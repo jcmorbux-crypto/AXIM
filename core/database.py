@@ -1,0 +1,235 @@
+import json
+import sqlite3
+import sys
+from pathlib import Path
+from datetime import datetime, timedelta
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+DB_FILE = Path("data/axim.db")
+
+_NEW_COLUMNS = {
+    "execution_status": "TEXT",
+    "opened_at": "TEXT",
+    "closed_at": "TEXT",
+    "profit_loss": "REAL",
+    "screenshot_paths": "TEXT",
+}
+
+
+def get_connection():
+    DB_FILE.parent.mkdir(exist_ok=True)
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _migrate_schema(conn):
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(signals)")}
+    for column, sql_type in _NEW_COLUMNS.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE signals ADD COLUMN {column} {sql_type}")
+
+
+def initialize_database():
+    conn = get_connection()
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        message_id INTEGER,
+        channel TEXT,
+        sender TEXT,
+        asset TEXT,
+        direction TEXT,
+        timeframe TEXT,
+        payout INTEGER,
+        trade_amount REAL,
+        message TEXT,
+        received_at TEXT,
+        executed INTEGER DEFAULT 0,
+        execution_time TEXT,
+        result TEXT,
+        profit REAL DEFAULT 0,
+        execution_status TEXT,
+        opened_at TEXT,
+        closed_at TEXT,
+        profit_loss REAL,
+        screenshot_paths TEXT
+    );
+    """)
+
+    _migrate_schema(conn)
+
+    conn.commit()
+    conn.close()
+
+
+def record_signal_received(signal, source=None, sender=None, message_id=None):
+    from trade_lifecycle import TradeStatus
+
+    conn = get_connection()
+    cursor = conn.execute("""
+    INSERT INTO signals (
+        message_id, channel, sender, asset, direction, timeframe,
+        trade_amount, message, received_at, executed, execution_status
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    """, (
+        message_id,
+        source,
+        sender,
+        signal["asset"],
+        signal["direction"],
+        signal["expiry"],
+        signal.get("trade_amount"),
+        signal["raw_message"],
+        datetime.now().isoformat(),
+        TradeStatus.SIGNAL_RECEIVED.value,
+    ))
+    conn.commit()
+    trade_id = cursor.lastrowid
+    conn.close()
+    return trade_id
+
+
+_UPDATABLE_FIELDS = {
+    "trade_amount", "payout", "opened_at", "closed_at", "result",
+    "profit_loss", "screenshot_paths", "execution_time", "executed",
+}
+
+
+def update_trade_status(trade_id, status, **fields):
+    from trade_lifecycle import TradeStatus
+
+    status_value = status.value if isinstance(status, TradeStatus) else status
+
+    set_clauses = ["execution_status = ?"]
+    params = [status_value]
+
+    for key, value in fields.items():
+        if key not in _UPDATABLE_FIELDS:
+            raise ValueError(f"Unknown trade field: {key!r}")
+        if key == "screenshot_paths" and isinstance(value, (list, tuple)):
+            value = json.dumps(list(value))
+        set_clauses.append(f"{key} = ?")
+        params.append(value)
+
+    params.append(trade_id)
+
+    conn = get_connection()
+    conn.execute(
+        f"UPDATE signals SET {', '.join(set_clauses)} WHERE id = ?",
+        params,
+    )
+    conn.commit()
+    conn.close()
+
+
+def append_screenshot_path(trade_id, path):
+    conn = get_connection()
+    row = conn.execute("SELECT screenshot_paths FROM signals WHERE id = ?", (trade_id,)).fetchone()
+    existing = json.loads(row["screenshot_paths"]) if row and row["screenshot_paths"] else []
+    existing.append(str(path))
+    conn.execute(
+        "UPDATE signals SET screenshot_paths = ? WHERE id = ?",
+        (json.dumps(existing), trade_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def find_recent_duplicate(asset, direction, expiry, window_seconds, exclude_id=None):
+    cutoff = (datetime.now() - timedelta(seconds=window_seconds)).isoformat()
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT id FROM signals
+        WHERE asset = ? AND direction = ? AND timeframe = ? AND received_at >= ?
+          AND (? IS NULL OR id != ?)
+        ORDER BY received_at DESC
+        LIMIT 1
+    """, (asset, direction, expiry, cutoff, exclude_id, exclude_id)).fetchone()
+    conn.close()
+    return row["id"] if row else None
+
+
+def count_trades_since(since_iso):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM signals WHERE received_at >= ?", (since_iso,)
+    ).fetchone()
+    conn.close()
+    return row["n"]
+
+
+def get_recent_results(limit):
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT result FROM signals
+        WHERE result IS NOT NULL
+        ORDER BY closed_at DESC
+        LIMIT ?
+    """, (limit,)).fetchall()
+    conn.close()
+    return [row["result"] for row in rows]
+
+
+def get_last_loss_time():
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT closed_at FROM signals
+        WHERE result = 'loss'
+        ORDER BY closed_at DESC
+        LIMIT 1
+    """).fetchone()
+    conn.close()
+    return row["closed_at"] if row else None
+
+
+def get_open_trades():
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT * FROM signals
+        WHERE execution_status IN ('trade_clicked', 'trade_opened')
+        ORDER BY opened_at ASC
+    """).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def get_trades_between(start_iso, end_iso, closed_only=False):
+    conn = get_connection()
+    if closed_only:
+        rows = conn.execute("""
+            SELECT * FROM signals
+            WHERE closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?
+            ORDER BY closed_at ASC
+        """, (start_iso, end_iso)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT * FROM signals
+            WHERE received_at >= ? AND received_at <= ?
+            ORDER BY received_at ASC
+        """, (start_iso, end_iso)).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+def count_with_result_prefix(prefix, since_iso=None):
+    conn = get_connection()
+    if since_iso:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM signals WHERE result LIKE ? AND received_at >= ?",
+            (f"{prefix}%", since_iso),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM signals WHERE result LIKE ?", (f"{prefix}%",)
+        ).fetchone()
+    conn.close()
+    return row["n"]
+
+
+if __name__ == "__main__":
+    initialize_database()
+    print("Database Ready")

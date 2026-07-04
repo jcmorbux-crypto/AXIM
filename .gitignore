@@ -1,0 +1,25 @@
+# Environment
+.env
+
+# Telegram Sessions
+*.session
+
+# Browser session/profile (cookies, auth state - never commit)
+sessions/
+
+# Python
+__pycache__/
+*.pyc
+
+# Virtual Environment
+venv/
+
+# Logs
+logs/
+
+# Data
+data/
+
+# OS
+Thumbs.db
+.DS_Store

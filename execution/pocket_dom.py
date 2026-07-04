@@ -1,0 +1,556 @@
+import logging
+import re
+import time
+from pathlib import Path
+
+from playwright.async_api import expect
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOG_DIR = PROJECT_ROOT / "logs"
+FAILURE_DIR = LOG_DIR / "failures"
+
+DEFAULT_TIMEOUT_MS = 10_000
+RETRY_ATTEMPTS = 2
+
+SEL_PROMO_CLOSE = ".mfp-close"
+
+SEL_ASSET_TRIGGER = ".pair-number-wrap"
+SEL_ASSET_SEARCH_INPUT = ".search__field"
+SEL_CURRENT_SYMBOL = ".current-symbol"
+SEL_ASSETS_BODY = ".assets-block__col-body"
+
+SEL_EXPIRY_TRIGGER = ".block--expiration-inputs"
+SEL_EXPIRY_PANEL = ".expiration-inputs-list-modal"
+SEL_EXPIRY_INPUTS = f"{SEL_EXPIRY_PANEL} input"
+
+SEL_AMOUNT_INPUT = ".block--bet-amount .value__val input"
+
+SEL_BUY_BUTTON = ".btn.btn-call"
+SEL_SELL_BUTTON = ".btn.btn-put"
+
+SEL_DEALS_LIST = ".deals-list"
+SEL_NO_DEALS = ".no-deals"
+SEL_TRADES_PANEL = ".widget-slot.deals"
+SEL_CLOSED_LIST_ITEM = f"{SEL_DEALS_LIST} .deals-list__item"
+
+SEL_PAYOUT_BLOCK = ".block--payout"
+SEL_PAYOUT_PERCENT = f"{SEL_PAYOUT_BLOCK} .value__val-start"
+
+SEL_ACTIVE_DROPDOWN_MODAL = "#modal-root .drop-down-modal-wrap.active"
+
+# Fixed point inside the chart backdrop, deliberately far left of the
+# BUY/SELL/amount control column (which sits in the right-hand panel
+# regardless of window size, per direct measurement at both 1600x1000 and
+# maximized/screen-fit windows). Re-verify if the site's layout changes.
+NEUTRAL_CLICK_POINT = (800, 500)
+
+_RETRYABLE_ERRORS = (PlaywrightTimeoutError, AssertionError)
+
+
+class _ReplacingStreamHandler(logging.StreamHandler):
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            stream = self.stream
+            encoding = stream.encoding or "utf-8"
+            stream.write(msg.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+            stream.write(self.terminator)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+
+logger = logging.getLogger("axim.pocket_dom")
+if not logger.handlers:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    file_handler = logging.FileHandler(LOG_DIR / "pocket_dom.log", encoding="utf-8")
+    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(file_handler)
+    logger.addHandler(_ReplacingStreamHandler())
+    logger.setLevel(logging.INFO)
+
+
+def _log_selector_event(action, selector, timeout_ms, retry, found, visible, enabled):
+    logger.info(
+        "SELECTOR_CHECK action=%s selector=%r timeout_ms=%d retry=%d/%d found=%s visible=%s enabled=%s",
+        action, selector, timeout_ms, retry, RETRY_ATTEMPTS, found, visible, enabled,
+    )
+
+
+async def _probe_state(locator):
+    try:
+        found = await locator.count() > 0
+    except Exception:
+        found = False
+
+    visible = False
+    enabled = False
+    if found:
+        try:
+            visible = await locator.is_visible()
+        except Exception:
+            visible = False
+        try:
+            enabled = await locator.is_enabled()
+        except Exception:
+            enabled = False
+
+    return found, visible, enabled
+
+
+class PocketDomError(Exception):
+    def __init__(self, action, selector, reason, screenshot_path=None, html_path=None, url=None):
+        self.action = action
+        self.selector = selector
+        self.reason = reason
+        self.screenshot_path = screenshot_path
+        self.html_path = html_path
+        self.url = url
+        super().__init__(f"{action} failed on selector '{selector}': {reason}")
+
+
+class AssetUntradeableError(Exception):
+    """Raised when the requested asset's row is found but marked
+    unavailable (e.g. live forex market closed) - a legitimate business
+    condition, not a DOM verification failure, so it is not retried and
+    does not trigger a failure-diagnostics capture."""
+    def __init__(self, asset_name, reason="market closed / schedule unavailable"):
+        self.asset_name = asset_name
+        self.reason = reason
+        super().__init__(f"{asset_name} is currently untradeable: {reason}")
+
+
+async def _capture_failure(page, action, selector, reason):
+    FAILURE_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = f"{int(time.time() * 1000)}_{action}"
+    out_dir = FAILURE_DIR / stamp
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    screenshot_path = out_dir / "screenshot.png"
+    html_path = out_dir / "page.html"
+    url_path = out_dir / "url.txt"
+
+    try:
+        await page.screenshot(path=str(screenshot_path))
+    except Exception as e:
+        screenshot_path = None
+        logger.error("screenshot capture failed for action=%s: %s", action, e)
+
+    try:
+        html = await page.content()
+        html_path.write_text(html, encoding="utf-8")
+    except Exception as e:
+        html_path = None
+        logger.error("html capture failed for action=%s: %s", action, e)
+
+    try:
+        url = page.url
+        url_path.write_text(url, encoding="utf-8")
+    except Exception as e:
+        url = None
+        logger.error("url capture failed for action=%s: %s", action, e)
+
+    logger.error(
+        "VERIFICATION FAILED action=%s selector=%s reason=%s screenshot=%s html=%s url=%s",
+        action, selector, reason, screenshot_path, html_path, url,
+    )
+
+    raise PocketDomError(action, selector, reason, screenshot_path, html_path, url)
+
+
+def _expiry_to_hms(expiry_str):
+    match = re.match(r"(\d+)\s*(Second|Minute)", expiry_str or "", re.IGNORECASE)
+    if not match:
+        raise ValueError(f"Unrecognized expiry format: {expiry_str!r}")
+
+    value = int(match.group(1))
+    unit = match.group(2).lower()
+    total_seconds = value if unit.startswith("second") else value * 60
+
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return hours, minutes, seconds
+
+
+def expiry_to_seconds(expiry_str):
+    hours, minutes, seconds = _expiry_to_hms(expiry_str)
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def _format_amount(amount):
+    amount = float(amount)
+    if amount.is_integer():
+        return str(int(amount))
+    return f"{amount:.2f}"
+
+
+def _asset_search_term(asset_name):
+    # Confirmed by direct testing: the search field does not reliably match
+    # "EUR/USD OTC" or "EURUSD.OTC" - the compact symbol with no separators
+    # and no "OTC" (e.g. "EURUSD") is what surfaces both the OTC and
+    # non-OTC rows. Disambiguation between those rows happens afterward,
+    # explicitly, based on whether the signal asset requested OTC.
+    compact = re.sub(r"[/.\s]", "", asset_name)
+    compact = re.sub(r"OTC$", "", compact, flags=re.IGNORECASE)
+    return compact.upper()
+
+
+def _wants_otc(asset_name):
+    return asset_name.upper().endswith(" OTC")
+
+
+async def dismiss_blocking_modals(page, timeout=3000):
+    close_btn = page.locator(SEL_PROMO_CLOSE).first
+    try:
+        await close_btn.wait_for(state="visible", timeout=timeout)
+    except PlaywrightTimeoutError:
+        return
+
+    await close_btn.click(timeout=timeout)
+    await expect(close_btn).to_be_hidden(timeout=timeout)
+
+
+async def _close_active_dropdown_modal(page, timeout=DEFAULT_TIMEOUT_MS):
+    modal = page.locator(SEL_ACTIVE_DROPDOWN_MODAL).first
+    if await modal.count() == 0 or not await modal.is_visible():
+        return
+    x, y = NEUTRAL_CLICK_POINT
+    await page.mouse.click(x, y)
+    await expect(modal).to_be_hidden(timeout=timeout)
+
+
+async def _read_current_asset(page):
+    try:
+        return (await page.locator(SEL_CURRENT_SYMBOL).first.inner_text(timeout=2000)).strip()
+    except Exception:
+        return None
+
+
+async def select_asset(page, asset_name, timeout=DEFAULT_TIMEOUT_MS):
+    if await _read_current_asset(page) == asset_name:
+        logger.info("select_asset: %r already selected, no-op", asset_name)
+        return
+
+    search_term = _asset_search_term(asset_name)
+    wants_otc = _wants_otc(asset_name)
+    logger.info(
+        "select_asset: target=%r search_term=%r wants_otc=%s",
+        asset_name, search_term, wants_otc,
+    )
+
+    last_reason = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            panel = page.locator(SEL_ASSETS_BODY)
+            if not await panel.is_visible():
+                await page.locator(SEL_ASSET_TRIGGER).first.click(timeout=timeout)
+                await expect(panel).to_be_visible(timeout=timeout)
+
+            # 1. Asset search selector
+            search = page.locator(SEL_ASSET_SEARCH_INPUT).first
+            found, visible, enabled = await _probe_state(search)
+            _log_selector_event("asset_search_selector", SEL_ASSET_SEARCH_INPUT, timeout, attempt, found, visible, enabled)
+            await expect(search).to_be_visible(timeout=timeout)
+            await expect(search).to_be_enabled(timeout=timeout)
+            await search.fill(search_term, timeout=timeout)
+
+            # 2. Asset selection - explicit OTC / non-OTC disambiguation.
+            # A compact search term can surface both variants of a pair
+            # (e.g. "EUR/USD" and "EUR/USD OTC"). Exact-text matching against
+            # the full asset_name - which itself does or doesn't carry the
+            # "OTC" suffix - is what picks the correct row. Never assume the
+            # first result is correct.
+            matches = panel.get_by_text(asset_name, exact=True)
+            match_count = await matches.count()
+            row = matches.first
+            found, visible, enabled = await _probe_state(row)
+            _log_selector_event(
+                "asset_selection",
+                f"text={asset_name!r} within {SEL_ASSETS_BODY} (matching_rows={match_count})",
+                timeout, attempt, found, visible, enabled,
+            )
+            await expect(row).to_be_visible(timeout=timeout)
+
+            tradeable = await row.evaluate("""
+                (el) => {
+                    const item = el.closest('.alist__item');
+                    if (!item) return true;
+                    return !item.querySelector('.alist__schedule-info');
+                }
+            """)
+            if not tradeable:
+                logger.warning(
+                    "select_asset: %r matched a row but it is currently untradeable "
+                    "(market closed / schedule unavailable) - aborting without retry",
+                    asset_name,
+                )
+                raise AssetUntradeableError(asset_name)
+
+            clicked_text = (await row.inner_text()).strip()
+            logger.info(
+                "select_asset: search_term=%r matching_rows=%d -> clicking result=%r (wants_otc=%s, target=%r)",
+                search_term, match_count, clicked_text, wants_otc, asset_name,
+            )
+            await row.click(timeout=timeout)
+
+            symbol = page.locator(SEL_CURRENT_SYMBOL).first
+            await expect(symbol).to_have_text(asset_name, timeout=timeout)
+
+            await _close_active_dropdown_modal(page, timeout=timeout)
+
+            found, visible, enabled = await _probe_state(symbol)
+            _log_selector_event("asset_selection_confirmed", SEL_CURRENT_SYMBOL, timeout, attempt, found, visible, enabled)
+            logger.info("select_asset: final result clicked=%r confirmed on screen", clicked_text)
+            return
+        except _RETRYABLE_ERRORS as e:
+            last_reason = str(e)
+            logger.warning(
+                "select_asset attempt %d/%d failed for %r (search_term=%r): %s",
+                attempt, RETRY_ATTEMPTS, asset_name, search_term, last_reason,
+            )
+
+    await _capture_failure(page, "select_asset", SEL_ASSET_SEARCH_INPUT, last_reason or "unknown")
+
+
+async def select_expiry(page, expiry_str, timeout=DEFAULT_TIMEOUT_MS):
+    hours, minutes, seconds = _expiry_to_hms(expiry_str)
+    targets = [f"{hours:02d}", f"{minutes:02d}", f"{seconds:02d}"]
+    labels = ["hours", "minutes", "seconds"]
+
+    last_reason = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            panel = page.locator(SEL_EXPIRY_PANEL)
+            if not await panel.is_visible():
+                trigger = page.locator(SEL_EXPIRY_TRIGGER).first
+                found, visible, enabled = await _probe_state(trigger)
+                _log_selector_event("expiration_selector_trigger", SEL_EXPIRY_TRIGGER, timeout, attempt, found, visible, enabled)
+                await trigger.click(timeout=timeout)
+
+            inputs = page.locator(SEL_EXPIRY_INPUTS)
+            await expect(inputs.nth(2)).to_be_visible(timeout=timeout)
+
+            for idx, target in enumerate(targets):
+                field = inputs.nth(idx)
+                found, visible, enabled = await _probe_state(field)
+                _log_selector_event(
+                    f"expiration_selector_{labels[idx]}", f"{SEL_EXPIRY_INPUTS} >> nth={idx}",
+                    timeout, attempt, found, visible, enabled,
+                )
+                await field.fill(target, timeout=timeout)
+                await expect(field).to_have_value(target, timeout=timeout)
+
+            await _close_active_dropdown_modal(page, timeout=timeout)
+            return
+        except _RETRYABLE_ERRORS as e:
+            last_reason = str(e)
+            logger.warning(
+                "select_expiry attempt %d/%d failed for %r: %s",
+                attempt, RETRY_ATTEMPTS, expiry_str, last_reason,
+            )
+
+    await _capture_failure(page, "select_expiry", SEL_EXPIRY_TRIGGER, last_reason or "unknown")
+
+
+async def set_amount(page, amount, timeout=DEFAULT_TIMEOUT_MS):
+    target = _format_amount(amount)
+
+    last_reason = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            field = page.locator(SEL_AMOUNT_INPUT).first
+            found, visible, enabled = await _probe_state(field)
+            _log_selector_event("amount_selector", SEL_AMOUNT_INPUT, timeout, attempt, found, visible, enabled)
+            await expect(field).to_be_visible(timeout=timeout)
+            await expect(field).to_be_enabled(timeout=timeout)
+            await field.fill(target, timeout=timeout)
+            await expect(field).to_have_value(target, timeout=timeout)
+            return
+        except _RETRYABLE_ERRORS as e:
+            last_reason = str(e)
+            logger.warning(
+                "set_amount attempt %d/%d failed for %r: %s",
+                attempt, RETRY_ATTEMPTS, amount, last_reason,
+            )
+
+    await _capture_failure(page, "set_amount", SEL_AMOUNT_INPUT, last_reason or "unknown")
+
+
+_UNCOVERED_CHECK_JS = """([buySelector, sellSelector]) => {
+    function isUncovered(selector) {
+        const el = document.querySelector(selector);
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width === 0 || r.height === 0) return false;
+        const cx = r.x + r.width / 2;
+        const cy = r.y + r.height / 2;
+        const top = document.elementFromPoint(cx, cy);
+        return top !== null && (top === el || el.contains(top));
+    }
+    return isUncovered(buySelector) && isUncovered(sellSelector);
+}"""
+
+
+async def verify_direction_controls_ready(page, timeout=DEFAULT_TIMEOUT_MS):
+    last_reason = None
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            buy = page.locator(SEL_BUY_BUTTON).first
+            sell = page.locator(SEL_SELL_BUTTON).first
+
+            found, visible, enabled = await _probe_state(buy)
+            _log_selector_event("buy_selector", SEL_BUY_BUTTON, timeout, attempt, found, visible, enabled)
+            await expect(buy).to_be_visible(timeout=timeout)
+            await expect(buy).to_be_enabled(timeout=timeout)
+
+            found, visible, enabled = await _probe_state(sell)
+            _log_selector_event("sell_selector", SEL_SELL_BUTTON, timeout, attempt, found, visible, enabled)
+            await expect(sell).to_be_visible(timeout=timeout)
+            await expect(sell).to_be_enabled(timeout=timeout)
+
+            # Visible+enabled isn't sufficient - something can still be layered
+            # on top and intercept the click. Test real click-reachability via
+            # the same hit-testing Playwright's own actionability engine uses.
+            await page.wait_for_function(
+                _UNCOVERED_CHECK_JS,
+                arg=[SEL_BUY_BUTTON, SEL_SELL_BUTTON],
+                timeout=timeout,
+            )
+
+            found, visible, enabled = await _probe_state(buy)
+            _log_selector_event("buy_selector_click_ready", SEL_BUY_BUTTON, timeout, attempt, found, visible, enabled)
+            found, visible, enabled = await _probe_state(sell)
+            _log_selector_event("sell_selector_click_ready", SEL_SELL_BUTTON, timeout, attempt, found, visible, enabled)
+            return
+        except _RETRYABLE_ERRORS as e:
+            last_reason = str(e)
+            logger.warning(
+                "verify_direction_controls_ready attempt %d/%d failed: %s",
+                attempt, RETRY_ATTEMPTS, last_reason,
+            )
+
+    await _capture_failure(
+        page, "verify_direction_controls_ready",
+        f"{SEL_BUY_BUTTON} / {SEL_SELL_BUTTON}", last_reason or "unknown",
+    )
+
+
+async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS):
+    direction = direction.upper()
+    if direction == "BUY":
+        button_selector = SEL_BUY_BUTTON
+    elif direction == "SELL":
+        button_selector = SEL_SELL_BUTTON
+    else:
+        raise ValueError(f"Unknown direction: {direction!r}")
+
+    try:
+        button = page.locator(button_selector).first
+        found, visible, enabled = await _probe_state(button)
+        _log_selector_event("click_direction", button_selector, timeout, 1, found, visible, enabled)
+        await expect(button).to_be_enabled(timeout=timeout)
+        await button.click(timeout=timeout)
+
+        no_deals = page.locator(SEL_DEALS_LIST).locator(SEL_NO_DEALS)
+        await expect(no_deals).to_be_hidden(timeout=timeout)
+    except _RETRYABLE_ERRORS as e:
+        await _capture_failure(page, "click_direction", button_selector, str(e))
+
+
+async def read_payout_percent(page, timeout=DEFAULT_TIMEOUT_MS):
+    """Reads the displayed payout percentage (e.g. 81 for '+81%'). Purely
+    informational - returns None on failure rather than raising, since a
+    missing payout reading should not block an otherwise-verified trade."""
+    locator = page.locator(SEL_PAYOUT_PERCENT).first
+    found, visible, enabled = await _probe_state(locator)
+    _log_selector_event("payout_selector", SEL_PAYOUT_PERCENT, timeout, 1, found, visible, enabled)
+
+    try:
+        await expect(locator).to_be_visible(timeout=timeout)
+        text = (await locator.inner_text()).strip()
+        match = re.search(r"(-?\d+)", text)
+        return int(match.group(1)) if match else None
+    except _RETRYABLE_ERRORS as e:
+        logger.warning("read_payout_percent: could not read payout (%s) - non-fatal", e)
+        return None
+
+
+async def wait_for_trade_result(page, expiry_seconds, settlement_buffer_seconds=30):
+    """
+    Waits for the currently-open trade to close, then classifies win/loss/
+    draw from the Closed tab.
+
+    Assumes a single open trade at a time - matches the current one-trade-
+    at-a-time execution model. Revisit if concurrent trades are added.
+
+    Win/loss classification is confirmed against one directly-observed LOSS
+    sample (final value $0 on a $1 stake). A WIN case has not yet been
+    directly observed. Classification used: final_value == 0 -> loss,
+    final_value >= stake -> win, anything else -> draw. Treat "win" results
+    from this function as unverified until confirmed against a real win.
+    """
+    timeout_ms = (expiry_seconds + settlement_buffer_seconds) * 1000
+
+    try:
+        no_deals = page.locator(SEL_DEALS_LIST).locator(SEL_NO_DEALS)
+        await expect(no_deals).to_be_visible(timeout=timeout_ms)
+
+        trades_panel = page.locator(SEL_TRADES_PANEL)
+        closed_tab = trades_panel.get_by_text("Closed", exact=True).first
+        found, visible, enabled = await _probe_state(closed_tab)
+        _log_selector_event("closed_tab_selector", "text=Closed", DEFAULT_TIMEOUT_MS, 1, found, visible, enabled)
+        await closed_tab.click(timeout=DEFAULT_TIMEOUT_MS)
+
+        item = page.locator(SEL_CLOSED_LIST_ITEM).first
+        await expect(item).to_be_visible(timeout=DEFAULT_TIMEOUT_MS)
+
+        data = await item.evaluate("""
+            (el) => {
+                const rows = el.querySelectorAll('.item-row');
+                const assetLink = rows[0] ? rows[0].querySelector('a') : null;
+                const valueDivs = rows[1] ? Array.from(rows[1].querySelectorAll('div')) : [];
+                return {
+                    asset: assetLink ? assetLink.innerText.trim() : null,
+                    direction: rows[1]
+                        ? (rows[1].querySelector('.fa-arrow-up') ? 'BUY'
+                            : (rows[1].querySelector('.fa-arrow-down') ? 'SELL' : null))
+                        : null,
+                    values: valueDivs.map(d => d.innerText.trim()),
+                };
+            }
+        """)
+    except _RETRYABLE_ERRORS as e:
+        await _capture_failure(page, "wait_for_trade_result", SEL_CLOSED_LIST_ITEM, str(e))
+        return None
+
+    logger.info("wait_for_trade_result: closed_item=%s", data)
+
+    def _to_amount(text):
+        try:
+            return float(text.replace("$", "").replace(",", ""))
+        except (ValueError, AttributeError, TypeError):
+            return None
+
+    values = data.get("values") or []
+    stake = _to_amount(values[0]) if len(values) > 0 else None
+    final_value = _to_amount(values[-1]) if len(values) > 0 else None
+
+    if stake is None or final_value is None:
+        result = "unknown"
+    elif final_value == 0:
+        result = "loss"
+    elif final_value >= stake:
+        result = "win"
+    else:
+        result = "draw"
+
+    return {
+        "result": result,
+        "asset": data.get("asset"),
+        "direction": data.get("direction"),
+        "stake": stake,
+        "final_value": final_value,
+        "raw_values": values,
+    }
