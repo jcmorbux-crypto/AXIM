@@ -18,6 +18,7 @@ from settings import (
     MAX_CONSECUTIVE_LOSSES,
     COOLDOWN_AFTER_LOSS_SECONDS,
     DUPLICATE_SIGNAL_WINDOW_SECONDS,
+    MINIMUM_PAYOUT,
 )
 
 logger = logging.getLogger("axim.lifecycle")
@@ -79,6 +80,31 @@ def check_cooldown_after_loss():
         raise RiskViolation(
             "cooldown_after_loss",
             f"{remaining:.0f}s remaining in post-loss cooldown",
+        )
+
+
+def check_minimum_payout(payout):
+    """Unlike the other rules, payout is only known after the browser has
+    already selected the asset/expiry and read it live (pocket_dom.
+    read_payout_percent) - it can't be pre-checked from signal/DB data
+    alone, and a cached value would go stale (payout fluctuates
+    continuously, unlike "is this asset tradeable"). Called from
+    pocket_executor.prepare_trade right after that live read, not from
+    TradeCoordinator's pre-flight stage with the other checks.
+
+    A missing reading (payout=None, e.g. the DOM read itself failed) fails
+    closed - rejected, not silently allowed - consistent with every other
+    safety check in this codebase (demo-mode verification, asset-
+    untradeable check, WATCH_CHANNELS enforcement all fail closed too)."""
+    if payout is None:
+        raise RiskViolation(
+            "minimum_payout",
+            f"payout could not be read - refusing to execute without confirming it meets MINIMUM_PAYOUT {MINIMUM_PAYOUT}%",
+        )
+    if payout < MINIMUM_PAYOUT:
+        raise RiskViolation(
+            "minimum_payout",
+            f"payout {payout}% is below MINIMUM_PAYOUT {MINIMUM_PAYOUT}%",
         )
 
 

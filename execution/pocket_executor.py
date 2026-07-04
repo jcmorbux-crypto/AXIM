@@ -14,6 +14,7 @@ sys.path.insert(0, str(CORE_DIR))
 
 import pocket_dom
 import database
+import risk_manager
 from trade_lifecycle import TradeStatus
 from latency import LatencyTracker
 
@@ -64,6 +65,25 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
         await pocket_dom.verify_direction_controls_ready(page)
 
         payout = await pocket_dom.read_payout_percent(page)
+
+        try:
+            risk_manager.check_minimum_payout(payout)
+        except risk_manager.RiskViolation as violation:
+            lifecycle_logger.warning(
+                "trade_id=%s worker_id=%s rejected: %s", trade_id, worker.worker_id, violation.reason,
+            )
+            database.update_trade_status(
+                trade_id, TradeStatus.ERROR,
+                trade_amount=amount, payout=payout,
+                result=f"rejected:{violation.rule}",
+            )
+            print(f"Status    : REJECTED ({violation.rule}: {violation.reason})")
+            latency.log_summary()
+            return {
+                "status": "rejected", "trade_id": trade_id,
+                "rule": violation.rule, "reason": violation.reason,
+            }
+
         screenshot_path = await _take_screenshot(page, trade_id, "prepared")
         database.append_screenshot_path(trade_id, screenshot_path)
         database.update_trade_status(

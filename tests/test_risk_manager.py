@@ -94,6 +94,22 @@ class RiskManagerTests(unittest.TestCase):
     def test_demo_only_passes_when_demo(self):
         risk_manager.check_demo_only()
 
+    def test_minimum_payout_below_threshold(self):
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_minimum_payout(risk_manager.MINIMUM_PAYOUT - 1)
+        self.assertEqual(ctx.exception.rule, "minimum_payout")
+
+    def test_minimum_payout_at_threshold(self):
+        risk_manager.check_minimum_payout(risk_manager.MINIMUM_PAYOUT)
+
+    def test_minimum_payout_above_threshold(self):
+        risk_manager.check_minimum_payout(risk_manager.MINIMUM_PAYOUT + 10)
+
+    def test_minimum_payout_none_fails_closed(self):
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_minimum_payout(None)
+        self.assertEqual(ctx.exception.rule, "minimum_payout")
+
     def test_evaluate_all_passes_clean_signal(self):
         risk_manager.evaluate_all("GBP/USD OTC", "SELL", "5 Minute", 1)
 
