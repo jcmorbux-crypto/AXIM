@@ -13,6 +13,7 @@ from browser_session import PocketBrowserSession, get_trading_page, DEMO_URL
 import pocket_dom
 import asset_cache
 from logger import get_logger
+import database
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -105,8 +106,14 @@ class BrowserWarmupService:
             if await self.health_check():
                 return
             logger.warning("browser_warmup: reconnecting after crashed/closed browser")
-            await self.stop()
-            await self.start()
+            try:
+                await self.stop()
+                await self.start()
+            except Exception as e:
+                database.record_recovery_event("browser_reconnect", "failed", str(e))
+                raise
+            else:
+                database.record_recovery_event("browser_reconnect", "succeeded", f"generation={self.generation}")
 
     async def stop(self):
         if self._session is not None:

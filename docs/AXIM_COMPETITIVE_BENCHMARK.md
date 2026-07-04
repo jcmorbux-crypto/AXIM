@@ -1,0 +1,165 @@
+# AXIM Competitive Benchmark
+
+**Status:** Analysis only. No code changed to produce this document.
+**Method:** AXIM's own codebase (read directly), AXIM's own historical execution
+data (`data/axim.db`), and generally-known patterns in browser-automation /
+trading-bot engineering. **No specific competitor source code has been
+reviewed** - none has been provided yet. Where this document compares AXIM
+against "common practice," that means publicly-documented Playwright/browser-
+automation technique, not a specific competitor's verified implementation.
+This document is ready to be sharpened with real comparisons the moment
+specific public repos/docs are provided.
+
+Scope boundary (per explicit instruction): only AXIM's own code, the user's
+own authorized Telegram observation, public repos/docs the user supplies, and
+AXIM's own measured latency. No reverse-engineering of Pocket Option's
+proprietary client or backend.
+
+---
+
+## 1. What AXIM already does that matches strong common practice
+
+| Technique | AXIM's current implementation | Status |
+|---|---|---|
+| Persistent authenticated session | `PocketBrowserSession` uses `launch_persistent_context` against a fixed `user_data_dir` (`sessions/pocket_browser`) - login/cookies survive restarts | **In place** |
+| Warm browser (no cold launch per trade) | `BrowserWarmupService` launches once at startup and stays alive for the process lifetime; `ensure_alive()`/generation-counter reconnects on a whole-browser crash | **In place** |
+| Warm, pre-opened pages (not one page reused sequentially) | `BrowserWorkerPool` maintains N pages (tabs) in the same context, each with its own `asyncio.Lock`, `MAX_CONCURRENT_WORKERS` (default 2) | **In place** |
+| Pre-scanned/cached asset availability | `asset_cache.build_cache()` scans every category once at startup; `TradeCoordinator` fast-rejects a known-untradeable asset without touching the browser at all | **In place** |
+| Static selector table (no runtime selector discovery) | All selectors are module-level constants in `pocket_dom.py`, verified against the live DOM once, reused everywhere | **In place** |
+| No-op skip when state already matches | `select_asset`/`select_expiry`/`set_amount` each check current DOM state first and skip entirely if already correct - the actual mechanism behind the "<2s when nothing changes" path | **In place** |
+| Explicit, structured verification before every click | Locator visibility/enabled/hit-testing checks before every interaction, with screenshot+HTML+URL capture on failure | **In place**, but see §3 - some of this capture work currently sits on the critical path |
+| Fail-closed safety gates | Demo-mode verification, `WATCH_CHANNELS` allow-list, `MINIMUM_PAYOUT`, tradeable-now pre-check all reject rather than silently proceed on missing/ambiguous data | **In place** (a genuine differentiator - "fast" and "fails open" are usually the same failure mode in this space) |
+
+AXIM's warm-execution architecture (Phase 4/5) already implements the core
+of what's normally the *entire* pitch of a "fast" Pocket Option bot: don't
+re-authenticate, don't cold-launch a browser, don't re-discover selectors,
+don't re-scan assets you already know about. That baseline is solid. The gap
+is in what happens *inside* the already-warm path (§3) and in whether DOM
+automation is even the fastest possible signal for confirmation (§4).
+
+---
+
+## 2. Measured baseline (real data, small sample)
+
+From `data/axim.db`, all trades with both `received_at` and `opened_at`
+recorded (signal-received -> trade-button-clicked-and-confirmed-open):
+
+| Metric | Value |
+|---|---|
+| Sample size | 6 |
+| Min | 1.97s |
+| Max | 3.62s |
+| Average | 3.12s |
+| Median | 3.46s |
+
+**Caveat stated plainly:** n=6 is too small to be a real distribution - it's
+six manual/demo test trades, not production volume. It's directionally
+consistent with the Phase 4/5 roadmap notes ("~1-2s warm, ~2-5s on an asset
+change") but should not be treated as a reliable percentile estimate. Part of
+the Sprint plan (see companion doc) is instrumenting enough per-stage,
+per-trade data that this baseline stops being six data points.
+
+One structural note: **this number currently can't be broken down by stage**
+in a queryable way. `LatencyTracker` computes per-checkpoint deltas
+(`telegram_received`, `parsed`, `risk_approved`, `asset_selected`,
+`expiry_set`, `amount_set`, `click_completed`, `confirmation_detected`) but
+only ever writes them as one text line to `logs/lifecycle.log` - never to the
+database. Those log files also rotate/truncate (confirmed - they were
+regenerated during this session's logging-architecture work), so historical
+per-stage detail doesn't survive. This is the top item in the Sprint plan's
+recommended changes: persist the checkpoints structurally so "top bottleneck"
+can be answered from real data across every trade, not just log-tailing one
+run.
+
+---
+
+## 3. Where AXIM likely lags common practice
+
+These are structural findings from reading the current code, not measured
+regressions (no per-stage historical data exists yet - see above) - each is
+flagged with how confident the finding is.
+
+1. **Synchronous SQLite calls on the asyncio event loop.** Every risk check
+   (`check_max_trades_per_hour`, `check_max_consecutive_losses`,
+   `check_cooldown_after_loss`, `check_duplicate_signal`) plus
+   `record_signal_received`/`update_trade_status` opens a brand-new
+   `sqlite3.connect()` and runs a blocking query, all directly inside `async
+   def` functions with no `asyncio.to_thread` offload. Individually each call
+   is probably single-digit milliseconds locally, but they run sequentially
+   (5+ separate connect/query/close round trips per signal) and, more
+   importantly, **block the single event loop thread** - under real
+   concurrency (multiple workers reacting to simultaneous signals) this
+   serializes work that should be independent. *Confidence: high (read
+   directly from `database.py`/`risk_manager.py`; impact estimate is
+   structural, not yet measured in isolation).*
+
+2. **Screenshot capture sits on the critical path.** `pocket_executor.
+   prepare_trade` calls `await _take_screenshot(...)` (a full `page.
+   screenshot()` IPC round trip + PNG encode) twice per trade - once at
+   "prepared", once at "clicked" - both awaited in-line before the function
+   can proceed. `SAVE_SCREENSHOTS` exists in `config/settings.py` but is a
+   hardcoded `True` (not read from `.env` despite `os.getenv` being used for
+   every neighboring setting) and is never actually checked before this call
+   - the setting is currently decorative. *Confidence: high.*
+
+3. **`select_expiry` makes 3 sequential Playwright round trips** (hours/
+   minutes/seconds inputs, each `fill()` + `expect().to_have_value()`) where
+   the underlying DOM operation could plausibly be done as one `page.
+   evaluate()` setting all three native input values and dispatching input
+   events once. Each round trip is IPC + a real browser paint/validation
+   cycle, not free. *Confidence: medium - plausible optimization, not yet
+   tested for whether Pocket Option's own input handlers tolerate a
+   synthetic multi-field batch write instead of sequential user-like input.*
+
+4. **No WebSocket/network-layer observation at all.** Every confirmation
+   AXIM currently relies on - "trade opened" (`.no-deals` hidden), "trade
+   closed" (`.no-deals` visible again on the Closed tab) - is inferred from
+   DOM state that itself lags whatever real-time channel the page uses to
+   render it. Trading platforms overwhelmingly push price/order-state over
+   WebSocket; the DOM update is a downstream *effect* of that message, not
+   the source event. Playwright can passively observe frames on the already-
+   authenticated page (`page.on("websocket")` / CDP `Network` domain) without
+   touching, modifying, or reverse-engineering any proprietary client code -
+   it's the same authorized browser session simply being asked what it
+   already received. This is very likely the single largest available
+   latency win for *confirmation* specifically, and is explicitly in scope
+   per the user's own boundary ("websocket/API observations available from my
+   own browser session"). Not yet attempted. *Confidence: directionally
+   high that the opportunity exists; unconfirmed until an actual passive
+   capture is taken, since Pocket Option's specific message format is
+   unknown.*
+
+5. **Worker health-check overhead on every acquire.** `acquire_worker()`
+   calls `_ensure_pool_healthy()` -> `warmup_service.ensure_alive()` ->
+   a live `page.evaluate("() => 1")` round trip, every single trade, even on
+   the fully-healthy path. Previously measured (Phase 5 roadmap) at 0-31ms -
+   small, but non-zero and avoidable most of the time with a short TTL cache
+   ("healthy as of N ms ago, skip re-check"). *Confidence: high (previously
+   measured), impact: low but non-zero.*
+
+None of the above required touching Pocket Option's private code or backend -
+they're all read from AXIM's own source or are standard Playwright/CDP
+capabilities against the user's own session.
+
+---
+
+## 4. Where public repos would sharpen this
+
+This document currently compares AXIM against generally-known patterns, not
+a specific competitor. If/when the user provides specific public
+repositories or documentation, the highest-value additions would be:
+- Confirming whether other implementations actually do WebSocket/network
+  interception for confirmation (vs. also being DOM-based - possible AXIM
+  is already at parity here and the DOM approach is simply the common
+  ceiling for this platform).
+- Any documented Pocket Option-specific quirks (rate limits, anti-automation
+  detection, session/tab-sharing behavior) that would explain or contradict
+  the cross-tab state-sharing risk flagged in the companion Sprint doc.
+- Concrete published latency figures to compare against, rather than only
+  AXIM's own n=6 baseline.
+
+---
+
+*No files were modified to produce this report. See
+`docs/AXIM_LATENCY_SPRINT.md` for the prioritized action plan awaiting
+approval.*

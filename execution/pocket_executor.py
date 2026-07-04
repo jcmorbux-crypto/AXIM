@@ -1,15 +1,18 @@
 import os
 import sys
 import asyncio
+import time
 from datetime import datetime
 from pathlib import Path
 
 EXECUTION_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = EXECUTION_DIR.parent
 CORE_DIR = PROJECT_ROOT / "core"
+CONFIG_DIR = PROJECT_ROOT / "config"
 
 sys.path.insert(0, str(EXECUTION_DIR))
 sys.path.insert(0, str(CORE_DIR))
+sys.path.insert(0, str(CONFIG_DIR))
 
 import pocket_dom
 import database
@@ -17,12 +20,48 @@ import risk_manager
 from trade_lifecycle import TradeStatus
 from latency import LatencyTracker
 from logger import get_logger
+from settings import SAVE_SCREENSHOTS
 
 ARMED = os.getenv("ARMED", "false").lower() == "true"
 
 SCREENSHOT_DIR = PROJECT_ROOT / "logs" / "trades"
 
 lifecycle_logger = get_logger("axim.lifecycle", filename="lifecycle.log")
+
+
+def _capture_screenshot_background(page, trade_id, label):
+    """Fire-and-forget screenshot capture - previously `await
+    _take_screenshot(...)` sat directly on the signal-to-click critical
+    path (confirmed by the P0 benchmark: ~1.6s of otherwise-unaccounted
+    time between amount_set and click_completed on the already-warm no-op
+    path). Screenshots are diagnostic/audit only, never read by any
+    execution or risk decision, so nothing downstream depends on this
+    finishing before prepare_trade returns.
+
+    Documented tradeoff (required before trading any latency for anything,
+    including the inverse case of gaining latency at a reliability/
+    diagnostic cost): for the "prepared" label specifically, if this same
+    worker's page gets reacquired by a new trade before the background
+    capture actually runs (only possible on the prepared-not-armed/
+    rejected paths, where the worker is released immediately - the
+    successful "clicked" path holds the worker until the trade closes, so
+    it cannot race), the screenshot could show the new trade's state
+    instead. This never affects trade correctness or any risk decision -
+    only what a saved diagnostic image shows - and requires the same
+    worker being reacquired within a sub-second window to occur at all."""
+    if not SAVE_SCREENSHOTS:
+        return
+
+    async def _do():
+        try:
+            path = await _take_screenshot(page, trade_id, label)
+            database.append_screenshot_path(trade_id, path)
+        except Exception as e:
+            lifecycle_logger.error(
+                "trade_id=%s failed to capture/persist %r screenshot: %s", trade_id, label, e,
+            )
+
+    asyncio.create_task(_do())
 
 
 async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool, latency=None):
@@ -83,8 +122,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
                 "rule": violation.rule, "reason": violation.reason,
             }
 
-        screenshot_path = await _take_screenshot(page, trade_id, "prepared")
-        database.append_screenshot_path(trade_id, screenshot_path)
+        _capture_screenshot_background(page, trade_id, "prepared")
         database.update_trade_status(
             trade_id, TradeStatus.TRADE_PREPARED,
             trade_amount=amount, payout=payout,
@@ -123,8 +161,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
         latency.mark("confirmation_detected")
 
         opened_at = datetime.now().isoformat()
-        screenshot_path = await _take_screenshot(page, trade_id, "clicked")
-        database.append_screenshot_path(trade_id, screenshot_path)
+        _capture_screenshot_background(page, trade_id, "clicked")
         database.update_trade_status(trade_id, TradeStatus.TRADE_CLICKED, opened_at=opened_at)
         lifecycle_logger.info("trade_id=%s worker_id=%s status=%s", trade_id, worker.worker_id, TradeStatus.TRADE_CLICKED.value)
 
@@ -169,8 +206,20 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds):
     the trade resolves - only that one worker is blocked meanwhile, other
     workers remain free for concurrent trades."""
     page = worker.page
+    # Measures detection/polling overhead on top of the trade's own
+    # contractual expiry duration - not the expiry wait itself (a
+    # deliberate, non-optimizable delay), but how much extra wall-clock
+    # AXIM's polling loop takes beyond that to actually notice and classify
+    # the close.
+    wait_t0 = time.monotonic()
     try:
         outcome = await pocket_dom.wait_for_trade_result(page, expiry_seconds)
+        detection_overhead_ms = (time.monotonic() - wait_t0 - expiry_seconds) * 1000
+        try:
+            database.record_outcome_latency(trade_id, detection_overhead_ms)
+        except Exception as e:
+            lifecycle_logger.error("trade_id=%s failed to persist outcome_detection_ms: %s", trade_id, e)
+
         if outcome is None:
             database.update_trade_status(trade_id, TradeStatus.ERROR, result="error:result_read_failed")
             lifecycle_logger.error(

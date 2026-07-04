@@ -1,6 +1,12 @@
+import sys
 import time
+from pathlib import Path
 
 from logger import get_logger
+
+CORE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(CORE_DIR))
+import database
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -13,6 +19,7 @@ class LatencyTracker:
         "telegram_received",
         "parsed",
         "risk_approved",
+        "worker_acquired",
         "asset_selected",
         "expiry_set",
         "amount_set",
@@ -46,3 +53,8 @@ class LatencyTracker:
             "LATENCY trade_id=%s worker_id=%s %s",
             self.trade_id, self.worker_id, parts or "(no checkpoints recorded)",
         )
+        if self.trade_id is not None and self._marks:
+            try:
+                database.record_latency_checkpoints(self.trade_id, self._marks)
+            except Exception as e:
+                logger.error("LatencyTracker: failed to persist checkpoints for trade_id=%s: %s", self.trade_id, e)

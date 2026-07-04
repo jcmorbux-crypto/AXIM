@@ -1,5 +1,7 @@
 import asyncio
+import os
 import sys
+import time
 from pathlib import Path
 
 EXECUTION_DIR = Path(__file__).resolve().parent
@@ -12,8 +14,22 @@ sys.path.insert(0, str(CORE_DIR))
 from browser_session import DEMO_URL, get_trading_page
 import pocket_dom
 from logger import get_logger
+import database
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
+
+# How long a previous health check (whole-pool or per-worker) is trusted
+# before re-verifying live, instead of probing on every single
+# acquire_worker() call. Documented tradeoff (P0 latency sprint): this
+# trades up to HEALTH_CHECK_TTL_SECONDS of extra detection delay for a
+# crash that happens to land inside the TTL window, in exchange for
+# skipping a redundant page.evaluate() IPC round trip on the hot path most
+# of the time (previously measured at 0-31ms per acquire, Phase 5).
+# page.is_closed() (a local, synchronous property - not an IPC call) is
+# still always checked regardless of TTL, so an already-closed page is
+# still caught instantly; only the live "is it actually responsive" probe
+# is subject to the TTL.
+HEALTH_CHECK_TTL_SECONDS = float(os.getenv("HEALTH_CHECK_TTL_SECONDS", 2))
 
 
 class BrowserWorker:
@@ -25,6 +41,7 @@ class BrowserWorker:
         # detect and discard a worker whose page belongs to a browser
         # context that no longer exists (see BrowserWorkerPool docstring).
         self.generation = generation
+        self.last_health_check = 0.0
 
 
 class BrowserWorkerPool:
@@ -64,6 +81,7 @@ class BrowserWorkerPool:
         self._warmup_generation = None
         self._pool_generation = 0
         self._health_lock = asyncio.Lock()
+        self._last_pool_health_check = 0.0
 
     async def start(self):
         self._warmup_generation = await self.warmup_service.ensure_alive()
@@ -94,8 +112,15 @@ class BrowserWorkerPool:
         )
 
     async def _ensure_pool_healthy(self):
+        if time.monotonic() - self._last_pool_health_check < HEALTH_CHECK_TTL_SECONDS:
+            return
+
         async with self._health_lock:
+            if time.monotonic() - self._last_pool_health_check < HEALTH_CHECK_TTL_SECONDS:
+                return  # a concurrent caller already refreshed it while we waited for the lock
+
             current_generation = await self.warmup_service.ensure_alive()
+            self._last_pool_health_check = time.monotonic()
             if current_generation != self._warmup_generation:
                 logger.warning(
                     "browser_worker_pool: underlying browser reconnected "
@@ -104,7 +129,16 @@ class BrowserWorkerPool:
                     self._warmup_generation, current_generation,
                 )
                 self._warmup_generation = current_generation
-                await self._build_workers()
+                try:
+                    await self._build_workers()
+                except Exception as e:
+                    database.record_recovery_event("worker_pool_rebuild", "failed", str(e))
+                    raise
+                else:
+                    database.record_recovery_event(
+                        "worker_pool_rebuild", "succeeded",
+                        f"generation={current_generation} workers={self.num_workers}",
+                    )
 
     async def acquire_worker(self, timeout=0):
         await self._ensure_pool_healthy()
@@ -143,11 +177,16 @@ class BrowserWorkerPool:
         """Handles a single tab dying while the rest of the browser is
         fine - the whole-browser-crash case is caught earlier, in
         _ensure_pool_healthy(), before a worker is even pulled from the
-        queue."""
+        queue. page.is_closed() is always checked (free, local, no IPC);
+        the live page.evaluate() probe is skipped if this worker was
+        already verified within HEALTH_CHECK_TTL_SECONDS."""
         try:
             if worker.page.is_closed():
                 raise RuntimeError("page closed")
+            if time.monotonic() - worker.last_health_check < HEALTH_CHECK_TTL_SECONDS:
+                return worker
             await asyncio.wait_for(worker.page.evaluate("() => 1"), timeout=3)
+            worker.last_health_check = time.monotonic()
             return worker
         except Exception as e:
             logger.warning(
@@ -158,6 +197,7 @@ class BrowserWorkerPool:
             new_page = await get_trading_page(context, DEMO_URL)
             await pocket_dom.dismiss_blocking_modals(new_page)
             worker.page = new_page
+            worker.last_health_check = time.monotonic()
             return worker
 
     async def stop(self):

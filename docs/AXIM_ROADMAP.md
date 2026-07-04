@@ -86,9 +86,36 @@ Replaced all of it with a single `get_logger(name, filename=None, console=True)`
 All 11 call sites migrated to `from logger import get_logger`; verified every affected module still imports cleanly, the existing 16/16 `test_risk_manager` suite still passes, and a live check confirmed an emoji-containing message lands intact in both the per-module file and the new unified `axim.log` while printing safely (replaced, not crashed) to console.
 
 ## Current phase
-Phase 5 complete: multi-worker demo concurrency, `MINIMUM_PAYOUT` enforcement, a combined tradeable+payout live check before every click, whole-browser-crash recovery, and a unified logging architecture, all verified with real trades, simulated failures, or live output checks. `ARMED` remains `false`; all validation to date has been on the Pocket Option demo account only.
+Phase 5 complete, plus a P0 latency/reliability sprint (see
+`docs/AXIM_COMPETITIVE_BENCHMARK.md`, `docs/AXIM_LATENCY_SPRINT.md`,
+`docs/AXIM_P0_SPRINT_REPORT.md`): `WATCH_CHANNELS` now set to the trusted
+research source (`PocketOption_quant_algorithm_bot`, matched by username);
+per-stage latency now persisted to the database (not just logged) via a new
+`worker_acquired` checkpoint and `latency_checkpoints_json`/
+`outcome_detection_ms` columns; screenshot capture moved off the trade
+critical path (measured at ~856ms each, previously synchronous, twice per
+trade) and now respects `SAVE_SCREENSHOTS`; a TTL added to the worker
+health-check; a process-level 24/7 auto-restart supervisor added to
+`telegram_listener.py`; and a live investigation found no evidence that
+asset selection is cross-tab-shared (unlike the already-confirmed Opened/
+Closed tab-state sharing). All changes benchmarked before/after on real
+demo trades; regression suite (16/16) passes; `ARMED` remains `false`.
 
 ## Next priorities
-- `WATCH_CHANNELS` needs to actually be set in `.env` before the live listener will process anything, now that it's enforced.
-- Build the actual Performance Dashboard UI (deferred from Phase 3 per the scope decision above).
-- Live-mode readiness review before `ARMED` is ever considered for anything beyond deliberate, watched demo validation.
+The P0 sprint report's measured data (not assumptions) points to, in order:
+1. Investigate outcome-detection latency under concurrent load - the
+   sprint's largest finding: up to 28s of unexplained overhead beyond a
+   trade's own expiry when multiple positions close around the same time,
+   previously invisible before this sprint's instrumentation.
+2. Close the confirmation-latency instrumentation gap (`click_completed`
+   and `confirmation_detected` are currently marked back-to-back with no
+   separating work - a measurement gap, not a real zero-cost finding).
+3. Attack asset-selection latency directly, now precisely quantified at
+   ~1.67s average for a "must change asset" trade vs ~25ms when already
+   selected.
+4. Live-fire-test the new process-level supervisor (deliberately kill the
+   listener/browser) to get real recovery-rate data instead of "no data yet".
+5. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
+   scope decision above).
+6. Live-mode readiness review before `ARMED` is ever considered for
+   anything beyond deliberate, watched demo validation.

@@ -42,13 +42,28 @@ async def resume_pending_trades(pool):
     for row in open_trades:
         trade_id = row["id"]
         try:
-            await _resume_one(row, pool)
+            resumed = await _resume_one(row, pool)
         except Exception as e:
             logger.error("recovery: trade_id=%s failed to resume: %s", trade_id, e)
             database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:recovery_failed:{e}")
+            database.record_recovery_event("resume_open_trade", "failed", f"trade_id={trade_id}: {e}")
+        else:
+            if resumed:
+                database.record_recovery_event("resume_open_trade", "succeeded", f"trade_id={trade_id}")
+            else:
+                # Not a resume attempt at all - get_open_trades() only
+                # returns trade_clicked/trade_opened rows, so a missing
+                # opened_at here is an unexpected data inconsistency (not
+                # the normal "never clicked" case, which mark_abandoned_
+                # preparations() already handles separately) - worth
+                # counting as a failed recovery, since ideally this trade
+                # would have been resumable.
+                database.record_recovery_event("resume_open_trade", "failed", f"trade_id={trade_id}: missing opened_at")
 
 
 async def _resume_one(row, pool):
+    """Returns True if outcome tracking was actually re-attached, False if
+    this row couldn't be resumed (missing opened_at)."""
     trade_id = row["id"]
     asset = row["asset"]
     expiry = row["timeframe"]
@@ -57,7 +72,7 @@ async def _resume_one(row, pool):
     if not opened_at_raw:
         logger.warning("recovery: trade_id=%s has no opened_at - marking abandoned", trade_id)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result="error:abandoned_on_restart")
-        return
+        return False
 
     opened_at = datetime.fromisoformat(opened_at_raw)
     total_expiry_seconds = pocket_dom.expiry_to_seconds(expiry)
@@ -76,6 +91,7 @@ async def _resume_one(row, pool):
     asyncio.create_task(
         pocket_executor.track_outcome(worker, pool, trade_id, remaining)
     )
+    return True
 
 
 def mark_abandoned_preparations():

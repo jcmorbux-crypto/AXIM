@@ -147,6 +147,7 @@ class TradeCoordinator:
                 database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:all_workers_busy")
                 latency.log_summary()
                 return {"status": "rejected", "trade_id": trade_id, "rule": "all_workers_busy", "reason": reason}
+            latency.mark("worker_acquired")
             self._log_stage(trade_id, "worker_pool", f"acquired worker_id={worker.worker_id}", time.monotonic() - stage_t0)
 
             # Stage: Pocket Executor (unchanged browser execution logic,

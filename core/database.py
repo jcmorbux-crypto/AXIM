@@ -14,6 +14,8 @@ _NEW_COLUMNS = {
     "closed_at": "TEXT",
     "profit_loss": "REAL",
     "screenshot_paths": "TEXT",
+    "latency_checkpoints_json": "TEXT",
+    "outcome_detection_ms": "REAL",
 }
 
 
@@ -55,7 +57,19 @@ def initialize_database():
         opened_at TEXT,
         closed_at TEXT,
         profit_loss REAL,
-        screenshot_paths TEXT
+        screenshot_paths TEXT,
+        latency_checkpoints_json TEXT,
+        outcome_detection_ms REAL
+    );
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS recovery_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT,
+        outcome TEXT,
+        detail TEXT,
+        created_at TEXT
     );
     """)
 
@@ -124,6 +138,56 @@ def update_trade_status(trade_id, status, **fields):
     )
     conn.commit()
     conn.close()
+
+
+def record_latency_checkpoints(trade_id, checkpoints):
+    """Persists LatencyTracker's per-stage checkpoint dict (cumulative ms
+    since signal receipt) so per-stage latency is queryable across every
+    trade, not just readable from one text log line at a time. Does not
+    touch execution_status - safe to call regardless of a trade's current
+    lifecycle stage."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE signals SET latency_checkpoints_json = ? WHERE id = ?",
+        (json.dumps(checkpoints), trade_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def record_outcome_latency(trade_id, detection_overhead_ms):
+    """Persists outcome-detection overhead: wall-clock time spent in
+    wait_for_trade_result beyond the trade's own contractual expiry
+    duration. This isolates AXIM's detection/polling lag from the
+    deliberate expiry wait, which is not itself a latency cost to optimize."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE signals SET outcome_detection_ms = ? WHERE id = ?",
+        (detection_overhead_ms, trade_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def record_recovery_event(event_type, outcome, detail=None):
+    """Structured log of an automatic-recovery attempt (browser reconnect,
+    worker pool rebuild, process-level restart, abandoned-trade resume) and
+    whether it succeeded - the basis for a real "recovery rate" metric,
+    rather than inferring it from unstructured log text."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO recovery_events (event_type, outcome, detail, created_at) VALUES (?, ?, ?, ?)",
+        (event_type, outcome, detail, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_recovery_event_stats():
+    conn = get_connection()
+    rows = conn.execute("SELECT event_type, outcome, COUNT(*) AS n FROM recovery_events GROUP BY event_type, outcome").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def append_screenshot_path(trade_id, path):

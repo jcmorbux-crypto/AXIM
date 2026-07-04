@@ -34,8 +34,8 @@ TRADE_DELAY = int(os.getenv("TRADE_DELAY", 0))
 DATABASE_FILE = "data/axim.db"
 
 # Logging
-SAVE_SCREENSHOTS = True
-SAVE_HTML = False
+SAVE_SCREENSHOTS = os.getenv("SAVE_SCREENSHOTS", "true").lower() == "true"
+SAVE_HTML = os.getenv("SAVE_HTML", "false").lower() == "true"
 
 # Risk management
 MAX_TRADE_AMOUNT = float(os.getenv("MAX_TRADE_AMOUNT", 50))
