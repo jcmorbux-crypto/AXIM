@@ -18,7 +18,7 @@
 - Structured lifecycle logging to `logs/lifecycle.log` for every state transition and every risk rejection.
 - Unit tests for all risk rules (`tests/test_risk_manager.py`, no browser required) — 12/12 passing.
 
-**Known limitation carried forward:** win/loss classification in `wait_for_trade_result()` is confirmed against one directly-observed **loss** sample only. A win case has not yet been directly observed on the real DOM — the classification logic (`final_value >= stake → win`) is a reasonable inference from the confirmed structure, not yet independently verified the way the click layer was. Should be validated against a real win before this feeds risk decisions that matter (e.g. `max_consecutive_losses`).
+**Known limitation at the time (resolved in Phase 3, see below):** win/loss classification in `wait_for_trade_result()` was confirmed against one directly-observed **loss** sample only - no win case had been directly observed on the real DOM yet.
 
 ### Phase 3 — Autonomous Trade Engine (in progress)
 - `core/event_bus.py` (previously an empty Phase 1 stub) — minimal async pub/sub. Stage transitions publish events (`trade.signal_received`, `trade.prepared`, `trade.closed`, `trade.error`, `signal.ignored`) instead of anything polling the database.
@@ -66,7 +66,6 @@ Previously one persistent page + one global lock, meaning a second signal always
 Phase 5, multi-worker demo concurrency verified with real overlapping trades, plus `MINIMUM_PAYOUT` now enforced. `ARMED` remains `false`; all validation to date has been on the Pocket Option demo account only.
 
 ## Next priorities
-- Validate `wait_for_trade_result()` against a real win (currently loss-only confirmed) - unaffected by Phase 5, still open.
 - Whole-browser-crash recovery (`BrowserWarmupService`'s existing reconnect logic) is not yet extended to rebuild the worker pool if the entire browser process dies - a known gap flagged during the Phase 5 design, not solved this pass.
 - Full logging architecture (`core/logger.py` is still an empty stub — today's logging is per-module, not unified, though `axim.lifecycle` now unifies orchestration-level logs across `risk_manager`, `trade_coordinator`, `recovery`, `pocket_executor`, and `browser_worker_pool`).
 - `WATCH_CHANNELS` needs to actually be set in `.env` before the live listener will process anything, now that it's enforced.
