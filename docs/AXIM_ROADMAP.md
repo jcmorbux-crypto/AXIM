@@ -86,33 +86,42 @@ Replaced all of it with a single `get_logger(name, filename=None, console=True)`
 All 11 call sites migrated to `from logger import get_logger`; verified every affected module still imports cleanly, the existing 16/16 `test_risk_manager` suite still passes, and a live check confirmed an emoji-containing message lands intact in both the per-module file and the new unified `axim.log` while printing safely (replaced, not crashed) to console.
 
 ## Current phase
-Phase 5 complete, plus a P0 latency/reliability sprint (see
-`docs/AXIM_COMPETITIVE_BENCHMARK.md`, `docs/AXIM_LATENCY_SPRINT.md`,
-`docs/AXIM_P0_SPRINT_REPORT.md`): `WATCH_CHANNELS` now set to the trusted
-research source (`PocketOption_quant_algorithm_bot`, matched by username);
-per-stage latency now persisted to the database (not just logged) via a new
-`worker_acquired` checkpoint and `latency_checkpoints_json`/
-`outcome_detection_ms` columns; screenshot capture moved off the trade
-critical path (measured at ~856ms each, previously synchronous, twice per
-trade) and now respects `SAVE_SCREENSHOTS`; a TTL added to the worker
-health-check; a process-level 24/7 auto-restart supervisor added to
-`telegram_listener.py`; and a live investigation found no evidence that
-asset selection is cross-tab-shared (unlike the already-confirmed Opened/
-Closed tab-state sharing). All changes benchmarked before/after on real
-demo trades; regression suite (16/16) passes; `ARMED` remains `false`.
+Phase 5 complete, plus a P0 latency/reliability sprint and an immediate P1
+follow-up (see `docs/AXIM_COMPETITIVE_BENCHMARK.md`,
+`docs/AXIM_LATENCY_SPRINT.md`, `docs/AXIM_P0_SPRINT_REPORT.md`):
+`WATCH_CHANNELS` now set to the trusted research source
+(`PocketOption_quant_algorithm_bot`, matched by username); per-stage latency
+now persisted to the database (not just logged) via a new `worker_acquired`
+checkpoint and `latency_checkpoints_json`/`outcome_detection_ms` columns;
+screenshot capture moved off the trade critical path (measured at ~856ms
+each, previously synchronous, twice per trade) and now respects
+`SAVE_SCREENSHOTS`; a TTL added to the worker health-check; a
+process-level 24/7 auto-restart supervisor added to `telegram_listener.py`;
+a live investigation found no evidence that asset selection is
+cross-tab-shared (unlike the already-confirmed Opened/Closed tab-state
+sharing); and the sprint's largest finding - outcome-detection overhead of
+up to 28s under concurrent load - was root-caused (`.no-deals` is a
+system-wide "zero open positions" signal, not per-trade, confirmed by
+firing a 15s and a 60s trade concurrently and watching the 15s trade's own
+`.no-deals` stay false for the full ~60s) and fixed (`wait_for_trade_result`
+now sleeps for the trade's own known expiry and matches its specific closed
+item by asset+direction+closest time, instead of polling that signal) -
+re-measured overhead dropped to a tight 8.3s band, independent of
+concurrent load. All changes benchmarked before/after on real demo trades;
+regression suite (16/16) passes; `ARMED` remains `false`.
 
 ## Next priorities
 The P0 sprint report's measured data (not assumptions) points to, in order:
-1. Investigate outcome-detection latency under concurrent load - the
-   sprint's largest finding: up to 28s of unexplained overhead beyond a
-   trade's own expiry when multiple positions close around the same time,
-   previously invisible before this sprint's instrumentation.
-2. Close the confirmation-latency instrumentation gap (`click_completed`
+1. Close the confirmation-latency instrumentation gap (`click_completed`
    and `confirmation_detected` are currently marked back-to-back with no
    separating work - a measurement gap, not a real zero-cost finding).
-3. Attack asset-selection latency directly, now precisely quantified at
+2. Attack asset-selection latency directly, now precisely quantified at
    ~1.67s average for a "must change asset" trade vs ~25ms when already
    selected.
+3. Tune `wait_for_trade_result`'s `settlement_buffer_seconds` down from its
+   current 8s default - every trade in the post-fix re-measurement
+   succeeded on its first read attempt, suggesting real settlement
+   completes faster than that.
 4. Live-fire-test the new process-level supervisor (deliberately kill the
    listener/browser) to get real recovery-rate data instead of "no data yet".
 5. Build the actual Performance Dashboard UI (deferred from Phase 3 per the

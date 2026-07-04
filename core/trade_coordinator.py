@@ -16,7 +16,7 @@ import database
 import risk_manager
 from trade_lifecycle import TradeStatus
 from event_bus import get_event_bus
-from latency import LatencyTracker
+from timeline import TradeTimeline
 from logger import get_logger
 from settings import MAX_SIGNAL_AGE, PREVIEW_ONLY, AUTO_EXECUTE, TRADE_AMOUNT, WORKER_ACQUIRE_TIMEOUT_SECONDS
 
@@ -54,119 +54,127 @@ class TradeCoordinator:
         )
 
     async def handle_signal(self, signal, source=None, sender=None, message_id=None,
-                             sent_at=None, latency=None):
-        latency = latency or LatencyTracker()
-        if latency.summary().get("telegram_received") is None:
-            latency.mark("telegram_received")
-        if latency.summary().get("parsed") is None:
-            latency.mark("parsed")
-
-        # Bookkeeping: record the signal immediately, before any gate runs,
-        # so an ignored or rejected signal still has a row to log against -
-        # otherwise "signals ignored"/"signals rejected" statistics would
-        # have nothing to count.
-        stage_t0 = time.monotonic()
-        trade_id = database.record_signal_received(signal, source=source, sender=sender, message_id=message_id)
-        latency.trade_id = trade_id
-        self._log_stage(trade_id, TradeStatus.SIGNAL_RECEIVED.value, "recorded", time.monotonic() - stage_t0)
-        await self.event_bus.publish("trade.signal_received", {"trade_id": trade_id, "signal": signal})
-
-        asset, direction, expiry = signal["asset"], signal["direction"], signal["expiry"]
-        amount = TRADE_AMOUNT
-
+                             sent_at=None, timeline=None):
+        timeline = timeline or TradeTimeline()
+        token = timeline.activate()
         try:
-            # Stage: Validation (freshness)
-            stage_t0 = time.monotonic()
-            if sent_at is not None:
-                now = datetime.now(sent_at.tzinfo) if sent_at.tzinfo else datetime.now()
-                age_seconds = (now - sent_at).total_seconds()
-                if age_seconds > MAX_SIGNAL_AGE:
-                    reason = f"signal age {age_seconds:.1f}s exceeds MAX_SIGNAL_AGE {MAX_SIGNAL_AGE}s"
-                    self._log_stage(trade_id, "validation", "ignored", time.monotonic() - stage_t0, reason)
-                    database.update_trade_status(trade_id, TradeStatus.ERROR, result="ignored:stale_signal")
-                    await self.event_bus.publish("signal.ignored", {"trade_id": trade_id, "reason": "stale_signal"})
-                    latency.log_summary()
-                    return {"status": "ignored", "trade_id": trade_id, "reason": "stale_signal", "age_seconds": age_seconds}
-            self._log_stage(trade_id, "validation", "passed", time.monotonic() - stage_t0)
+            if "signal_received" not in timeline.stage_timestamps:
+                timeline.mark("signal_received")
+            if "signal_parsed" not in timeline.stage_timestamps:
+                timeline.mark("signal_parsed")
 
-            # Stage: Risk Manager
+            # Bookkeeping: record the signal immediately, before any gate runs,
+            # so an ignored or rejected signal still has a row to log against -
+            # otherwise "signals ignored"/"signals rejected" statistics would
+            # have nothing to count.
             stage_t0 = time.monotonic()
+            trade_id = database.record_signal_received(signal, source=source, sender=sender, message_id=message_id)
+            timeline.trade_id = trade_id
+            self._log_stage(trade_id, TradeStatus.SIGNAL_RECEIVED.value, "recorded", time.monotonic() - stage_t0)
+            await self.event_bus.publish("trade.signal_received", {"trade_id": trade_id, "signal": signal})
+
+            asset, direction, expiry = signal["asset"], signal["direction"], signal["expiry"]
+            amount = TRADE_AMOUNT
+
             try:
-                risk_manager.check_demo_only()
-                risk_manager.check_max_trade_amount(amount)
-                risk_manager.check_max_trades_per_hour()
-                risk_manager.check_max_consecutive_losses()
-                risk_manager.check_cooldown_after_loss()
-            except risk_manager.RiskViolation as violation:
-                latency.log_summary()
-                return self._reject(trade_id, violation, time.monotonic() - stage_t0)
-            self._log_stage(trade_id, "risk_manager", "passed", time.monotonic() - stage_t0)
+                # Stage: Validation (freshness)
+                stage_t0 = time.monotonic()
+                if sent_at is not None:
+                    now = datetime.now(sent_at.tzinfo) if sent_at.tzinfo else datetime.now()
+                    age_seconds = (now - sent_at).total_seconds()
+                    if age_seconds > MAX_SIGNAL_AGE:
+                        reason = f"signal age {age_seconds:.1f}s exceeds MAX_SIGNAL_AGE {MAX_SIGNAL_AGE}s"
+                        self._log_stage(trade_id, "validation", "ignored", time.monotonic() - stage_t0, reason)
+                        database.update_trade_status(trade_id, TradeStatus.ERROR, result="ignored:stale_signal")
+                        await self.event_bus.publish("signal.ignored", {"trade_id": trade_id, "reason": "stale_signal"})
+                        timeline.persist(database)
+                        return {"status": "ignored", "trade_id": trade_id, "reason": "stale_signal", "age_seconds": age_seconds}
+                self._log_stage(trade_id, "validation", "passed", time.monotonic() - stage_t0)
 
-            # Stage: Duplicate Detection
-            stage_t0 = time.monotonic()
-            try:
-                risk_manager.check_duplicate_signal(asset, direction, expiry, exclude_id=trade_id)
-            except risk_manager.RiskViolation as violation:
-                latency.log_summary()
-                return self._reject(trade_id, violation, time.monotonic() - stage_t0)
-            self._log_stage(trade_id, "duplicate_detection", "passed", time.monotonic() - stage_t0)
-            latency.mark("risk_approved")
+                # Stage: Risk Manager
+                stage_t0 = time.monotonic()
+                try:
+                    risk_manager.check_demo_only()
+                    risk_manager.check_max_trade_amount(amount)
+                    risk_manager.check_max_trades_per_hour()
+                    risk_manager.check_max_consecutive_losses()
+                    risk_manager.check_cooldown_after_loss()
+                except risk_manager.RiskViolation as violation:
+                    timeline.persist(database)
+                    return self._reject(trade_id, violation, time.monotonic() - stage_t0)
+                self._log_stage(trade_id, "risk_manager", "passed", time.monotonic() - stage_t0)
 
-            # Fast-path rejection using the startup asset cache: if we
-            # already know (from the last scan) that this asset is
-            # untradeable, reject now without touching the browser/lock at
-            # all. The cache can go stale, so "unknown" (None) falls through
-            # to the normal flow, where pocket_dom does the live DOM check.
-            cached_tradeable = asset_cache.is_known_tradeable(asset)
-            if cached_tradeable is False:
-                reason = f"{asset!r} was untradeable at last asset-cache scan"
-                self._log_stage(trade_id, "asset_cache", "rejected", 0.0, reason)
-                database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable_cached")
-                latency.log_summary()
-                return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable_cached", "reason": reason}
+                # Stage: Duplicate Detection
+                stage_t0 = time.monotonic()
+                try:
+                    risk_manager.check_duplicate_signal(asset, direction, expiry, exclude_id=trade_id)
+                except risk_manager.RiskViolation as violation:
+                    timeline.persist(database)
+                    return self._reject(trade_id, violation, time.monotonic() - stage_t0)
+                self._log_stage(trade_id, "duplicate_detection", "passed", time.monotonic() - stage_t0)
+                timeline.mark("risk_evaluated")
 
-            # Stage: Trade Lifecycle - cleared for execution
-            self._log_stage(trade_id, "trade_lifecycle", "cleared_for_execution", 0.0)
+                # Fast-path rejection using the startup asset cache: if we
+                # already know (from the last scan) that this asset is
+                # untradeable, reject now without touching the browser/lock at
+                # all. The cache can go stale, so "unknown" (None) falls through
+                # to the normal flow, where pocket_dom does the live DOM check.
+                cached_tradeable = asset_cache.is_known_tradeable(asset)
+                if cached_tradeable is False:
+                    reason = f"{asset!r} was untradeable at last asset-cache scan"
+                    self._log_stage(trade_id, "asset_cache", "rejected", 0.0, reason)
+                    database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable_cached")
+                    timeline.persist(database)
+                    return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable_cached", "reason": reason}
 
-            if PREVIEW_ONLY or not AUTO_EXECUTE:
-                self._log_stage(trade_id, "pocket_executor", "preview_only", 0.0)
-                latency.log_summary()
-                return {"status": "preview", "trade_id": trade_id}
+                # Stage: Trade Lifecycle - cleared for execution
+                self._log_stage(trade_id, "trade_lifecycle", "cleared_for_execution", 0.0)
 
-            # Stage: Worker Pool - acquire one of N warm pages. Queues
-            # (FIFO) up to WORKER_ACQUIRE_TIMEOUT_SECONDS if all are busy;
-            # rejects cleanly rather than hanging if none free up in time.
-            stage_t0 = time.monotonic()
-            worker = await self.worker_pool.acquire_worker(timeout=WORKER_ACQUIRE_TIMEOUT_SECONDS)
-            if worker is None:
-                reason = (
-                    f"all {self.worker_pool.num_workers} worker(s) busy for "
-                    f"longer than WORKER_ACQUIRE_TIMEOUT_SECONDS={WORKER_ACQUIRE_TIMEOUT_SECONDS}s"
+                if PREVIEW_ONLY or not AUTO_EXECUTE:
+                    self._log_stage(trade_id, "pocket_executor", "preview_only", 0.0)
+                    timeline.persist(database)
+                    return {"status": "preview", "trade_id": trade_id}
+
+                # Stage: Worker Pool - acquire one of N warm pages. Queues
+                # (FIFO) up to WORKER_ACQUIRE_TIMEOUT_SECONDS if all are busy;
+                # rejects cleanly rather than hanging if none free up in time.
+                stage_t0 = time.monotonic()
+                worker = await self.worker_pool.acquire_worker(timeout=WORKER_ACQUIRE_TIMEOUT_SECONDS)
+                if worker is None:
+                    reason = (
+                        f"all {self.worker_pool.num_workers} worker(s) busy for "
+                        f"longer than WORKER_ACQUIRE_TIMEOUT_SECONDS={WORKER_ACQUIRE_TIMEOUT_SECONDS}s"
+                    )
+                    self._log_stage(trade_id, "worker_pool", "rejected", time.monotonic() - stage_t0, reason)
+                    database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:all_workers_busy")
+                    timeline.persist(database)
+                    return {"status": "rejected", "trade_id": trade_id, "rule": "all_workers_busy", "reason": reason}
+                self._log_stage(trade_id, "worker_pool", f"acquired worker_id={worker.worker_id}", time.monotonic() - stage_t0)
+
+                # Stage: Pocket Executor (unchanged browser execution logic,
+                # against this worker's own warm page)
+                stage_t0 = time.monotonic()
+                result = await pocket_executor.prepare_trade(
+                    trade_id, asset, direction, expiry, amount,
+                    worker, self.worker_pool, timeline=timeline,
                 )
-                self._log_stage(trade_id, "worker_pool", "rejected", time.monotonic() - stage_t0, reason)
-                database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:all_workers_busy")
-                latency.log_summary()
-                return {"status": "rejected", "trade_id": trade_id, "rule": "all_workers_busy", "reason": reason}
-            latency.mark("worker_acquired")
-            self._log_stage(trade_id, "worker_pool", f"acquired worker_id={worker.worker_id}", time.monotonic() - stage_t0)
+                self._log_stage(trade_id, "pocket_executor", result.get("status"), time.monotonic() - stage_t0)
+                await self.event_bus.publish("trade.prepared", {"trade_id": trade_id, "result": result})
 
-            # Stage: Pocket Executor (unchanged browser execution logic,
-            # against this worker's own warm page)
-            stage_t0 = time.monotonic()
-            result = await pocket_executor.prepare_trade(
-                trade_id, asset, direction, expiry, amount,
-                worker, self.worker_pool, latency=latency,
-            )
-            self._log_stage(trade_id, "pocket_executor", result.get("status"), time.monotonic() - stage_t0)
-            await self.event_bus.publish("trade.prepared", {"trade_id": trade_id, "result": result})
-
-            return result
-        except Exception as e:
-            logger.error("trade_coordinator: trade_id=%s unhandled error=%s", trade_id, e)
-            database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
-            await self.event_bus.publish("trade.error", {"trade_id": trade_id, "error": str(e)})
-            latency.log_summary()
-            raise
+                return result
+            except Exception as e:
+                logger.error("trade_coordinator: trade_id=%s unhandled error=%s", trade_id, e)
+                database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
+                await self.event_bus.publish("trade.error", {"trade_id": trade_id, "error": str(e)})
+                timeline.persist(database)
+                raise
+        finally:
+            # Safe even though a background track_outcome task may still be
+            # using this SAME timeline object - asyncio.create_task() copies
+            # the active-context reference at task-creation time, so
+            # deactivating here (in THIS context) does not affect the
+            # already-scheduled child task's own copy.
+            TradeTimeline.deactivate(token)
 
     def _reject(self, trade_id, violation, elapsed):
         self._log_stage(trade_id, violation.rule, "rejected", elapsed, violation.reason)

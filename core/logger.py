@@ -22,11 +22,16 @@ Safe to call repeatedly - handlers are only attached once per logger name.
 """
 import logging
 import os
+import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from timeline import get_current_timeline
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOG_DIR = PROJECT_ROOT / "logs"
+
+_TIMED_LOG_METHODS = ("debug", "info", "warning", "error", "critical", "exception")
 
 MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", 5 * 1024 * 1024))
 BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", 5))
@@ -53,6 +58,30 @@ class _SafeStreamHandler(logging.StreamHandler):
 
 def _resolve_level():
     return getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+
+
+def _time_log_calls(logger):
+    """Wraps a logger's info/warning/error/etc. bound methods so every call
+    anywhere in the codebase contributes measured wall time to the current
+    trade's "logging" category (core/timeline.py), with zero changes needed
+    at any of the many existing logger.info(...) call sites. A no-op
+    measurement when no trade timeline is active (e.g. startup logging)."""
+    for method_name in _TIMED_LOG_METHODS:
+        original = getattr(logger, method_name)
+
+        def make_wrapper(original=original):
+            def wrapper(*args, **kwargs):
+                t0 = time.monotonic()
+                try:
+                    return original(*args, **kwargs)
+                finally:
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    timeline = get_current_timeline()
+                    if timeline is not None:
+                        timeline.add_time("logging", elapsed_ms)
+            return wrapper
+
+        setattr(logger, method_name, make_wrapper())
 
 
 def _attach_root():
@@ -95,5 +124,6 @@ def get_logger(name, filename=None, console=True):
 
         logger.setLevel(_resolve_level())
         logger.propagate = True  # bubbles up to "axim" root -> logs/axim.log
+        _time_log_calls(logger)
 
     return logger

@@ -82,6 +82,12 @@ class BrowserWorkerPool:
         self._pool_generation = 0
         self._health_lock = asyncio.Lock()
         self._last_pool_health_check = 0.0
+        # Shared across every worker in this pool - the Opened/Closed
+        # active-tab toggle is confirmed live-synced across all pages of
+        # the same browser context (see wait_for_trade_result), so the
+        # final tab-switch+read step when a trade closes is serialized
+        # through this lock rather than left to contend freely.
+        self.closed_tab_lock = asyncio.Lock()
 
     async def start(self):
         self._warmup_generation = await self.warmup_service.ensure_alive()

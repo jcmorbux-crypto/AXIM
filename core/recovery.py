@@ -66,6 +66,7 @@ async def _resume_one(row, pool):
     this row couldn't be resumed (missing opened_at)."""
     trade_id = row["id"]
     asset = row["asset"]
+    direction = row["direction"]
     expiry = row["timeframe"]
     opened_at_raw = row["opened_at"]
 
@@ -89,7 +90,7 @@ async def _resume_one(row, pool):
     # the pool when the trade resolves, exactly as in the normal flow.
     worker = await pool.acquire_worker(timeout=None)
     asyncio.create_task(
-        pocket_executor.track_outcome(worker, pool, trade_id, remaining)
+        pocket_executor.track_outcome(worker, pool, trade_id, remaining, asset=asset, direction=direction)
     )
     return True
 

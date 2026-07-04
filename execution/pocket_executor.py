@@ -18,7 +18,7 @@ import pocket_dom
 import database
 import risk_manager
 from trade_lifecycle import TradeStatus
-from latency import LatencyTracker
+from timeline import TradeTimeline, get_current_timeline, time_category
 from logger import get_logger
 from settings import SAVE_SCREENSHOTS
 
@@ -173,7 +173,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
 
         expiry_seconds = pocket_dom.expiry_to_seconds(expiry)
         ownership_transferred = True
-        asyncio.create_task(track_outcome(worker, pool, trade_id, expiry_seconds))
+        asyncio.create_task(track_outcome(worker, pool, trade_id, expiry_seconds, asset=asset, direction=direction))
 
         return {
             "status": "clicked",
@@ -198,22 +198,31 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
             pool.release_worker(worker)
 
 
-async def track_outcome(worker, pool, trade_id, expiry_seconds):
+async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, direction=None):
     """Waits for a trade to close and records the result. Used both for the
     normal post-click flow (prepare_trade, above) and by core/recovery.py
     to re-attach tracking to a trade left open across a restart. Releases
     `worker` back to the pool when done, since it holds that page until
     the trade resolves - only that one worker is blocked meanwhile, other
-    workers remain free for concurrent trades."""
+    workers remain free for concurrent trades.
+
+    `asset`/`direction` let wait_for_trade_result identify THIS specific
+    trade's own closed item rather than relying on .no-deals, which was
+    confirmed (P0 latency sprint follow-up) to reflect "zero open positions
+    system-wide", not "this worker's trade closed" - under concurrency that
+    silently delayed detection by however long the slowest concurrent trade
+    took (measured up to 28s)."""
     page = worker.page
     # Measures detection/polling overhead on top of the trade's own
     # contractual expiry duration - not the expiry wait itself (a
     # deliberate, non-optimizable delay), but how much extra wall-clock
-    # AXIM's polling loop takes beyond that to actually notice and classify
-    # the close.
+    # AXIM's settlement wait/retry takes beyond that to actually notice and
+    # classify the close.
     wait_t0 = time.monotonic()
     try:
-        outcome = await pocket_dom.wait_for_trade_result(page, expiry_seconds)
+        outcome = await pocket_dom.wait_for_trade_result(
+            page, expiry_seconds, asset=asset, direction=direction, closed_tab_lock=pool.closed_tab_lock,
+        )
         detection_overhead_ms = (time.monotonic() - wait_t0 - expiry_seconds) * 1000
         try:
             database.record_outcome_latency(trade_id, detection_overhead_ms)

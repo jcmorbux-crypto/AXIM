@@ -1,6 +1,8 @@
+import asyncio
 import re
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from playwright.async_api import expect
@@ -14,6 +16,7 @@ FAILURE_DIR = LOG_DIR / "failures"
 
 sys.path.insert(0, str(CORE_DIR))
 from logger import get_logger
+from timeline import timed, time_category, get_current_timeline
 
 DEFAULT_TIMEOUT_MS = 10_000
 RETRY_ATTEMPTS = 2
@@ -185,6 +188,7 @@ def _wants_otc(asset_name):
     return asset_name.upper().endswith(" OTC")
 
 
+@timed("browser")
 async def dismiss_blocking_modals(page, timeout=3000):
     close_btn = page.locator(SEL_PROMO_CLOSE).first
     try:
@@ -246,6 +250,7 @@ async def _read_current_amount(page):
         return None
 
 
+@timed("browser")
 async def select_asset(page, asset_name, timeout=DEFAULT_TIMEOUT_MS):
     if await _read_current_asset(page) == asset_name:
         logger.info("select_asset: %r already selected, no-op", asset_name)
@@ -332,6 +337,7 @@ async def select_asset(page, asset_name, timeout=DEFAULT_TIMEOUT_MS):
     await _capture_failure(page, "select_asset", SEL_ASSET_SEARCH_INPUT, last_reason or "unknown")
 
 
+@timed("browser")
 async def select_expiry(page, expiry_str, timeout=DEFAULT_TIMEOUT_MS):
     hours, minutes, seconds = _expiry_to_hms(expiry_str)
     targets = [f"{hours:02d}", f"{minutes:02d}", f"{seconds:02d}"]
@@ -377,6 +383,7 @@ async def select_expiry(page, expiry_str, timeout=DEFAULT_TIMEOUT_MS):
     await _capture_failure(page, "select_expiry", SEL_EXPIRY_TRIGGER, last_reason or "unknown")
 
 
+@timed("browser")
 async def set_amount(page, amount, timeout=DEFAULT_TIMEOUT_MS):
     target = _format_amount(amount)
 
@@ -420,6 +427,7 @@ _UNCOVERED_CHECK_JS = """([buySelector, sellSelector]) => {
 }"""
 
 
+@timed("browser")
 async def verify_direction_controls_ready(page, timeout=DEFAULT_TIMEOUT_MS):
     last_reason = None
     for attempt in range(1, RETRY_ATTEMPTS + 1):
@@ -465,6 +473,19 @@ async def verify_direction_controls_ready(page, timeout=DEFAULT_TIMEOUT_MS):
 
 
 async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS):
+    """
+    Splits into two separately-timed, separately-marked phases (closing a
+    documented instrumentation gap: previously "clicked" and "confirmation
+    detected" were marked back-to-back with no separating work, making
+    trade-confirmation latency measure as 0ms - not a real finding, just an
+    instrumentation blind spot):
+    1. The actual button click - marked "clicked" the instant it returns.
+    2. Waiting for Pocket Option's own UI to confirm the trade opened
+       (.no-deals hidden) - marked "confirmation_detected" once that
+       resolves. This part is network/server-bound, not something client-
+       side optimization can shrink - measuring it separately is what lets
+       that be shown precisely instead of assumed.
+    """
     direction = direction.upper()
     if direction == "BUY":
         button_selector = SEL_BUY_BUTTON
@@ -474,20 +495,30 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS):
         raise ValueError(f"Unknown direction: {direction!r}")
 
     try:
-        await _ensure_opened_tab_active(page, timeout=timeout)
+        async with time_category("browser"):
+            await _ensure_opened_tab_active(page, timeout=timeout)
 
-        button = page.locator(button_selector).first
-        found, visible, enabled = await _probe_state(button)
-        _log_selector_event("click_direction", button_selector, timeout, 1, found, visible, enabled)
-        await expect(button).to_be_enabled(timeout=timeout)
-        await button.click(timeout=timeout)
+            button = page.locator(button_selector).first
+            found, visible, enabled = await _probe_state(button)
+            _log_selector_event("click_direction", button_selector, timeout, 1, found, visible, enabled)
+            await expect(button).to_be_enabled(timeout=timeout)
+            await button.click(timeout=timeout)
 
-        no_deals = page.locator(SEL_DEALS_LIST).locator(SEL_NO_DEALS)
-        await expect(no_deals).to_be_hidden(timeout=timeout)
+        timeline = get_current_timeline()
+        if timeline is not None:
+            timeline.mark("clicked")
+
+        async with time_category("browser"):
+            no_deals = page.locator(SEL_DEALS_LIST).locator(SEL_NO_DEALS)
+            await expect(no_deals).to_be_hidden(timeout=timeout)
+
+        if timeline is not None:
+            timeline.mark("confirmation_detected")
     except _RETRYABLE_ERRORS as e:
         await _capture_failure(page, "click_direction", button_selector, str(e))
 
 
+@timed("browser")
 async def read_payout_percent(page, timeout=DEFAULT_TIMEOUT_MS):
     """Reads the displayed payout percentage (e.g. 81 for '+81%'). Purely
     informational - returns None on failure rather than raising, since a
@@ -535,6 +566,7 @@ _PAYOUT_AND_TRADEABLE_JS = """
 """
 
 
+@timed("browser")
 async def read_payout_and_check_tradeable(page):
     """
     Single combined DOM read for the two live facts needed right before a
@@ -580,70 +612,162 @@ async def read_payout_and_check_tradeable(page):
     return payout, tradeable
 
 
-async def wait_for_trade_result(page, expiry_seconds, settlement_buffer_seconds=30):
+_CLOSED_ITEMS_JS = """
+(maxItems) => {
+    const items = Array.from(document.querySelectorAll('.deals-list .deals-list__item')).slice(0, maxItems);
+    return items.map(el => {
+        const rows = el.querySelectorAll('.item-row');
+        // rows[0] contains TWO <a> tags: a .favorites star icon (empty
+        // text) first, then the actual asset name - querySelector('a')
+        // grabs the star icon and always returns ''. Confirmed this was a
+        // pre-existing bug (present in the original single-item version
+        // of this extraction too, silently masked because nothing
+        // previously filtered by asset - it always just took .first).
+        const assetLink = rows[0] ? Array.from(rows[0].querySelectorAll('a')).find(a => !a.closest('.favorites')) : null;
+        const timeDiv = rows[0] ? rows[0].querySelectorAll('div')[1] : null;
+        const valueDivs = rows[1] ? Array.from(rows[1].querySelectorAll('div')) : [];
+        return {
+            asset: assetLink ? assetLink.innerText.trim() : null,
+            direction: rows[1]
+                ? (rows[1].querySelector('.fa-arrow-up') ? 'BUY'
+                    : (rows[1].querySelector('.fa-arrow-down') ? 'SELL' : null))
+                : null,
+            time_text: timeDiv ? timeDiv.innerText.trim() : null,
+            values: valueDivs.map(d => d.innerText.trim()),
+        };
+    });
+}
+"""
+
+
+def _closest_closed_item(items, asset, direction, expected_close_dt):
+    """Among Closed-list items matching asset+direction, picks the one
+    whose displayed close time (HH:MM, minute-resolution only - the site
+    doesn't render seconds) is closest to when THIS trade was expected to
+    close. Reduces but does not eliminate ambiguity between same-asset,
+    same-direction trades that close within the same clock-minute under
+    heavy concurrency - a documented residual limit, not a claim of
+    perfect uniqueness."""
+    candidates = [i for i in items if i.get("asset") == asset and i.get("direction") == direction]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    def _time_diff(item):
+        try:
+            hh, mm = item["time_text"].split(":")
+            candidate_dt = expected_close_dt.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            # HH:MM alone is ambiguous across a day boundary - try the
+            # neighboring day in each direction and keep whichever is
+            # actually closest to the expected close time.
+            best = abs((candidate_dt - expected_close_dt).total_seconds())
+            for delta_days in (-1, 1):
+                alt = candidate_dt + timedelta(days=delta_days)
+                best = min(best, abs((alt - expected_close_dt).total_seconds()))
+            return best
+        except (ValueError, AttributeError, TypeError):
+            return float("inf")
+
+    return min(candidates, key=_time_diff)
+
+
+async def wait_for_trade_result(page, expiry_seconds, asset=None, direction=None,
+                                 settlement_buffer_seconds=8, closed_tab_lock=None):
     """
     Waits for the currently-open trade to close, then classifies win/loss/
     draw from the Closed tab.
 
-    Assumes a single open trade at a time - matches the current one-trade-
-    at-a-time execution model. Revisit if concurrent trades are added.
+    Does NOT rely on .no-deals to detect closure. Confirmed via direct live
+    testing (two concurrent trades, 15s and 60s expiry, watched every 2s):
+    the 15s trade's own .no-deals stayed False for the FULL ~60 seconds,
+    flipping True only once the 60s trade ALSO closed - .no-deals reflects
+    "zero open positions across this whole browser context", not "this
+    worker's specific trade closed". Under concurrency this silently
+    delayed outcome detection by however long the slowest concurrent trade
+    took (measured up to 28s in the P0 sprint benchmark) - a correctness
+    gap for downstream risk tracking (consecutive-losses, cooldown), not
+    only a latency one.
+
+    Fix: this trade's own close time is already known deterministically
+    (expiry_seconds, fixed at signal time) - sleep for that duration plus a
+    short settlement buffer, then read the Closed tab once and match the
+    specific item by asset + direction + closest closing-time to when this
+    trade was expected to close (see _closest_closed_item). Falls back to
+    a few bounded retries (short extra sleeps, re-reading the list each
+    time) if the item isn't rendered yet, up to a generous ceiling - but no
+    longer polls indefinitely on a signal that can't distinguish this
+    trade's closure from an unrelated one.
+
+    `closed_tab_lock`, if given (an asyncio.Lock shared across a
+    BrowserWorkerPool's workers), serializes the tab-switch+read step
+    itself across workers finishing at nearly the same moment, since the
+    active-tab toggle is confirmed shared live across every page in the
+    same browser context (verified: clicking Closed on one page instantly
+    flips another, untouched page's rendered active tab too). This no
+    longer matters for the wait itself (no DOM interaction happens during
+    the sleep now), only for this brief final read.
 
     Win/loss classification is confirmed against both a real win ($1 stake
     -> $1.92 returned, 92% payout) and a real loss ($1 stake -> $0
     returned) sample. Classification: total returned == 0 -> loss, total
     returned > stake -> win, otherwise -> draw.
     """
-    timeout_ms = (expiry_seconds + settlement_buffer_seconds) * 1000
+    # Intentional waiting, not active execution - a deliberate delay for a
+    # deterministic, known duration (the trade's own contractual expiry),
+    # timed separately so it never gets miscounted as browser/CPU work.
+    async with time_category("waiting"):
+        await asyncio.sleep(expiry_seconds + settlement_buffer_seconds)
+
+    max_wait = time.monotonic() + 30
+    retry_sleep = 3
+    match = None
+    data = None
 
     try:
-        # Under concurrency, another worker's page can reactively flip this
-        # page's Opened/Closed selection mid-wait (observed: the Opened tab
-        # was correctly made active at the start, but by the time the wait
-        # would have succeeded, the page had switched to Closed - plausibly
-        # a cross-tab shared UI preference, e.g. localStorage, since this
-        # never surfaced in the single-page/single-worker design). Re-assert
-        # Opened is active every few seconds throughout the wait instead of
-        # only once at the start, rather than trust it stays put.
-        no_deals = page.locator(SEL_DEALS_LIST).locator(SEL_NO_DEALS)
-        deadline = time.monotonic() + timeout_ms / 1000
         while True:
-            await _ensure_opened_tab_active(page)
-            remaining_ms = max(0, (deadline - time.monotonic()) * 1000)
-            poll_ms = min(remaining_ms, 3000)
-            try:
-                await expect(no_deals).to_be_visible(timeout=poll_ms)
+            async def _read_once():
+                async with time_category("browser"):
+                    await _ensure_opened_tab_active(page)
+                    trades_panel = page.locator(SEL_TRADES_PANEL)
+                    closed_tab = trades_panel.get_by_text("Closed", exact=True).first
+                    found, visible, enabled = await _probe_state(closed_tab)
+                    _log_selector_event("closed_tab_selector", "text=Closed", DEFAULT_TIMEOUT_MS, 1, found, visible, enabled)
+                    await closed_tab.click(timeout=DEFAULT_TIMEOUT_MS)
+                    item = page.locator(SEL_CLOSED_LIST_ITEM).first
+                    await expect(item).to_be_visible(timeout=DEFAULT_TIMEOUT_MS)
+                    return await page.evaluate(_CLOSED_ITEMS_JS, 10)
+
+            if closed_tab_lock is not None:
+                async with closed_tab_lock:
+                    items = await _read_once()
+            else:
+                items = await _read_once()
+
+            if asset is not None and direction is not None:
+                match = _closest_closed_item(items, asset, direction, datetime.now())
+            else:
+                match = items[0] if items else None
+
+            if match is not None or time.monotonic() >= max_wait:
+                data = match
                 break
-            except AssertionError:
-                if time.monotonic() >= deadline:
-                    raise
-
-        trades_panel = page.locator(SEL_TRADES_PANEL)
-        closed_tab = trades_panel.get_by_text("Closed", exact=True).first
-        found, visible, enabled = await _probe_state(closed_tab)
-        _log_selector_event("closed_tab_selector", "text=Closed", DEFAULT_TIMEOUT_MS, 1, found, visible, enabled)
-        await closed_tab.click(timeout=DEFAULT_TIMEOUT_MS)
-
-        item = page.locator(SEL_CLOSED_LIST_ITEM).first
-        await expect(item).to_be_visible(timeout=DEFAULT_TIMEOUT_MS)
-
-        data = await item.evaluate("""
-            (el) => {
-                const rows = el.querySelectorAll('.item-row');
-                const assetLink = rows[0] ? rows[0].querySelector('a') : null;
-                const valueDivs = rows[1] ? Array.from(rows[1].querySelectorAll('div')) : [];
-                return {
-                    asset: assetLink ? assetLink.innerText.trim() : null,
-                    direction: rows[1]
-                        ? (rows[1].querySelector('.fa-arrow-up') ? 'BUY'
-                            : (rows[1].querySelector('.fa-arrow-down') ? 'SELL' : null))
-                        : null,
-                    values: valueDivs.map(d => d.innerText.trim()),
-                };
-            }
-        """)
+            async with time_category("waiting"):
+                await asyncio.sleep(retry_sleep)
     except _RETRYABLE_ERRORS as e:
         await _capture_failure(page, "wait_for_trade_result", SEL_CLOSED_LIST_ITEM, str(e))
         return None
+
+    if data is None:
+        logger.error(
+            "wait_for_trade_result: no matching closed item found for asset=%r direction=%r after settlement wait",
+            asset, direction,
+        )
+        return None
+
+    timeline = get_current_timeline()
+    if timeline is not None:
+        timeline.mark("trade_settled")
 
     logger.info("wait_for_trade_result: closed_item=%s", data)
 

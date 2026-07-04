@@ -121,25 +121,58 @@ click-time from confirmation-wait time. Flagged as a P1 fix below, not
 glossed over as "confirmation is free."
 
 ### Outcome detection latency (overhead beyond the trade's own expiry)
-Newly instrumented this sprint - **the most significant finding of this
-report.** Average overhead: **14,897ms** (n=10) - but the range is what
-matters: **172ms to 28,031ms**, and it is not randomly distributed. All 10
-trades were opened at staggered times (25 seconds apart, end to end) but
-**all 10 closed within a 2.5-second window** (14:53:04.96-14:53:07.46)
-regardless of when each one opened. The trade opened last (closest to that
-window) showed only 172ms overhead; the trade opened first (furthest from
-that window) showed 28 seconds of overhead. This strongly suggests
-something about how multiple concurrently-open positions resolve is *not*
-independent per trade - possibly related to the same class of cross-tab/
-shared-UI-state behavior already confirmed for the Opened/Closed panel
-(though this wasn't directly proven here, only observed as a strong
-correlation, and is worth stating precisely rather than overclaiming a root
-cause). **Scoping caveat:** this benchmark used 10 concurrent workers - well
-above the default `MAX_CONCURRENT_WORKERS=2` - so this magnitude is very
-likely amplified by an atypically high concurrent load; the effect itself,
-however, was directly measured, not assumed, and existed already before any
-P0 change (the pre-P0 benchmark's resolution order was similarly out of
-submission order - this was previously invisible, not previously absent).
+**UPDATE - root-caused and fixed as an immediate P1 follow-up (same session).**
+
+Original finding: average overhead **14,897ms** (n=10), range **172ms to
+28,031ms**, strongly correlated with trade order - all 10 trades opened at
+staggered times (25s apart) but all closed within a 2.5s window regardless
+of when each one opened.
+
+**Root cause, confirmed by direct live test** (not inferred): fired one
+15-second-expiry trade and one 60-second-expiry trade concurrently and
+polled `.no-deals` on both pages every 2 seconds. The 15s trade's own
+`.no-deals` stayed **False for the entire ~60 seconds**, flipping **True**
+only at the exact same instant as the 60s trade's own `.no-deals` -
+confirming `.no-deals` reflects "zero open positions across this whole
+browser context", not "this worker's specific trade closed". Under
+concurrency, every worker was silently blocked until the *slowest*
+concurrently-open trade also closed - a correctness gap for downstream risk
+tracking (consecutive-losses, cooldown), not only a latency one.
+
+**Fix**: `pocket_dom.wait_for_trade_result` no longer polls `.no-deals` at
+all. Since a trade's own expiry duration is already known deterministically
+at signal time, it now sleeps for `expiry_seconds + settlement_buffer`
+(buffer defaults to 8s), then reads the Closed tab once and matches the
+specific item by asset + direction + closest closing-time to this trade's
+own expected close (bounded retries if not yet rendered). `asset`/
+`direction` are threaded through `pocket_executor.track_outcome` and
+`recovery.py`'s resume path. A `closed_tab_lock` (new, shared across a
+`BrowserWorkerPool`'s workers) serializes the brief final tab-read across
+workers finishing at nearly the same moment, since the active-tab toggle
+was separately confirmed to be **live-synced across every page in the same
+browser context** (clicking Closed on one untouched page instantly flips
+another page's rendered active tab too, with no interaction on the second
+page at all).
+
+One genuine pre-existing bug surfaced while validating this fix: the
+Closed-list item's asset field was always extracted as `''` (a `.favorites`
+star-icon `<a>` was being matched instead of the actual asset-name `<a>` -
+two anchors exist in that row, `querySelector('a')` silently grabbed the
+wrong one). This bug existed in the original code too, just harmless there
+since nothing previously filtered by asset. Fixed as part of this change.
+
+**Re-measured after the fix**, same 10-trade concurrent benchmark: outcome
+detection overhead is now **8,266ms-8,469ms** (avg 8,362ms, n=10) - every
+single trade succeeded on its first read attempt, and each trade's own
+`closed_at` now lands independently at its own expiry time instead of
+clustering. Confirmed directly with the differing-expiry test too
+(promoted to `tests/outcome_detection_independence_test.py`): the 15s trade
+resolved in 13.2s wall-clock, the 60s trade in 68.7s - no longer coupled.
+**Scoping note preserved from the original finding**: the *magnitude* of the
+original bug (up to 28s) was likely amplified by this benchmark's
+atypically high 10-worker concurrency (vs. the production default of 2),
+but the underlying mechanism was real, existed before any P0 change, and is
+now closed at the root rather than merely reduced in magnitude.
 
 ### Failure rate
 **17.2%** (5 errors / 29 trades that reached actual execution, i.e.
@@ -166,14 +199,15 @@ system.
 
 ## Recommended next P1 sprint (based on the measured data above, not assumptions)
 
-1. **[Highest priority - largest measured effect]** Investigate the
-   outcome-detection clustering behavior under concurrent load. This is now
-   the single largest number in this entire report (up to 28s of unexplained
-   overhead) and was previously invisible before this sprint's
-   instrumentation. Start by testing at the actual production
-   `MAX_CONCURRENT_WORKERS=2` (not 10) to see if the effect is proportional,
-   and by checking whether the Closed-tab read is contending the same way
-   the Opened/Closed tab-state was already confirmed to.
+1. ~~**[Highest priority]** Investigate the outcome-detection clustering
+   behavior under concurrent load.~~ **DONE (same session).** Root-caused
+   (`.no-deals` is a system-wide aggregate, confirmed by direct live test)
+   and fixed (deterministic sleep + matched Closed-tab read instead of
+   polling that signal). Re-measured: overhead dropped from 172ms-28,031ms
+   (avg 14,897ms, correlated with trade count) to a tight 8,266ms-8,469ms
+   (avg 8,362ms) band, independent of concurrent load. See the updated
+   "Outcome detection latency" section above and
+   `tests/outcome_detection_independence_test.py`.
 2. **Close the confirmation-latency instrumentation gap**: add a
    `pre_click` checkpoint immediately before `click_direction()` is called,
    so `click_completed - pre_click` actually isolates click+confirmation-
@@ -183,10 +217,15 @@ system.
    ~1.67s average for a change, vs ~25ms when already selected) - the
    batched-`page.evaluate()` idea from the original sprint doc, validated
    against this new baseline.
-4. **Live-fire-test the process-level supervisor** (deliberately kill the
+4. **Tune `settlement_buffer_seconds` down from its current 8s default** -
+   every trade in the post-fix re-measurement succeeded on its *first* read
+   attempt at 8s, suggesting real settlement completes faster than that;
+   worth testing a smaller buffer (e.g. 3-5s) now that detection is no
+   longer coupled to unrelated concurrent trades.
+5. **Live-fire-test the process-level supervisor** (deliberately kill the
    listener process or its browser mid-run) to actually exercise the P0 #5
    restart path and populate real recovery-rate data instead of the current
    "no data yet."
-5. Re-run this same benchmark script once the live listener has processed
+6. Re-run this same benchmark script once the live listener has processed
    genuine Telegram signals, so failure/duplicate rates stop being
    test-script artifacts and start reflecting real usage.

@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from timeline import timed
 
 DB_FILE = Path("data/axim.db")
 
@@ -16,6 +17,8 @@ _NEW_COLUMNS = {
     "screenshot_paths": "TEXT",
     "latency_checkpoints_json": "TEXT",
     "outcome_detection_ms": "REAL",
+    "trade_timeline_json": "TEXT",
+    "category_timings_json": "TEXT",
 }
 
 
@@ -59,7 +62,9 @@ def initialize_database():
         profit_loss REAL,
         screenshot_paths TEXT,
         latency_checkpoints_json TEXT,
-        outcome_detection_ms REAL
+        outcome_detection_ms REAL,
+        trade_timeline_json TEXT,
+        category_timings_json TEXT
     );
     """)
 
@@ -79,6 +84,7 @@ def initialize_database():
     conn.close()
 
 
+@timed("database")
 def record_signal_received(signal, source=None, sender=None, message_id=None):
     from trade_lifecycle import TradeStatus
 
@@ -113,6 +119,7 @@ _UPDATABLE_FIELDS = {
 }
 
 
+@timed("database")
 def update_trade_status(trade_id, status, **fields):
     from trade_lifecycle import TradeStatus
 
@@ -140,6 +147,7 @@ def update_trade_status(trade_id, status, **fields):
     conn.close()
 
 
+@timed("database")
 def record_latency_checkpoints(trade_id, checkpoints):
     """Persists LatencyTracker's per-stage checkpoint dict (cumulative ms
     since signal receipt) so per-stage latency is queryable across every
@@ -155,6 +163,7 @@ def record_latency_checkpoints(trade_id, checkpoints):
     conn.close()
 
 
+@timed("database")
 def record_outcome_latency(trade_id, detection_overhead_ms):
     """Persists outcome-detection overhead: wall-clock time spent in
     wait_for_trade_result beyond the trade's own contractual expiry
@@ -169,6 +178,40 @@ def record_outcome_latency(trade_id, detection_overhead_ms):
     conn.close()
 
 
+@timed("database")
+def record_trade_timeline(trade_id, stage_timestamps, category_totals_ms):
+    """Merges (does not overwrite) a TradeTimeline's stage timestamps and
+    category totals into whatever is already persisted for this trade_id.
+    A trade's timeline is typically written in two passes - once from
+    prepare_trade, once later from track_outcome, sometimes from a
+    different OS process entirely (a trade resumed by core/recovery.py
+    after a restart) - so this always reads the existing JSON first and
+    combines rather than clobbers it. Category totals are summed (each
+    pass measures its own portion of the work), stage timestamps are
+    merged key-by-key (each stage is only ever written once, by whichever
+    pass reaches it)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT trade_timeline_json, category_timings_json FROM signals WHERE id = ?", (trade_id,)
+    ).fetchone()
+
+    existing_stages = json.loads(row["trade_timeline_json"]) if row and row["trade_timeline_json"] else {}
+    existing_categories = json.loads(row["category_timings_json"]) if row and row["category_timings_json"] else {}
+
+    merged_stages = {**existing_stages, **stage_timestamps}
+    merged_categories = dict(existing_categories)
+    for category, ms in category_totals_ms.items():
+        merged_categories[category] = merged_categories.get(category, 0.0) + ms
+
+    conn.execute(
+        "UPDATE signals SET trade_timeline_json = ?, category_timings_json = ? WHERE id = ?",
+        (json.dumps(merged_stages), json.dumps(merged_categories), trade_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
 def record_recovery_event(event_type, outcome, detail=None):
     """Structured log of an automatic-recovery attempt (browser reconnect,
     worker pool rebuild, process-level restart, abandoned-trade resume) and
@@ -183,6 +226,7 @@ def record_recovery_event(event_type, outcome, detail=None):
     conn.close()
 
 
+@timed("database")
 def get_recovery_event_stats():
     conn = get_connection()
     rows = conn.execute("SELECT event_type, outcome, COUNT(*) AS n FROM recovery_events GROUP BY event_type, outcome").fetchall()
@@ -190,6 +234,7 @@ def get_recovery_event_stats():
     return [dict(r) for r in rows]
 
 
+@timed("database")
 def append_screenshot_path(trade_id, path):
     conn = get_connection()
     row = conn.execute("SELECT screenshot_paths FROM signals WHERE id = ?", (trade_id,)).fetchone()
@@ -203,6 +248,7 @@ def append_screenshot_path(trade_id, path):
     conn.close()
 
 
+@timed("database")
 def find_recent_duplicate(asset, direction, expiry, window_seconds, exclude_id=None):
     cutoff = (datetime.now() - timedelta(seconds=window_seconds)).isoformat()
     conn = get_connection()
@@ -217,6 +263,7 @@ def find_recent_duplicate(asset, direction, expiry, window_seconds, exclude_id=N
     return row["id"] if row else None
 
 
+@timed("database")
 def count_trades_since(since_iso):
     conn = get_connection()
     row = conn.execute(
@@ -226,6 +273,7 @@ def count_trades_since(since_iso):
     return row["n"]
 
 
+@timed("database")
 def get_recent_results(limit):
     conn = get_connection()
     rows = conn.execute("""
@@ -238,6 +286,7 @@ def get_recent_results(limit):
     return [row["result"] for row in rows]
 
 
+@timed("database")
 def get_last_loss_time():
     conn = get_connection()
     row = conn.execute("""
@@ -250,6 +299,7 @@ def get_last_loss_time():
     return row["closed_at"] if row else None
 
 
+@timed("database")
 def get_open_trades():
     conn = get_connection()
     rows = conn.execute("""
@@ -261,6 +311,7 @@ def get_open_trades():
     return [dict(row) for row in rows]
 
 
+@timed("database")
 def get_trades_between(start_iso, end_iso, closed_only=False):
     conn = get_connection()
     if closed_only:
@@ -279,6 +330,7 @@ def get_trades_between(start_iso, end_iso, closed_only=False):
     return [dict(row) for row in rows]
 
 
+@timed("database")
 def count_with_result_prefix(prefix, since_iso=None):
     conn = get_connection()
     if since_iso:
