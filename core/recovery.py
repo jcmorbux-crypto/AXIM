@@ -15,7 +15,6 @@ sys.path.insert(0, str(EXECUTION_DIR))
 import database
 from trade_lifecycle import TradeStatus
 
-from browser_session import PocketBrowserSession, get_trading_page, DEMO_URL
 import pocket_dom
 import pocket_executor
 
@@ -29,12 +28,14 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
-async def resume_pending_trades():
+async def resume_pending_trades(warmup_service):
     """
-    Called once at startup. Any trade left in trade_clicked/trade_opened
-    when the process last stopped had a real position opened on Pocket
-    Option that was never resolved in our database - re-attach outcome
-    tracking to it for the remaining time until expiry.
+    Called once at startup, after the persistent browser session is up.
+    Any trade left in trade_clicked/trade_opened when the process last
+    stopped had a real position opened on Pocket Option that was never
+    resolved in our database - re-attach outcome tracking to it, reusing
+    the same warm page (not a separate browser), for the remaining time
+    until expiry.
 
     A trade stuck at trade_prepared was never clicked (either ARMED was
     false or the process died before the click), so there is no real
@@ -50,13 +51,13 @@ async def resume_pending_trades():
     for row in open_trades:
         trade_id = row["id"]
         try:
-            await _resume_one(row)
+            await _resume_one(row, warmup_service)
         except Exception as e:
             logger.error("recovery: trade_id=%s failed to resume: %s", trade_id, e)
             database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:recovery_failed:{e}")
 
 
-async def _resume_one(row):
+async def _resume_one(row, warmup_service):
     trade_id = row["id"]
     asset = row["asset"]
     expiry = row["timeframe"]
@@ -77,14 +78,14 @@ async def _resume_one(row):
         trade_id, asset, opened_at_raw, elapsed, remaining,
     )
 
-    session = PocketBrowserSession()
-    context = await session.__aenter__()
-    page = await get_trading_page(context, DEMO_URL)
-    await pocket_dom.dismiss_blocking_modals(page)
+    page = await warmup_service.get_page()
+    await warmup_service.lock.acquire()
 
-    # track_outcome takes ownership of the session and closes it when done,
+    # track_outcome releases warmup_service.lock when the trade resolves,
     # exactly as it does in the normal (non-recovery) flow.
-    asyncio.create_task(pocket_executor.track_outcome(session, page, trade_id, remaining))
+    asyncio.create_task(
+        pocket_executor.track_outcome(page, trade_id, remaining, warmup_service.lock)
+    )
 
 
 def mark_abandoned_preparations():
@@ -103,8 +104,9 @@ def mark_abandoned_preparations():
         database.update_trade_status(trade_id, TradeStatus.ERROR, result="error:abandoned_on_restart")
 
 
-async def run_recovery():
+async def run_recovery(warmup_service):
     """Single entry point for startup: reconcile abandoned preparations,
-    then resume tracking for any genuinely open positions."""
+    then resume tracking for any genuinely open positions. Must be called
+    after warmup_service.start()."""
     mark_abandoned_preparations()
-    await resume_pending_trades()
+    await resume_pending_trades(warmup_service)

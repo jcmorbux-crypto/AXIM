@@ -1,7 +1,7 @@
-import asyncio
 import logging
 import os
 import sys
+import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -12,10 +12,10 @@ CORE_DIR = PROJECT_ROOT / "core"
 sys.path.insert(0, str(EXECUTION_DIR))
 sys.path.insert(0, str(CORE_DIR))
 
-from browser_session import PocketBrowserSession, get_trading_page, DEMO_URL
 import pocket_dom
 import database
 from trade_lifecycle import TradeStatus
+from latency import LatencyTracker
 
 ARMED = os.getenv("ARMED", "false").lower() == "true"
 
@@ -32,18 +32,33 @@ if not lifecycle_logger.handlers:
     lifecycle_logger.setLevel(logging.INFO)
 
 
-async def prepare_trade(trade_id, asset, direction, expiry, amount):
-    session = PocketBrowserSession()
-    context = await session.__aenter__()
-    close_session = True
+async def prepare_trade(trade_id, asset, direction, expiry, amount, page, lock, latency=None):
+    """
+    Runs the verified browser interaction sequence (unchanged internals -
+    select_asset/select_expiry/set_amount/verify_direction_controls_ready/
+    click_direction all live in pocket_dom.py exactly as before) against
+    the persistent, already-open `page` supplied by BrowserWarmupService.
 
+    `lock` guards the one warm page - held for the whole synchronous part
+    of this call, and transferred to the background outcome tracker (not
+    released here) if a real click happens, since that task keeps using
+    the same page until the trade closes.
+    """
+    latency = latency or LatencyTracker(trade_id)
+    latency.trade_id = trade_id
+
+    await lock.acquire()
+    lock_transferred = False
     try:
-        page = await get_trading_page(context, DEMO_URL)
-
-        await pocket_dom.dismiss_blocking_modals(page)
         await pocket_dom.select_asset(page, asset)
+        latency.mark("asset_selected")
+
         await pocket_dom.select_expiry(page, expiry)
+        latency.mark("expiry_set")
+
         await pocket_dom.set_amount(page, amount)
+        latency.mark("amount_set")
+
         await pocket_dom.verify_direction_controls_ready(page)
 
         payout = await pocket_dom.read_payout_percent(page)
@@ -65,6 +80,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount):
 
         if not ARMED:
             print("Status    : ARMED=false, trade NOT clicked")
+            latency.log_summary()
             return {
                 "status": "prepared_not_armed",
                 "trade_id": trade_id,
@@ -75,6 +91,11 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount):
             }
 
         await pocket_dom.click_direction(page, direction)
+        latency.mark("click_completed")
+        # click_direction's own internal wait already confirms the trade
+        # opened (Opened list updated) before returning without raising -
+        # its successful return IS the confirmation.
+        latency.mark("confirmation_detected")
 
         opened_at = datetime.now().isoformat()
         screenshot_path = await _take_screenshot(page, trade_id, "clicked")
@@ -86,13 +107,11 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount):
         lifecycle_logger.info("trade_id=%s status=%s", trade_id, TradeStatus.TRADE_OPENED.value)
 
         print("Status    : TRADE BUTTON CLICKED (confirmed via Opened trades list)")
+        latency.log_summary()
 
-        # Ownership of the browser session transfers to the background
-        # outcome tracker so this call can return immediately - waiting for
-        # expiry here would block the listener from handling new signals.
         expiry_seconds = pocket_dom.expiry_to_seconds(expiry)
-        close_session = False
-        asyncio.create_task(track_outcome(session, page, trade_id, expiry_seconds))
+        lock_transferred = True
+        asyncio.create_task(track_outcome(page, trade_id, expiry_seconds, lock))
 
         return {
             "status": "clicked",
@@ -105,20 +124,24 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount):
     except pocket_dom.AssetUntradeableError as e:
         lifecycle_logger.warning("trade_id=%s asset untradeable: %s", trade_id, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable")
+        latency.log_summary()
         return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable", "reason": str(e)}
     except Exception as e:
         lifecycle_logger.error("trade_id=%s status=%s error=%s", trade_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
+        latency.log_summary()
         raise
     finally:
-        if close_session:
-            await session.__aexit__(None, None, None)
+        if not lock_transferred:
+            lock.release()
 
 
-async def track_outcome(session, page, trade_id, expiry_seconds):
+async def track_outcome(page, trade_id, expiry_seconds, lock):
     """Waits for a trade to close and records the result. Used both for the
     normal post-click flow (prepare_trade, above) and by core/recovery.py
-    to re-attach tracking to a trade left open across a restart."""
+    to re-attach tracking to a trade left open across a restart. Releases
+    `lock` when done, since it holds the one warm page until the trade
+    resolves - the next queued trade can't proceed until this returns."""
     try:
         outcome = await pocket_dom.wait_for_trade_result(page, expiry_seconds)
         if outcome is None:
@@ -169,7 +192,7 @@ async def track_outcome(session, page, trade_id, expiry_seconds):
         lifecycle_logger.error("trade_id=%s status=%s error=%s", trade_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
     finally:
-        await session.__aexit__(None, None, None)
+        lock.release()
 
 
 async def _take_screenshot(page, trade_id, label):

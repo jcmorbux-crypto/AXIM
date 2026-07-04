@@ -228,6 +228,20 @@ async def _read_current_asset(page):
         return None
 
 
+async def _read_current_expiry_display(page):
+    try:
+        return (await page.locator(f"{SEL_EXPIRY_TRIGGER} .value__val").first.inner_text(timeout=2000)).strip()
+    except Exception:
+        return None
+
+
+async def _read_current_amount(page):
+    try:
+        return (await page.locator(SEL_AMOUNT_INPUT).first.input_value(timeout=2000)).strip()
+    except Exception:
+        return None
+
+
 async def select_asset(page, asset_name, timeout=DEFAULT_TIMEOUT_MS):
     if await _read_current_asset(page) == asset_name:
         logger.info("select_asset: %r already selected, no-op", asset_name)
@@ -318,6 +332,11 @@ async def select_expiry(page, expiry_str, timeout=DEFAULT_TIMEOUT_MS):
     hours, minutes, seconds = _expiry_to_hms(expiry_str)
     targets = [f"{hours:02d}", f"{minutes:02d}", f"{seconds:02d}"]
     labels = ["hours", "minutes", "seconds"]
+    target_display = f"{targets[0]}:{targets[1]}:{targets[2]}"
+
+    if await _read_current_expiry_display(page) == target_display:
+        logger.info("select_expiry: %r already set (%s), no-op", expiry_str, target_display)
+        return
 
     last_reason = None
     for attempt in range(1, RETRY_ATTEMPTS + 1):
@@ -356,6 +375,10 @@ async def select_expiry(page, expiry_str, timeout=DEFAULT_TIMEOUT_MS):
 
 async def set_amount(page, amount, timeout=DEFAULT_TIMEOUT_MS):
     target = _format_amount(amount)
+
+    if await _read_current_amount(page) == target:
+        logger.info("set_amount: %r already set, no-op", target)
+        return
 
     last_reason = None
     for attempt in range(1, RETRY_ATTEMPTS + 1):

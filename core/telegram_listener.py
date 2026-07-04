@@ -9,6 +9,8 @@ sys.path.insert(0, "core")
 
 from signal_parser import parse_signal
 from trade_coordinator import TradeCoordinator
+from browser_warmup import BrowserWarmupService
+from latency import LatencyTracker
 import recovery
 
 load_dotenv()
@@ -18,13 +20,17 @@ api_hash = os.getenv("TELEGRAM_API_HASH") or os.getenv("API_HASH")
 phone = os.getenv("TELEGRAM_PHONE") or os.getenv("PHONE")
 
 client = TelegramClient("axim_session", api_id, api_hash)
-coordinator = TradeCoordinator()
+warmup_service = BrowserWarmupService()
+coordinator = TradeCoordinator(warmup_service)
 
 print("AXIM Telegram Listener Starting...")
 
 
 @client.on(events.NewMessage)
 async def handler(event):
+    latency = LatencyTracker()
+    latency.mark("telegram_received")
+
     sender = await event.get_sender()
     chat = await event.get_chat()
     chat_title = getattr(chat, "title", "") or getattr(chat, "first_name", "") or ""
@@ -37,6 +43,7 @@ async def handler(event):
     print(f"Message:\n{event.raw_text}")
 
     signal = parse_signal(event.raw_text)
+    latency.mark("parsed")
 
     if signal:
         execution_result = await coordinator.handle_signal(
@@ -45,6 +52,7 @@ async def handler(event):
             sender=str(sender.id),
             message_id=event.id,
             sent_at=event.date,
+            latency=latency,
         )
 
         print(f"Execution Status: {execution_result['status']}")
@@ -55,7 +63,10 @@ async def handler(event):
         print(f"Expiry    : {signal['expiry']}")
 
 
-client.loop.run_until_complete(recovery.run_recovery())
+print("AXIM: starting persistent Pocket Option session...")
+client.loop.run_until_complete(warmup_service.start())
+print("AXIM: persistent session ready, running startup recovery...")
+client.loop.run_until_complete(recovery.run_recovery(warmup_service))
 
 client.start(phone=phone)
 
