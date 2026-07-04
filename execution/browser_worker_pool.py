@@ -23,10 +23,14 @@ if not logger.handlers:
 
 
 class BrowserWorker:
-    def __init__(self, worker_id, page):
+    def __init__(self, worker_id, page, generation):
         self.worker_id = worker_id
         self.page = page
         self.lock = asyncio.Lock()
+        # Which pool rebuild this worker belongs to - lets release_worker
+        # detect and discard a worker whose page belongs to a browser
+        # context that no longer exists (see BrowserWorkerPool docstring).
+        self.generation = generation
 
 
 class BrowserWorkerPool:
@@ -45,6 +49,17 @@ class BrowserWorkerPool:
     rejects instantly if all are busy; timeout=N waits up to N seconds
     (queued, FIFO order via the queue itself); timeout=None waits
     indefinitely.
+
+    Whole-browser-crash recovery: every acquire_worker() call first asks
+    warmup_service.ensure_alive() for the current generation. If it
+    doesn't match the generation this pool last built its workers from,
+    the underlying browser was relaunched (a full crash, not just one
+    tab) - every worker's page belongs to a now-nonexistent browser
+    process, so the whole pool is rebuilt from the new context rather
+    than trying to patch individual pages. A worker that was mid-trade
+    during the crash and gets released later (via its own try/except)
+    is recognized as stale by its own generation number and discarded
+    instead of corrupting the freshly-rebuilt pool.
     """
 
     def __init__(self, warmup_service, num_workers=2):
@@ -52,18 +67,54 @@ class BrowserWorkerPool:
         self.num_workers = num_workers
         self.workers = []
         self._available = asyncio.Queue()
+        self._warmup_generation = None
+        self._pool_generation = 0
+        self._health_lock = asyncio.Lock()
 
     async def start(self):
+        self._warmup_generation = await self.warmup_service.ensure_alive()
+        await self._build_workers()
+
+    async def _build_workers(self):
+        self._pool_generation += 1
         context = self.warmup_service.get_context()
+
+        # Drain any stale entries defensively (e.g. rebuilding after a
+        # crash that happened between calls).
+        while True:
+            try:
+                self._available.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        self.workers = []
         for i in range(self.num_workers):
             page = await get_trading_page(context, DEMO_URL)
             await pocket_dom.dismiss_blocking_modals(page)
-            worker = BrowserWorker(i, page)
+            worker = BrowserWorker(i, page, self._pool_generation)
             self.workers.append(worker)
             self._available.put_nowait(worker)
-        logger.info("browser_worker_pool: started %d worker(s)", self.num_workers)
+        logger.info(
+            "browser_worker_pool: built %d worker(s) at generation %s",
+            self.num_workers, self._pool_generation,
+        )
+
+    async def _ensure_pool_healthy(self):
+        async with self._health_lock:
+            current_generation = await self.warmup_service.ensure_alive()
+            if current_generation != self._warmup_generation:
+                logger.warning(
+                    "browser_worker_pool: underlying browser reconnected "
+                    "(warmup generation %s -> %s) - rebuilding all workers "
+                    "from the new browser context",
+                    self._warmup_generation, current_generation,
+                )
+                self._warmup_generation = current_generation
+                await self._build_workers()
 
     async def acquire_worker(self, timeout=0):
+        await self._ensure_pool_healthy()
+
         try:
             if timeout == 0:
                 worker = self._available.get_nowait()
@@ -79,11 +130,26 @@ class BrowserWorkerPool:
         return worker
 
     def release_worker(self, worker):
+        if worker.generation != self._pool_generation:
+            logger.info(
+                "browser_worker_pool: worker_id=%s is from a previous generation "
+                "(%s != %s) - discarding instead of returning to the pool, its "
+                "page belongs to a browser context that no longer exists",
+                worker.worker_id, worker.generation, self._pool_generation,
+            )
+            if worker.lock.locked():
+                worker.lock.release()
+            return
+
         if worker.lock.locked():
             worker.lock.release()
         self._available.put_nowait(worker)
 
     async def _ensure_worker_healthy(self, worker):
+        """Handles a single tab dying while the rest of the browser is
+        fine - the whole-browser-crash case is caught earlier, in
+        _ensure_pool_healthy(), before a worker is even pulled from the
+        queue."""
         try:
             if worker.page.is_closed():
                 raise RuntimeError("page closed")
