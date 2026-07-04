@@ -64,7 +64,14 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
 
         await pocket_dom.verify_direction_controls_ready(page)
 
-        payout = await pocket_dom.read_payout_percent(page)
+        # Combined single-pass read: is the asset still tradeable right
+        # now (closing the narrow window between select_asset's own
+        # pre-selection check and this point), and its current payout.
+        payout, tradeable_now = await pocket_dom.read_payout_and_check_tradeable(page)
+        if not tradeable_now:
+            raise pocket_dom.AssetUntradeableError(
+                asset, reason="became untradeable after selection (asset-inactive overlay active)",
+            )
 
         try:
             risk_manager.check_minimum_payout(payout)

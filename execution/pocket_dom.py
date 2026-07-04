@@ -522,6 +522,80 @@ async def read_payout_percent(page, timeout=DEFAULT_TIMEOUT_MS):
         return None
 
 
+SEL_ASSET_INACTIVE_OVERLAY = ".asset-inactive"
+
+_PAYOUT_AND_TRADEABLE_JS = """
+() => {
+    const overlay = document.querySelector('.asset-inactive');
+    let tradeable = true;
+    if (overlay) {
+        const style = getComputedStyle(overlay);
+        const opacity = parseFloat(style.opacity || '1');
+        // Confirmed by direct measurement: this element is ALWAYS present
+        // in the DOM with non-zero width/height, display:block, and
+        // visibility:visible even when completely inert (dormant
+        // CSS-transition scaffolding) - checking those properties alone
+        // (the original, wrong approach) always reports "blocking" and
+        // never actually distinguishes anything. opacity and
+        // pointer-events are what genuinely differ between a real,
+        // active "instrument unavailable" state and the normal dormant
+        // one.
+        tradeable = !(opacity > 0.05 && style.pointerEvents !== 'none');
+    }
+    const payoutEl = document.querySelector('.block--payout .value__val-start');
+    return {
+        tradeable,
+        payoutText: payoutEl ? payoutEl.innerText.trim() : null,
+    };
+}
+"""
+
+
+async def read_payout_and_check_tradeable(page):
+    """
+    Single combined DOM read for the two live facts needed right before a
+    click: is the currently-selected asset still tradeable right now, and
+    what is its current payout. Complements select_asset's own
+    pre-selection tradeable check (via the search-results row's
+    .alist__schedule-info) by re-confirming on the actual trading page
+    immediately before the click - closing the narrow window between "was
+    tradeable when selected" and "is still tradeable now", in one DOM
+    round-trip instead of two separate reads.
+
+    Returns (payout, tradeable) - payout is None if it couldn't be read
+    (non-fatal on its own; risk_manager.check_minimum_payout fails closed
+    on None). tradeable defaults to True if the DOM read itself fails,
+    since a failed read here isn't evidence of an actual problem - the
+    picker-level check already covers the primary case.
+    """
+    try:
+        result = await page.evaluate(_PAYOUT_AND_TRADEABLE_JS)
+    except Exception as e:
+        logger.warning("read_payout_and_check_tradeable: DOM read failed (%s)", e)
+        return None, True
+
+    tradeable = result.get("tradeable", True)
+    payout_text = result.get("payoutText")
+    payout = None
+    if payout_text:
+        match = re.search(r"(-?\d+)", payout_text)
+        if match:
+            payout = int(match.group(1))
+
+    logger.info(
+        "read_payout_and_check_tradeable: payout=%s tradeable=%s",
+        payout, tradeable,
+    )
+    if not tradeable:
+        logger.warning(
+            "read_payout_and_check_tradeable: asset-inactive overlay is genuinely "
+            "active (opacity>0.05, pointer-events enabled) - asset became "
+            "untradeable after selection"
+        )
+
+    return payout, tradeable
+
+
 async def wait_for_trade_result(page, expiry_seconds, settlement_buffer_seconds=30):
     """
     Waits for the currently-open trade to close, then classifies win/loss/
