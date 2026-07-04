@@ -29,8 +29,9 @@ class LatencyTracker:
         "confirmation_detected",
     ]
 
-    def __init__(self, trade_id=None):
+    def __init__(self, trade_id=None, worker_id=None):
         self.trade_id = trade_id
+        self.worker_id = worker_id
         self._start = time.monotonic()
         self._marks = {}
         self._logged = False
@@ -50,4 +51,7 @@ class LatencyTracker:
         parts = " ".join(
             f"{cp}={self._marks[cp]:.0f}ms" for cp in self.CHECKPOINTS if cp in self._marks
         )
-        logger.info("LATENCY trade_id=%s %s", self.trade_id, parts or "(no checkpoints recorded)")
+        logger.info(
+            "LATENCY trade_id=%s worker_id=%s %s",
+            self.trade_id, self.worker_id, parts or "(no checkpoints recorded)",
+        )

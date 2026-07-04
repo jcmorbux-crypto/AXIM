@@ -221,6 +221,26 @@ async def _close_active_dropdown_modal(page, timeout=DEFAULT_TIMEOUT_MS):
     await expect(modal).to_be_hidden(timeout=timeout)
 
 
+async def _ensure_opened_tab_active(page, timeout=DEFAULT_TIMEOUT_MS):
+    """The Opened/Closed sub-tabs in the Trades panel persist whichever was
+    last active across page loads (confirmed: a prior session leaving
+    Closed active meant .no-deals - which only has meaning on the Opened
+    tab - never appeared, breaking both click_direction's confirmation and
+    wait_for_trade_result's initial wait). Always confirm Opened is active
+    before relying on either."""
+    opened_tab = page.locator(SEL_TRADES_PANEL).get_by_text("Opened", exact=True).first
+    try:
+        is_active = await opened_tab.evaluate(
+            "(el) => { const li = el.closest('li'); return li ? li.classList.contains('active') : false; }"
+        )
+    except Exception:
+        is_active = False
+
+    if not is_active:
+        await opened_tab.click(timeout=timeout)
+        await expect(opened_tab.locator("xpath=..")).to_have_class(re.compile(r"\bactive\b"), timeout=timeout)
+
+
 async def _read_current_asset(page):
     try:
         return (await page.locator(SEL_CURRENT_SYMBOL).first.inner_text(timeout=2000)).strip()
@@ -470,6 +490,8 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS):
         raise ValueError(f"Unknown direction: {direction!r}")
 
     try:
+        await _ensure_opened_tab_active(page, timeout=timeout)
+
         button = page.locator(button_selector).first
         found, visible, enabled = await _probe_state(button)
         _log_selector_event("click_direction", button_selector, timeout, 1, found, visible, enabled)
@@ -508,17 +530,34 @@ async def wait_for_trade_result(page, expiry_seconds, settlement_buffer_seconds=
     Assumes a single open trade at a time - matches the current one-trade-
     at-a-time execution model. Revisit if concurrent trades are added.
 
-    Win/loss classification is confirmed against one directly-observed LOSS
-    sample (final value $0 on a $1 stake). A WIN case has not yet been
-    directly observed. Classification used: final_value == 0 -> loss,
-    final_value >= stake -> win, anything else -> draw. Treat "win" results
-    from this function as unverified until confirmed against a real win.
+    Win/loss classification is confirmed against both a real win ($1 stake
+    -> $1.92 returned, 92% payout) and a real loss ($1 stake -> $0
+    returned) sample. Classification: total returned == 0 -> loss, total
+    returned > stake -> win, otherwise -> draw.
     """
     timeout_ms = (expiry_seconds + settlement_buffer_seconds) * 1000
 
     try:
+        # Under concurrency, another worker's page can reactively flip this
+        # page's Opened/Closed selection mid-wait (observed: the Opened tab
+        # was correctly made active at the start, but by the time the wait
+        # would have succeeded, the page had switched to Closed - plausibly
+        # a cross-tab shared UI preference, e.g. localStorage, since this
+        # never surfaced in the single-page/single-worker design). Re-assert
+        # Opened is active every few seconds throughout the wait instead of
+        # only once at the start, rather than trust it stays put.
         no_deals = page.locator(SEL_DEALS_LIST).locator(SEL_NO_DEALS)
-        await expect(no_deals).to_be_visible(timeout=timeout_ms)
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            await _ensure_opened_tab_active(page)
+            remaining_ms = max(0, (deadline - time.monotonic()) * 1000)
+            poll_ms = min(remaining_ms, 3000)
+            try:
+                await expect(no_deals).to_be_visible(timeout=poll_ms)
+                break
+            except AssertionError:
+                if time.monotonic() >= deadline:
+                    raise
 
         trades_panel = page.locator(SEL_TRADES_PANEL)
         closed_tab = trades_panel.get_by_text("Closed", exact=True).first
@@ -558,13 +597,20 @@ async def wait_for_trade_result(page, expiry_seconds, settlement_buffer_seconds=
 
     values = data.get("values") or []
     stake = _to_amount(values[0]) if len(values) > 0 else None
-    final_value = _to_amount(values[-1]) if len(values) > 0 else None
+    # values[1] is the TOTAL amount returned (win: stake+profit, e.g.
+    # "$1.92" on a $1 stake; loss: "$0") - confirmed against both a real
+    # win and a real loss sample. values[-1] is just the profit delta
+    # alone on a win (e.g. "+$0.92") and must NOT be compared against the
+    # stake for classification - doing so was a real bug found here: a
+    # genuine $1.92-return win was misclassified as "draw" because its
+    # $0.92 profit delta is less than the $1 stake.
+    total_returned = _to_amount(values[1]) if len(values) > 1 else None
 
-    if stake is None or final_value is None:
+    if stake is None or total_returned is None:
         result = "unknown"
-    elif final_value == 0:
+    elif total_returned == 0:
         result = "loss"
-    elif final_value >= stake:
+    elif total_returned > stake:
         result = "win"
     else:
         result = "draw"
@@ -574,6 +620,6 @@ async def wait_for_trade_result(page, expiry_seconds, settlement_buffer_seconds=
         "asset": data.get("asset"),
         "direction": data.get("direction"),
         "stake": stake,
-        "final_value": final_value,
+        "final_value": total_returned,
         "raw_values": values,
     }

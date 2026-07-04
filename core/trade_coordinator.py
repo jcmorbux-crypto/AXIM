@@ -19,7 +19,7 @@ import risk_manager
 from trade_lifecycle import TradeStatus
 from event_bus import get_event_bus
 from latency import LatencyTracker
-from settings import MAX_SIGNAL_AGE, PREVIEW_ONLY, AUTO_EXECUTE, TRADE_AMOUNT
+from settings import MAX_SIGNAL_AGE, PREVIEW_ONLY, AUTO_EXECUTE, TRADE_AMOUNT, WORKER_ACQUIRE_TIMEOUT_SECONDS
 
 import pocket_executor
 import asset_cache
@@ -43,14 +43,16 @@ class TradeCoordinator:
     Does not perform any browser interaction itself - that stays entirely
     inside execution/pocket_executor.py and execution/pocket_dom.py.
 
-    Uses a persistent BrowserWarmupService instead of opening a fresh
-    browser per signal - `warmup_service.get_page()` returns the one warm
-    page, and `warmup_service.lock` serializes access to it (one trade at
-    a time; a second signal simply waits for the lock to free up).
+    Uses a BrowserWorkerPool (N warm pages, each with its own lock) instead
+    of a single page/lock - trades on different workers run fully in
+    parallel. If all workers are busy, acquire_worker() queues (FIFO) up to
+    WORKER_ACQUIRE_TIMEOUT_SECONDS before this coordinator rejects the
+    signal cleanly, rather than stalling "near-instant" execution
+    indefinitely.
     """
 
-    def __init__(self, warmup_service, event_bus=None):
-        self.warmup_service = warmup_service
+    def __init__(self, worker_pool, event_bus=None):
+        self.worker_pool = worker_pool
         self.event_bus = event_bus or get_event_bus()
 
     def _log_stage(self, trade_id, stage, status, elapsed, reason=None):
@@ -139,13 +141,28 @@ class TradeCoordinator:
                 latency.log_summary()
                 return {"status": "preview", "trade_id": trade_id}
 
-            # Stage: Pocket Executor (unchanged browser execution logic,
-            # against the persistent warm page)
+            # Stage: Worker Pool - acquire one of N warm pages. Queues
+            # (FIFO) up to WORKER_ACQUIRE_TIMEOUT_SECONDS if all are busy;
+            # rejects cleanly rather than hanging if none free up in time.
             stage_t0 = time.monotonic()
-            page = await self.warmup_service.get_page()
+            worker = await self.worker_pool.acquire_worker(timeout=WORKER_ACQUIRE_TIMEOUT_SECONDS)
+            if worker is None:
+                reason = (
+                    f"all {self.worker_pool.num_workers} worker(s) busy for "
+                    f"longer than WORKER_ACQUIRE_TIMEOUT_SECONDS={WORKER_ACQUIRE_TIMEOUT_SECONDS}s"
+                )
+                self._log_stage(trade_id, "worker_pool", "rejected", time.monotonic() - stage_t0, reason)
+                database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:all_workers_busy")
+                latency.log_summary()
+                return {"status": "rejected", "trade_id": trade_id, "rule": "all_workers_busy", "reason": reason}
+            self._log_stage(trade_id, "worker_pool", f"acquired worker_id={worker.worker_id}", time.monotonic() - stage_t0)
+
+            # Stage: Pocket Executor (unchanged browser execution logic,
+            # against this worker's own warm page)
+            stage_t0 = time.monotonic()
             result = await pocket_executor.prepare_trade(
                 trade_id, asset, direction, expiry, amount,
-                page, self.warmup_service.lock, latency=latency,
+                worker, self.worker_pool, latency=latency,
             )
             self._log_stage(trade_id, "pocket_executor", result.get("status"), time.monotonic() - stage_t0)
             await self.event_bus.publish("trade.prepared", {"trade_id": trade_id, "result": result})

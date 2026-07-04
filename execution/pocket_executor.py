@@ -32,23 +32,25 @@ if not lifecycle_logger.handlers:
     lifecycle_logger.setLevel(logging.INFO)
 
 
-async def prepare_trade(trade_id, asset, direction, expiry, amount, page, lock, latency=None):
+async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool, latency=None):
     """
     Runs the verified browser interaction sequence (unchanged internals -
     select_asset/select_expiry/set_amount/verify_direction_controls_ready/
     click_direction all live in pocket_dom.py exactly as before) against
-    the persistent, already-open `page` supplied by BrowserWarmupService.
+    `worker.page`, one of BrowserWorkerPool's N warm pages.
 
-    `lock` guards the one warm page - held for the whole synchronous part
-    of this call, and transferred to the background outcome tracker (not
-    released here) if a real click happens, since that task keeps using
-    the same page until the trade closes.
+    `worker`'s lock is already held by the time this is called (acquired
+    by the caller via pool.acquire_worker()) - held for the whole
+    synchronous part of this call, and transferred to the background
+    outcome tracker (not released here) if a real click happens, since
+    that task keeps using the same worker until the trade closes.
     """
     latency = latency or LatencyTracker(trade_id)
     latency.trade_id = trade_id
+    latency.worker_id = worker.worker_id
+    page = worker.page
 
-    await lock.acquire()
-    lock_transferred = False
+    ownership_transferred = False
     try:
         await pocket_dom.select_asset(page, asset)
         latency.mark("asset_selected")
@@ -68,9 +70,13 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, page, lock, 
             trade_id, TradeStatus.TRADE_PREPARED,
             trade_amount=amount, payout=payout,
         )
-        lifecycle_logger.info("trade_id=%s status=%s payout=%s", trade_id, TradeStatus.TRADE_PREPARED.value, payout)
+        lifecycle_logger.info(
+            "trade_id=%s worker_id=%s status=%s payout=%s",
+            trade_id, worker.worker_id, TradeStatus.TRADE_PREPARED.value, payout,
+        )
 
         print("\nAXIM TRADE PREPARED (verified: asset, expiry, amount, direction controls)")
+        print(f"Worker    : {worker.worker_id}")
         print(f"Asset     : {asset}")
         print(f"Direction : {direction}")
         print(f"Expiry    : {expiry}")
@@ -101,17 +107,17 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, page, lock, 
         screenshot_path = await _take_screenshot(page, trade_id, "clicked")
         database.append_screenshot_path(trade_id, screenshot_path)
         database.update_trade_status(trade_id, TradeStatus.TRADE_CLICKED, opened_at=opened_at)
-        lifecycle_logger.info("trade_id=%s status=%s", trade_id, TradeStatus.TRADE_CLICKED.value)
+        lifecycle_logger.info("trade_id=%s worker_id=%s status=%s", trade_id, worker.worker_id, TradeStatus.TRADE_CLICKED.value)
 
         database.update_trade_status(trade_id, TradeStatus.TRADE_OPENED, opened_at=opened_at)
-        lifecycle_logger.info("trade_id=%s status=%s", trade_id, TradeStatus.TRADE_OPENED.value)
+        lifecycle_logger.info("trade_id=%s worker_id=%s status=%s", trade_id, worker.worker_id, TradeStatus.TRADE_OPENED.value)
 
         print("Status    : TRADE BUTTON CLICKED (confirmed via Opened trades list)")
         latency.log_summary()
 
         expiry_seconds = pocket_dom.expiry_to_seconds(expiry)
-        lock_transferred = True
-        asyncio.create_task(track_outcome(page, trade_id, expiry_seconds, lock))
+        ownership_transferred = True
+        asyncio.create_task(track_outcome(worker, pool, trade_id, expiry_seconds))
 
         return {
             "status": "clicked",
@@ -122,33 +128,35 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, page, lock, 
             "amount": amount,
         }
     except pocket_dom.AssetUntradeableError as e:
-        lifecycle_logger.warning("trade_id=%s asset untradeable: %s", trade_id, e)
+        lifecycle_logger.warning("trade_id=%s worker_id=%s asset untradeable: %s", trade_id, worker.worker_id, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable")
         latency.log_summary()
         return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable", "reason": str(e)}
     except Exception as e:
-        lifecycle_logger.error("trade_id=%s status=%s error=%s", trade_id, TradeStatus.ERROR.value, e)
+        lifecycle_logger.error("trade_id=%s worker_id=%s status=%s error=%s", trade_id, worker.worker_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
         latency.log_summary()
         raise
     finally:
-        if not lock_transferred:
-            lock.release()
+        if not ownership_transferred:
+            pool.release_worker(worker)
 
 
-async def track_outcome(page, trade_id, expiry_seconds, lock):
+async def track_outcome(worker, pool, trade_id, expiry_seconds):
     """Waits for a trade to close and records the result. Used both for the
     normal post-click flow (prepare_trade, above) and by core/recovery.py
     to re-attach tracking to a trade left open across a restart. Releases
-    `lock` when done, since it holds the one warm page until the trade
-    resolves - the next queued trade can't proceed until this returns."""
+    `worker` back to the pool when done, since it holds that page until
+    the trade resolves - only that one worker is blocked meanwhile, other
+    workers remain free for concurrent trades."""
+    page = worker.page
     try:
         outcome = await pocket_dom.wait_for_trade_result(page, expiry_seconds)
         if outcome is None:
             database.update_trade_status(trade_id, TradeStatus.ERROR, result="error:result_read_failed")
             lifecycle_logger.error(
-                "trade_id=%s status=%s reason=result_read_failed",
-                trade_id, TradeStatus.ERROR.value,
+                "trade_id=%s worker_id=%s status=%s reason=result_read_failed",
+                trade_id, worker.worker_id, TradeStatus.ERROR.value,
             )
             return
 
@@ -161,7 +169,7 @@ async def track_outcome(page, trade_id, expiry_seconds, lock):
             trade_id, TradeStatus.TRADE_CLOSED,
             closed_at=closed_at, result=outcome["result"], profit_loss=profit_loss,
         )
-        lifecycle_logger.info("trade_id=%s status=%s", trade_id, TradeStatus.TRADE_CLOSED.value)
+        lifecycle_logger.info("trade_id=%s worker_id=%s status=%s", trade_id, worker.worker_id, TradeStatus.TRADE_CLOSED.value)
 
         status_map = {
             "win": TradeStatus.RESULT_WIN,
@@ -176,8 +184,8 @@ async def track_outcome(page, trade_id, expiry_seconds, lock):
         )
 
         lifecycle_logger.info(
-            "trade_id=%s status=%s result=%s stake=%s final_value=%s profit_loss=%s",
-            trade_id, result_status.value, outcome["result"],
+            "trade_id=%s worker_id=%s status=%s result=%s stake=%s final_value=%s profit_loss=%s",
+            trade_id, worker.worker_id, result_status.value, outcome["result"],
             outcome["stake"], outcome["final_value"], profit_loss,
         )
 
@@ -189,10 +197,10 @@ async def track_outcome(page, trade_id, expiry_seconds, lock):
         except Exception as e:
             lifecycle_logger.error("trade_id=%s failed to publish trade.closed event: %s", trade_id, e)
     except Exception as e:
-        lifecycle_logger.error("trade_id=%s status=%s error=%s", trade_id, TradeStatus.ERROR.value, e)
+        lifecycle_logger.error("trade_id=%s worker_id=%s status=%s error=%s", trade_id, worker.worker_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
     finally:
-        lock.release()
+        pool.release_worker(worker)
 
 
 async def _take_screenshot(page, trade_id, label):

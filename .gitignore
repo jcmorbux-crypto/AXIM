@@ -3,6 +3,9 @@
 
 # Telegram Sessions
 *.session
+*.session-journal
+*.session-wal
+*.session-shm
 
 # Browser session/profile (cookies, auth state - never commit)
 sessions/

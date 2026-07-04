@@ -28,14 +28,13 @@ if not logger.handlers:
     logger.setLevel(logging.INFO)
 
 
-async def resume_pending_trades(warmup_service):
+async def resume_pending_trades(pool):
     """
-    Called once at startup, after the persistent browser session is up.
-    Any trade left in trade_clicked/trade_opened when the process last
-    stopped had a real position opened on Pocket Option that was never
-    resolved in our database - re-attach outcome tracking to it, reusing
-    the same warm page (not a separate browser), for the remaining time
-    until expiry.
+    Called once at startup, after the browser worker pool is up. Any trade
+    left in trade_clicked/trade_opened when the process last stopped had a
+    real position opened on Pocket Option that was never resolved in our
+    database - re-attach outcome tracking to it, using a worker from the
+    pool (not a separate browser), for the remaining time until expiry.
 
     A trade stuck at trade_prepared was never clicked (either ARMED was
     false or the process died before the click), so there is no real
@@ -51,13 +50,13 @@ async def resume_pending_trades(warmup_service):
     for row in open_trades:
         trade_id = row["id"]
         try:
-            await _resume_one(row, warmup_service)
+            await _resume_one(row, pool)
         except Exception as e:
             logger.error("recovery: trade_id=%s failed to resume: %s", trade_id, e)
             database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:recovery_failed:{e}")
 
 
-async def _resume_one(row, warmup_service):
+async def _resume_one(row, pool):
     trade_id = row["id"]
     asset = row["asset"]
     expiry = row["timeframe"]
@@ -78,13 +77,12 @@ async def _resume_one(row, warmup_service):
         trade_id, asset, opened_at_raw, elapsed, remaining,
     )
 
-    page = await warmup_service.get_page()
-    await warmup_service.lock.acquire()
-
-    # track_outcome releases warmup_service.lock when the trade resolves,
-    # exactly as it does in the normal (non-recovery) flow.
+    # Blocks until a worker frees up - acceptable at startup since no live
+    # signals are flowing yet. track_outcome releases the worker back to
+    # the pool when the trade resolves, exactly as in the normal flow.
+    worker = await pool.acquire_worker(timeout=None)
     asyncio.create_task(
-        pocket_executor.track_outcome(page, trade_id, remaining, warmup_service.lock)
+        pocket_executor.track_outcome(worker, pool, trade_id, remaining)
     )
 
 
@@ -104,9 +102,9 @@ def mark_abandoned_preparations():
         database.update_trade_status(trade_id, TradeStatus.ERROR, result="error:abandoned_on_restart")
 
 
-async def run_recovery(warmup_service):
+async def run_recovery(pool):
     """Single entry point for startup: reconcile abandoned preparations,
     then resume tracking for any genuinely open positions. Must be called
-    after warmup_service.start()."""
+    after pool.start()."""
     mark_abandoned_preparations()
-    await resume_pending_trades(warmup_service)
+    await resume_pending_trades(pool)

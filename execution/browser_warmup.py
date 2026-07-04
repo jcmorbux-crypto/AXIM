@@ -29,15 +29,17 @@ class DemoModeVerificationError(Exception):
 
 class BrowserWarmupService:
     """
-    Long-lived, single persistent Pocket Option session. Launches once at
-    AXIM startup and stays open for the life of the process, reused for
-    every trade instead of opening/closing a fresh browser per signal -
-    that per-trade browser launch was the dominant cost in the old flow.
+    Long-lived, single persistent Pocket Option browser context. Launches
+    once at AXIM startup and stays open for the life of the process.
 
-    One active page at a time - `lock` must be held for the duration of any
-    interaction with the page (asset/expiry/amount/click and the outcome
-    wait that follows a real click). No multi-tab concurrency in this
-    version; a second signal simply waits for the lock.
+    Owns the shared browser context, demo-mode verification, and the
+    asset cache scan (all context/account-level facts, not per-page).
+    Trade execution itself now happens through execution/browser_worker_pool.py's
+    BrowserWorkerPool, which opens additional pages (tabs) from
+    get_context() - each with its own lock, enabling real concurrency.
+    This service's own `get_page()`/`.lock` (the bootstrap page) remain
+    available for single-page use (e.g. the asset cache scan) but are no
+    longer the primary trade-execution interface.
     """
 
     def __init__(self):
@@ -77,6 +79,9 @@ class BrowserWarmupService:
         if self._page is None or self._page.is_closed() or not await self.health_check():
             await self._reconnect()
         return self._page
+
+    def get_context(self):
+        return self._context
 
     async def _reconnect(self):
         logger.warning("browser_warmup: reconnecting after crashed/closed page")
