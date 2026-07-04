@@ -1,26 +1,20 @@
 import asyncio
-import logging
 import sys
 from pathlib import Path
 
 EXECUTION_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = EXECUTION_DIR.parent
-LOG_DIR = PROJECT_ROOT / "logs"
+CORE_DIR = PROJECT_ROOT / "core"
 
 sys.path.insert(0, str(EXECUTION_DIR))
+sys.path.insert(0, str(CORE_DIR))
 
 from browser_session import PocketBrowserSession, get_trading_page, DEMO_URL
 import pocket_dom
 import asset_cache
+from logger import get_logger
 
-logger = logging.getLogger("axim.lifecycle")
-if not logger.handlers:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_DIR / "lifecycle.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(handler)
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.INFO)
+logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 
 class DemoModeVerificationError(Exception):

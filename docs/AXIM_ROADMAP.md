@@ -74,12 +74,21 @@ The Phase 5 gap: `BrowserWorkerPool`'s per-worker health check (`_ensure_worker_
 
 **Verified with an actual simulated crash** (force-closed the underlying Playwright `BrowserContext` directly, bypassing normal shutdown, to reproduce what a real browser death looks like): `acquire_worker()` correctly detected it, the browser relaunched (generation 1→2), the pool detected the mismatch and rebuilt all workers from the new context, the returned worker was proven genuinely functional (`page.title()` succeeded), and a stale pre-crash worker reference was correctly discarded on release rather than being re-added (`available_qsize` stayed at 2, not 3). Measured overhead of the added health-check on the normal, non-crashed path: 0-31ms per `acquire_worker()` call - negligible against the multi-second selector interactions that follow, so this doesn't meaningfully affect the Phase 4 "near-instant execution" targets.
 
+### Full logging architecture (FIXED)
+`core/logger.py` was a 0-byte stub since Phase 1; every other module hand-rolled the same ~7-line handler setup, and it had drifted into three inconsistent variants: `axim.lifecycle` (shared across `risk_manager`, `trade_coordinator`, `recovery`, `latency`, `event_bus`, `pocket_executor`, `browser_warmup`, `browser_worker_pool`, `asset_cache`) used a plain `logging.StreamHandler()`; `axim.pocket_dom` had its own one-off Unicode-safe `_ReplacingStreamHandler` (added after console crashes on non-ASCII DOM text); `axim.source_observer` used the plain handler again, unprotected. None of the log files rotated, and `LOG_LEVEL` in `.env` was dead config nothing read.
+
+Replaced all of it with a single `get_logger(name, filename=None, console=True)` in `core/logger.py`, now the only place that constructs a handler:
+- Generalizes `pocket_dom.py`'s Unicode-safe handler (`_SafeStreamHandler`) to every logger, so no console output path can crash on emoji/non-ASCII text (this had bitten `source_observer.py` and the `axim.lifecycle` group specifically, since only `pocket_dom.py` had the fix before).
+- Every file handler is now a `RotatingFileHandler` (5MB, 5 backups by default, overridable via `LOG_MAX_BYTES`/`LOG_BACKUP_COUNT`) — previously all four log files grew unbounded for the life of the process.
+- `LOG_LEVEL` from `.env` is now actually read (defaults to `INFO`).
+- Every module logger propagates to one root `axim` logger, which writes every record — regardless of origin — to a new `logs/axim.log`, giving one genuinely unified stream in addition to each existing per-topic file (`lifecycle.log`, `pocket_dom.log`, `source_observer.log`, unchanged names/filenames). The root has no console handler of its own, so this doesn't double-print.
+
+All 11 call sites migrated to `from logger import get_logger`; verified every affected module still imports cleanly, the existing 16/16 `test_risk_manager` suite still passes, and a live check confirmed an emoji-containing message lands intact in both the per-module file and the new unified `axim.log` while printing safely (replaced, not crashed) to console.
+
 ## Current phase
-Phase 5 complete: multi-worker demo concurrency, `MINIMUM_PAYOUT` enforcement, a combined tradeable+payout live check before every click, and whole-browser-crash recovery, all verified with real trades or simulated failures. `ARMED` remains `false`; all validation to date has been on the Pocket Option demo account only.
+Phase 5 complete: multi-worker demo concurrency, `MINIMUM_PAYOUT` enforcement, a combined tradeable+payout live check before every click, whole-browser-crash recovery, and a unified logging architecture, all verified with real trades, simulated failures, or live output checks. `ARMED` remains `false`; all validation to date has been on the Pocket Option demo account only.
 
 ## Next priorities
-- Full logging architecture (`core/logger.py` is still an empty stub — today's logging is per-module, not unified, though `axim.lifecycle` now unifies orchestration-level logs across `risk_manager`, `trade_coordinator`, `recovery`, `pocket_executor`, and `browser_worker_pool`).
 - `WATCH_CHANNELS` needs to actually be set in `.env` before the live listener will process anything, now that it's enforced.
-- Consider a "tradeable now" pre-check combined with the payout read, so both live-DOM facts (tradeable + payout) are gathered in one pass rather than two separate reads.
 - Build the actual Performance Dashboard UI (deferred from Phase 3 per the scope decision above).
 - Live-mode readiness review before `ARMED` is ever considered for anything beyond deliberate, watched demo validation.

@@ -1,4 +1,3 @@
-import logging
 import os
 import sys
 import asyncio
@@ -17,20 +16,13 @@ import database
 import risk_manager
 from trade_lifecycle import TradeStatus
 from latency import LatencyTracker
+from logger import get_logger
 
 ARMED = os.getenv("ARMED", "false").lower() == "true"
 
 SCREENSHOT_DIR = PROJECT_ROOT / "logs" / "trades"
-LOG_DIR = PROJECT_ROOT / "logs"
 
-lifecycle_logger = logging.getLogger("axim.lifecycle")
-if not lifecycle_logger.handlers:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    _handler = logging.FileHandler(LOG_DIR / "lifecycle.log", encoding="utf-8")
-    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    lifecycle_logger.addHandler(_handler)
-    lifecycle_logger.addHandler(logging.StreamHandler())
-    lifecycle_logger.setLevel(logging.INFO)
+lifecycle_logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 
 async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool, latency=None):

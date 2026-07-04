@@ -1,4 +1,3 @@
-import logging
 import sys
 import time
 from datetime import datetime
@@ -8,7 +7,6 @@ CORE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CORE_DIR.parent
 CONFIG_DIR = PROJECT_ROOT / "config"
 EXECUTION_DIR = PROJECT_ROOT / "execution"
-LOG_DIR = PROJECT_ROOT / "logs"
 
 sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CONFIG_DIR))
@@ -19,19 +17,13 @@ import risk_manager
 from trade_lifecycle import TradeStatus
 from event_bus import get_event_bus
 from latency import LatencyTracker
+from logger import get_logger
 from settings import MAX_SIGNAL_AGE, PREVIEW_ONLY, AUTO_EXECUTE, TRADE_AMOUNT, WORKER_ACQUIRE_TIMEOUT_SECONDS
 
 import pocket_executor
 import asset_cache
 
-logger = logging.getLogger("axim.lifecycle")
-if not logger.handlers:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_DIR / "lifecycle.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(handler)
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.INFO)
+logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 
 class TradeCoordinator:

@@ -17,7 +17,6 @@ Explicit boundaries:
 
 Run: python core/source_observer.py
 """
-import logging
 import os
 import re
 import sqlite3
@@ -57,14 +56,9 @@ SOURCE_USERNAME = os.getenv("RESEARCH_SOURCE_USERNAME", "PocketOption_quant_algo
 
 DB_FILE = DATA_DIR / "axim.db"
 
-logger = logging.getLogger("axim.source_observer")
-if not logger.handlers:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_DIR / "source_observer.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(handler)
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.INFO)
+from logger import get_logger
+
+logger = get_logger("axim.source_observer", filename="source_observer.log")
 
 # Best-effort scan for countdown/timing language. Not an exhaustive parser -
 # it flags phrases worth a human (or source_profiler.py) reviewing, since

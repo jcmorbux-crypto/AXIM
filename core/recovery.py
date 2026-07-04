@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -7,25 +6,18 @@ from pathlib import Path
 CORE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = CORE_DIR.parent
 EXECUTION_DIR = PROJECT_ROOT / "execution"
-LOG_DIR = PROJECT_ROOT / "logs"
 
 sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(EXECUTION_DIR))
 
 import database
 from trade_lifecycle import TradeStatus
+from logger import get_logger
 
 import pocket_dom
 import pocket_executor
 
-logger = logging.getLogger("axim.lifecycle")
-if not logger.handlers:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_DIR / "lifecycle.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(handler)
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.INFO)
+logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 
 async def resume_pending_trades(pool):

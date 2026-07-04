@@ -1,16 +1,15 @@
-import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = CORE_DIR.parent / "config"
-LOG_DIR = CORE_DIR.parent / "logs"
 
 sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CONFIG_DIR))
 
 import database
+from logger import get_logger
 from settings import (
     ACCOUNT,
     MAX_TRADE_AMOUNT,
@@ -21,14 +20,7 @@ from settings import (
     MINIMUM_PAYOUT,
 )
 
-logger = logging.getLogger("axim.lifecycle")
-if not logger.handlers:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_DIR / "lifecycle.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(handler)
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.INFO)
+logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 
 class RiskViolation(Exception):

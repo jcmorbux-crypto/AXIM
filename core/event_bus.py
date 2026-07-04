@@ -1,18 +1,9 @@
 import inspect
-import logging
 from collections import defaultdict
-from pathlib import Path
 
-LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+from logger import get_logger
 
-logger = logging.getLogger("axim.lifecycle")
-if not logger.handlers:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    handler = logging.FileHandler(LOG_DIR / "lifecycle.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(handler)
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.INFO)
+logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 
 class EventBus:

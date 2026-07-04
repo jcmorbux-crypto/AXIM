@@ -1,14 +1,19 @@
-import logging
 import re
+import sys
 import time
 from pathlib import Path
 
 from playwright.async_api import expect
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+EXECUTION_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = EXECUTION_DIR.parent
+CORE_DIR = PROJECT_ROOT / "core"
 LOG_DIR = PROJECT_ROOT / "logs"
 FAILURE_DIR = LOG_DIR / "failures"
+
+sys.path.insert(0, str(CORE_DIR))
+from logger import get_logger
 
 DEFAULT_TIMEOUT_MS = 10_000
 RETRY_ATTEMPTS = 2
@@ -47,28 +52,7 @@ NEUTRAL_CLICK_POINT = (800, 500)
 
 _RETRYABLE_ERRORS = (PlaywrightTimeoutError, AssertionError)
 
-
-class _ReplacingStreamHandler(logging.StreamHandler):
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            stream = self.stream
-            encoding = stream.encoding or "utf-8"
-            stream.write(msg.encode(encoding, errors="replace").decode(encoding, errors="replace"))
-            stream.write(self.terminator)
-            self.flush()
-        except Exception:
-            self.handleError(record)
-
-
-logger = logging.getLogger("axim.pocket_dom")
-if not logger.handlers:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(LOG_DIR / "pocket_dom.log", encoding="utf-8")
-    file_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    logger.addHandler(file_handler)
-    logger.addHandler(_ReplacingStreamHandler())
-    logger.setLevel(logging.INFO)
+logger = get_logger("axim.pocket_dom", filename="pocket_dom.log")
 
 
 def _log_selector_event(action, selector, timeout_ms, retry, found, visible, enabled):
