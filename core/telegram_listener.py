@@ -4,6 +4,16 @@ import sys
 import time
 from dotenv import load_dotenv
 
+# Windows consoles default to cp1252, which can't encode most emoji/non-
+# Latin characters that arrive in real Telegram messages - forcing UTF-8
+# here means print() never crashes the process over a character the
+# terminal can't represent (previously fixed ad hoc per-script; this is
+# the one place that matters since this is the live entry point).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 sys.path.insert(0, "parsers")
 sys.path.insert(0, "execution")
 sys.path.insert(0, "core")
@@ -26,6 +36,13 @@ load_dotenv()
 api_id = int(os.getenv("TELEGRAM_API_ID") or os.getenv("API_ID"))
 api_hash = os.getenv("TELEGRAM_API_HASH") or os.getenv("API_HASH")
 phone = os.getenv("TELEGRAM_PHONE") or os.getenv("PHONE")
+
+# Originated as a one-off WATCH_CHANNELS/filter debugging aid; kept as a
+# permanent, opt-in observability feature - logs every incoming message's
+# routing decision BEFORE any filtering, execution-unrelated. Does not touch
+# trade_coordinator, pocket_executor, risk_manager, or pocket_dom. Off by
+# default (set TELEGRAM_DEBUG_LOG=true to enable).
+TELEGRAM_DEBUG_LOG = os.getenv("TELEGRAM_DEBUG_LOG", "false").strip().lower() == "true"
 
 client = TelegramClient("axim_session", api_id, api_hash)
 
@@ -70,11 +87,37 @@ def source_allowed(chat_title, chat_username=None):
     )
 
 
+def _debug_safe(text):
+    """Belt-and-suspenders alongside the UTF-8 stdout reconfigure above -
+    guards print() calls if stdout is ever swapped for a stream that
+    doesn't support .reconfigure, so a stray unencodable character never
+    crashes the process. Never touches what actually gets parsed or
+    executed."""
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    return (text or "").encode(encoding, "replace").decode(encoding, "replace")
+
+
 @client.on(events.NewMessage)
 async def handler(event):
     chat = await event.get_chat()
     chat_title = getattr(chat, "title", "") or getattr(chat, "first_name", "") or ""
     chat_username = getattr(chat, "username", "") or ""
+
+    if TELEGRAM_DEBUG_LOG:
+        debug_sender = await event.get_sender()
+        filter_decision = source_allowed(chat_title, chat_username)
+        print("\n[TELEGRAM_DEBUG] ------------------------------")
+        print(f"[TELEGRAM_DEBUG] chat_title    : {_debug_safe(chat_title)}")
+        print(f"[TELEGRAM_DEBUG] chat_username : {_debug_safe(chat_username)}")
+        print(f"[TELEGRAM_DEBUG] sender_id     : {getattr(debug_sender, 'id', None)}")
+        print(f"[TELEGRAM_DEBUG] chat_id       : {event.chat_id}")
+        print(f"[TELEGRAM_DEBUG] raw_text[:200]: {_debug_safe(event.raw_text)[:200]}")
+        print(f"[TELEGRAM_DEBUG] filter_decision: {'ALLOWED' if filter_decision else 'BLOCKED'}")
+        if not filter_decision:
+            print("[TELEGRAM_DEBUG] parser_decision: (not evaluated - blocked by filter)")
+        else:
+            debug_signal = parse_signal(event.raw_text)
+            print(f"[TELEGRAM_DEBUG] parser_decision: {'PARSED -> ' + repr(debug_signal) if debug_signal else 'REJECTED (returned None)'}")
 
     if not source_allowed(chat_title, chat_username):
         return
@@ -87,9 +130,9 @@ async def handler(event):
     print("\n========================")
     print("New Telegram Message")
     print("========================")
-    print(f"Chat   : {chat_title}")
+    print(f"Chat   : {_debug_safe(chat_title)}")
     print(f"Sender : {sender.id}")
-    print(f"Message:\n{event.raw_text}")
+    print(f"Message:\n{_debug_safe(event.raw_text)}")
 
     signal = parse_signal(event.raw_text)
     timeline.mark("signal_parsed")
@@ -125,9 +168,9 @@ async def _startup():
     print(f"AXIM: starting browser worker pool ({MAX_CONCURRENT_WORKERS} worker(s))...")
     worker_pool = BrowserWorkerPool(warmup_service, num_workers=MAX_CONCURRENT_WORKERS)
     await worker_pool.start()
-    coordinator = TradeCoordinator(worker_pool)
+    coordinator = TradeCoordinator(worker_pool, warmup_service)
     print("AXIM: worker pool ready, running startup recovery...")
-    await recovery.run_recovery(worker_pool)
+    await recovery.run_recovery(warmup_service)
 
 
 async def _shutdown():

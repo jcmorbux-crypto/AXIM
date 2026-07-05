@@ -40,15 +40,15 @@ def _capture_screenshot_background(page, trade_id, label):
 
     Documented tradeoff (required before trading any latency for anything,
     including the inverse case of gaining latency at a reliability/
-    diagnostic cost): for the "prepared" label specifically, if this same
-    worker's page gets reacquired by a new trade before the background
-    capture actually runs (only possible on the prepared-not-armed/
-    rejected paths, where the worker is released immediately - the
-    successful "clicked" path holds the worker until the trade closes, so
-    it cannot race), the screenshot could show the new trade's state
-    instead. This never affects trade correctness or any risk decision -
-    only what a saved diagnostic image shows - and requires the same
-    worker being reacquired within a sub-second window to occur at all."""
+    diagnostic cost): the worker's page is released immediately after
+    prepare_trade returns on every path now, including "clicked" (a worker
+    is no longer held for a trade's full expiry - see track_outcome), so if
+    this same worker's page gets reacquired by a new trade before the
+    background capture actually runs, the screenshot could show the new
+    trade's state instead. This never affects trade correctness or any risk
+    decision - only what a saved diagnostic image shows - and requires the
+    same worker being reacquired within a sub-second window to occur at
+    all."""
     if not SAVE_SCREENSHOTS:
         return
 
@@ -72,7 +72,7 @@ def _capture_screenshot_background(page, trade_id, label):
     asyncio.create_task(_do())
 
 
-async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool, timeline=None):
+async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool, warmup_service, timeline=None):
     """
     Runs the verified browser interaction sequence (unchanged internals -
     select_asset/select_expiry/set_amount/verify_direction_controls_ready/
@@ -179,8 +179,13 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
         timeline.persist(database)
 
         expiry_seconds = pocket_dom.expiry_to_seconds(expiry)
-        ownership_transferred = True
-        asyncio.create_task(track_outcome(worker, pool, trade_id, expiry_seconds, asset=asset, direction=direction))
+        # The worker is released right below (finally) instead of being
+        # held by track_outcome for the trade's whole expiry - see
+        # track_outcome's docstring for why that was the real bottleneck
+        # limiting concurrent open trades to MAX_CONCURRENT_WORKERS, and
+        # why outcome-watching uses warmup_service's dedicated page rather
+        # than this same placement pool.
+        asyncio.create_task(track_outcome(warmup_service, trade_id, expiry_seconds, asset=asset, direction=direction))
 
         return {
             "status": "clicked",
@@ -201,24 +206,47 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
         timeline.persist(database)
         raise
     finally:
-        if not ownership_transferred:
-            pool.release_worker(worker)
+        pool.release_worker(worker)
 
 
-async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, direction=None):
+async def track_outcome(warmup_service, trade_id, expiry_seconds, asset=None, direction=None):
     """Waits for a trade to close and records the result. Used both for the
     normal post-click flow (prepare_trade, above) and by core/recovery.py
-    to re-attach tracking to a trade left open across a restart. Releases
-    `worker` back to the pool when done, since it holds that page until
-    the trade resolves - only that one worker is blocked meanwhile, other
-    workers remain free for concurrent trades.
+    to re-attach tracking to a trade left open across a restart.
+
+    Does NOT hold - or even borrow - a placement worker for the wait or the
+    read. The original design held the worker that placed the trade for its
+    entire expiry (a 10-minute trade tied up one of only
+    MAX_CONCURRENT_WORKERS browser tabs for 10 minutes), which meant the
+    real limit on "how many trades can be open at once" was the worker
+    count, not anything about risk or the source's actual signal rate -
+    real bursts of fast-expiry signals arriving while long-expiry trades
+    were still open got dropped as "all workers busy" even though nothing
+    was actually wrong. A first fix had wait_for_trade_result briefly
+    acquire a placement worker just for the final tab-switch+read step -
+    better, but that still meant every trade's outcome check contended with
+    NEW trades for a worker slot, which under heavy concurrency (10
+    workers, real signal bursts) measurably degraded placement reliability
+    itself (DOM timeouts on select_asset/select_expiry rose noticeably).
+    Final fix: outcome detection only ever needed the Closed-trades list,
+    which pocket_dom.wait_for_trade_result confirmed is shared live across
+    every page in the browser context (clicking Closed on one tab instantly
+    flips every other tab's rendered active tab too) - so it reads from
+    `warmup_service`'s own dedicated bootstrap page (idle after startup)
+    instead of the placement pool at all. Placement workers are now used
+    for PLACEMENT ONLY, full stop - MAX_CONCURRENT_WORKERS bounds
+    simultaneous placements, not simultaneous open positions, and outcome
+    reads never compete with a new signal for a worker.
 
     `asset`/`direction` let wait_for_trade_result identify THIS specific
     trade's own closed item rather than relying on .no-deals, which was
     confirmed (P0 latency sprint follow-up) to reflect "zero open positions
-    system-wide", not "this worker's trade closed" - under concurrency that
-    silently delayed detection by however long the slowest concurrent trade
-    took (measured up to 28s).
+    system-wide", not "this trade closed". Residual limitation, unchanged
+    by this redesign: same-asset, same-direction trades closing within the
+    same clock-minute (the site only renders HH:MM) can still be
+    ambiguous - _closest_closed_item picks the nearest-time match, which
+    reduces but does not eliminate that ambiguity, and higher concurrency
+    makes it somewhat more likely to occur, not less.
 
     This coroutine is created via asyncio.create_task while prepare_trade's
     timeline is still active, so it normally inherits that SAME timeline
@@ -235,7 +263,6 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
         timeline = TradeTimeline(trade_id=trade_id)
         own_token = timeline.activate()
 
-    page = worker.page
     # Measures detection/polling overhead on top of the trade's own
     # contractual expiry duration - not the expiry wait itself (a
     # deliberate, non-optimizable delay), but how much extra wall-clock
@@ -244,7 +271,7 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
     wait_t0 = time.monotonic()
     try:
         outcome = await pocket_dom.wait_for_trade_result(
-            page, expiry_seconds, asset=asset, direction=direction, closed_tab_lock=pool.closed_tab_lock,
+            warmup_service, expiry_seconds, asset=asset, direction=direction,
         )
         detection_overhead_ms = (time.monotonic() - wait_t0 - expiry_seconds) * 1000
         try:
@@ -255,8 +282,8 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
         if outcome is None:
             database.update_trade_status(trade_id, TradeStatus.ERROR, result="error:result_read_failed")
             lifecycle_logger.error(
-                "trade_id=%s worker_id=%s status=%s reason=result_read_failed",
-                trade_id, worker.worker_id, TradeStatus.ERROR.value,
+                "trade_id=%s status=%s reason=result_read_failed",
+                trade_id, TradeStatus.ERROR.value,
             )
             timeline.persist(database)
             return
@@ -270,7 +297,7 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
             trade_id, TradeStatus.TRADE_CLOSED,
             closed_at=closed_at, result=outcome["result"], profit_loss=profit_loss,
         )
-        lifecycle_logger.info("trade_id=%s worker_id=%s status=%s", trade_id, worker.worker_id, TradeStatus.TRADE_CLOSED.value)
+        lifecycle_logger.info("trade_id=%s status=%s", trade_id, TradeStatus.TRADE_CLOSED.value)
 
         status_map = {
             "win": TradeStatus.RESULT_WIN,
@@ -287,8 +314,8 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
         timeline.persist(database)
 
         lifecycle_logger.info(
-            "trade_id=%s worker_id=%s status=%s result=%s stake=%s final_value=%s profit_loss=%s",
-            trade_id, worker.worker_id, result_status.value, outcome["result"],
+            "trade_id=%s status=%s result=%s stake=%s final_value=%s profit_loss=%s",
+            trade_id, result_status.value, outcome["result"],
             outcome["stake"], outcome["final_value"], profit_loss,
         )
 
@@ -300,11 +327,10 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
         except Exception as e:
             lifecycle_logger.error("trade_id=%s failed to publish trade.closed event: %s", trade_id, e)
     except Exception as e:
-        lifecycle_logger.error("trade_id=%s worker_id=%s status=%s error=%s", trade_id, worker.worker_id, TradeStatus.ERROR.value, e)
+        lifecycle_logger.error("trade_id=%s status=%s error=%s", trade_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
         timeline.persist(database)
     finally:
-        pool.release_worker(worker)
         if own_token is not None:
             TradeTimeline.deactivate(own_token)
 

@@ -97,7 +97,7 @@ async def main():
     await warmup.start()
     pool = BrowserWorkerPool(warmup, num_workers=NUM_TRADES)
     await pool.start()
-    coordinator = TradeCoordinator(pool)
+    coordinator = TradeCoordinator(pool, warmup)
 
     samples = []
     for i in range(NUM_TRADES):

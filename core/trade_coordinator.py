@@ -43,8 +43,13 @@ class TradeCoordinator:
     indefinitely.
     """
 
-    def __init__(self, worker_pool, event_bus=None):
+    def __init__(self, worker_pool, warmup_service, event_bus=None):
         self.worker_pool = worker_pool
+        # Passed through to pocket_executor.prepare_trade so its background
+        # track_outcome task reads outcomes from this service's own
+        # dedicated (otherwise-idle) page instead of borrowing a placement
+        # worker - see pocket_executor.track_outcome's docstring.
+        self.warmup_service = warmup_service
         self.event_bus = event_bus or get_event_bus()
 
     def _log_stage(self, trade_id, stage, status, elapsed, reason=None):
@@ -99,6 +104,7 @@ class TradeCoordinator:
                     risk_manager.check_max_trades_per_hour()
                     risk_manager.check_max_consecutive_losses()
                     risk_manager.check_cooldown_after_loss()
+                    risk_manager.check_max_daily_loss()
                 except risk_manager.RiskViolation as violation:
                     timeline.persist(database)
                     return self._reject(trade_id, violation, time.monotonic() - stage_t0)
@@ -113,6 +119,13 @@ class TradeCoordinator:
                     return self._reject(trade_id, violation, time.monotonic() - stage_t0)
                 self._log_stage(trade_id, "duplicate_detection", "passed", time.monotonic() - stage_t0)
                 timeline.mark("risk_evaluated")
+
+                # Correct a case-only mismatch against the real scanned asset
+                # list before anything else - execution/pocket_dom.py's
+                # select_asset() does an exact-text DOM match, so a parsed
+                # name that's right except for casing would otherwise reach
+                # the browser and fail as "not found" for no real reason.
+                asset = asset_cache.resolve_exact_name(asset)
 
                 # Fast-path rejection using the startup asset cache: if we
                 # already know (from the last scan) that this asset is
@@ -156,7 +169,7 @@ class TradeCoordinator:
                 stage_t0 = time.monotonic()
                 result = await pocket_executor.prepare_trade(
                     trade_id, asset, direction, expiry, amount,
-                    worker, self.worker_pool, timeline=timeline,
+                    worker, self.worker_pool, self.warmup_service, timeline=timeline,
                 )
                 self._log_stage(trade_id, "pocket_executor", result.get("status"), time.monotonic() - stage_t0)
                 await self.event_bus.publish("trade.prepared", {"trade_id": trade_id, "result": result})

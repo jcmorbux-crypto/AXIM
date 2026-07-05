@@ -74,7 +74,7 @@ async def main():
     await warmup.start()
     pool = BrowserWorkerPool(warmup, num_workers=2)
     await pool.start()
-    coordinator = TradeCoordinator(pool)
+    coordinator = TradeCoordinator(pool, warmup)
 
     print("Firing FAST (15s) and SLOW (60s) trades concurrently...")
     result_fast, result_slow = await asyncio.gather(

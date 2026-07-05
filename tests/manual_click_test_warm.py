@@ -73,7 +73,7 @@ async def main():
     await pool.start()
     print(f"Pool started with {pool.num_workers} worker(s)")
 
-    coordinator = TradeCoordinator(pool)
+    coordinator = TradeCoordinator(pool, warmup)
 
     t0 = time.monotonic()
     result_a, result_b = await asyncio.gather(

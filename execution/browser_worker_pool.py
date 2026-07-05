@@ -82,12 +82,6 @@ class BrowserWorkerPool:
         self._pool_generation = 0
         self._health_lock = asyncio.Lock()
         self._last_pool_health_check = 0.0
-        # Shared across every worker in this pool - the Opened/Closed
-        # active-tab toggle is confirmed live-synced across all pages of
-        # the same browser context (see wait_for_trade_result), so the
-        # final tab-switch+read step when a trade closes is serialized
-        # through this lock rather than left to contend freely.
-        self.closed_tab_lock = asyncio.Lock()
 
     async def start(self):
         self._warmup_generation = await self.warmup_service.ensure_alive()
@@ -161,7 +155,30 @@ class BrowserWorkerPool:
 
         worker = await self._ensure_worker_healthy(worker)
         await worker.lock.acquire()
+        await self._ensure_no_stray_modal(worker)
         return worker
+
+    async def _ensure_no_stray_modal(self, worker):
+        """A trade that fails mid-sequence (select_asset/select_expiry
+        timing out) can leave that page's dropdown-style modal open - the
+        asset picker and expiry picker both render into the same shared
+        #modal-root wrapper (pocket_dom.SEL_ACTIVE_DROPDOWN_MODAL) -
+        because prepare_trade's exception handler doesn't clean up before
+        releasing the worker back to the pool (attempting cleanup there
+        would risk masking the real error with a second one). Confirmed
+        live: a failed select_expiry left its worker's modal open, and the
+        very next trade that reused that same worker failed at select_asset
+        because the leftover modal blocked the search field - this is the
+        single chokepoint that catches that regardless of which prior
+        operation caused it. Cheap when nothing is wrong (the modal
+        presence check is a fast local DOM read, not a poll)."""
+        try:
+            await pocket_dom._close_active_dropdown_modal(worker.page)
+        except Exception as e:
+            logger.warning(
+                "browser_worker_pool: worker_id=%s failed to clear a stray dropdown modal: %s",
+                worker.worker_id, e,
+            )
 
     def release_worker(self, worker):
         if worker.generation != self._pool_generation:

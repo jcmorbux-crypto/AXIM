@@ -18,8 +18,24 @@ sys.path.insert(0, str(CORE_DIR))
 from logger import get_logger
 from timeline import timed, time_category, get_current_timeline
 
-DEFAULT_TIMEOUT_MS = 10_000
+# Raised from 10s during the production stress test: 8 truly-simultaneous
+# signals showed a real ~37% "search field not visible"/DOM-contention
+# failure rate under that load (docs/AXIM_PRODUCTION_READINESS_REPORT.md
+# section 4.1) - real Telegram traffic is naturally spaced out, so this
+# mainly buys margin for genuine bursts rather than changing steady-state
+# behavior, which was already comfortably under 10s.
+DEFAULT_TIMEOUT_MS = 15_000
 RETRY_ATTEMPTS = 2
+
+# How many of the most recent Closed-list items wait_for_trade_result scans
+# per read. Must comfortably exceed how many trades can realistically close
+# within one settlement-retry window (~30s) - with the worker-pool
+# redesign removing the old cap on concurrent OPEN trades, more than 10
+# trades can now close in that window, which pushed an older trade's own
+# closed item past a too-small scan window before it was ever matched
+# (confirmed live: a real EUR/RUB OTC trade's result_read_failed while 3+
+# other trades closed around the same time).
+CLOSED_ITEMS_SCAN_COUNT = 40
 
 SEL_PROMO_CLOSE = ".mfp-close"
 
@@ -664,8 +680,8 @@ def _closest_closed_item(items, asset, direction, expected_close_dt):
     return min(candidates, key=_time_diff)
 
 
-async def wait_for_trade_result(page, expiry_seconds, asset=None, direction=None,
-                                 settlement_buffer_seconds=2, closed_tab_lock=None):
+async def wait_for_trade_result(warmup_service, expiry_seconds, asset=None, direction=None,
+                                 settlement_buffer_seconds=2):
     """
     Waits for the currently-open trade to close, then classifies win/loss/
     draw from the Closed tab.
@@ -684,11 +700,11 @@ async def wait_for_trade_result(page, expiry_seconds, asset=None, direction=None
     the 15s trade's own .no-deals stayed False for the FULL ~60 seconds,
     flipping True only once the 60s trade ALSO closed - .no-deals reflects
     "zero open positions across this whole browser context", not "this
-    worker's specific trade closed". Under concurrency this silently
-    delayed outcome detection by however long the slowest concurrent trade
-    took (measured up to 28s in the P0 sprint benchmark) - a correctness
-    gap for downstream risk tracking (consecutive-losses, cooldown), not
-    only a latency one.
+    specific trade closed". Under concurrency this silently delayed outcome
+    detection by however long the slowest concurrent trade took (measured
+    up to 28s in the P0 sprint benchmark) - a correctness gap for
+    downstream risk tracking (consecutive-losses, cooldown), not only a
+    latency one.
 
     Fix: this trade's own close time is already known deterministically
     (expiry_seconds, fixed at signal time) - sleep for that duration plus a
@@ -700,14 +716,23 @@ async def wait_for_trade_result(page, expiry_seconds, asset=None, direction=None
     longer polls indefinitely on a signal that can't distinguish this
     trade's closure from an unrelated one.
 
-    `closed_tab_lock`, if given (an asyncio.Lock shared across a
-    BrowserWorkerPool's workers), serializes the tab-switch+read step
-    itself across workers finishing at nearly the same moment, since the
-    active-tab toggle is confirmed shared live across every page in the
-    same browser context (verified: clicking Closed on one page instantly
-    flips another, untouched page's rendered active tab too). This no
-    longer matters for the wait itself (no DOM interaction happens during
-    the sleep now), only for this brief final read.
+    Takes the warmup service's own dedicated bootstrap page (via
+    `warmup_service.get_page()`), NOT a BrowserWorkerPool worker - that
+    page is otherwise idle after startup, so reading outcomes here means
+    outcome-watching NEVER competes with trade placement for a worker slot,
+    at any concurrency level. (An earlier version borrowed a placement
+    worker for this brief read; moving it to this always-idle dedicated
+    page instead removes that contention entirely rather than just
+    shortening it.) The sleep itself needs no browser resource of any kind
+    regardless. Safe to reuse one page across every trade's outcome check
+    because the Opened/Closed active-tab toggle is confirmed shared live
+    across every page in the same browser context (verified: clicking
+    Closed on one page instantly flips another, untouched page's rendered
+    active tab too) - this dedicated page can read the same Closed list
+    that reflects trades placed on any worker. `warmup_service.outcome_lock`
+    serializes the tab-switch+read step itself across trades finishing at
+    nearly the same moment, since it is only ever this one page doing the
+    reading now.
 
     Win/loss classification is confirmed against both a real win ($1 stake
     -> $1.92 returned, 92% payout) and a real loss ($1 stake -> $0
@@ -717,6 +742,7 @@ async def wait_for_trade_result(page, expiry_seconds, asset=None, direction=None
     # Intentional waiting, not active execution - a deliberate delay for a
     # deterministic, known duration (the trade's own contractual expiry),
     # timed separately so it never gets miscounted as browser/CPU work.
+    # No browser resource is held during this wait at all.
     async with time_category("waiting"):
         await asyncio.sleep(expiry_seconds + settlement_buffer_seconds)
 
@@ -725,6 +751,7 @@ async def wait_for_trade_result(page, expiry_seconds, asset=None, direction=None
     match = None
     data = None
 
+    page = await warmup_service.get_page()
     try:
         while True:
             async def _read_once():
@@ -737,12 +764,9 @@ async def wait_for_trade_result(page, expiry_seconds, asset=None, direction=None
                     await closed_tab.click(timeout=DEFAULT_TIMEOUT_MS)
                     item = page.locator(SEL_CLOSED_LIST_ITEM).first
                     await expect(item).to_be_visible(timeout=DEFAULT_TIMEOUT_MS)
-                    return await page.evaluate(_CLOSED_ITEMS_JS, 10)
+                    return await page.evaluate(_CLOSED_ITEMS_JS, CLOSED_ITEMS_SCAN_COUNT)
 
-            if closed_tab_lock is not None:
-                async with closed_tab_lock:
-                    items = await _read_once()
-            else:
+            async with warmup_service.outcome_lock:
                 items = await _read_once()
 
             if asset is not None and direction is not None:

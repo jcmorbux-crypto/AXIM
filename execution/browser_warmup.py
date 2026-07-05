@@ -50,6 +50,13 @@ class BrowserWarmupService:
         self._page = None
         self.generation = 0
         self._reconnect_lock = asyncio.Lock()
+        # Serializes track_outcome's tab-switch+read step on this ONE
+        # dedicated page - see wait_for_trade_result's docstring for why
+        # outcome-watching lives here instead of borrowing from
+        # BrowserWorkerPool: this page is otherwise idle after startup, so
+        # using it means outcome reads never compete with trade placement
+        # for a worker slot, at any concurrency level.
+        self.outcome_lock = asyncio.Lock()
 
     async def start(self):
         self._session = PocketBrowserSession()
