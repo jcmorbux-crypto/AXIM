@@ -192,8 +192,11 @@ In priority order, matching what was measured, not a generic checklist:
 2. Consider whether `CLOSED_ITEMS_SCAN_COUNT=40` needs to go higher still if
    real sustained throughput increases, since it was raised once already
    this session in direct response to a real failure.
-3. Automate a "verify Chrome is clean before restart" helper to remove the
-   manual step this session repeatedly had to do by hand (§4.4).
+3. **Done.** `scripts/cleanup_axim_chrome.ps1` - finds (dry-run by default)
+   or terminates (`-Kill`) Chrome processes tied specifically to AXIM's own
+   `--user-data-dir`, never any other Chrome process. Verified live: found
+   all 11 real chrome.exe processes belonging to a running listener,
+   correctly did not touch them in dry-run mode.
 4. Continue the soak test to a real, substantial duration before any
    recommendation to increase stakes or run unattended.
 5. Everything in the Phase 2 priority list the user specified (regression

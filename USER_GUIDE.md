@@ -129,8 +129,16 @@ the underlying Chromium tabs can be left running, and they accumulate
 across repeated force-kills, measurably slowing down the next startup (this
 was observed directly during this project's own stress testing - see
 `docs/AXIM_PRODUCTION_READINESS_REPORT.md` section 4.4). If you do have to
-force-kill it, check for and close any leftover `chrome.exe` processes
-before restarting.
+force-kill it, run the cleanup helper before restarting:
+
+```powershell
+powershell -File scripts\cleanup_axim_chrome.ps1          # reports what it would stop (dry run)
+powershell -File scripts\cleanup_axim_chrome.ps1 -Kill     # actually stops them
+```
+
+It only ever targets Chrome processes launched with AXIM's own
+`--user-data-dir` (its persistent profile path) - it cannot affect your
+regular browser or another program's Chrome/Playwright session.
 
 ## Checking the database directly
 
