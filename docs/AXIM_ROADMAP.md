@@ -257,6 +257,36 @@ table was clipped inside a too-narrow stat-card column - moved to its own
 full-width row, matching the latency tables. Regression suite (16/16)
 passes.
 
+### Live-mode readiness review (done, see `docs/AXIM_LIVE_READINESS_REVIEW.md`)
+**Bottom line: not ready.** Queried `data/axim.db` directly: of 404 signal
+rows, **zero** ever came from the actual trusted source
+(`PocketOption_quant_algorithm_bot`) - every row is either an old untagged
+test row or an explicitly-named test/benchmark source. The live listener
+has never processed a genuine incoming signal in production, which means
+the one question that actually matters for going live - does this source
+have a real edge - is completely unanswered regardless of how solid
+execution has become. Also found: no maximum-daily-loss/drawdown risk
+rule exists anywhere (only a consecutive-losses check, which an
+alternating win/loss pattern never trips); `MODE=DEMO` in `.env` is dead
+config that does nothing (only `ACCOUNT` gates demo-vs-live) and sits
+next to `ACCOUNT=DEMO` looking like a second switch, which is actively
+misleading; and the historical dashboard/DB data reflects test runs where
+risk rules were deliberately relaxed (`MINIMUM_PAYOUT=1`, etc.) to avoid
+contaminating latency measurements, not real enforced behavior. Full
+findings and a concrete, staged path (observe the real source in
+preview-only mode first, add the missing risk rule, fix the `MODE`
+confusion, only then evaluate real edge) are in the review doc. This
+review does not recommend enabling live trading on any timeline - it
+exists to make the gaps visible before that door is opened.
+
 ## Next priorities
-1. Live-mode readiness review before `ARMED` is ever considered for
-   anything beyond deliberate, watched demo validation.
+The live-readiness review surfaced concrete next steps, in order:
+1. Run the live listener against the real trusted source in observation/
+   preview-only mode (`AUTO_EXECUTE=false` or `PREVIEW_ONLY=true`, `ARMED`
+   still `false`) for a real, meaningful stretch of time - the only way to
+   learn whether the source's signals would actually win money, using real
+   (not relaxed) risk-rule thresholds.
+2. Add a real `MAX_DAILY_LOSS`/drawdown-percentage risk rule - a genuine
+   gap in `core/risk_manager.py`, not a wiring oversight.
+3. Remove or consolidate `MODE` so exactly one setting controls
+   demo-vs-live, not two where only one does anything.
