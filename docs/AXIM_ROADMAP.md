@@ -229,10 +229,34 @@ Real, populated `recovery_events` data now exists for the first time:
 Regression suite (16/16) passes; no orphaned browser processes after any
 of the tests.
 
+### Performance Dashboard UI (done)
+Built the actual web UI deferred back in Phase 3. `core/dashboard_server.py`
+- deliberately stdlib-only (`http.server`, no new dependency, matching the
+project's dependency-light philosophy for what's still a local,
+single-operator tool) - serves `dashboard/index.html` and a `GET /api/data`
+JSON endpoint bundling `trade_statistics.full_report()` (daily/weekly win
+rate, P/L, ROI, consecutive wins/losses, signals ignored/rejected),
+`core/timeline_report.py`'s full P50/P95/P99 aggregates (every stage
+transition, every time category), `database.get_recovery_event_stats()`
+(the real recovery-rate data from the live-fire testing above), and the 25
+most recent signals. Read-only - never imports trade_coordinator/
+pocket_executor/risk_manager, never writes to the database. Binds to
+127.0.0.1 only. Wired up the previously-dead `ENABLE_DASHBOARD`/
+`DASHBOARD_PORT` env vars into `config/settings.py`.
+
+`dashboard/index.html` is a single self-contained file (no build step, no
+node_modules) that polls `/api/data` every 5s and renders it. Verified
+live, not just by reading the code: started the real server against the
+real `data/axim.db`, confirmed the JSON API and index route both respond
+correctly, then loaded the page in an actual Playwright-driven browser and
+screenshotted it - zero console errors, all sections populated with real
+data (today/week stats, recovery health across all 4 layers, both latency
+tables, a 25-row recent-signals table with win/loss/draw badges). One
+layout bug found and fixed during that visual check: the Recovery Health
+table was clipped inside a too-narrow stat-card column - moved to its own
+full-width row, matching the latency tables. Regression suite (16/16)
+passes.
+
 ## Next priorities
-1. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
-   scope decision above) - now has a real data source to draw from
-   (`core/timeline_report.py`'s per-trade/aggregate data, plus real
-   recovery-rate data from `database.get_recovery_event_stats()`).
-2. Live-mode readiness review before `ARMED` is ever considered for
+1. Live-mode readiness review before `ARMED` is ever considered for
    anything beyond deliberate, watched demo validation.

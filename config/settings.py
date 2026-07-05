@@ -47,3 +47,8 @@ DUPLICATE_SIGNAL_WINDOW_SECONDS = int(os.getenv("DUPLICATE_SIGNAL_WINDOW_SECONDS
 # Concurrency (demo-only multi-worker execution)
 MAX_CONCURRENT_WORKERS = int(os.getenv("MAX_CONCURRENT_WORKERS", 2))
 WORKER_ACQUIRE_TIMEOUT_SECONDS = float(os.getenv("WORKER_ACQUIRE_TIMEOUT_SECONDS", 5))
+
+# Dashboard (core/dashboard_server.py) - read-only, local-only web UI over
+# the same signals.db every other tool already reads
+ENABLE_DASHBOARD = os.getenv("ENABLE_DASHBOARD", "true").lower() == "true"
+DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 8080))

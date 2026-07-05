@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AXIM Performance Dashboard</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #12161f;
+    --panel-border: #232936;
+    --text: #e6e9ef;
+    --text-dim: #8b93a3;
+    --green: #3ddc84;
+    --red: #ff5c5c;
+    --yellow: #f5c542;
+    --blue: #5b9dff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  h1 {
+    font-size: 20px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  #status-line {
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 16px;
+    margin-bottom: 20px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: 10px;
+    padding: 16px 18px;
+    overflow-x: auto;
+  }
+  .panel h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-dim);
+    margin: 0 0 12px 0;
+    font-weight: 600;
+  }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--text-dim); }
+  .stat-value { font-variant-numeric: tabular-nums; font-weight: 500; }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .neutral { color: var(--text); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 6px 10px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  th {
+    color: var(--text-dim);
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--panel-border);
+  }
+  tbody tr:nth-child(odd) { background: rgba(255,255,255,0.02); }
+  .badge {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .badge-win { background: rgba(61,220,132,0.15); color: var(--green); }
+  .badge-loss { background: rgba(255,92,92,0.15); color: var(--red); }
+  .badge-draw { background: rgba(245,197,66,0.15); color: var(--yellow); }
+  .badge-other { background: rgba(139,147,163,0.15); color: var(--text-dim); }
+  .full-width { grid-column: 1 / -1; }
+  .empty { color: var(--text-dim); font-size: 13px; font-style: italic; }
+  #error-banner {
+    display: none;
+    background: rgba(255,92,92,0.12);
+    border: 1px solid var(--red);
+    color: var(--red);
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>AXIM Performance Dashboard</h1>
+  <div id="status-line">loading...</div>
+</header>
+
+<div id="error-banner"></div>
+
+<div class="grid">
+  <div class="panel">
+    <h2>Today</h2>
+    <div id="daily-stats"></div>
+  </div>
+  <div class="panel">
+    <h2>Last 7 Days</h2>
+    <div id="weekly-stats"></div>
+  </div>
+  <div class="panel">
+    <h2>Signal Handling</h2>
+    <div id="signal-stats"></div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel full-width">
+    <h2>Recovery Health</h2>
+    <table id="recovery-table">
+      <thead><tr><th>Layer</th><th>Succeeded</th><th>Failed</th><th>Rate</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel full-width">
+    <h2>Latency - Stage Transitions (ms, from core/timeline_report.py)</h2>
+    <table id="stage-table">
+      <thead><tr><th>Transition</th><th>n</th><th>avg</th><th>p50</th><th>p95</th><th>p99</th><th>min</th><th>max</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel full-width">
+    <h2>Latency - Time Categories (ms)</h2>
+    <table id="category-table">
+      <thead><tr><th>Category</th><th>n</th><th>avg</th><th>p50</th><th>p95</th><th>p99</th><th>min</th><th>max</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel full-width">
+    <h2>Recent Signals</h2>
+    <table id="recent-table">
+      <thead><tr>
+        <th>ID</th><th>Asset</th><th>Dir</th><th>Expiry</th><th>Source</th>
+        <th>Status</th><th>Result</th><th>P/L</th><th>Payout</th><th>Received</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const REFRESH_MS = 5000;
+const fmt = (n, d = 2) => (n === null || n === undefined) ? '-' : Number(n).toFixed(d);
+const pct = (n, d = 1) => (n === null || n === undefined) ? '-' : (Number(n) * 100).toFixed(d) + '%';
+const ms = (n) => (n === null || n === undefined) ? '-' : Number(n).toFixed(0);
+
+function plClass(v) {
+  if (v === null || v === undefined) return 'neutral';
+  return v > 0 ? 'pos' : (v < 0 ? 'neg' : 'neutral');
+}
+
+function statRow(label, value, cls = 'neutral') {
+  return `<div class="stat-row"><span class="stat-label">${label}</span>
+    <span class="stat-value ${cls}">${value}</span></div>`;
+}
+
+function renderSummary(stats) {
+  const d = stats.daily, w = stats.weekly;
+  document.getElementById('daily-stats').innerHTML =
+    statRow('Closed trades', d.total_closed) +
+    statRow('Win rate', pct(d.win_rate)) +
+    statRow('W / L / D', `${d.wins} / ${d.losses} / ${d.draws}`) +
+    statRow('Profit/Loss', '$' + fmt(d.profit_loss), plClass(d.profit_loss)) +
+    statRow('ROI', pct(d.roi), plClass(d.roi)) +
+    statRow('Avg payout', d.average_payout !== null ? fmt(d.average_payout, 1) + '%' : '-');
+
+  document.getElementById('weekly-stats').innerHTML =
+    statRow('Closed trades', w.total_closed) +
+    statRow('Win rate', pct(w.win_rate)) +
+    statRow('W / L / D', `${w.wins} / ${w.losses} / ${w.draws}`) +
+    statRow('Profit/Loss', '$' + fmt(w.profit_loss), plClass(w.profit_loss)) +
+    statRow('ROI', pct(w.roi), plClass(w.roi)) +
+    statRow('Avg payout', w.average_payout !== null ? fmt(w.average_payout, 1) + '%' : '-');
+
+  document.getElementById('signal-stats').innerHTML =
+    statRow('Consecutive wins', stats.consecutive_wins, stats.consecutive_wins > 0 ? 'pos' : 'neutral') +
+    statRow('Consecutive losses', stats.consecutive_losses, stats.consecutive_losses > 0 ? 'neg' : 'neutral') +
+    statRow('Signals ignored', stats.signals_ignored) +
+    statRow('Signals rejected', stats.signals_rejected);
+}
+
+function renderRecovery(recovery) {
+  const byLayer = {};
+  for (const row of recovery) {
+    byLayer[row.event_type] = byLayer[row.event_type] || { succeeded: 0, failed: 0 };
+    byLayer[row.event_type][row.outcome] = row.n;
+  }
+  const tbody = document.querySelector('#recovery-table tbody');
+  const layers = Object.keys(byLayer);
+  if (layers.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">No recovery events recorded yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = layers.map(layer => {
+    const s = byLayer[layer].succeeded || 0, f = byLayer[layer].failed || 0;
+    const total = s + f;
+    const rate = total > 0 ? pct(s / total) : '-';
+    return `<tr><td>${layer}</td><td class="pos">${s}</td><td class="${f > 0 ? 'neg' : 'neutral'}">${f}</td><td>${rate}</td></tr>`;
+  }).join('');
+}
+
+function renderStatsTable(tableId, statsObj, isCategory) {
+  const tbody = document.querySelector(`#${tableId} tbody`);
+  const keys = Object.keys(statsObj).filter(k => statsObj[k].n > 0);
+  if (keys.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No timeline data yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = keys.map(key => {
+    const s = statsObj[key];
+    return `<tr><td>${key}</td><td>${s.n}</td><td>${ms(s.avg)}</td><td>${ms(s.p50)}</td>` +
+      `<td>${ms(s.p95)}</td><td>${ms(s.p99)}</td><td>${ms(s.min)}</td><td>${ms(s.max)}</td></tr>`;
+  }).join('');
+}
+
+function resultBadge(status, result) {
+  if (status === 'result_win') return '<span class="badge badge-win">WIN</span>';
+  if (status === 'result_loss') return '<span class="badge badge-loss">LOSS</span>';
+  if (status === 'result_draw') return '<span class="badge badge-draw">DRAW</span>';
+  return `<span class="badge badge-other">${status || '-'}</span>`;
+}
+
+function renderRecent(trades) {
+  const tbody = document.querySelector('#recent-table tbody');
+  if (!trades.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No signals recorded yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = trades.map(t => `<tr>
+    <td>${t.id}</td>
+    <td>${t.asset || '-'}</td>
+    <td>${t.direction || '-'}</td>
+    <td>${t.timeframe || '-'}</td>
+    <td>${t.channel || '-'}</td>
+    <td>${resultBadge(t.execution_status, t.result)}</td>
+    <td>${t.result || '-'}</td>
+    <td class="${plClass(t.profit_loss)}">${t.profit_loss !== null ? '$' + fmt(t.profit_loss) : '-'}</td>
+    <td>${t.payout !== null && t.payout !== undefined ? t.payout + '%' : '-'}</td>
+    <td>${t.received_at ? t.received_at.replace('T', ' ').slice(0, 19) : '-'}</td>
+  </tr>`).join('');
+}
+
+async function refresh() {
+  const banner = document.getElementById('error-banner');
+  try {
+    const res = await fetch('/api/data', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderSummary(data.statistics);
+    renderRecovery(data.recovery);
+    renderStatsTable('stage-table', data.timeline.stage_transitions);
+    renderStatsTable('category-table', data.timeline.categories);
+    renderRecent(data.recent_trades);
+    banner.style.display = 'none';
+    document.getElementById('status-line').textContent =
+      `updated ${new Date().toLocaleTimeString()} - ${data.timeline.sample_size} trade(s) with timeline data`;
+  } catch (e) {
+    banner.textContent = 'Failed to load dashboard data: ' + e.message + ' (is core/dashboard_server.py running against a reachable data/axim.db?)';
+    banner.style.display = 'block';
+    document.getElementById('status-line').textContent = 'connection error';
+  }
+}
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+
+</body>
+</html>

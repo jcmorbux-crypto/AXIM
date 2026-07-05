@@ -284,6 +284,23 @@ def get_last_loss_time():
 
 
 @timed("database")
+def get_recent_signals(limit=25):
+    """Most recent signals regardless of status - the dashboard's activity
+    table. Unlike get_trades_between, not scoped to a time window or
+    closed-only, so an in-flight or rejected/ignored signal shows up
+    immediately rather than only once it resolves."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, asset, direction, timeframe, channel, execution_status, result, "
+        "profit_loss, payout, received_at, opened_at, closed_at FROM signals "
+        "ORDER BY id DESC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+@timed("database")
 def get_open_trades():
     conn = get_connection()
     rows = conn.execute("""
