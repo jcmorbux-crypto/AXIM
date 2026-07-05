@@ -49,8 +49,10 @@ flags that it's still needed.
 - [x] `INSTALL.md`, `USER_GUIDE.md`, `DEPLOYMENT.md` exist and are current
 - [x] `requirements.txt` reflects actual runtime dependencies
       (telethon, playwright, python-dotenv)
-- [ ] Process supervision configured (Task Scheduler/NSSM/equivalent) if
-      running unattended - see `DEPLOYMENT.md`
+- [x] Process supervision configured - Windows Scheduled Task "AXIM
+      Listener" registered (`scripts/install_scheduled_task.ps1`),
+      auto-starts at logon, auto-restarts up to 999x (1 min apart) on
+      failure
 - [x] Log rotation confirmed working (`core/logger.py`, 5MB × 5 backups per
       logger by default)
 - [x] A backup/retention plan exists (`scripts/backup_axim_state.ps1`) -
