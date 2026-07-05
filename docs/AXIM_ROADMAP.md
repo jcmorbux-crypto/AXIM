@@ -154,25 +154,41 @@ then restoring and re-measuring: `select_expiry` dropped from an average
 of 323.6ms to 232.1ms (91.5ms, ~28.3%), `set_amount` from 104.9ms to
 76.0ms (28.9ms, ~27.5%) - both larger relative wins than `select_asset`,
 consistent with the field-loop calling the probe more times.
-`verify_direction_controls_ready` and `click_direction` still use the same
-idiom and haven't been touched yet. Regression suite (16/16) and a full
-10-trade production benchmark both pass end to end.
+Applied the same removal to the last two functions using the idiom:
+`verify_direction_controls_ready` (4 probe calls: buy/sell before the
+visible+enabled checks, buy/sell again after the hit-testing
+`wait_for_function`) and `click_direction` (1 probe call, before the
+button click). Measured before/after with a dedicated probe (8 repeated
+calls to the safe, repeatable `verify_direction_controls_ready`; 4 real
+$1 demo trades for `click_direction`, which necessarily has side effects):
+`verify_direction_controls_ready` dropped from an average of 173.9ms to
+64.5ms (109.4ms, ~62.9%) - the largest relative win of this whole series,
+and it runs on **every single trade**, not only when asset/expiry/amount
+changes, so its aggregate impact is the broadest of the four.
+`click_direction` showed no clear win (476.5ms before vs 496.2ms after,
+within noise) - its one removed probe was small relative to the
+network/server-bound `.no-deals`-hidden confirmation wait that dominates
+the measurement (documented in the function's own docstring as not
+something client-side optimization can shrink). Reported honestly rather
+than forcing a story: the change is still correct and harmless (pure
+diagnostic overhead removed, zero behavior change), it just doesn't show
+a measurable speedup here. Regression suite (16/16) and a full 10-trade
+production benchmark both pass end to end with no errors.
+
+This closes out the `_probe_state`/`_log_selector_event` cleanup across
+all of `pocket_dom.py` - every remaining call to those helpers is now
+either on a genuine failure-diagnostic path or gone.
 
 ## Next priorities
 The full-observability data (not assumptions) points to, in order:
-1. Apply the same diagnostic-overhead-removal pattern to
-   `verify_direction_controls_ready` and `click_direction`, the two
-   remaining functions using the `_probe_state`+`_log_selector_event`
-   idiom - not yet measured/confirmed to matter as much there, but the
-   same zero-risk logic applies.
-2. Tune `wait_for_trade_result`'s `settlement_buffer_seconds` down from its
+1. Tune `wait_for_trade_result`'s `settlement_buffer_seconds` down from its
    current 8s default - every trade in recent re-measurements succeeded on
    its first read attempt, suggesting real settlement completes faster
    than that.
-3. Live-fire-test the process-level supervisor (deliberately kill the
+2. Live-fire-test the process-level supervisor (deliberately kill the
    listener/browser) to get real recovery-rate data instead of "no data yet".
-4. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
+3. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
    scope decision above) - now has a real data source to draw from
    (`core/timeline_report.py`'s per-trade/aggregate data).
-5. Live-mode readiness review before `ARMED` is ever considered for
+4. Live-mode readiness review before `ARMED` is ever considered for
    anything beyond deliberate, watched demo validation.

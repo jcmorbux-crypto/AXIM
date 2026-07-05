@@ -423,19 +423,21 @@ _UNCOVERED_CHECK_JS = """([buySelector, sellSelector]) => {
 
 @timed("browser")
 async def verify_direction_controls_ready(page, timeout=DEFAULT_TIMEOUT_MS):
+    # No _probe_state()/_log_selector_event() here (removed - same
+    # reasoning as select_asset/select_expiry/set_amount: 4 calls' worth of
+    # found/visible/enabled reads that only ever fed a log line, never a
+    # control-flow decision. The real correctness checks - the two expect()
+    # pairs and the hit-testing wait_for_function below - are unchanged and
+    # still run every time this is called, which is every single trade).
     last_reason = None
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
             buy = page.locator(SEL_BUY_BUTTON).first
             sell = page.locator(SEL_SELL_BUTTON).first
 
-            found, visible, enabled = await _probe_state(buy)
-            _log_selector_event("buy_selector", SEL_BUY_BUTTON, timeout, attempt, found, visible, enabled)
             await expect(buy).to_be_visible(timeout=timeout)
             await expect(buy).to_be_enabled(timeout=timeout)
 
-            found, visible, enabled = await _probe_state(sell)
-            _log_selector_event("sell_selector", SEL_SELL_BUTTON, timeout, attempt, found, visible, enabled)
             await expect(sell).to_be_visible(timeout=timeout)
             await expect(sell).to_be_enabled(timeout=timeout)
 
@@ -447,11 +449,6 @@ async def verify_direction_controls_ready(page, timeout=DEFAULT_TIMEOUT_MS):
                 arg=[SEL_BUY_BUTTON, SEL_SELL_BUTTON],
                 timeout=timeout,
             )
-
-            found, visible, enabled = await _probe_state(buy)
-            _log_selector_event("buy_selector_click_ready", SEL_BUY_BUTTON, timeout, attempt, found, visible, enabled)
-            found, visible, enabled = await _probe_state(sell)
-            _log_selector_event("sell_selector_click_ready", SEL_SELL_BUTTON, timeout, attempt, found, visible, enabled)
             return
         except _RETRYABLE_ERRORS as e:
             last_reason = str(e)
@@ -492,9 +489,10 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS):
         async with time_category("browser"):
             await _ensure_opened_tab_active(page, timeout=timeout)
 
+            # No _probe_state()/_log_selector_event() here - same reasoning
+            # as the other pocket_dom functions: purely diagnostic, the
+            # real correctness check is the expect() call below.
             button = page.locator(button_selector).first
-            found, visible, enabled = await _probe_state(button)
-            _log_selector_event("click_direction", button_selector, timeout, 1, found, visible, enabled)
             await expect(button).to_be_enabled(timeout=timeout)
             await button.click(timeout=timeout)
 
