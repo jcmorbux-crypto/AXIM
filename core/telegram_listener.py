@@ -13,7 +13,7 @@ from signal_parser import parse_signal
 from trade_coordinator import TradeCoordinator
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
-from latency import LatencyTracker
+from timeline import TradeTimeline
 from settings import WATCH_CHANNELS, MAX_CONCURRENT_WORKERS
 from logger import get_logger
 import recovery
@@ -79,8 +79,8 @@ async def handler(event):
     if not source_allowed(chat_title, chat_username):
         return
 
-    latency = LatencyTracker()
-    latency.mark("telegram_received")
+    timeline = TradeTimeline()
+    timeline.mark("signal_received")
 
     sender = await event.get_sender()
 
@@ -92,7 +92,7 @@ async def handler(event):
     print(f"Message:\n{event.raw_text}")
 
     signal = parse_signal(event.raw_text)
-    latency.mark("parsed")
+    timeline.mark("signal_parsed")
 
     if signal:
         execution_result = await coordinator.handle_signal(
@@ -101,7 +101,7 @@ async def handler(event):
             sender=str(sender.id),
             message_id=event.id,
             sent_at=event.date,
-            latency=latency,
+            timeline=timeline,
         )
 
         print(f"Execution Status: {execution_result['status']}")

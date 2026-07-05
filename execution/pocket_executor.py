@@ -18,7 +18,7 @@ import pocket_dom
 import database
 import risk_manager
 from trade_lifecycle import TradeStatus
-from timeline import TradeTimeline, get_current_timeline, time_category
+from timeline import TradeTimeline, get_current_timeline, clear_current
 from logger import get_logger
 from settings import SAVE_SCREENSHOTS
 
@@ -53,6 +53,14 @@ def _capture_screenshot_background(page, trade_id, label):
         return
 
     async def _do():
+        # This task's context was copied (with the active timeline) at
+        # asyncio.create_task() time below, but its own work runs
+        # CONCURRENTLY with the rest of prepare_trade's sequential
+        # execution, not as part of it - clearing the timeline here (only
+        # affects this task's own copy) stops its screenshot IPC and DB
+        # write from being double-counted against a trade whose "total"
+        # duration doesn't include this overlapping background work.
+        clear_current()
         try:
             path = await _take_screenshot(page, trade_id, label)
             database.append_screenshot_path(trade_id, path)
@@ -64,7 +72,7 @@ def _capture_screenshot_background(page, trade_id, label):
     asyncio.create_task(_do())
 
 
-async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool, latency=None):
+async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool, timeline=None):
     """
     Runs the verified browser interaction sequence (unchanged internals -
     select_asset/select_expiry/set_amount/verify_direction_controls_ready/
@@ -76,22 +84,26 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
     synchronous part of this call, and transferred to the background
     outcome tracker (not released here) if a real click happens, since
     that task keeps using the same worker until the trade closes.
+
+    "clicked" and "confirmation_detected" are marked inside pocket_dom.
+    click_direction itself (via the active timeline, core/timeline.py),
+    not here - closes a documented instrumentation gap where those two
+    stages used to be marked back-to-back with no separating work.
     """
-    latency = latency or LatencyTracker(trade_id)
-    latency.trade_id = trade_id
-    latency.worker_id = worker.worker_id
+    timeline = timeline or TradeTimeline(trade_id=trade_id)
+    timeline.trade_id = trade_id
     page = worker.page
 
     ownership_transferred = False
     try:
         await pocket_dom.select_asset(page, asset)
-        latency.mark("asset_selected")
+        timeline.mark("asset_selected")
 
         await pocket_dom.select_expiry(page, expiry)
-        latency.mark("expiry_set")
+        timeline.mark("expiry_set")
 
         await pocket_dom.set_amount(page, amount)
-        latency.mark("amount_set")
+        timeline.mark("amount_set")
 
         await pocket_dom.verify_direction_controls_ready(page)
 
@@ -116,7 +128,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
                 result=f"rejected:{violation.rule}",
             )
             print(f"Status    : REJECTED ({violation.rule}: {violation.reason})")
-            latency.log_summary()
+            timeline.persist(database)
             return {
                 "status": "rejected", "trade_id": trade_id,
                 "rule": violation.rule, "reason": violation.reason,
@@ -143,7 +155,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
 
         if not ARMED:
             print("Status    : ARMED=false, trade NOT clicked")
-            latency.log_summary()
+            timeline.persist(database)
             return {
                 "status": "prepared_not_armed",
                 "trade_id": trade_id,
@@ -154,11 +166,6 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
             }
 
         await pocket_dom.click_direction(page, direction)
-        latency.mark("click_completed")
-        # click_direction's own internal wait already confirms the trade
-        # opened (Opened list updated) before returning without raising -
-        # its successful return IS the confirmation.
-        latency.mark("confirmation_detected")
 
         opened_at = datetime.now().isoformat()
         _capture_screenshot_background(page, trade_id, "clicked")
@@ -169,7 +176,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
         lifecycle_logger.info("trade_id=%s worker_id=%s status=%s", trade_id, worker.worker_id, TradeStatus.TRADE_OPENED.value)
 
         print("Status    : TRADE BUTTON CLICKED (confirmed via Opened trades list)")
-        latency.log_summary()
+        timeline.persist(database)
 
         expiry_seconds = pocket_dom.expiry_to_seconds(expiry)
         ownership_transferred = True
@@ -186,12 +193,12 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
     except pocket_dom.AssetUntradeableError as e:
         lifecycle_logger.warning("trade_id=%s worker_id=%s asset untradeable: %s", trade_id, worker.worker_id, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable")
-        latency.log_summary()
+        timeline.persist(database)
         return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable", "reason": str(e)}
     except Exception as e:
         lifecycle_logger.error("trade_id=%s worker_id=%s status=%s error=%s", trade_id, worker.worker_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
-        latency.log_summary()
+        timeline.persist(database)
         raise
     finally:
         if not ownership_transferred:
@@ -211,7 +218,23 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
     confirmed (P0 latency sprint follow-up) to reflect "zero open positions
     system-wide", not "this worker's trade closed" - under concurrency that
     silently delayed detection by however long the slowest concurrent trade
-    took (measured up to 28s)."""
+    took (measured up to 28s).
+
+    This coroutine is created via asyncio.create_task while prepare_trade's
+    timeline is still active, so it normally inherits that SAME timeline
+    object (contextvars propagate into child tasks by reference-copy at
+    creation time - see core/timeline.py). The exception is a trade resumed
+    by core/recovery.py after a process restart: no timeline was ever
+    activated for this trade_id in THIS process, so a fresh one is created
+    here, scoped to just the tail-end stages - persist() merges it with
+    whatever the original process already saved, rather than clobbering it.
+    """
+    timeline = get_current_timeline()
+    own_token = None
+    if timeline is None:
+        timeline = TradeTimeline(trade_id=trade_id)
+        own_token = timeline.activate()
+
     page = worker.page
     # Measures detection/polling overhead on top of the trade's own
     # contractual expiry duration - not the expiry wait itself (a
@@ -235,6 +258,7 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
                 "trade_id=%s worker_id=%s status=%s reason=result_read_failed",
                 trade_id, worker.worker_id, TradeStatus.ERROR.value,
             )
+            timeline.persist(database)
             return
 
         closed_at = datetime.now().isoformat()
@@ -259,6 +283,8 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
             trade_id, result_status,
             closed_at=closed_at, result=outcome["result"], profit_loss=profit_loss,
         )
+        timeline.mark("outcome_recorded")
+        timeline.persist(database)
 
         lifecycle_logger.info(
             "trade_id=%s worker_id=%s status=%s result=%s stake=%s final_value=%s profit_loss=%s",
@@ -276,11 +302,24 @@ async def track_outcome(worker, pool, trade_id, expiry_seconds, asset=None, dire
     except Exception as e:
         lifecycle_logger.error("trade_id=%s worker_id=%s status=%s error=%s", trade_id, worker.worker_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
+        timeline.persist(database)
     finally:
         pool.release_worker(worker)
+        if own_token is not None:
+            TradeTimeline.deactivate(own_token)
 
 
 async def _take_screenshot(page, trade_id, label):
+    """Deliberately NOT wrapped in time_category("browser") - this runs as
+    fire-and-forget background work (see _capture_screenshot_background),
+    concurrently with the rest of the trade's own sequential execution, not
+    sequentially as part of it. Two operations that overlap in wall-clock
+    time can't be summed additively against a wall-clock total (the same
+    reason "CPU time" can exceed "wall time" on a multi-core system) - since
+    this is explicitly decoupled from the critical path (the whole point of
+    making it fire-and-forget), it's excluded from the category totals that
+    active-time is computed as a residual against, rather than silently
+    breaking that arithmetic."""
     trade_dir = SCREENSHOT_DIR / str(trade_id)
     trade_dir.mkdir(parents=True, exist_ok=True)
     path = trade_dir / f"{label}.png"

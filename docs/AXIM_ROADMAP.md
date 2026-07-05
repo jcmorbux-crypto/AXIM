@@ -110,21 +110,37 @@ re-measured overhead dropped to a tight 8.3s band, independent of
 concurrent load. All changes benchmarked before/after on real demo trades;
 regression suite (16/16) passes; `ARMED` remains `false`.
 
+### Full observability (done, see `docs/AXIM_OBSERVABILITY.md`)
+Replaced the P0 sprint's `LatencyTracker` with `core/timeline.py`'s
+`TradeTimeline`: 10 named stages (absolute timestamps, cross-process safe)
+plus 4 genuinely measured time categories - waiting/browser/database/logging
+- with "active" computed as the residual, persisted per trade
+(`signals.trade_timeline_json`/`category_timings_json`), and a new
+`core/timeline_report.py` producing per-trade timelines plus P50/P95/P99
+aggregates. Closed the confirmation-latency instrumentation gap (`clicked`
+and `confirmation_detected` are now marked around real, separate work, not
+back-to-back). Found and fixed two real double-counting bugs while
+verifying the category arithmetic actually holds up against measured
+totals (fire-and-forget screenshot work bleeding into a trade's categories
+despite running concurrently with it; `persist()` re-summing an already-
+cumulative total on a second call) - both caught because "active" landing
+at exactly 0.0 on every trade was implausible enough to investigate rather
+than accept. Verified end to end with real demo trades; regression suite
+(16/16) passes.
+
 ## Next priorities
-The P0 sprint report's measured data (not assumptions) points to, in order:
-1. Close the confirmation-latency instrumentation gap (`click_completed`
-   and `confirmation_detected` are currently marked back-to-back with no
-   separating work - a measurement gap, not a real zero-cost finding).
-2. Attack asset-selection latency directly, now precisely quantified at
-   ~1.67s average for a "must change asset" trade vs ~25ms when already
-   selected.
-3. Tune `wait_for_trade_result`'s `settlement_buffer_seconds` down from its
-   current 8s default - every trade in the post-fix re-measurement
-   succeeded on its first read attempt, suggesting real settlement
-   completes faster than that.
-4. Live-fire-test the new process-level supervisor (deliberately kill the
+The full-observability data (not assumptions) points to, in order:
+1. Attack asset-selection latency directly, now precisely quantified at
+   ~536ms average across all trades but clearly bimodal - ~25-58ms when
+   already selected, ~1.2-1.34s when the asset must change.
+2. Tune `wait_for_trade_result`'s `settlement_buffer_seconds` down from its
+   current 8s default - every trade in recent re-measurements succeeded on
+   its first read attempt, suggesting real settlement completes faster
+   than that.
+3. Live-fire-test the process-level supervisor (deliberately kill the
    listener/browser) to get real recovery-rate data instead of "no data yet".
-5. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
-   scope decision above).
-6. Live-mode readiness review before `ARMED` is ever considered for
+4. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
+   scope decision above) - now has a real data source to draw from
+   (`core/timeline_report.py`'s per-trade/aggregate data).
+5. Live-mode readiness review before `ARMED` is ever considered for
    anything beyond deliberate, watched demo validation.

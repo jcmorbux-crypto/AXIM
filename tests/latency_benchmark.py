@@ -2,8 +2,10 @@
 MANUAL, ONE-OFF BENCHMARK - not part of the automated suite, never runs
 automatically. Fires a controlled sequential series of real demo trades
 through the full TradeCoordinator -> pocket_executor -> pocket_dom pipeline
-and records real per-stage latency (LatencyTracker.summary()) plus outcome
-data, for a before/after comparison across the P0 latency/reliability sprint.
+and records each trade's full TradeTimeline (10-stage timestamps +
+waiting/browser/database/logging category totals, core/timeline.py) plus
+outcome data, for a before/after comparison across the P0 latency/
+reliability sprint and the full-observability follow-up.
 
 Alternates asset (forcing the "asset must change" path every other trade)
 and direction (BUY/SELL, so consecutive same-asset trades aren't flagged as
@@ -49,7 +51,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "config"))
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
 from trade_coordinator import TradeCoordinator
-from latency import LatencyTracker
+from timeline import TradeTimeline
 import database
 
 ASSETS = ["EUR/USD OTC", "GBP/USD OTC"]
@@ -101,21 +103,22 @@ async def main():
     for i in range(NUM_TRADES):
         signal = _build_signal(i)
         expected_nochange = (i % 2 == 1)  # odd trades repeat the prior asset
-        latency = LatencyTracker()
+        timeline = TradeTimeline()
         t0 = time.monotonic()
         result = await coordinator.handle_signal(
             signal, source="latency-benchmark", sender="benchmark", message_id=95000 + i,
-            latency=latency,
+            timeline=timeline,
         )
         wall_elapsed = time.monotonic() - t0
-        checkpoints = latency.summary()
         print(f"[{i}] {signal['asset']} {signal['direction']} -> {result.get('status')} "
-              f"wall={wall_elapsed:.3f}s checkpoints={checkpoints}")
+              f"wall={wall_elapsed:.3f}s stages={timeline.stage_timestamps} "
+              f"categories_ms={timeline.category_totals_ms}")
         samples.append({
             "index": i, "asset": signal["asset"], "direction": signal["direction"],
             "expected_nochange": expected_nochange, "status": result.get("status"),
             "trade_id": result.get("trade_id"), "wall_seconds": wall_elapsed,
-            "checkpoints_ms": checkpoints,
+            "stage_timestamps": timeline.stage_timestamps,
+            "category_totals_ms": timeline.category_totals_ms,
         })
 
     # Wait for outcome resolution on the trades that actually clicked, to

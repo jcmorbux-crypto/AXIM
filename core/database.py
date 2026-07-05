@@ -148,22 +148,6 @@ def update_trade_status(trade_id, status, **fields):
 
 
 @timed("database")
-def record_latency_checkpoints(trade_id, checkpoints):
-    """Persists LatencyTracker's per-stage checkpoint dict (cumulative ms
-    since signal receipt) so per-stage latency is queryable across every
-    trade, not just readable from one text log line at a time. Does not
-    touch execution_status - safe to call regardless of a trade's current
-    lifecycle stage."""
-    conn = get_connection()
-    conn.execute(
-        "UPDATE signals SET latency_checkpoints_json = ? WHERE id = ?",
-        (json.dumps(checkpoints), trade_id),
-    )
-    conn.commit()
-    conn.close()
-
-
-@timed("database")
 def record_outcome_latency(trade_id, detection_overhead_ms):
     """Persists outcome-detection overhead: wall-clock time spent in
     wait_for_trade_result beyond the trade's own contractual expiry

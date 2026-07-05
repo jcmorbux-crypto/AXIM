@@ -54,11 +54,31 @@ def get_current_timeline():
     return _current.get()
 
 
+def clear_current():
+    """Clears the current timeline for THIS context only (e.g. inside a
+    fire-and-forget background task that should not attribute its own work
+    to whatever timeline was active when the task was created - see
+    execution/pocket_executor.py's _capture_screenshot_background). Two
+    operations that overlap in wall-clock time can't be summed additively
+    against a wall-clock total (the same reason "CPU time" can exceed "wall
+    time" on a multi-core system) - background work that runs concurrently
+    with a trade's own sequential execution must not add to that trade's
+    category totals, or the totals stop meaning anything."""
+    _current.set(None)
+
+
 class TradeTimeline:
     def __init__(self, trade_id=None):
         self.trade_id = trade_id
         self.stage_timestamps = {}  # stage -> ISO 8601 string
         self.category_totals_ms = {c: 0.0 for c in MEASURED_CATEGORIES}
+        # What this SAME object has already sent to persist() - category
+        # totals are cumulative on this object (add_time keeps summing),
+        # but persist() can be called multiple times on one object
+        # (prepare_trade, then later track_outcome) - only the DELTA since
+        # the last persist() should be added to the DB each time, or a
+        # later call double-counts everything the object already reported.
+        self._last_persisted_categories = {c: 0.0 for c in MEASURED_CATEGORIES}
 
     def mark(self, stage):
         if stage not in STAGES:
@@ -89,10 +109,21 @@ class TradeTimeline:
         trade's full timeline is typically written in two passes -
         prepare_trade's stages, then track_outcome's - sometimes from two
         different processes (a recovery-resumed trade), so the write must
-        combine with existing data rather than clobber it."""
+        combine with existing data rather than clobber it.
+
+        Only sends the category-time DELTA since this object's own last
+        persist() call, not the full running total - category_totals_ms is
+        cumulative on this object, so resending the whole total on a second
+        call would double-count whatever an earlier call on this SAME
+        object already reported."""
         if self.trade_id is None:
             return
-        database_module.record_trade_timeline(self.trade_id, self.stage_timestamps, self.category_totals_ms)
+        delta = {
+            c: self.category_totals_ms[c] - self._last_persisted_categories[c]
+            for c in MEASURED_CATEGORIES
+        }
+        database_module.record_trade_timeline(self.trade_id, self.stage_timestamps, delta)
+        self._last_persisted_categories = dict(self.category_totals_ms)
 
 
 class time_category:
