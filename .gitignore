@@ -23,6 +23,9 @@ logs/
 # Data
 data/
 
+# Backups (scripts/backup_axim_state.ps1 output - contains live credentials/session state)
+backups/
+
 # OS
 Thumbs.db
 .DS_Store

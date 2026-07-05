@@ -53,8 +53,11 @@ flags that it's still needed.
       running unattended - see `DEPLOYMENT.md`
 - [x] Log rotation confirmed working (`core/logger.py`, 5MB × 5 backups per
       logger by default)
-- [ ] A backup/retention plan exists for `data/axim.db` and the session
-      directories
+- [x] A backup/retention plan exists (`scripts/backup_axim_state.ps1`) -
+      backs up `data/axim.db`, both session files, and the Chrome profile,
+      keeps the most recent 14 by default; verified live against real
+      state (gracefully skips locked Chrome files while AXIM is running
+      rather than aborting)
 
 ## Known, accepted limitations at this release
 

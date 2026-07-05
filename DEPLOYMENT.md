@@ -37,6 +37,22 @@ matters for avoiding orphaned Chrome tabs across restarts.
 | `.env` | All configuration and credentials | Yes, but **never commit it to git** |
 | `logs/` | Rotating log files (`core/logger.py` handles rotation automatically, default 5MB × 5 backups per logger) | Optional, useful for post-incident review |
 
+`scripts/backup_axim_state.ps1` copies all of the above (except `.env` and
+`logs/`, which are handled separately) into a timestamped folder under
+`backups/`, and prunes anything beyond the most recent 14 by default:
+
+```powershell
+powershell -File scripts\backup_axim_state.ps1
+```
+
+Safe to run while AXIM is live - the database and session files copy
+cleanly, and a handful of files inside the Chrome profile that are held
+open by the running browser (e.g. `Cookies`) are skipped with a warning
+rather than aborting the whole backup (confirmed live, not hypothetical).
+For a guaranteed-complete profile snapshot, stop AXIM first. Schedule this
+alongside your process supervisor (e.g. a second Task Scheduler entry,
+daily) for unattended operation.
+
 ## Secrets
 
 `.env` contains your Telegram API credentials, Pocket Option login, and
