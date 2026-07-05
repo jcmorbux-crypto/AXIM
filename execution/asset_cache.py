@@ -1,3 +1,4 @@
+import re
 import sys
 from pathlib import Path
 
@@ -102,3 +103,39 @@ def is_known_tradeable(asset_name):
     if entry is None:
         return None
     return entry["tradeable"]
+
+
+def _normalize_for_fuzzy_match(name):
+    """Collapse whitespace and drop an "OTC" suffix, for comparing asset
+    names that differ only in spacing or whether OTC was included - not for
+    anything stricter, since real asset names differ in ways that matter
+    (GameStop vs Gamestop is a real mismatch, not noise)."""
+    collapsed = re.sub(r"\s+", " ", name).strip()
+    return re.sub(r"\s*OTC$", "", collapsed, flags=re.IGNORECASE).lower()
+
+
+def resolve_exact_name(asset_name):
+    """Looks up the cache's real display names against a parsed asset name,
+    tolerating minor formatting differences a source or the parser might
+    introduce - casing, extra/collapsed whitespace, or an inconsistently
+    present "OTC" suffix. Returns the exact cached name to use for
+    select_asset() (which does an exact-text DOM match) whenever exactly one
+    such match exists, else the input unchanged. Catches a parsed asset
+    that's right in substance but not in exact formatting before it wastes a
+    doomed browser search - returns the input as-is if the cache is empty or
+    has no confident match, since an unrecognized name may still be correct
+    (cache can go stale) and the live DOM check remains the final authority."""
+    if not asset_name or asset_name in _cache:
+        return asset_name
+
+    target = asset_name.lower()
+    for name in _cache:
+        if name.lower() == target:
+            return name
+
+    fuzzy_target = _normalize_for_fuzzy_match(asset_name)
+    fuzzy_matches = [name for name in _cache if _normalize_for_fuzzy_match(name) == fuzzy_target]
+    if len(fuzzy_matches) == 1:
+        return fuzzy_matches[0]
+
+    return asset_name
