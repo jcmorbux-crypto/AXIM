@@ -18,6 +18,7 @@ from settings import (
     COOLDOWN_AFTER_LOSS_SECONDS,
     DUPLICATE_SIGNAL_WINDOW_SECONDS,
     MINIMUM_PAYOUT,
+    MAX_DAILY_LOSS,
 )
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
@@ -100,6 +101,30 @@ def check_minimum_payout(payout):
         )
 
 
+def check_max_daily_loss():
+    """Drawdown circuit breaker - flagged as a genuine gap in
+    docs/AXIM_LIVE_READINESS_REVIEW.md. check_max_consecutive_losses only
+    catches an unbroken losing STREAK; it never trips on a steady bleed-out
+    through an alternating win/loss pattern, which is exactly what a
+    no-edge binary-options payout structure (paying out less than 100% on
+    a win) produces on average over time. This checks realized net P/L
+    since local midnight instead - a genuinely different signal, not a
+    restatement of the consecutive-losses rule.
+
+    MAX_DAILY_LOSS <= 0 disables the check (an operator's explicit choice,
+    not a default - see settings.py's own comment on why the default is a
+    real active threshold rather than 0)."""
+    if MAX_DAILY_LOSS <= 0:
+        return
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    realized_pnl = database.get_realized_pnl_since(midnight)
+    if realized_pnl <= -MAX_DAILY_LOSS:
+        raise RiskViolation(
+            "max_daily_loss",
+            f"realized P/L today is ${realized_pnl:.2f}, at or beyond -MAX_DAILY_LOSS ${MAX_DAILY_LOSS:.2f}",
+        )
+
+
 def check_duplicate_signal(asset, direction, expiry, exclude_id=None):
     duplicate_id = database.find_recent_duplicate(
         asset, direction, expiry, DUPLICATE_SIGNAL_WINDOW_SECONDS, exclude_id=exclude_id,
@@ -120,6 +145,7 @@ def evaluate_all(asset, direction, expiry, amount, exclude_id=None):
         lambda: check_max_trades_per_hour(),
         lambda: check_max_consecutive_losses(),
         lambda: check_cooldown_after_loss(),
+        lambda: check_max_daily_loss(),
     ]
     for check in checks:
         check()

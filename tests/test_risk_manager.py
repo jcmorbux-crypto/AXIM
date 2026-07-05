@@ -25,7 +25,7 @@ class RiskManagerTests(unittest.TestCase):
         self._tmp_dir.cleanup()
 
     def _insert_signal(self, asset="EUR/USD OTC", direction="BUY", expiry="1 Minute",
-                        result=None, closed_at=None):
+                        result=None, closed_at=None, profit_loss=None):
         trade_id = database.record_signal_received(
             {"asset": asset, "direction": direction, "expiry": expiry, "raw_message": "test"},
         )
@@ -33,6 +33,7 @@ class RiskManagerTests(unittest.TestCase):
             database.update_trade_status(
                 trade_id, TradeStatus.TRADE_CLOSED,
                 result=result, closed_at=closed_at or datetime.now().isoformat(),
+                profit_loss=profit_loss,
             )
         return trade_id
 
@@ -79,6 +80,8 @@ class RiskManagerTests(unittest.TestCase):
         risk_manager.check_max_consecutive_losses()
 
     def test_cooldown_after_loss_blocks(self):
+        if risk_manager.COOLDOWN_AFTER_LOSS_SECONDS <= 0:
+            self.skipTest("COOLDOWN_AFTER_LOSS_SECONDS is 0 - cooldown intentionally disabled")
         self._insert_signal(result="loss", closed_at=datetime.now().isoformat())
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_cooldown_after_loss()
@@ -109,6 +112,56 @@ class RiskManagerTests(unittest.TestCase):
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_minimum_payout(None)
         self.assertEqual(ctx.exception.rule, "minimum_payout")
+
+    def test_max_daily_loss_disabled_when_zero(self):
+        original = risk_manager.MAX_DAILY_LOSS
+        risk_manager.MAX_DAILY_LOSS = 0
+        try:
+            self._insert_signal(result="loss", profit_loss=-1000)
+            risk_manager.check_max_daily_loss()  # must not raise
+        finally:
+            risk_manager.MAX_DAILY_LOSS = original
+
+    def test_max_daily_loss_passes_within_threshold(self):
+        original = risk_manager.MAX_DAILY_LOSS
+        risk_manager.MAX_DAILY_LOSS = 10
+        try:
+            self._insert_signal(result="loss", profit_loss=-1)
+            self._insert_signal(result="win", profit_loss=2)
+            risk_manager.check_max_daily_loss()  # net +1, must not raise
+        finally:
+            risk_manager.MAX_DAILY_LOSS = original
+
+    def test_max_daily_loss_trips_on_alternating_win_loss_pattern(self):
+        """The whole point of this rule: MAX_CONSECUTIVE_LOSSES never trips
+        on an alternating win/loss pattern (no unbroken streak), but a
+        real no-edge payout structure (win pays back less than 100%)
+        bleeds out money through exactly that pattern. This must be caught
+        by realized P/L, not streak length."""
+        original = risk_manager.MAX_DAILY_LOSS
+        risk_manager.MAX_DAILY_LOSS = 5
+        try:
+            # Alternating win/loss, net -6: win +0.5, loss -1, x12 (12 * -0.5 = -6).
+            for _ in range(12):
+                self._insert_signal(result="win", profit_loss=0.5)
+                self._insert_signal(result="loss", profit_loss=-1)
+            with self.assertRaises(risk_manager.RiskViolation) as ctx:
+                risk_manager.check_max_daily_loss()
+            self.assertEqual(ctx.exception.rule, "max_daily_loss")
+            # Confirm the premise: consecutive-losses would NOT have caught this.
+            risk_manager.check_max_consecutive_losses()  # must not raise
+        finally:
+            risk_manager.MAX_DAILY_LOSS = original
+
+    def test_max_daily_loss_ignores_prior_days(self):
+        original = risk_manager.MAX_DAILY_LOSS
+        risk_manager.MAX_DAILY_LOSS = 5
+        try:
+            yesterday = (datetime.now() - timedelta(days=1)).isoformat()
+            self._insert_signal(result="loss", profit_loss=-1000, closed_at=yesterday)
+            risk_manager.check_max_daily_loss()  # must not raise - loss was yesterday
+        finally:
+            risk_manager.MAX_DAILY_LOSS = original
 
     def test_evaluate_all_passes_clean_signal(self):
         risk_manager.evaluate_all("GBP/USD OTC", "SELL", "5 Minute", 1)

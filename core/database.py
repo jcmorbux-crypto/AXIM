@@ -284,6 +284,24 @@ def get_last_loss_time():
 
 
 @timed("database")
+def get_realized_pnl_since(since_iso):
+    """Sum of profit_loss across every trade CLOSED (not just placed) since
+    since_iso - a win contributes positively, a loss negatively, so this is
+    the actual net realized result for the window, not a trade count.
+    NULL profit_loss rows (never reached a terminal win/loss/draw) are
+    excluded via the SUM's own NULL-skipping behavior. Returns 0.0 (not
+    None) when there are no closed trades in the window, so callers can
+    compare directly against a threshold without a None check."""
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT SUM(profit_loss) AS total FROM signals
+        WHERE closed_at >= ? AND profit_loss IS NOT NULL
+    """, (since_iso,)).fetchone()
+    conn.close()
+    return row["total"] if row["total"] is not None else 0.0
+
+
+@timed("database")
 def get_recent_signals(limit=25):
     """Most recent signals regardless of status - the dashboard's activity
     table. Unlike get_trades_between, not scoped to a time window or

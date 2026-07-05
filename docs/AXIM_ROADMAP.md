@@ -279,14 +279,65 @@ confusion, only then evaluate real edge) are in the review doc. This
 review does not recommend enabling live trading on any timeline - it
 exists to make the gaps visible before that door is opened.
 
-## Next priorities
-The live-readiness review surfaced concrete next steps, in order:
-1. Run the live listener against the real trusted source in observation/
-   preview-only mode (`AUTO_EXECUTE=false` or `PREVIEW_ONLY=true`, `ARMED`
-   still `false`) for a real, meaningful stretch of time - the only way to
-   learn whether the source's signals would actually win money, using real
-   (not relaxed) risk-rule thresholds.
-2. Add a real `MAX_DAILY_LOSS`/drawdown-percentage risk rule - a genuine
-   gap in `core/risk_manager.py`, not a wiring oversight.
-3. Remove or consolidate `MODE` so exactly one setting controls
-   demo-vs-live, not two where only one does anything.
+## Next priorities (superseded - see "Version 1 production hardening" below)
+The live-readiness review's three next steps have all since been acted on:
+1. **Done, and then some.** The live listener has been run against real
+   Telegram signals (from an actual production source, "Go+ | Trading
+   Bot") with `ARMED=true` - real trades placed, real wins and losses
+   recorded, not just observation. See the production stress test and
+   Production Readiness Report below.
+2. **Done.** `risk_manager.check_max_daily_loss()` added - see "Version 1
+   production hardening."
+3. **Done.** `MODE` removed from `.env` (was dead config, only `ACCOUNT`
+   is read).
+
+## Version 1 production hardening
+Following the live-readiness review, AXIM was run against a real
+production signal source (`Go+ | Trading Bot`) with `ARMED=true`, finding
+and fixing several real defects live rather than in isolated testing:
+
+- **Parser fixes** (`parsers/signal_parser.py`): a false-positive
+  concatenated-currency-pair match ("Signal" -> fake asset "SIG/NAL"), a
+  `.title()` case-mangling bug on real mixed-case platform names
+  ("GameStop Corp OTC" -> wrongly "Gamestop Corp OTC"), and a source-side
+  label typo ("Commoditi:" instead of "Commodity:") - all found against
+  real incoming messages, all fixed and covered by new regression tests.
+- **Worker-pool architecture redesign** (`execution/pocket_executor.py`,
+  `execution/pocket_dom.py`, `execution/browser_worker_pool.py`,
+  `execution/browser_warmup.py`): outcome-tracking no longer holds a
+  placement worker for a trade's full expiry (previously the real
+  bottleneck limiting concurrent open trades to `MAX_CONCURRENT_WORKERS`)
+  - it reads the Closed-trades list from `BrowserWarmupService`'s own
+    dedicated, otherwise-idle page instead, so placement workers are used
+    for placement only.
+- **Leftover-modal bug fixed** (`browser_worker_pool._ensure_no_stray_modal`):
+  a trade that failed mid-sequence could leave its tab's dropdown modal
+  open, poisoning the very next trade that reused that same worker -
+  confirmed by real worker-level failure correlation (one worker failed
+  100% of its uses before the fix, others 0%).
+- **Production stress test executed** (`tests/production_stress_test.py`)
+  and a full **Production Readiness Report** written
+  (`docs/AXIM_PRODUCTION_READINESS_REPORT.md`) - real measured PASS/FAIL
+  per subsystem, real latency percentiles, real known limitations, a
+  72/100 confidence score.
+- **`MAX_DAILY_LOSS` drawdown circuit breaker added** - the gap flagged
+  above. `risk_manager.check_max_daily_loss()`, wired into
+  `trade_coordinator.py`'s real risk-check sequence, 4 new unit tests
+  (including one that explicitly proves `MAX_CONSECUTIVE_LOSSES` alone
+  does not catch what this does).
+- **`MODE` dead config removed**; `PO_EMAIL`/`PO_PASSWORD` (also unused -
+  login is handled by the persistent browser profile) annotated rather
+  than removed, since they're a plausible placeholder for a future
+  automated-login feature.
+- **Regression suite expanded**: `test_trade_coordinator.py` and
+  `test_browser_worker_pool.py` added - previously zero automated coverage
+  on the core orchestration and concurrency logic, both previously
+  validated only through manual live-fire scripts.
+- **Documentation completed**: `INSTALL.md`, `USER_GUIDE.md`,
+  `DEPLOYMENT.md`, `docs/AXIM_RELEASE_CHECKLIST.md`, and a real
+  `requirements.txt` (all were previously empty placeholders).
+
+**Still open** (see `docs/AXIM_RELEASE_CHECKLIST.md` for the full list):
+a genuine multi-hour soak test running to completion; process supervision
+configuration (Task Scheduler/equivalent) for unattended operation; a
+backup/retention plan for `data/axim.db` and session directories.

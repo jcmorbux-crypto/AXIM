@@ -43,6 +43,15 @@ MAX_TRADES_PER_HOUR = int(os.getenv("MAX_TRADES_PER_HOUR", 10))
 MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", 3))
 COOLDOWN_AFTER_LOSS_SECONDS = int(os.getenv("COOLDOWN_AFTER_LOSS_SECONDS", 300))
 DUPLICATE_SIGNAL_WINDOW_SECONDS = int(os.getenv("DUPLICATE_SIGNAL_WINDOW_SECONDS", 120))
+# Drawdown circuit breaker - flagged as a genuine gap in
+# docs/AXIM_LIVE_READINESS_REVIEW.md: MAX_CONSECUTIVE_LOSSES alone never
+# trips on a steady bleed-out through an alternating win/loss pattern,
+# which is exactly what a no-edge binary-options payout structure produces
+# on average. Default of 100 is a conservative starting point (10x the
+# TRADE_AMOUNT default), consistent with every other risk knob in this
+# file defaulting to a real, active, adjustable threshold rather than
+# "off" - fail-closed by default, like the rest of this codebase.
+MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", 100))
 
 # Concurrency (demo-only multi-worker execution)
 MAX_CONCURRENT_WORKERS = int(os.getenv("MAX_CONCURRENT_WORKERS", 2))
