@@ -156,29 +156,43 @@ def run_forever():
     full process restart; this is the outermost layer for the failures
     that do.
 
+    Records "process_restart" succeeded/failed recovery_events - matching
+    the other 3 recovery layers (browser_reconnect, worker_pool_rebuild,
+    resume_open_trade), which all record a real terminal outcome, not just
+    an attempt. Only recorded for actual RESTARTS (following a prior
+    disconnect or failure), not the initial clean startup, which isn't a
+    recovery from anything.
+
     Ctrl+C (or SIGTERM via SystemExit) shuts down cleanly and does not
     retry - only genuinely unexpected failures trigger a restart."""
     backoff = 1
     max_backoff = 60
+    is_restart = False
     while True:
         try:
             client.loop.run_until_complete(_startup())
             client.start(phone=phone)
             print("Connected to Telegram")
+            if is_restart:
+                database.record_recovery_event("process_restart", "succeeded", "listener operational again after restart")
             backoff = 1  # reset only after a fully successful (re)start
+            is_restart = False
             client.run_until_disconnected()
             # A clean, intentional stop arrives as KeyboardInterrupt/
             # SystemExit below, not a normal return here - reaching this
-            # point means the connection dropped unexpectedly.
+            # point means the connection dropped unexpectedly. Not itself
+            # a recovery outcome - it's the failure that the NEXT
+            # successful (or failed) restart attempt reports on.
             logger.warning("telegram_listener: client disconnected unexpectedly - restarting")
-            database.record_recovery_event("process_restart", "attempted", "client disconnected unexpectedly")
+            is_restart = True
         except (KeyboardInterrupt, SystemExit):
             print("\nAXIM: shutdown requested, closing cleanly...")
             client.loop.run_until_complete(_shutdown())
             raise
         except Exception as e:
             logger.error("telegram_listener: unhandled error, restarting: %s", e)
-            database.record_recovery_event("process_restart", "attempted", str(e))
+            database.record_recovery_event("process_restart", "failed", str(e))
+            is_restart = True
             try:
                 client.loop.run_until_complete(_shutdown())
             except Exception as shutdown_error:

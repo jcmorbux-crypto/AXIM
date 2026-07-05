@@ -192,12 +192,47 @@ benchmark: every trade succeeded on its first read attempt, no retries -
 the previous 8s-buffer average of ~8362ms, a ~5937ms (~71%) reduction in
 post-click dead time per trade. Regression suite (16/16) passes.
 
+### Process-level supervisor live-fire tested (done)
+Found and fixed a real gap while preparing to test this: `run_forever()`
+only ever recorded a `"process_restart"` `"attempted"` recovery_event -
+never a terminal `"succeeded"`/`"failed"` outcome, unlike the other 3
+recovery layers, which all record real terminal outcomes. Fixed by
+tracking whether a restart is in progress and recording `"failed"` when a
+restart attempt itself throws, `"succeeded"` once a restart (following a
+prior disconnect/failure) fully reconnects - the initial clean startup
+records nothing, since it isn't a recovery from anything.
+
+Then live-fire tested all 4 recovery layers with real fault injection
+against the ACTUAL production code (not reimplementations):
+- **process_restart**: injected a real exception into `_startup()` on the
+  first call only, let the genuine `run_forever()` retry logic take over
+  unmodified - confirmed `"failed"` recorded, automatic backoff, and a
+  fully genuine second attempt (real browser, real worker pool, real
+  Telegram reconnect) recording `"succeeded"`.
+- **browser_reconnect** / **worker_pool_rebuild**: forcibly closed the
+  real underlying `BrowserContext` (same technique as the original Phase 5
+  crash-recovery verification) and confirmed both `ensure_alive()` and
+  `acquire_worker()` detected it, genuinely relaunched, and recorded
+  `"succeeded"` - the recovered worker's page was independently confirmed
+  responsive, not just "no exception thrown".
+- **resume_open_trade**: drove a real trade's browser actions manually
+  (bypassing `prepare_trade`, which would have auto-spawned a competing
+  tracking task) to produce a genuine `trade_opened` row with no live
+  tracking anywhere - exactly what a real crash leaves behind - then
+  called the real `recovery.resume_pending_trades(pool)` and confirmed it
+  found the trade, reattached tracking, and resolved it correctly,
+  recording `"succeeded"`.
+
+Real, populated `recovery_events` data now exists for the first time:
+`browser_reconnect` succeeded=2, `process_restart` failed=1/succeeded=1,
+`resume_open_trade` succeeded=1, `worker_pool_rebuild` succeeded=2.
+Regression suite (16/16) passes; no orphaned browser processes after any
+of the tests.
+
 ## Next priorities
-The full-observability data (not assumptions) points to, in order:
-1. Live-fire-test the process-level supervisor (deliberately kill the
-   listener/browser) to get real recovery-rate data instead of "no data yet".
-2. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
+1. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
    scope decision above) - now has a real data source to draw from
-   (`core/timeline_report.py`'s per-trade/aggregate data).
-3. Live-mode readiness review before `ARMED` is ever considered for
+   (`core/timeline_report.py`'s per-trade/aggregate data, plus real
+   recovery-rate data from `database.get_recovery_event_stats()`).
+2. Live-mode readiness review before `ARMED` is ever considered for
    anything beyond deliberate, watched demo validation.
