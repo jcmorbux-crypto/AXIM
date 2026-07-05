@@ -128,11 +128,32 @@ at exactly 0.0 on every trade was implausible enough to investigate rather
 than accept. Verified end to end with real demo trades; regression suite
 (16/16) passes.
 
+### Asset-selection latency (done)
+Added temporary fine-grained per-step timing inside `select_asset` and ran
+8 forced real asset changes to find the actual bottleneck rather than
+guessing: `open_picker` (~199ms) and `click_row` (~138ms) and
+`close_dropdown_modal` (~87ms) are real, necessary browser interactions -
+but three `_probe_state()` calls (`probe_search` ~56ms, `probe_row` ~31ms,
+`probe_symbol_confirmed` ~20ms = ~107ms, ~15% of the total) were pure
+diagnostic overhead: their found/visible/enabled results were only ever
+fed into a log line, never a control-flow decision - the actual
+correctness checks are separate `expect()` calls that are unchanged and
+still run every time. Removed those three (plus one more diagnostic-only
+`inner_text()` call and an unused `match_count`), keeping every real
+verification intact. Measured before/after with the production benchmark:
+asset-change latency dropped from an average of 1284.9ms (1340.3, 1198.0,
+1325.9, 1275.4) to 1173.4ms (1168.8, 1168.3, 1176.1, 1180.3) - a 111.5ms
+(~8.7%) reduction, matching the predicted ~107ms almost exactly. Regression
+suite (16/16) passes.
+
 ## Next priorities
 The full-observability data (not assumptions) points to, in order:
-1. Attack asset-selection latency directly, now precisely quantified at
-   ~536ms average across all trades but clearly bimodal - ~25-58ms when
-   already selected, ~1.2-1.34s when the asset must change.
+1. Apply the same diagnostic-overhead-removal pattern to `select_expiry`,
+   `set_amount`, `verify_direction_controls_ready`, and `click_direction`,
+   which use the identical `_probe_state`+`_log_selector_event` idiom -
+   not yet measured/confirmed to matter as much there, but the same
+   zero-risk logic applies (these calls don't feed any control-flow
+   decision, only a log line).
 2. Tune `wait_for_trade_result`'s `settlement_buffer_seconds` down from its
    current 8s default - every trade in recent re-measurements succeeded on
    its first read attempt, suggesting real settlement completes faster

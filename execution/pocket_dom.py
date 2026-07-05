@@ -271,29 +271,25 @@ async def select_asset(page, asset_name, timeout=DEFAULT_TIMEOUT_MS):
                 await page.locator(SEL_ASSET_TRIGGER).first.click(timeout=timeout)
                 await expect(panel).to_be_visible(timeout=timeout)
 
-            # 1. Asset search selector
+            # Asset search input. No _probe_state()/_log_selector_event()
+            # here (removed - measured via fine-grained timing at ~56ms per
+            # call, pure diagnostic overhead: found/visible/enabled were
+            # only ever fed into a log line, never a control-flow decision.
+            # The actual correctness checks are the two expect() calls
+            # below, which are unchanged and still run every time.
             search = page.locator(SEL_ASSET_SEARCH_INPUT).first
-            found, visible, enabled = await _probe_state(search)
-            _log_selector_event("asset_search_selector", SEL_ASSET_SEARCH_INPUT, timeout, attempt, found, visible, enabled)
             await expect(search).to_be_visible(timeout=timeout)
             await expect(search).to_be_enabled(timeout=timeout)
             await search.fill(search_term, timeout=timeout)
 
-            # 2. Asset selection - explicit OTC / non-OTC disambiguation.
+            # Asset selection - explicit OTC / non-OTC disambiguation.
             # A compact search term can surface both variants of a pair
             # (e.g. "EUR/USD" and "EUR/USD OTC"). Exact-text matching against
             # the full asset_name - which itself does or doesn't carry the
             # "OTC" suffix - is what picks the correct row. Never assume the
             # first result is correct.
             matches = panel.get_by_text(asset_name, exact=True)
-            match_count = await matches.count()
             row = matches.first
-            found, visible, enabled = await _probe_state(row)
-            _log_selector_event(
-                "asset_selection",
-                f"text={asset_name!r} within {SEL_ASSETS_BODY} (matching_rows={match_count})",
-                timeout, attempt, found, visible, enabled,
-            )
             await expect(row).to_be_visible(timeout=timeout)
 
             tradeable = await row.evaluate("""
@@ -311,10 +307,9 @@ async def select_asset(page, asset_name, timeout=DEFAULT_TIMEOUT_MS):
                 )
                 raise AssetUntradeableError(asset_name)
 
-            clicked_text = (await row.inner_text()).strip()
             logger.info(
-                "select_asset: search_term=%r matching_rows=%d -> clicking result=%r (wants_otc=%s, target=%r)",
-                search_term, match_count, clicked_text, wants_otc, asset_name,
+                "select_asset: search_term=%r -> clicking target=%r (wants_otc=%s)",
+                search_term, asset_name, wants_otc,
             )
             await row.click(timeout=timeout)
 
@@ -323,9 +318,7 @@ async def select_asset(page, asset_name, timeout=DEFAULT_TIMEOUT_MS):
 
             await _close_active_dropdown_modal(page, timeout=timeout)
 
-            found, visible, enabled = await _probe_state(symbol)
-            _log_selector_event("asset_selection_confirmed", SEL_CURRENT_SYMBOL, timeout, attempt, found, visible, enabled)
-            logger.info("select_asset: final result clicked=%r confirmed on screen", clicked_text)
+            logger.info("select_asset: %r confirmed on screen", asset_name)
             return
         except _RETRYABLE_ERRORS as e:
             last_reason = str(e)
