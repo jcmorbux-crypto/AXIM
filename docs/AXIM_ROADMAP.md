@@ -179,16 +179,25 @@ This closes out the `_probe_state`/`_log_selector_event` cleanup across
 all of `pocket_dom.py` - every remaining call to those helpers is now
 either on a genuine failure-diagnostic path or gone.
 
+### settlement_buffer_seconds tuned down (done)
+Built a dedicated probe: 6 real trades, each polled every 250ms starting
+exactly at nominal expiry (zero buffer) to find precisely how long after
+expiry the Closed-tab item actually appears. Result: 172-250ms (avg
+206ms) - the previous 8s default was roughly 32x more than needed. Tuned
+`wait_for_trade_result`'s default down to 2s (a real ~8x margin over the
+observed max, with the existing bounded retry loop still in place as a
+safety net for any outlier). Verified with a full 10-trade production
+benchmark: every trade succeeded on its first read attempt, no retries -
+`outcome_detection_ms` averaged 2424.9ms (range 2312-2813ms), down from
+the previous 8s-buffer average of ~8362ms, a ~5937ms (~71%) reduction in
+post-click dead time per trade. Regression suite (16/16) passes.
+
 ## Next priorities
 The full-observability data (not assumptions) points to, in order:
-1. Tune `wait_for_trade_result`'s `settlement_buffer_seconds` down from its
-   current 8s default - every trade in recent re-measurements succeeded on
-   its first read attempt, suggesting real settlement completes faster
-   than that.
-2. Live-fire-test the process-level supervisor (deliberately kill the
+1. Live-fire-test the process-level supervisor (deliberately kill the
    listener/browser) to get real recovery-rate data instead of "no data yet".
-3. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
+2. Build the actual Performance Dashboard UI (deferred from Phase 3 per the
    scope decision above) - now has a real data source to draw from
    (`core/timeline_report.py`'s per-trade/aggregate data).
-4. Live-mode readiness review before `ARMED` is ever considered for
+3. Live-mode readiness review before `ARMED` is ever considered for
    anything beyond deliberate, watched demo validation.

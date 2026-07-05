@@ -665,10 +665,19 @@ def _closest_closed_item(items, asset, direction, expected_close_dt):
 
 
 async def wait_for_trade_result(page, expiry_seconds, asset=None, direction=None,
-                                 settlement_buffer_seconds=8, closed_tab_lock=None):
+                                 settlement_buffer_seconds=2, closed_tab_lock=None):
     """
     Waits for the currently-open trade to close, then classifies win/loss/
     draw from the Closed tab.
+
+    settlement_buffer_seconds default tuned from measurement, not a guess:
+    a dedicated probe (6 real trades) polled every 250ms starting exactly
+    at nominal expiry and found the Closed item actually appears just
+    172-250ms later (avg 206ms) - the previous 8s default was roughly 32x
+    more than needed. 2s keeps a real ~8x margin over the observed max
+    while still cutting 6s of pure dead time off every single trade; the
+    bounded retry loop below remains as a safety net for any outlier
+    slower than that.
 
     Does NOT rely on .no-deals to detect closure. Confirmed via direct live
     testing (two concurrent trades, 15s and 60s expiry, watched every 2s):
