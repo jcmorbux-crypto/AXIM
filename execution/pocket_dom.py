@@ -334,7 +334,6 @@ async def select_asset(page, asset_name, timeout=DEFAULT_TIMEOUT_MS):
 async def select_expiry(page, expiry_str, timeout=DEFAULT_TIMEOUT_MS):
     hours, minutes, seconds = _expiry_to_hms(expiry_str)
     targets = [f"{hours:02d}", f"{minutes:02d}", f"{seconds:02d}"]
-    labels = ["hours", "minutes", "seconds"]
     target_display = f"{targets[0]}:{targets[1]}:{targets[2]}"
 
     if await _read_current_expiry_display(page) == target_display:
@@ -344,11 +343,17 @@ async def select_expiry(page, expiry_str, timeout=DEFAULT_TIMEOUT_MS):
     last_reason = None
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
+            # No _probe_state()/_log_selector_event() here or in the field
+            # loop below (removed - same reasoning as select_asset: these
+            # found/visible/enabled reads were only ever fed into a log
+            # line, never a control-flow decision, and this loop ran the
+            # probe 3 times, once per hours/minutes/seconds field. The
+            # actual correctness checks are trigger.click()'s own
+            # actionability wait plus the expect() per field, both
+            # unchanged and still run every time).
             panel = page.locator(SEL_EXPIRY_PANEL)
             if not await panel.is_visible():
                 trigger = page.locator(SEL_EXPIRY_TRIGGER).first
-                found, visible, enabled = await _probe_state(trigger)
-                _log_selector_event("expiration_selector_trigger", SEL_EXPIRY_TRIGGER, timeout, attempt, found, visible, enabled)
                 await trigger.click(timeout=timeout)
 
             inputs = page.locator(SEL_EXPIRY_INPUTS)
@@ -356,11 +361,6 @@ async def select_expiry(page, expiry_str, timeout=DEFAULT_TIMEOUT_MS):
 
             for idx, target in enumerate(targets):
                 field = inputs.nth(idx)
-                found, visible, enabled = await _probe_state(field)
-                _log_selector_event(
-                    f"expiration_selector_{labels[idx]}", f"{SEL_EXPIRY_INPUTS} >> nth={idx}",
-                    timeout, attempt, found, visible, enabled,
-                )
                 await field.fill(target, timeout=timeout)
                 await expect(field).to_have_value(target, timeout=timeout)
 
@@ -387,9 +387,10 @@ async def set_amount(page, amount, timeout=DEFAULT_TIMEOUT_MS):
     last_reason = None
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
+            # No _probe_state()/_log_selector_event() here - same reasoning
+            # as select_asset/select_expiry: purely diagnostic, the actual
+            # correctness checks are the two expect() calls below.
             field = page.locator(SEL_AMOUNT_INPUT).first
-            found, visible, enabled = await _probe_state(field)
-            _log_selector_event("amount_selector", SEL_AMOUNT_INPUT, timeout, attempt, found, visible, enabled)
             await expect(field).to_be_visible(timeout=timeout)
             await expect(field).to_be_enabled(timeout=timeout)
             await field.fill(target, timeout=timeout)

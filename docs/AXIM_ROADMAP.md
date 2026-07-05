@@ -146,14 +146,25 @@ asset-change latency dropped from an average of 1284.9ms (1340.3, 1198.0,
 (~8.7%) reduction, matching the predicted ~107ms almost exactly. Regression
 suite (16/16) passes.
 
+Applied the same removal to `select_expiry` (probe was called 3 times per
+call - once per hours/minutes/seconds field) and `set_amount`. Measured
+before/after by stashing the change, re-measuring the pre-optimization
+code with a dedicated forced-change probe (8 real expiry/amount changes),
+then restoring and re-measuring: `select_expiry` dropped from an average
+of 323.6ms to 232.1ms (91.5ms, ~28.3%), `set_amount` from 104.9ms to
+76.0ms (28.9ms, ~27.5%) - both larger relative wins than `select_asset`,
+consistent with the field-loop calling the probe more times.
+`verify_direction_controls_ready` and `click_direction` still use the same
+idiom and haven't been touched yet. Regression suite (16/16) and a full
+10-trade production benchmark both pass end to end.
+
 ## Next priorities
 The full-observability data (not assumptions) points to, in order:
-1. Apply the same diagnostic-overhead-removal pattern to `select_expiry`,
-   `set_amount`, `verify_direction_controls_ready`, and `click_direction`,
-   which use the identical `_probe_state`+`_log_selector_event` idiom -
-   not yet measured/confirmed to matter as much there, but the same
-   zero-risk logic applies (these calls don't feed any control-flow
-   decision, only a log line).
+1. Apply the same diagnostic-overhead-removal pattern to
+   `verify_direction_controls_ready` and `click_direction`, the two
+   remaining functions using the `_probe_state`+`_log_selector_event`
+   idiom - not yet measured/confirmed to matter as much there, but the
+   same zero-risk logic applies.
 2. Tune `wait_for_trade_result`'s `settlement_buffer_seconds` down from its
    current 8s default - every trade in recent re-measurements succeeded on
    its first read attempt, suggesting real settlement completes faster
