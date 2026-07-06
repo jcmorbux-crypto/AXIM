@@ -1,5 +1,25 @@
 # AXIM UI Implementation Plan
 
+**Product direction change:** AXIM is pivoting from an always-on
+continuous listener to bounded, user-configured **trading sessions** -
+see `docs/AXIM_SESSION_ARCHITECTURE.md` for the full spec (session
+start/stop conditions, interactive Telegram-bot signal sourcing,
+session-scoped money management, the new Trading Sessions UI page). That
+document is now the source of truth for anything session-related;
+Phases 1-3 below (channel manager, money management, live dashboard) are
+still valid and still in place - the pivot adds a session layer on top of
+them, it doesn't throw them away. Phase 4 below is being superseded by
+the session architecture's own "Suggested build order" rather than
+"controls end-to-end" as originally scoped.
+
+One change already made as part of the pivot: `cooldown_after_loss_seconds`
+defaulted to 300s (5 min after every loss) - it now defaults to `0`
+(disabled) in both `config/settings.py` and `.env`, per
+`docs/AXIM_SESSION_ARCHITECTURE.md` section 3 ("No Cooldown
+Requirement"). The mechanism itself is unchanged and still available as
+an explicit opt-in override via `PUT /api/settings` - it's just no longer
+a default-on behavior.
+
 ## Goal
 A usable desktop/web UI to control AXIM without editing code or `.env`:
 Telegram source manager, signal parsing settings, money management,
@@ -108,13 +128,41 @@ and safety confirmations before anything live-money-adjacent.
      selector, but not implemented this phase (would need its own live
      verification against the trading-adjacent code, not rushed in here).
 
-4. **Controls end-to-end + safety**
-   - Start/Stop/Pause/Test-mode/Emergency-stop all wired to real effect,
-     not just UI state
-   - Confirmation dialog before flipping to live trading (`ACCOUNT=LIVE`),
-     showing current risk settings
-   - Secrets (`.env` values) never sent to the UI/API responses
+4. **Controls end-to-end + safety - DONE (global/single-listener scope)**
+   - Start/Stop/Pause/Emergency-stop: already wired to real effect (not
+     just UI state) since Phase 1 - process control via the Windows
+     Scheduled Task, pause/emergency-stop via `ui_control_state`.
+   - **Test mode - DONE**: `ui_control_state.test_mode` (new column,
+     same shape as `paused`/`emergency_stop`), checked in
+     `trade_coordinator.py` right alongside the existing static
+     `PREVIEW_ONLY`/`AUTO_EXECUTE` .env gate - purely additive, can only
+     add a reason to skip the real browser click, never removes the
+     static safety default. `POST /api/control/test-mode/enable` /
+     `/disable`. UI: a Test Mode badge + toggle in the Trading panel.
+   - **Confirmation-before-start - DONE**: `confirmStart()` in
+     `web/index.html` fetches `/api/settings` + `/api/pocket-option/status`
+     and shows the operator a summary of current risk settings (sizing
+     mode, max trade amount, daily loss limit, max trades/day,
+     consecutive-loss stop, next trade's computed size) before calling
+     `POST /api/process/start`. If `account_mode` is `LIVE`, requires
+     typing `START LIVE` verbatim as a second confirmation step.
+   - Secrets: verified `api/main.py` never imports or returns
+     `TELEGRAM_API_ID`/`API_HASH`/`PHONE`/`PO_EMAIL`/`PO_PASSWORD` -
+     structurally impossible to leak them since the API process never
+     touches those constants at all, not just "the code happens not to
+     serialize them."
+   - **Superseded by the session pivot for anything session-scoped**:
+     per-session start/stop, session-scoped confirmation-before-each-signal
+     in Live mode, etc. now live in
+     `docs/AXIM_SESSION_ARCHITECTURE.md` sections 6/7 instead of here.
 
-5. **Package as desktop app**
+5. **Session architecture** - see `docs/AXIM_SESSION_ARCHITECTURE.md` in
+   full. Not yet built; planning only as of this pivot. Suggested order
+   there: session/profile schema -> session-scoped risk checks in a new
+   `core/session_manager.py` -> passive-channel sessions end-to-end ->
+   interactive Telegram-bot signal sourcing -> martingale/compounding/
+   profit-vault money-management profile fields.
+
+6. **Package as desktop app**
    - Tauri wrapping the same web UI + a bundled Python backend, once the
      web version is fully featured - no UI rewrite needed for this step

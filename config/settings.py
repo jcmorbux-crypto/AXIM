@@ -41,7 +41,10 @@ SAVE_HTML = os.getenv("SAVE_HTML", "false").lower() == "true"
 MAX_TRADE_AMOUNT = float(os.getenv("MAX_TRADE_AMOUNT", 50))
 MAX_TRADES_PER_HOUR = int(os.getenv("MAX_TRADES_PER_HOUR", 10))
 MAX_CONSECUTIVE_LOSSES = int(os.getenv("MAX_CONSECUTIVE_LOSSES", 3))
-COOLDOWN_AFTER_LOSS_SECONDS = int(os.getenv("COOLDOWN_AFTER_LOSS_SECONDS", 300))
+# Off by default (0) as of docs/AXIM_SESSION_ARCHITECTURE.md section 3 -
+# AXIM keeps trading within an active session after a loss unless the
+# user explicitly opts into a cooldown as a custom rule.
+COOLDOWN_AFTER_LOSS_SECONDS = int(os.getenv("COOLDOWN_AFTER_LOSS_SECONDS", 0))
 DUPLICATE_SIGNAL_WINDOW_SECONDS = int(os.getenv("DUPLICATE_SIGNAL_WINDOW_SECONDS", 120))
 # Drawdown circuit breaker - flagged as a genuine gap in
 # docs/AXIM_LIVE_READINESS_REVIEW.md: MAX_CONSECUTIVE_LOSSES alone never
