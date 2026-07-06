@@ -166,3 +166,20 @@ def parse_signal(message):
     signal["raw_message"] = message
 
     return signal
+
+
+def apply_signal_rules(message, rules):
+    """Applies channel-specific find/replace rules (core/database.py's
+    signal_rules table) to a raw message BEFORE parse_signal() sees it -
+    e.g. a channel that spells its label unusually can be normalized to
+    whatever parse_signal() already recognizes, without a second parser
+    implementation. `rules` is an iterable of dicts with find_pattern/
+    replace_with keys (already filtered to enabled=1 by the caller).
+    A rule with an invalid regex is skipped rather than raising, so one
+    bad saved rule can't take down every message from that channel."""
+    for rule in rules:
+        try:
+            message = re.sub(rule["find_pattern"], rule["replace_with"], message)
+        except re.error:
+            continue
+    return message

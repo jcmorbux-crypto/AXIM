@@ -20,7 +20,7 @@ sys.path.insert(0, "execution")
 sys.path.insert(0, "core")
 sys.path.insert(0, "config")
 
-from signal_parser import parse_signal
+from signal_parser import parse_signal, apply_signal_rules
 from trade_coordinator import TradeCoordinator
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
@@ -127,6 +127,17 @@ async def handler(event):
     chat_title = getattr(chat, "title", "") or getattr(chat, "first_name", "") or ""
     chat_username = getattr(chat, "username", "") or ""
 
+    # Captured unconditionally - even for channels not yet enabled/allowed -
+    # so the Telegram Sources / Signal Inspector pages can show "last
+    # message received" and a recent-messages preview for a channel BEFORE
+    # the operator decides whether to enable it, not just after.
+    try:
+        database.record_channel_message(
+            chat_id=event.chat_id, username=chat_username, title=chat_title, message_text=event.raw_text,
+        )
+    except Exception as e:
+        logger.error("telegram_listener: record_channel_message failed: %s", e)
+
     if TELEGRAM_DEBUG_LOG:
         debug_sender = await event.get_sender()
         filter_decision = channel_allowed(chat_title, chat_username)
@@ -166,7 +177,19 @@ async def handler(event):
     print(f"Sender : {sender.id}")
     print(f"Message:\n{_debug_safe(event.raw_text)}")
 
-    signal = parse_signal(event.raw_text)
+    # Channel-specific find/replace rules (Signal Inspector's "Save Rule
+    # for This Channel") run BEFORE the real parser, never as a
+    # replacement for it - resolves the row the same way
+    # record_channel_signal_seen already does, so a channel seeded from
+    # .env without a real chat_id yet still matches by username/title.
+    message_text = event.raw_text
+    channel_row = database.find_channel(chat_id=event.chat_id, username=chat_username, title=chat_title)
+    if channel_row:
+        rules = database.get_enabled_rules_for_channel(channel_row["id"])
+        if rules:
+            message_text = apply_signal_rules(message_text, rules)
+
+    signal = parse_signal(message_text)
     timeline.mark("signal_parsed")
 
     if signal:

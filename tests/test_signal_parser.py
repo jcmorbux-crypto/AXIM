@@ -5,7 +5,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "parsers"))
 
-from signal_parser import parse_signal
+from signal_parser import parse_signal, apply_signal_rules
 
 
 class SignalParserTests(unittest.TestCase):
@@ -140,6 +140,28 @@ class SignalParserTests(unittest.TestCase):
             with self.subTest(label=label):
                 signal = parse_signal(f"{label}: Toncoin OTC\nSignal: BUY\nExpiration: M1")
                 self.assertEqual(signal["asset"], "Toncoin OTC")
+
+
+class ApplySignalRulesTests(unittest.TestCase):
+    def test_single_rule_transforms_before_parse(self):
+        rules = [{"find_pattern": r"Signal:\s*", "replace_with": "Direction: "}]
+        transformed = apply_signal_rules("Currency pair: EUR/NZD OTC\nSignal: BUY", rules)
+        self.assertIn("Direction: BUY", transformed)
+
+    def test_no_rules_returns_message_unchanged(self):
+        self.assertEqual(apply_signal_rules("unchanged text", []), "unchanged text")
+
+    def test_multiple_rules_applied_in_order(self):
+        rules = [
+            {"find_pattern": "FOO", "replace_with": "BAR"},
+            {"find_pattern": "BAR", "replace_with": "BAZ"},
+        ]
+        self.assertEqual(apply_signal_rules("FOO", rules), "BAZ")
+
+    def test_invalid_regex_rule_is_skipped_not_raised(self):
+        rules = [{"find_pattern": "(unclosed", "replace_with": "x"}]
+        # Should not raise, and the message passes through unmodified.
+        self.assertEqual(apply_signal_rules("hello", rules), "hello")
 
 
 if __name__ == "__main__":

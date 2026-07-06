@@ -13,6 +13,7 @@ the existing core/dashboard_server.py.
 Run: python -m uvicorn api.main:app --host 127.0.0.1 --port 8090
 """
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -52,6 +53,7 @@ from logger import get_logger
 
 import auth_routes as auth_module
 import admin as admin_module
+import telegram_admin as telegram_admin_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -87,6 +89,7 @@ database.initialize_database()
 app = FastAPI(title="AXIM Control API")
 app.include_router(auth_module.router)
 app.include_router(admin_module.router)
+app.include_router(telegram_admin_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -105,6 +108,24 @@ def _serve(filename):
 
 
 class ChannelToggle(BaseModel):
+    enabled: bool
+
+
+class ChannelConfigUpdate(BaseModel):
+    source_type: Optional[str] = None
+    priority: Optional[int] = None
+    trigger_command: Optional[str] = None
+    command_wait_for_result: Optional[bool] = None
+    max_requests_per_session: Optional[int] = None
+
+
+class SignalRuleCreate(BaseModel):
+    find_pattern: str
+    replace_with: str
+    rule_name: Optional[str] = None
+
+
+class SignalRuleToggle(BaseModel):
     enabled: bool
 
 
@@ -159,6 +180,16 @@ def users_page():
     return _serve("users.html")
 
 
+@app.get("/telegram")
+def telegram_page():
+    return _serve("telegram.html")
+
+
+@app.get("/inspector")
+def inspector_page():
+    return _serve("inspector.html")
+
+
 @app.get("/legacy")
 def legacy_page():
     """The original dark-theme single-page control UI - kept reachable
@@ -191,6 +222,66 @@ async def sync_channels(user=Depends(require_admin)):
 def set_channel_enabled(channel_id: int, body: ChannelToggle, user=Depends(require_admin)):
     database.set_channel_enabled(channel_id, body.enabled)
     return {"id": channel_id, "enabled": body.enabled}
+
+
+def _get_channel_or_404(channel_id):
+    channels = {c["id"]: c for c in database.list_channels()}
+    if channel_id not in channels:
+        raise HTTPException(status_code=404, detail="channel not found")
+    return channels[channel_id]
+
+
+@app.patch("/api/channels/{channel_id}/config")
+def set_channel_config(channel_id: int, body: ChannelConfigUpdate, user=Depends(require_admin)):
+    _get_channel_or_404(channel_id)
+    updates = body.model_dump(exclude_unset=True)
+    try:
+        database.set_channel_config(channel_id, **updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _get_channel_or_404(channel_id)
+
+
+@app.get("/api/channels/{channel_id}/messages")
+def channel_messages(channel_id: int, limit: int = 25, user=Depends(get_current_user)):
+    channel = _get_channel_or_404(channel_id)
+    return database.list_recent_channel_messages(chat_id=channel["chat_id"], username=channel["username"], limit=limit)
+
+
+@app.get("/api/channels/{channel_id}/performance")
+def channel_performance(channel_id: int, user=Depends(get_current_user)):
+    channel = _get_channel_or_404(channel_id)
+    return database.get_channel_performance(channel["title"])
+
+
+@app.get("/api/channels/{channel_id}/rules")
+def list_channel_rules(channel_id: int, user=Depends(get_current_user)):
+    _get_channel_or_404(channel_id)
+    return database.list_signal_rules(channel_id)
+
+
+@app.post("/api/channels/{channel_id}/rules")
+def create_channel_rule(channel_id: int, body: SignalRuleCreate, user=Depends(require_admin)):
+    _get_channel_or_404(channel_id)
+    try:
+        re.compile(body.find_pattern)
+    except re.error as e:
+        raise HTTPException(status_code=400, detail=f"invalid regex: {e}")
+    rule_id = database.create_signal_rule(channel_id, body.find_pattern, body.replace_with, body.rule_name)
+    logger.info("api: signal rule created by %s for channel %s", user["email"], channel_id)
+    return {"id": rule_id}
+
+
+@app.patch("/api/signal-rules/{rule_id}")
+def toggle_signal_rule(rule_id: int, body: SignalRuleToggle, user=Depends(require_admin)):
+    database.set_signal_rule_enabled(rule_id, body.enabled)
+    return {"id": rule_id, "enabled": body.enabled}
+
+
+@app.delete("/api/signal-rules/{rule_id}")
+def remove_signal_rule(rule_id: int, user=Depends(require_admin)):
+    database.delete_signal_rule(rule_id)
+    return {"status": "deleted"}
 
 
 @app.get("/api/control")

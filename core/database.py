@@ -21,6 +21,18 @@ _NEW_COLUMNS = {
     "category_timings_json": "TEXT",
 }
 
+# source_type: "passive" (default - existing behavior) | "bot_command"
+# (docs/AXIM_SESSION_ARCHITECTURE.md's interactive-bot workflow) | "group"
+# | "manual_review". The bot_command-only fields are simply unused/NULL
+# for every other source_type rather than living in a separate table.
+_NEW_CHANNEL_COLUMNS = {
+    "source_type": "TEXT DEFAULT 'passive'",
+    "priority": "INTEGER DEFAULT 0",
+    "trigger_command": "TEXT",
+    "command_wait_for_result": "INTEGER DEFAULT 1",
+    "max_requests_per_session": "INTEGER",
+}
+
 
 def get_connection():
     DB_FILE.parent.mkdir(exist_ok=True)
@@ -38,6 +50,11 @@ def _migrate_schema(conn):
     control_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ui_control_state)")}
     if "test_mode" not in control_columns:
         conn.execute("ALTER TABLE ui_control_state ADD COLUMN test_mode INTEGER DEFAULT 0")
+
+    channel_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ui_channels)")}
+    for column, sql_type in _NEW_CHANNEL_COLUMNS.items():
+        if column not in channel_columns:
+            conn.execute(f"ALTER TABLE ui_channels ADD COLUMN {column} {sql_type}")
 
 
 def initialize_database():
@@ -96,7 +113,60 @@ def initialize_database():
         enabled INTEGER DEFAULT 0,
         last_signal_at TEXT,
         last_synced_at TEXT,
+        created_at TEXT,
+        source_type TEXT DEFAULT 'passive',
+        priority INTEGER DEFAULT 0,
+        trigger_command TEXT,
+        command_wait_for_result INTEGER DEFAULT 1,
+        max_requests_per_session INTEGER
+    );
+    """)
+
+    # Raw incoming Telegram messages, captured regardless of whether they
+    # parsed as a tradeable signal - core/telegram_listener.py writes one
+    # row per message received. Distinct from `signals` (which only exists
+    # for messages that reached record_signal_received) - this is what
+    # powers "last message received" and the Signal Inspector's recent-
+    # messages viewer, including messages the parser rejected outright.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS channel_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT,
+        username TEXT,
+        title TEXT,
+        message_text TEXT,
+        received_at TEXT
+    );
+    """)
+
+    # Per-channel custom parsing override - a simple regex substitution
+    # applied to the raw message BEFORE it reaches the normal
+    # parsers/signal_parser.parse_signal(), rather than a second parser
+    # implementation. NULL channel_id means "no per-channel rule saved yet"
+    # is simply "no row" - there is no global/default rule concept here.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS signal_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        rule_name TEXT,
+        find_pattern TEXT NOT NULL,
+        replace_with TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
         created_at TEXT
+    );
+    """)
+
+    # Encrypted-at-rest Telegram API credentials (core/secrets_store.py) -
+    # lets the operator enter API ID/Hash/phone through the UI instead of
+    # editing .env. Singleton row; falls back to .env (config/settings.py)
+    # if this table is empty, so existing installs don't regress.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS telegram_credentials (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        api_id_encrypted TEXT,
+        api_hash_encrypted TEXT,
+        phone_encrypted TEXT,
+        updated_at TEXT
     );
     """)
 
@@ -480,6 +550,35 @@ def count_with_result_prefix(prefix, since_iso=None):
     return row["n"]
 
 
+@timed("database")
+def get_channel_performance(title):
+    """Win rate / P&L for one channel, matched by title - signals.channel
+    stores the chat_title trade_coordinator.handle_signal() was called
+    with (source=chat_title), not a foreign key to ui_channels.id, so
+    matching by title is the same join every other channel-scoped query
+    in this codebase already relies on."""
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT
+            COUNT(*) AS total_closed,
+            SUM(CASE WHEN result = 'win' THEN 1 ELSE 0 END) AS wins,
+            SUM(CASE WHEN result = 'loss' THEN 1 ELSE 0 END) AS losses,
+            SUM(profit_loss) AS profit_loss
+        FROM signals
+        WHERE channel = ? AND execution_status IN ('result_win', 'result_loss', 'result_draw')
+    """, (title,)).fetchone()
+    conn.close()
+    total = row["total_closed"] or 0
+    wins = row["wins"] or 0
+    return {
+        "total_closed": total,
+        "wins": wins,
+        "losses": row["losses"] or 0,
+        "win_rate": (wins / total) if total > 0 else None,
+        "profit_loss": row["profit_loss"] if row["profit_loss"] is not None else 0.0,
+    }
+
+
 # ---------------------------------------------------------------------
 # UI-managed channel allow-list (api/, core/telegram_channels.py,
 # core/telegram_listener.py)
@@ -576,6 +675,227 @@ def record_channel_signal_seen(chat_id=None, username=None, title=None):
         )
     conn.commit()
     conn.close()
+
+
+@timed("database")
+def find_channel(chat_id=None, username=None, title=None):
+    """Same match precedence as record_channel_signal_seen (chat_id, then
+    username, then title substring) - returns the first matching
+    ui_channels row as a dict, or None."""
+    conn = get_connection()
+    row = None
+    if chat_id is not None:
+        row = conn.execute("SELECT * FROM ui_channels WHERE chat_id = ?", (str(chat_id),)).fetchone()
+    if row is None and username:
+        row = conn.execute(
+            "SELECT * FROM ui_channels WHERE username IS NOT NULL AND LOWER(username) = LOWER(?)", (username,)
+        ).fetchone()
+    if row is None and title:
+        row = conn.execute(
+            "SELECT * FROM ui_channels WHERE title IS NOT NULL AND INSTR(LOWER(?), LOWER(title)) > 0", (title,)
+        ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+_CHANNEL_CONFIG_FIELDS = {
+    "source_type", "priority", "trigger_command",
+    "command_wait_for_result", "max_requests_per_session",
+}
+_VALID_SOURCE_TYPES = {"passive", "bot_command", "group", "manual_review"}
+
+
+@timed("database")
+def set_channel_config(channel_id, **fields):
+    for key in fields:
+        if key not in _CHANNEL_CONFIG_FIELDS:
+            raise ValueError(f"Unknown channel config field: {key!r}")
+    if "source_type" in fields and fields["source_type"] not in _VALID_SOURCE_TYPES:
+        raise ValueError(f"Invalid source_type: {fields['source_type']!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [channel_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE ui_channels SET {', '.join(set_clauses)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------
+# Raw incoming message capture (per channel) - core/telegram_listener.py
+# writes, api/ + Signal Inspector read
+# ---------------------------------------------------------------------
+
+@timed("database")
+def record_channel_message(chat_id=None, username=None, title=None, message_text=""):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO channel_messages (chat_id, username, title, message_text, received_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (str(chat_id) if chat_id is not None else None, username, title, message_text, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_last_channel_message(chat_id=None, username=None):
+    conn = get_connection()
+    if chat_id is not None:
+        row = conn.execute(
+            "SELECT * FROM channel_messages WHERE chat_id = ? ORDER BY received_at DESC LIMIT 1", (str(chat_id),)
+        ).fetchone()
+    elif username:
+        row = conn.execute(
+            "SELECT * FROM channel_messages WHERE LOWER(username) = LOWER(?) ORDER BY received_at DESC LIMIT 1",
+            (username,),
+        ).fetchone()
+    else:
+        row = None
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def list_recent_channel_messages(chat_id=None, username=None, limit=25):
+    conn = get_connection()
+    if chat_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM channel_messages WHERE chat_id = ? ORDER BY received_at DESC LIMIT ?",
+            (str(chat_id), limit),
+        ).fetchall()
+    elif username:
+        rows = conn.execute(
+            "SELECT * FROM channel_messages WHERE LOWER(username) = LOWER(?) ORDER BY received_at DESC LIMIT ?",
+            (username, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM channel_messages ORDER BY received_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------
+# Per-channel custom parsing rules (signal_rules) - api/, telegram_listener.py
+# A rule is a simple find/replace applied to the raw message text BEFORE
+# parsers/signal_parser.parse_signal() sees it - not a second parser.
+# ---------------------------------------------------------------------
+
+@timed("database")
+def create_signal_rule(channel_id, find_pattern, replace_with, rule_name=None):
+    conn = get_connection()
+    cursor = conn.execute(
+        """INSERT INTO signal_rules (channel_id, rule_name, find_pattern, replace_with, enabled, created_at)
+           VALUES (?, ?, ?, ?, 1, ?)""",
+        (channel_id, rule_name, find_pattern, replace_with, datetime.now().isoformat()),
+    )
+    conn.commit()
+    rule_id = cursor.lastrowid
+    conn.close()
+    return rule_id
+
+
+@timed("database")
+def list_signal_rules(channel_id=None):
+    conn = get_connection()
+    if channel_id is not None:
+        rows = conn.execute("SELECT * FROM signal_rules WHERE channel_id = ? ORDER BY id", (channel_id,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM signal_rules ORDER BY id").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def get_enabled_rules_for_channel(channel_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM signal_rules WHERE channel_id = ? AND enabled = 1 ORDER BY id", (channel_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def delete_signal_rule(rule_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM signal_rules WHERE id = ?", (rule_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def set_signal_rule_enabled(rule_id, enabled):
+    conn = get_connection()
+    conn.execute("UPDATE signal_rules SET enabled = ? WHERE id = ?", (1 if enabled else 0, rule_id))
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------
+# Encrypted Telegram credentials - core/secrets_store.py does the actual
+# encryption; this module only ever stores/returns ciphertext, except
+# get_decrypted_telegram_credentials() which is for internal use by the
+# Telegram client code itself, never exposed over HTTP as plaintext.
+# ---------------------------------------------------------------------
+
+@timed("database")
+def set_telegram_credentials(api_id, api_hash, phone):
+    import secrets_store
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO telegram_credentials (id, api_id_encrypted, api_hash_encrypted, phone_encrypted, updated_at)
+        VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            api_id_encrypted = excluded.api_id_encrypted,
+            api_hash_encrypted = excluded.api_hash_encrypted,
+            phone_encrypted = excluded.phone_encrypted,
+            updated_at = excluded.updated_at
+    """, (
+        secrets_store.encrypt(str(api_id)), secrets_store.encrypt(api_hash), secrets_store.encrypt(phone),
+        datetime.now().isoformat(),
+    ))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_telegram_credentials_status():
+    """Masked view for the UI - never the real values."""
+    import secrets_store
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM telegram_credentials WHERE id = 1").fetchone()
+    conn.close()
+    if row is None or not row["api_id_encrypted"]:
+        return {"configured": False, "phone_masked": None, "updated_at": None}
+    phone = secrets_store.decrypt(row["phone_encrypted"])
+    return {
+        "configured": True,
+        "phone_masked": secrets_store.mask(phone),
+        "updated_at": row["updated_at"],
+    }
+
+
+@timed("database")
+def get_decrypted_telegram_credentials():
+    """Internal use only (core/telegram_channels.py, core/telegram_listener.py)
+    - returns (api_id, api_hash, phone) or None if nothing is stored yet,
+    in which case callers fall back to the .env-derived config/settings.py
+    constants. Never call this from an HTTP-facing function."""
+    import secrets_store
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM telegram_credentials WHERE id = 1").fetchone()
+    conn.close()
+    if row is None or not row["api_id_encrypted"]:
+        return None
+    return (
+        int(secrets_store.decrypt(row["api_id_encrypted"])),
+        secrets_store.decrypt(row["api_hash_encrypted"]),
+        secrets_store.decrypt(row["phone_encrypted"]),
+    )
 
 
 # ---------------------------------------------------------------------

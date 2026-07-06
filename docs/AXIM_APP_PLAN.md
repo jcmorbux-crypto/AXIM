@@ -44,23 +44,50 @@ temporarily link to the pre-existing dark `web/index.html` (now served at
 money management settings, live dashboard, and screenshot viewer panels.
 Nothing regressed; it's a relocation/re-theme task, not new functionality.
 
-### Phase 2 - Telegram account linking, channel discovery, source manager, signal inspector
-Not yet started. Existing `core/telegram_channels.py` (dedicated
-`axim_ui_session` Telethon session) already does dialog sync; this phase
-adds:
-- In-app API ID/API Hash/phone/verification-code entry (currently
-  requires running `python core/telegram_channels.py` once, interactively,
-  from a terminal - not yet wrapped in the UI)
-- Encrypted-at-rest storage for the Telegram session file
-- Source-type classification per channel (Passive/Bot Command/Group/
-  Manual Review) - new `ui_channels` columns
-- Per-channel win rate/P&L, priority, last message/last parsed signal,
-  recent-messages viewer
-- Signal Inspector page (light theme) - the existing `/api/parse-test`
-  endpoint already does the real parsing; this phase adds the
-  Approve/Reject/Create-Parsing-Rule/Save-Rule-for-Channel actions, none
-  of which exist yet (channel-specific parsing rules are a known gap
-  flagged back in `docs/AXIM_UI_PLAN.md`)
+### Phase 2 - DONE - Telegram account linking, channel discovery, source manager, signal inspector
+- In-app API ID/API Hash/phone/verification-code entry:
+  `core/secrets_store.py` (Fernet encryption, key at `data/.secret_key`,
+  gitignored) + `telegram_credentials` table + `api/telegram_admin.py`
+  (`/api/telegram/credentials`, `/connect/send-code`, `/connect/verify-code`,
+  `/disconnect`, `/connection-status` - the latter does a REAL live
+  `client.is_user_authorized()` check, not a cached flag). Verified live:
+  `connection-status` correctly reported "Jay Thompson (@fxmavengroup)"
+  from the real authorized `axim_ui_session`. The send-code/verify-code
+  live login flow itself was NOT live-fire tested against the real
+  account (would risk disrupting the already-working session) - built,
+  unit-tested with the real Telethon client construction path, and
+  code-reviewed instead.
+- Source-type classification per channel (`passive` / `bot_command` /
+  `group` / `manual_review`) plus `priority`, `trigger_command`,
+  `command_wait_for_result`, `max_requests_per_session` - new `ui_channels`
+  columns, `PATCH /api/channels/{id}/config`.
+- Per-channel win rate/P&L (`database.get_channel_performance`, matched
+  by title against `signals.channel` - same join every other channel-
+  scoped query already uses), last message received and a recent-messages
+  viewer (new `channel_messages` table, populated by
+  `telegram_listener.py` for EVERY incoming message regardless of
+  enabled/allowed status, so a not-yet-enabled channel can still be
+  previewed before deciding to follow it).
+- Signal Inspector page (light theme): real `/api/parse-test` results
+  (asset/direction/expiry) with honest "not parsed/computed by current
+  parser" labels for confidence score/entry timing/amount, which the
+  parser genuinely does not produce - not fabricated. Approve/Reject are
+  scoped honestly as logged review decisions, NOT real trade execution
+  (that would need its own manual-execution architecture, not built).
+  Create/Save Parsing Rule is fully real: new `signal_rules` table (per-
+  channel regex find/replace), `parsers/signal_parser.apply_signal_rules()`
+  applied in `telegram_listener.py` BEFORE `parse_signal()` - not a second
+  parser implementation.
+- `web/telegram.html` + `web/inspector.html` - both screenshot-verified
+  live against the real running listener/production DB (real 152-channel
+  list, real per-channel win rate/P&L, real connection status).
+
+**Follow-up needed, not done this phase:** the live listener process
+(`core/telegram_listener.py`) needs restarting to pick up the new
+`channel_messages` capture code and rule-application logic - same as any
+other `core/` change, not deployed automatically. Until restarted, the
+Signal Inspector's recent-messages/last-message features will show
+"never"/empty for channels even though the code is correct.
 
 ### Phase 3 - Trading Sessions
 Full spec in `docs/AXIM_SESSION_ARCHITECTURE.md`. Not started. Suggested

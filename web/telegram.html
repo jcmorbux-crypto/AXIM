@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Telegram Sources - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .type-select { width: auto; padding: 4px 8px; font-size: 12px; }
+  .priority-input { width: 56px; padding: 4px 6px; }
+  .bot-fields { background: var(--blue-soft); border-radius: var(--radius-sm); padding: 8px 10px; margin-top: 6px; }
+  .bot-fields input { margin-bottom: 4px; }
+  .message-item { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .message-item:last-child { border-bottom: none; }
+  .message-time { color: var(--text-faint); font-size: 11px; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Telegram Sources</h1>
+        <div class="subtitle">Connect your Telegram account and choose which channels AXIM follows.</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card full-width">
+        <h3>Connection</h3>
+        <div class="row" style="margin-bottom:10px;">
+          Status: <span id="conn-badge" class="badge off">loading...</span>
+          <span id="conn-detail" class="muted"></span>
+        </div>
+        <div class="row">
+          <button class="primary" onclick="openConnectModal()">Connect / Reconnect Telegram</button>
+          <button onclick="syncChannels()">Refresh Channel List</button>
+          <span id="sync-status" class="muted"></span>
+          <button class="danger" onclick="confirmDisconnect()">Disconnect</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card solid full-width" style="margin-bottom:16px;">
+      <div class="row" style="margin-bottom:14px;">
+        <input type="text" id="filter-input" placeholder="Search channels by name/username..." style="width:280px;" oninput="renderChannels()">
+        <select id="type-filter" onchange="renderChannels()" style="width:auto;">
+          <option value="">All types</option>
+          <option value="passive">Passive Channel</option>
+          <option value="bot_command">Bot Command Channel</option>
+          <option value="group">Group Chat</option>
+          <option value="manual_review">Manual Review</option>
+        </select>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Enabled</th><th>Title</th><th>Username</th><th>Source type</th>
+            <th>Priority</th><th>Last message</th><th>Last signal</th>
+            <th>Win rate</th><th>P/L</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="channels-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<!-- Connect modal -->
+<div class="modal-backdrop" id="connect-modal">
+  <div class="modal">
+    <h2 style="margin-top:0;">Connect Telegram</h2>
+    <div id="connect-step-1">
+      <div class="muted" style="margin-bottom:12px;">Credentials are encrypted at rest and only used server-side.</div>
+      <div class="field"><label>API ID</label><input type="text" id="conn-api-id" placeholder="leave blank to reuse saved/.env credentials"></div>
+      <div class="field"><label>API Hash</label><input type="text" id="conn-api-hash" placeholder="leave blank to reuse saved/.env credentials"></div>
+      <div class="field"><label>Phone number</label><input type="text" id="conn-phone" placeholder="+15551234567"></div>
+      <div id="connect-error-1" class="banner danger" style="display:none;"></div>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="subtle" onclick="closeModal('connect-modal')">Cancel</button>
+        <button class="primary" onclick="submitSendCode()">Send Code</button>
+      </div>
+    </div>
+    <div id="connect-step-2" style="display:none;">
+      <div class="muted" style="margin-bottom:12px;" id="connect-code-sent-msg"></div>
+      <div class="field"><label>Verification code</label><input type="text" id="conn-code"></div>
+      <div class="field"><label>2FA password (only if your account has one)</label><input type="password" id="conn-password"></div>
+      <div id="connect-error-2" class="banner danger" style="display:none;"></div>
+      <div class="row" style="justify-content:flex-end;">
+        <button class="subtle" onclick="closeModal('connect-modal')">Cancel</button>
+        <button class="primary" onclick="submitVerifyCode()">Verify</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Recent messages modal -->
+<div class="modal-backdrop" id="messages-modal">
+  <div class="modal" style="width:520px;">
+    <h2 style="margin-top:0;" id="messages-title">Recent messages</h2>
+    <div id="messages-list" style="max-height:400px; overflow-y:auto;"></div>
+    <div class="row" style="justify-content:flex-end; margin-top:12px;">
+      <button class="subtle" onclick="closeModal('messages-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let allChannels = [];
+let currentMessagesChannelId = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
+
+async function refreshConnectionStatus() {
+  const badge = document.getElementById("conn-badge");
+  const detail = document.getElementById("conn-detail");
+  try {
+    const status = await fetchJSON("/api/telegram/connection-status");
+    if (status.authorized) {
+      badge.textContent = "Connected";
+      badge.className = "badge on";
+      detail.textContent = status.account_name ? `${status.account_name}${status.username ? " (@" + status.username + ")" : ""}` : "";
+    } else if (status.session_exists) {
+      badge.textContent = "Session exists, not authorized";
+      badge.className = "badge warn";
+      detail.textContent = status.note || "";
+    } else {
+      badge.textContent = "Not connected";
+      badge.className = "badge off";
+      detail.textContent = "";
+    }
+  } catch (e) {
+    badge.textContent = "Unknown";
+    badge.className = "badge off";
+    detail.textContent = e.message;
+  }
+}
+
+function openConnectModal() {
+  document.getElementById("connect-step-1").style.display = "block";
+  document.getElementById("connect-step-2").style.display = "none";
+  document.getElementById("connect-error-1").style.display = "none";
+  document.getElementById("connect-error-2").style.display = "none";
+  openModal("connect-modal");
+}
+
+let pendingLoginId = null;
+
+async function submitSendCode() {
+  const errEl = document.getElementById("connect-error-1");
+  errEl.style.display = "none";
+  const body = {};
+  const apiId = document.getElementById("conn-api-id").value;
+  const apiHash = document.getElementById("conn-api-hash").value;
+  const phone = document.getElementById("conn-phone").value;
+  if (apiId) body.api_id = parseInt(apiId, 10);
+  if (apiHash) body.api_hash = apiHash;
+  if (phone) body.phone = phone;
+  try {
+    const result = await fetchJSON("/api/telegram/connect/send-code", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    pendingLoginId = result.pending_id;
+    document.getElementById("connect-code-sent-msg").textContent = result.message;
+    document.getElementById("connect-step-1").style.display = "none";
+    document.getElementById("connect-step-2").style.display = "block";
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  }
+}
+
+async function submitVerifyCode() {
+  const errEl = document.getElementById("connect-error-2");
+  errEl.style.display = "none";
+  try {
+    await fetchJSON("/api/telegram/connect/verify-code", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pending_id: pendingLoginId,
+        code: document.getElementById("conn-code").value,
+        password: document.getElementById("conn-password").value || null,
+      }),
+    });
+    closeModal("connect-modal");
+    refreshConnectionStatus();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  }
+}
+
+async function confirmDisconnect() {
+  if (!confirm("Disconnect Telegram? This logs out the channel-manager session (axim_ui_session) - it does NOT stop the live trading listener's own session, but you'll need to reconnect before syncing channels again. Continue?")) return;
+  try {
+    await fetchJSON("/api/telegram/disconnect", { method: "POST" });
+    refreshConnectionStatus();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function syncChannels() {
+  const statusEl = document.getElementById("sync-status");
+  statusEl.textContent = "syncing...";
+  try {
+    const result = await fetchJSON("/api/channels/sync", { method: "POST" });
+    statusEl.textContent = `synced ${result.synced} dialog(s)`;
+    await refreshChannels();
+  } catch (e) {
+    statusEl.textContent = "sync failed: " + e.message;
+  }
+}
+
+async function refreshChannels() {
+  const tbody = document.getElementById("channels-body");
+  try {
+    allChannels = await fetchJSON("/api/channels");
+    await renderChannels();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="10" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function renderChannels() {
+  const filter = document.getElementById("filter-input").value.toLowerCase();
+  const typeFilter = document.getElementById("type-filter").value;
+  const tbody = document.getElementById("channels-body");
+  const filtered = allChannels.filter(c =>
+    (!filter || (c.title || "").toLowerCase().includes(filter) || (c.username || "").toLowerCase().includes(filter)) &&
+    (!typeFilter || c.source_type === typeFilter)
+  );
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td colspan="10" class="empty">No channels match.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = filtered.map(c => `
+    <tr>
+      <td>
+        <label class="toggle">
+          <input type="checkbox" ${c.enabled ? "checked" : ""} onchange="toggleChannel(${c.id}, this.checked)">
+          <span class="slider"></span>
+        </label>
+      </td>
+      <td class="title-cell">${escapeHtml(c.title || "(no title)")}</td>
+      <td class="muted">${c.username ? "@" + escapeHtml(c.username) : ""}</td>
+      <td>
+        <select class="type-select" onchange="setSourceType(${c.id}, this.value)">
+          <option value="passive" ${c.source_type === "passive" ? "selected" : ""}>Passive</option>
+          <option value="bot_command" ${c.source_type === "bot_command" ? "selected" : ""}>Bot Command</option>
+          <option value="group" ${c.source_type === "group" ? "selected" : ""}>Group Chat</option>
+          <option value="manual_review" ${c.source_type === "manual_review" ? "selected" : ""}>Manual Review</option>
+        </select>
+        ${c.source_type === "bot_command" ? botFields(c) : ""}
+      </td>
+      <td><input type="number" class="priority-input" value="${c.priority || 0}" onchange="setPriority(${c.id}, this.value)"></td>
+      <td class="muted" style="font-size:12px;">${fmtTime(c.last_signal_at) === "never" ? "-" : ""}<span id="lastmsg-${c.id}">loading...</span></td>
+      <td class="muted">${fmtTime(c.last_signal_at)}</td>
+      <td id="winrate-${c.id}" class="muted">-</td>
+      <td id="pl-${c.id}" class="muted">-</td>
+      <td><button class="subtle" onclick="openMessages(${c.id}, '${escapeHtml(c.title || "").replace(/'/g, "")}')">Messages</button></td>
+    </tr>
+  `).join("");
+
+  filtered.forEach(c => {
+    loadLastMessage(c.id);
+    loadPerformance(c.id);
+  });
+}
+
+function botFields(c) {
+  return `
+    <div class="bot-fields">
+      <input type="text" placeholder="/signal" value="${escapeHtml(c.trigger_command || "")}"
+             onchange="setTriggerCommand(${c.id}, this.value)" style="font-size:11.5px;">
+      <label style="display:flex; align-items:center; gap:6px; font-size:11px; margin:0;">
+        <input type="checkbox" style="width:auto;" ${c.command_wait_for_result ? "checked" : ""}
+               onchange="setWaitForResult(${c.id}, this.checked)"> Wait for result before next request
+      </label>
+    </div>
+  `;
+}
+
+async function toggleChannel(id, enabled) {
+  try {
+    await fetchJSON(`/api/channels/${id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+    });
+    const ch = allChannels.find(c => c.id === id);
+    if (ch) ch.enabled = enabled;
+  } catch (e) {
+    alert("Failed: " + e.message);
+    refreshChannels();
+  }
+}
+
+async function setSourceType(id, sourceType) {
+  try {
+    await fetchJSON(`/api/channels/${id}/config`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_type: sourceType }),
+    });
+    await refreshChannels();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function setPriority(id, priority) {
+  try {
+    await fetchJSON(`/api/channels/${id}/config`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ priority: parseInt(priority, 10) || 0 }),
+    });
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function setTriggerCommand(id, value) {
+  try {
+    await fetchJSON(`/api/channels/${id}/config`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trigger_command: value }),
+    });
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function setWaitForResult(id, checked) {
+  try {
+    await fetchJSON(`/api/channels/${id}/config`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command_wait_for_result: checked }),
+    });
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function loadLastMessage(id) {
+  const el = document.getElementById(`lastmsg-${id}`);
+  if (!el) return;
+  try {
+    const messages = await fetchJSON(`/api/channels/${id}/messages?limit=1`);
+    el.textContent = messages.length ? fmtTime(messages[0].received_at) : "never";
+  } catch (e) {
+    el.textContent = "-";
+  }
+}
+
+async function loadPerformance(id) {
+  const winEl = document.getElementById(`winrate-${id}`);
+  const plEl = document.getElementById(`pl-${id}`);
+  if (!winEl) return;
+  try {
+    const perf = await fetchJSON(`/api/channels/${id}/performance`);
+    winEl.textContent = perf.win_rate !== null ? (perf.win_rate * 100).toFixed(1) + "%" : "-";
+    plEl.textContent = perf.total_closed > 0 ? "$" + perf.profit_loss.toFixed(2) : "-";
+    plEl.className = perf.profit_loss > 0 ? "pos" : (perf.profit_loss < 0 ? "neg" : "muted");
+  } catch (e) {
+    winEl.textContent = "-";
+  }
+}
+
+async function openMessages(id, title) {
+  currentMessagesChannelId = id;
+  document.getElementById("messages-title").textContent = `Recent messages - ${title}`;
+  const listEl = document.getElementById("messages-list");
+  listEl.innerHTML = '<div class="empty">Loading...</div>';
+  openModal("messages-modal");
+  try {
+    const messages = await fetchJSON(`/api/channels/${id}/messages?limit=25`);
+    if (!messages.length) {
+      listEl.innerHTML = '<div class="empty">No messages captured yet.</div>';
+      return;
+    }
+    listEl.innerHTML = messages.map(m => `
+      <div class="message-item">
+        <div class="message-time">${fmtTime(m.received_at)}</div>
+        <div>${escapeHtml(m.message_text || "").slice(0, 300)}</div>
+      </div>
+    `).join("");
+  } catch (e) {
+    listEl.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "telegram" });
+  if (!user) return;
+  refreshConnectionStatus();
+  refreshChannels();
+  setInterval(refreshConnectionStatus, 15000);
+})();
+</script>
+</body>
+</html>

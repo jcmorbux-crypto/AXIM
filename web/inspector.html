@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signal Inspector - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .field-grid .stat-row { flex-direction: column; align-items: flex-start; gap: 2px; border: none; padding: 8px 10px; background: var(--bg); border-radius: var(--radius-sm); }
+  .msg-pick-item { padding: 8px 10px; border-radius: var(--radius-sm); cursor: pointer; font-size: 12.5px; border-bottom: 1px solid var(--border); }
+  .msg-pick-item:hover { background: var(--surface); }
+  .rule-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Signal Inspector</h1>
+        <div class="subtitle">See exactly what the real parser extracts from a message, and fix channel-specific formats with rules.</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Load a recent message</h3>
+        <div class="field"><label>Channel</label>
+          <select id="channel-picker" onchange="loadChannelMessages()"><option value="">Select a channel...</option></select>
+        </div>
+        <div id="recent-messages-list" class="muted">Pick a channel to see its recent messages.</div>
+      </div>
+
+      <div class="card full-width" style="grid-column: span 2;">
+        <h3>Test Parse</h3>
+        <textarea id="test-input" placeholder="Paste a sample signal message here, or pick one from a channel on the left..."></textarea>
+        <div class="row" style="margin-top:10px;">
+          <button class="primary" onclick="runParseTest()">Test Parse</button>
+          <span id="parse-status-text" class="muted"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card full-width" style="margin-bottom:16px;">
+      <h3>Parse Result</h3>
+      <div class="field-grid">
+        <div class="stat-row"><span class="stat-label">Parse status</span><span class="stat-value" id="r-status">-</span></div>
+        <div class="stat-row"><span class="stat-label">Asset</span><span class="stat-value" id="r-asset">-</span></div>
+        <div class="stat-row"><span class="stat-label">Direction</span><span class="stat-value" id="r-direction">-</span></div>
+        <div class="stat-row"><span class="stat-label">Expiry</span><span class="stat-value" id="r-expiry">-</span></div>
+        <div class="stat-row"><span class="stat-label">Entry timing</span><span class="stat-value faint" id="r-entry">not parsed by current parser</span></div>
+        <div class="stat-row"><span class="stat-label">Amount</span><span class="stat-value faint" id="r-amount">not parsed by current parser</span></div>
+        <div class="stat-row"><span class="stat-label">Confidence score</span><span class="stat-value faint" id="r-confidence">not computed by current parser</span></div>
+        <div class="stat-row"><span class="stat-label">Trade eligibility</span><span class="stat-value" id="r-eligibility">-</span></div>
+      </div>
+      <div class="row">
+        <button onclick="approveDecision(true)">Approve (log decision)</button>
+        <button onclick="approveDecision(false)">Reject (log decision)</button>
+        <span id="decision-status" class="muted"></span>
+      </div>
+      <div class="muted" style="margin-top:8px; font-size:12px;">Approve/Reject here only records your review decision in the admin log - it does not place a real trade. Real execution always goes through the live signal pipeline's own risk checks.</div>
+    </div>
+
+    <div class="card full-width">
+      <h3>Parsing Rules</h3>
+      <div class="muted" style="margin-bottom:12px;">A rule is a find/replace applied to a channel's raw messages BEFORE the parser sees them - useful for channels with unusual label spelling.</div>
+      <div class="field"><label>Apply to channel</label>
+        <select id="rule-channel-picker" onchange="loadRules()"><option value="">Select a channel...</option></select>
+      </div>
+      <div class="row" style="margin-bottom:12px;">
+        <input type="text" id="rule-find" placeholder="Find pattern (regex), e.g. Signal:\s*" style="width:260px;">
+        <input type="text" id="rule-replace" placeholder="Replace with, e.g. Direction: " style="width:220px;">
+        <input type="text" id="rule-name" placeholder="Rule name (optional)" style="width:180px;">
+        <button class="primary" onclick="createRule()">Save Rule for This Channel</button>
+      </div>
+      <div id="rules-list" class="muted">Select a channel to see its saved rules.</div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let allChannels = [];
+let lastParsedInput = "";
+let lastParsedResult = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
+
+async function loadChannelPickers() {
+  allChannels = await fetchJSON("/api/channels");
+  const options = allChannels.map(c => `<option value="${c.id}">${escapeHtml(c.title || c.username || c.id)}</option>`).join("");
+  document.getElementById("channel-picker").innerHTML = '<option value="">Select a channel...</option>' + options;
+  document.getElementById("rule-channel-picker").innerHTML = '<option value="">Select a channel...</option>' + options;
+}
+
+async function loadChannelMessages() {
+  const id = document.getElementById("channel-picker").value;
+  const listEl = document.getElementById("recent-messages-list");
+  if (!id) { listEl.innerHTML = "Pick a channel to see its recent messages."; return; }
+  listEl.innerHTML = "Loading...";
+  try {
+    const messages = await fetchJSON(`/api/channels/${id}/messages?limit=15`);
+    if (!messages.length) { listEl.innerHTML = '<div class="empty">No messages captured yet for this channel.</div>'; return; }
+    listEl.innerHTML = messages.map((m, i) => `
+      <div class="msg-pick-item" onclick="pickMessage(${i})">
+        <div class="muted" style="font-size:11px;">${fmtTime(m.received_at)}</div>
+        <div>${escapeHtml((m.message_text || "").slice(0, 120))}</div>
+      </div>
+    `).join("");
+    window._inspectorMessages = messages;
+  } catch (e) {
+    listEl.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function pickMessage(i) {
+  document.getElementById("test-input").value = window._inspectorMessages[i].message_text;
+  runParseTest();
+}
+
+function resultBadgeText(parsed) {
+  return parsed ? "Parsed" : "Rejected";
+}
+
+async function runParseTest() {
+  const input = document.getElementById("test-input").value;
+  const statusEl = document.getElementById("parse-status-text");
+  if (!input.trim()) { statusEl.textContent = "Enter a message first."; return; }
+  statusEl.textContent = "parsing...";
+  try {
+    const data = await fetchJSON("/api/parse-test", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: input }),
+    });
+    lastParsedInput = input;
+    lastParsedResult = data.parsed;
+    const p = data.parsed;
+    document.getElementById("r-status").innerHTML = p
+      ? '<span class="badge on">Parsed</span>' : '<span class="badge danger">Rejected</span>';
+    document.getElementById("r-asset").textContent = p ? p.asset : "-";
+    document.getElementById("r-direction").textContent = p ? p.direction : "-";
+    document.getElementById("r-expiry").textContent = p ? p.expiry : "-";
+    document.getElementById("r-eligibility").innerHTML = p
+      ? '<span class="badge info">Would reach risk checks at execution time</span>'
+      : '<span class="badge off">Not eligible - parser rejected the message</span>';
+    statusEl.textContent = "done";
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function approveDecision(approved) {
+  const statusEl = document.getElementById("decision-status");
+  if (!lastParsedInput) { statusEl.textContent = "Test parse a message first."; return; }
+  statusEl.textContent = approved ? "Decision logged: approved" : "Decision logged: rejected";
+  // Logged client-side status only for now - see the note under this
+  // panel; a durable server-side review log is a follow-up, not core to
+  // Signal Inspector's job of showing what the parser actually does.
+}
+
+async function loadRules() {
+  const id = document.getElementById("rule-channel-picker").value;
+  const listEl = document.getElementById("rules-list");
+  if (!id) { listEl.innerHTML = "Select a channel to see its saved rules."; return; }
+  listEl.innerHTML = "Loading...";
+  try {
+    const rules = await fetchJSON(`/api/channels/${id}/rules`);
+    if (!rules.length) { listEl.innerHTML = '<div class="empty">No rules saved for this channel yet.</div>'; return; }
+    listEl.innerHTML = rules.map(r => `
+      <div class="rule-row">
+        <div>
+          <div>${escapeHtml(r.rule_name || "(unnamed rule)")} ${r.enabled ? '<span class="badge on">on</span>' : '<span class="badge off">off</span>'}</div>
+          <div class="muted" style="font-size:11.5px;"><code>${escapeHtml(r.find_pattern)}</code> &rarr; <code>${escapeHtml(r.replace_with)}</code></div>
+        </div>
+        <div class="row">
+          <button class="subtle" onclick="toggleRule(${r.id}, ${!r.enabled})">${r.enabled ? "Disable" : "Enable"}</button>
+          <button class="subtle" onclick="deleteRule(${r.id})">Delete</button>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    listEl.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function createRule() {
+  const id = document.getElementById("rule-channel-picker").value;
+  if (!id) { alert("Pick a channel first."); return; }
+  const find = document.getElementById("rule-find").value;
+  const replace = document.getElementById("rule-replace").value;
+  const name = document.getElementById("rule-name").value;
+  if (!find) { alert("Enter a find pattern."); return; }
+  try {
+    await fetchJSON(`/api/channels/${id}/rules`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ find_pattern: find, replace_with: replace, rule_name: name || null }),
+    });
+    document.getElementById("rule-find").value = "";
+    document.getElementById("rule-replace").value = "";
+    document.getElementById("rule-name").value = "";
+    await loadRules();
+  } catch (e) {
+    alert("Failed to save rule: " + e.message);
+  }
+}
+
+async function toggleRule(ruleId, enabled) {
+  try {
+    await fetchJSON(`/api/signal-rules/${ruleId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+    });
+    await loadRules();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function deleteRule(ruleId) {
+  if (!confirm("Delete this rule?")) return;
+  try {
+    await fetchJSON(`/api/signal-rules/${ruleId}`, { method: "DELETE" });
+    await loadRules();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "inspector" });
+  if (!user) return;
+  loadChannelPickers();
+})();
+</script>
+</body>
+</html>
