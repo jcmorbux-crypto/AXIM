@@ -55,36 +55,59 @@ coordinator = None
 
 print("AXIM Telegram Listener Starting...")
 
-if not WATCH_CHANNELS:
+database.initialize_database()
+# One-time migration: populate ui_channels from the static .env
+# WATCH_CHANNELS the very first time this runs against a DB that's never
+# seen the UI channel manager - a no-op on every subsequent start (the
+# function itself checks the table isn't empty first). From here on,
+# ui_channels (editable via the API/web UI without touching .env or
+# restarting) is the real source of truth; WATCH_CHANNELS still works too
+# (see channel_allowed below) so nothing regresses for anyone not using
+# the UI yet.
+database.seed_channels_from_env(WATCH_CHANNELS)
+
+if not WATCH_CHANNELS and not database.get_enabled_channels():
     print(
-        "\n*** WARNING: WATCH_CHANNELS is empty - no chat is allow-listed. ***\n"
-        "AXIM will NOT process signals from ANY chat until you set\n"
-        "WATCH_CHANNELS=<comma-separated substrings of channel/chat titles>\n"
-        "in .env. This is intentional: previously this listener processed\n"
+        "\n*** WARNING: no channel is allow-listed (.env WATCH_CHANNELS is\n"
+        "empty and no channel is enabled in the UI channel manager). ***\n"
+        "AXIM will NOT process signals from ANY chat until you enable at\n"
+        "least one. This is intentional: previously this listener processed\n"
         "every message in every chat the account could see - fail-closed by\n"
         "default is safer than that.\n"
     )
 else:
-    print(f"Watching for chat titles containing: {WATCH_CHANNELS}")
+    print(f"Watching for chat titles containing: {WATCH_CHANNELS} (plus anything enabled in the UI channel manager)")
 
 
-def source_allowed(chat_title, chat_username=None):
-    """WATCH_CHANNELS entries are matched two ways: as a case-insensitive
-    substring of the chat's display title/first_name (works for anything,
-    but display names can be renamed or duplicated - e.g. this account has
-    both "Pocket Option Quant Algorithm" and a "PO Quant Algo" contact), and
-    as an exact case-insensitive match against the chat's @username, which
-    Telegram guarantees is unique and immutable - the more reliable of the
-    two for allow-listing a specific bot/channel. Either match is
-    sufficient; still fail-closed if WATCH_CHANNELS is empty."""
-    if not WATCH_CHANNELS:
-        return False
+def channel_allowed(chat_title, chat_username=None):
+    """A chat is allowed if it matches EITHER the static .env WATCH_CHANNELS
+    list OR a currently-enabled row in the UI-managed ui_channels table -
+    same two-way match either way: a case-insensitive substring of the
+    chat's display title/first_name (works for anything, but display names
+    can be renamed or duplicated - e.g. this account has both "Pocket
+    Option Quant Algorithm" and a "PO Quant Algo" contact), or an exact
+    case-insensitive match against the chat's @username, which Telegram
+    guarantees is unique and immutable - the more reliable of the two for
+    allow-listing a specific bot/channel. Fail-closed if neither source has
+    anything configured."""
     title_lower = (chat_title or "").lower()
     username_lower = (chat_username or "").lower()
-    return any(
+
+    if any(
         channel.lower() in title_lower or channel.lower() == username_lower
         for channel in WATCH_CHANNELS
-    )
+    ):
+        return True
+
+    for row in database.get_enabled_channels():
+        entry_username = (row["username"] or "").lower()
+        entry_title = (row["title"] or "").lower()
+        if (entry_username and entry_username == username_lower) or (
+            entry_title and entry_title in title_lower
+        ):
+            return True
+
+    return False
 
 
 def _debug_safe(text):
@@ -105,7 +128,7 @@ async def handler(event):
 
     if TELEGRAM_DEBUG_LOG:
         debug_sender = await event.get_sender()
-        filter_decision = source_allowed(chat_title, chat_username)
+        filter_decision = channel_allowed(chat_title, chat_username)
         print("\n[TELEGRAM_DEBUG] ------------------------------")
         print(f"[TELEGRAM_DEBUG] chat_title    : {_debug_safe(chat_title)}")
         print(f"[TELEGRAM_DEBUG] chat_username : {_debug_safe(chat_username)}")
@@ -119,7 +142,15 @@ async def handler(event):
             debug_signal = parse_signal(event.raw_text)
             print(f"[TELEGRAM_DEBUG] parser_decision: {'PARSED -> ' + repr(debug_signal) if debug_signal else 'REJECTED (returned None)'}")
 
-    if not source_allowed(chat_title, chat_username):
+    if not channel_allowed(chat_title, chat_username):
+        return
+
+    database.record_channel_signal_seen(chat_id=event.chat_id, username=chat_username, title=chat_title)
+
+    control_state = database.get_control_state()
+    if control_state["emergency_stop"] or control_state["paused"]:
+        reason = "emergency_stop" if control_state["emergency_stop"] else "paused"
+        print(f"\n[UI CONTROL] Signal from {_debug_safe(chat_title)!r} skipped - AXIM is {reason} via the UI.")
         return
 
     timeline = TradeTimeline()

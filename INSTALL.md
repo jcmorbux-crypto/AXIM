@@ -105,5 +105,20 @@ real demo account, and never concurrently with a running
 `telegram_listener.py` (they share the same persistent browser profile at
 `sessions/pocket_browser` and cannot run at the same time).
 
+## 6. (Optional) Control UI
+
+A local web UI covers channel management and start/stop/pause without
+editing `.env`. Needs its own, separate Telegram login the first time
+(a second session, so it can list dialogs live even while the listener
+holds its own session open):
+
+```powershell
+python core/telegram_channels.py           # one-time interactive login + first sync
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8090
+```
+
+Then open `http://127.0.0.1:8090`. See `USER_GUIDE.md`'s "Control UI"
+section for what it can do.
+
 See `USER_GUIDE.md` for day-to-day operation and `DEPLOYMENT.md` for running
 this unattended.

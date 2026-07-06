@@ -45,6 +45,38 @@ set `TELEGRAM_DEBUG_LOG=true` (see "Debug logging" below) - it logs every
 incoming message's routing decision from every chat your account can see,
 before any filtering.
 
+## Control UI (channel manager, start/stop/pause)
+
+A local web UI is available instead of editing `.env`/restarting for
+channel changes. It's a separate process from the listener - start it
+alongside:
+
+```powershell
+python -m uvicorn api.main:app --host 127.0.0.1 --port 8090
+```
+
+Then open `http://127.0.0.1:8090`. First time only: the channel manager
+needs its own, separate Telegram login (`axim_ui_session` - a second
+session under your same account, so it can list dialogs live even while
+the listener holds its own session file open):
+
+```powershell
+python core/telegram_channels.py
+```
+
+From the UI you can: see every channel/group/bot your account can see,
+search/filter them, enable or disable which ones AXIM follows (takes
+effect on the listener's next incoming message - no restart needed), see
+when each one last produced a signal, and Start/Stop/Pause/Resume/
+Emergency-Stop the listener. `WATCH_CHANNELS` in `.env` still works too -
+either source enables a channel, so nothing already configured stops
+working.
+
+Pause and Emergency Stop take effect immediately (the running listener
+checks this before executing anything, on every incoming message) - Start/
+Stop control the actual process via the Scheduled Task
+(`scripts/install_scheduled_task.ps1`).
+
 ## The PREVIEW_ONLY / ARMED / AUTO_EXECUTE gate
 
 Three separate switches, in the order they're checked:

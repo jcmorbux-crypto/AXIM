@@ -78,6 +78,36 @@ def initialize_database():
     );
     """)
 
+    # UI-managed state (api/, core/telegram_channels.py,
+    # core/telegram_listener.py) - deliberately separate from the
+    # signals/recovery_events tables above, which are trade history, not
+    # configuration.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS ui_channels (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT UNIQUE,
+        username TEXT,
+        title TEXT,
+        kind TEXT,
+        enabled INTEGER DEFAULT 0,
+        last_signal_at TEXT,
+        last_synced_at TEXT,
+        created_at TEXT
+    );
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS ui_control_state (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        paused INTEGER DEFAULT 0,
+        emergency_stop INTEGER DEFAULT 0,
+        updated_at TEXT
+    );
+    """)
+    # Singleton row - every read/write targets id=1, created once here so
+    # callers never have to special-case "no row yet".
+    conn.execute("INSERT OR IGNORE INTO ui_control_state (id, paused, emergency_stop) VALUES (1, 0, 0)")
+
     _migrate_schema(conn)
 
     conn.commit()
@@ -363,6 +393,134 @@ def count_with_result_prefix(prefix, since_iso=None):
         ).fetchone()
     conn.close()
     return row["n"]
+
+
+# ---------------------------------------------------------------------
+# UI-managed channel allow-list (api/, core/telegram_channels.py,
+# core/telegram_listener.py)
+# ---------------------------------------------------------------------
+
+@timed("database")
+def upsert_channel(chat_id, username, title, kind):
+    """Insert or refresh a dialog's identity (from a real Telethon sync) -
+    never touches `enabled`, so re-syncing the dialog list never silently
+    re-enables or disables a channel the operator already chose."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    conn.execute("""
+        INSERT INTO ui_channels (chat_id, username, title, kind, enabled, last_synced_at, created_at)
+        VALUES (?, ?, ?, ?, 0, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            username = excluded.username,
+            title = excluded.title,
+            kind = excluded.kind,
+            last_synced_at = excluded.last_synced_at
+    """, (str(chat_id), username, title, kind, now, now))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_channels():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM ui_channels ORDER BY enabled DESC, title ASC").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+@timed("database")
+def set_channel_enabled(channel_id, enabled):
+    conn = get_connection()
+    conn.execute("UPDATE ui_channels SET enabled = ? WHERE id = ?", (1 if enabled else 0, channel_id))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_enabled_channels():
+    """The real, current allow-list - telegram_listener.py's source of
+    truth once at least one row exists (see seed_channels_from_env)."""
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM ui_channels WHERE enabled = 1").fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+@timed("database")
+def seed_channels_from_env(watch_channels):
+    """Populates ui_channels from the static .env WATCH_CHANNELS list, but
+    ONLY if the table is completely empty - a one-time migration so
+    switching to DB-backed channel control doesn't silently change which
+    channels are followed on first upgrade. Each entry is seeded with
+    chat_id=NULL (identity unknown until a real dialog sync matches it by
+    username/title) - enabled=1 so behavior is preserved immediately."""
+    conn = get_connection()
+    count = conn.execute("SELECT COUNT(*) AS n FROM ui_channels").fetchone()["n"]
+    if count > 0:
+        conn.close()
+        return
+    now = datetime.now().isoformat()
+    for entry in watch_channels:
+        conn.execute("""
+            INSERT INTO ui_channels (chat_id, username, title, kind, enabled, created_at)
+            VALUES (NULL, ?, ?, 'unknown', 1, ?)
+        """, (entry, entry, now))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def record_channel_signal_seen(chat_id=None, username=None, title=None):
+    """Updates last_signal_at for whichever ui_channels row matches - by
+    chat_id if known, else by username, else by title substring (mirrors
+    telegram_listener.source_allowed's own matching logic, since a
+    seeded-from-env row may not have a real chat_id yet)."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    if chat_id is not None:
+        conn.execute("UPDATE ui_channels SET last_signal_at = ? WHERE chat_id = ?", (now, str(chat_id)))
+    if username:
+        conn.execute(
+            "UPDATE ui_channels SET last_signal_at = ? WHERE username IS NOT NULL AND LOWER(username) = LOWER(?)",
+            (now, username),
+        )
+    if title:
+        conn.execute(
+            "UPDATE ui_channels SET last_signal_at = ? WHERE title IS NOT NULL AND INSTR(LOWER(?), LOWER(title)) > 0",
+            (now, title),
+        )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------
+# UI control state (pause/resume/emergency-stop) - api/, telegram_listener.py
+# ---------------------------------------------------------------------
+
+@timed("database")
+def get_control_state():
+    conn = get_connection()
+    row = conn.execute("SELECT paused, emergency_stop, updated_at FROM ui_control_state WHERE id = 1").fetchone()
+    conn.close()
+    return {
+        "paused": bool(row["paused"]),
+        "emergency_stop": bool(row["emergency_stop"]),
+        "updated_at": row["updated_at"],
+    }
+
+
+@timed("database")
+def set_control_state(paused=None, emergency_stop=None):
+    conn = get_connection()
+    current = conn.execute("SELECT paused, emergency_stop FROM ui_control_state WHERE id = 1").fetchone()
+    new_paused = current["paused"] if paused is None else (1 if paused else 0)
+    new_emergency = current["emergency_stop"] if emergency_stop is None else (1 if emergency_stop else 0)
+    conn.execute(
+        "UPDATE ui_control_state SET paused = ?, emergency_stop = ?, updated_at = ? WHERE id = 1",
+        (new_paused, new_emergency, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":
