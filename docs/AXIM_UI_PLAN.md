@@ -78,13 +78,35 @@ and safety confirmations before anything live-money-adjacent.
    - Old, superseded plan text below kept for reference:
      read from the browser layer's own state
 
-3. **Live dashboard + signal parsing tool**
-   - Port `core/dashboard_server.py`'s existing stats/timeline/recovery/
-     recent-trades logic into FastAPI endpoints (supersedes the old
-     stdlib dashboard rather than running two)
-   - Test-parse tool: paste a sample message, see `parse_signal()`'s
-     output live, using the exact real parser
-   - Screenshot viewer for `logs/trades/*.png`
+3. **Live dashboard + signal parsing tool - DONE**
+   - `GET /api/dashboard`: reuses `trade_statistics.full_report()`,
+     `timeline_report.generate_report()`, and
+     `database.get_recovery_event_stats()` directly - not a
+     re-implementation. Supersedes `core/dashboard_server.py` as the
+     primary UI (that stdlib dashboard still runs standalone if wanted).
+   - `POST /api/parse-test`: runs the real `parsers/signal_parser.parse_signal()`
+     against a pasted message. Verified live with a real Go+-style
+     message (`"Currency pair: EUR/NZD OTC\nSignal: BUY\nExpiration: S55"`)
+     - correctly returned `asset: "EUR/NZD OTC"`, `direction: "BUY"`.
+   - `GET /api/screenshots/{trade_id}` + `/{filename}`: screenshot viewer,
+     strict filename allowlist (`prepared.png`/`clicked.png` only, closes
+     off path traversal entirely rather than sanitizing an arbitrary
+     path). Verified live: clicking a screenshot link in the Recent
+     Trades table opens a real trade screenshot (confirmed order placed,
+     Gold OTC Sell $1, 88% payout) in a modal.
+   - `web/index.html`: Live Dashboard section (today/7-day/signal-handling
+     stat cards, recovery health table, stage-transition latency table,
+     recent trades table with WIN/LOSS/DRAW badges and screenshot links)
+     + Signal Parser Test panel (textarea, Test Parse button, JSON result)
+     + a click-to-zoom screenshot modal. All screenshot-verified against
+     the real running listener's live data (135 closed trades in the
+     last 7 days, 35.6% win rate, real recovery-event counts).
+   - Noted in passing, not yet acted on: the real Pocket Option DOM does
+     show the account balance in its top bar (confirmed via a captured
+     trade screenshot: "Q1 Demo / USD 49,973.97") - a concrete, findable
+     target for a future `execution/pocket_dom.py` balance-reading
+     selector, but not implemented this phase (would need its own live
+     verification against the trading-adjacent code, not rushed in here).
 
 4. **Controls end-to-end + safety**
    - Start/Stop/Pause/Test-mode/Emergency-stop all wired to real effect,

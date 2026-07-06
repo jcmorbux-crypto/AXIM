@@ -12,6 +12,7 @@ the existing core/dashboard_server.py.
 
 Run: python -m uvicorn api.main:app --host 127.0.0.1 --port 8090
 """
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -20,10 +21,12 @@ API_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = API_DIR.parent
 CORE_DIR = PROJECT_ROOT / "core"
 CONFIG_DIR = PROJECT_ROOT / "config"
+PARSERS_DIR = PROJECT_ROOT / "parsers"
 
 sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CONFIG_DIR))
 sys.path.insert(0, str(API_DIR))
+sys.path.insert(0, str(PARSERS_DIR))
 
 from typing import Optional
 
@@ -35,6 +38,9 @@ import database
 import telegram_channels
 import process_control
 import risk_manager
+import trade_statistics
+import timeline_report
+from signal_parser import parse_signal
 from settings import (
     WATCH_CHANNELS, ACCOUNT, MAX_TRADE_AMOUNT, MAX_TRADES_PER_HOUR,
     MAX_CONSECUTIVE_LOSSES, COOLDOWN_AFTER_LOSS_SECONDS,
@@ -78,6 +84,10 @@ WEB_DIR = PROJECT_ROOT / "web"
 
 class ChannelToggle(BaseModel):
     enabled: bool
+
+
+class ParseTestRequest(BaseModel):
+    message: str
 
 
 # Every field optional - PUT /api/settings only overwrites the keys the
@@ -248,3 +258,59 @@ def pocket_option_status():
         "heartbeat_stale": stale,
         "balance": None,  # not yet implemented - see docstring above
     }
+
+
+@app.get("/api/dashboard")
+def dashboard():
+    """Same data core/dashboard_server.py's /api/data has always served
+    (daily/weekly stats, recovery-rate data, P50/P95/P99 latency, recent
+    signals) - reusing those exact functions, not a re-implementation.
+    Supersedes the old stdlib dashboard rather than running both; that one
+    still works standalone if preferred (python core/dashboard_server.py)."""
+    _, timeline_aggregate = timeline_report.generate_report(limit=200)
+    return {
+        "statistics": trade_statistics.full_report(),
+        "recovery": database.get_recovery_event_stats(),
+        "timeline": timeline_aggregate,
+        "recent_trades": database.get_recent_signals(25),
+    }
+
+
+@app.post("/api/parse-test")
+def parse_test(body: ParseTestRequest):
+    """Runs the REAL parsers/signal_parser.parse_signal() against a
+    pasted sample message - not a mock or a re-implementation, the exact
+    function the live listener calls on every incoming message."""
+    result = parse_signal(body.message)
+    return {"input": body.message, "parsed": result}
+
+
+@app.get("/api/screenshots/{trade_id}")
+def list_trade_screenshots(trade_id: int):
+    conn = database.get_connection()
+    row = conn.execute("SELECT screenshot_paths FROM signals WHERE id = ?", (trade_id,)).fetchone()
+    conn.close()
+    if row is None or not row["screenshot_paths"]:
+        return {"trade_id": trade_id, "screenshots": []}
+    paths = json.loads(row["screenshot_paths"])
+    return {
+        "trade_id": trade_id,
+        "screenshots": [
+            {"label": Path(p).stem, "url": f"/api/screenshots/{trade_id}/{Path(p).name}"}
+            for p in paths
+        ],
+    }
+
+
+@app.get("/api/screenshots/{trade_id}/{filename}")
+def get_trade_screenshot(trade_id: int, filename: str):
+    # filename must be exactly one of the two labels prepare_trade ever
+    # writes (execution/pocket_executor.py's _capture_screenshot_background
+    # calls) - rejects anything else outright rather than trying to
+    # sanitize an arbitrary path, closing off path traversal entirely.
+    if filename not in ("prepared.png", "clicked.png"):
+        raise HTTPException(status_code=400, detail="invalid screenshot filename")
+    path = PROJECT_ROOT / "logs" / "trades" / str(trade_id) / filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="screenshot not found")
+    return FileResponse(path)

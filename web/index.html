@@ -115,6 +115,71 @@
     margin-bottom: 16px;
     font-weight: 600;
   }
+  .stat-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+  }
+  .stat-row:last-child { border-bottom: none; }
+  .stat-label { color: var(--text-dim); }
+  .stat-value { font-variant-numeric: tabular-nums; font-weight: 500; }
+  .pos { color: var(--green); }
+  .neg { color: var(--red); }
+  .neutral { color: var(--text); }
+  .full-width { grid-column: 1 / -1; }
+  .empty { color: var(--text-dim); font-size: 13px; font-style: italic; }
+  .badge-win { background: rgba(61,220,132,0.15); color: var(--green); }
+  .badge-loss { background: rgba(255,92,92,0.15); color: var(--red); }
+  .badge-draw { background: rgba(245,197,66,0.15); color: var(--yellow); }
+  .badge-other { background: rgba(139,147,163,0.15); color: var(--text-dim); }
+  textarea {
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 13px;
+    font-family: inherit;
+    width: 100%;
+    min-height: 90px;
+    resize: vertical;
+  }
+  .thumb-link {
+    color: var(--blue);
+    text-decoration: none;
+    font-size: 12px;
+    margin-right: 8px;
+  }
+  .thumb-link:hover { text-decoration: underline; }
+  pre.result-box {
+    background: var(--bg);
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  #screenshot-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.75);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+  }
+  #screenshot-modal img {
+    max-width: 92vw;
+    max-height: 92vh;
+    border-radius: 8px;
+    border: 1px solid var(--panel-border);
+  }
 </style>
 </head>
 <body>
@@ -200,6 +265,71 @@
     </thead>
     <tbody id="channels-body"></tbody>
   </table>
+</div>
+
+<h2 style="font-size:15px; margin: 28px 0 12px 0; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em;">Live Dashboard</h2>
+
+<div class="grid">
+  <div class="panel">
+    <h2>Today</h2>
+    <div id="daily-stats" class="muted">loading...</div>
+  </div>
+  <div class="panel">
+    <h2>Last 7 Days</h2>
+    <div id="weekly-stats" class="muted">loading...</div>
+  </div>
+  <div class="panel">
+    <h2>Signal Handling</h2>
+    <div id="signal-stats" class="muted">loading...</div>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel full-width">
+    <h2>Recovery Health</h2>
+    <table id="recovery-table">
+      <thead><tr><th>Layer</th><th>Succeeded</th><th>Failed</th><th>Rate</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel full-width">
+    <h2>Latency - Stage Transitions (ms)</h2>
+    <table id="stage-table">
+      <thead><tr><th>Transition</th><th>n</th><th>avg</th><th>p50</th><th>p95</th><th>p99</th><th>min</th><th>max</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="panel full-width">
+    <h2>Recent Trades</h2>
+    <table id="recent-table">
+      <thead><tr>
+        <th>ID</th><th>Asset</th><th>Dir</th><th>Expiry</th><th>Source</th>
+        <th>Status</th><th>Result</th><th>P/L</th><th>Payout</th><th>Received</th><th>Screenshots</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel" style="margin-bottom:20px;">
+  <h2>Signal Parser Test</h2>
+  <div class="muted" style="margin-bottom:8px;">Paste a sample signal message to see exactly what the real parser (<code>parsers/signal_parser.py</code>) extracts from it.</div>
+  <textarea id="parse-test-input" placeholder="Paste a sample Telegram signal message here..."></textarea>
+  <div class="row" style="margin-top:10px;">
+    <button class="primary" onclick="runParseTest()">Test Parse</button>
+    <span id="parse-test-status" class="muted"></span>
+  </div>
+  <pre class="result-box" id="parse-test-result" style="margin-top:10px; display:none;"></pre>
+</div>
+
+<div id="screenshot-modal" onclick="closeScreenshot()">
+  <img id="screenshot-modal-img" src="">
 </div>
 
 <script>
@@ -457,12 +587,179 @@ async function reconnect() {
   await callControl("/api/process/start");
 }
 
+const fmt = (n, d = 2) => (n === null || n === undefined) ? '-' : Number(n).toFixed(d);
+const pct = (n, d = 1) => (n === null || n === undefined) ? '-' : (Number(n) * 100).toFixed(d) + '%';
+const ms = (n) => (n === null || n === undefined) ? '-' : Number(n).toFixed(0);
+
+function plClass(v) {
+  if (v === null || v === undefined) return 'neutral';
+  return v > 0 ? 'pos' : (v < 0 ? 'neg' : 'neutral');
+}
+
+function statRow(label, value, cls = 'neutral') {
+  return `<div class="stat-row"><span class="stat-label">${label}</span>
+    <span class="stat-value ${cls}">${value}</span></div>`;
+}
+
+function renderDashboardSummary(stats) {
+  const d = stats.daily, w = stats.weekly;
+  document.getElementById('daily-stats').innerHTML =
+    statRow('Closed trades', d.total_closed) +
+    statRow('Win rate', pct(d.win_rate)) +
+    statRow('W / L / D', `${d.wins} / ${d.losses} / ${d.draws}`) +
+    statRow('Profit/Loss', '$' + fmt(d.profit_loss), plClass(d.profit_loss)) +
+    statRow('ROI', pct(d.roi), plClass(d.roi)) +
+    statRow('Avg payout', d.average_payout !== null ? fmt(d.average_payout, 1) + '%' : '-');
+
+  document.getElementById('weekly-stats').innerHTML =
+    statRow('Closed trades', w.total_closed) +
+    statRow('Win rate', pct(w.win_rate)) +
+    statRow('W / L / D', `${w.wins} / ${w.losses} / ${w.draws}`) +
+    statRow('Profit/Loss', '$' + fmt(w.profit_loss), plClass(w.profit_loss)) +
+    statRow('ROI', pct(w.roi), plClass(w.roi)) +
+    statRow('Avg payout', w.average_payout !== null ? fmt(w.average_payout, 1) + '%' : '-');
+
+  document.getElementById('signal-stats').innerHTML =
+    statRow('Consecutive wins', stats.consecutive_wins, stats.consecutive_wins > 0 ? 'pos' : 'neutral') +
+    statRow('Consecutive losses', stats.consecutive_losses, stats.consecutive_losses > 0 ? 'neg' : 'neutral') +
+    statRow('Signals ignored', stats.signals_ignored) +
+    statRow('Signals rejected', stats.signals_rejected);
+}
+
+function renderRecovery(recovery) {
+  const byLayer = {};
+  for (const row of recovery) {
+    byLayer[row.event_type] = byLayer[row.event_type] || { succeeded: 0, failed: 0 };
+    byLayer[row.event_type][row.outcome] = row.n;
+  }
+  const tbody = document.querySelector('#recovery-table tbody');
+  const layers = Object.keys(byLayer);
+  if (layers.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">No recovery events recorded yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = layers.map(layer => {
+    const s = byLayer[layer].succeeded || 0, f = byLayer[layer].failed || 0;
+    const total = s + f;
+    const rate = total > 0 ? pct(s / total) : '-';
+    return `<tr><td>${layer}</td><td class="pos">${s}</td><td class="${f > 0 ? 'neg' : 'neutral'}">${f}</td><td>${rate}</td></tr>`;
+  }).join('');
+}
+
+function renderStageTable(statsObj) {
+  const tbody = document.querySelector('#stage-table tbody');
+  const keys = Object.keys(statsObj).filter(k => statsObj[k].n > 0);
+  if (keys.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">No timeline data yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = keys.map(key => {
+    const s = statsObj[key];
+    return `<tr><td>${key}</td><td>${s.n}</td><td>${ms(s.avg)}</td><td>${ms(s.p50)}</td>` +
+      `<td>${ms(s.p95)}</td><td>${ms(s.p99)}</td><td>${ms(s.min)}</td><td>${ms(s.max)}</td></tr>`;
+  }).join('');
+}
+
+function resultBadge(status, result) {
+  if (status === 'result_win') return '<span class="badge badge-win">WIN</span>';
+  if (status === 'result_loss') return '<span class="badge badge-loss">LOSS</span>';
+  if (status === 'result_draw') return '<span class="badge badge-draw">DRAW</span>';
+  return `<span class="badge badge-other">${status || '-'}</span>`;
+}
+
+async function renderRecent(trades) {
+  const tbody = document.querySelector('#recent-table tbody');
+  if (!trades.length) {
+    tbody.innerHTML = '<tr><td colspan="11" class="empty">No signals recorded yet</td></tr>';
+    return;
+  }
+  tbody.innerHTML = trades.map(t => `<tr>
+    <td>${t.id}</td>
+    <td>${escapeHtml(t.asset || '-')}</td>
+    <td>${escapeHtml(t.direction || '-')}</td>
+    <td>${escapeHtml(t.timeframe || '-')}</td>
+    <td>${escapeHtml(t.channel || '-')}</td>
+    <td>${resultBadge(t.execution_status, t.result)}</td>
+    <td>${escapeHtml(t.result || '-')}</td>
+    <td class="${plClass(t.profit_loss)}">${t.profit_loss !== null ? '$' + fmt(t.profit_loss) : '-'}</td>
+    <td>${t.payout !== null && t.payout !== undefined ? t.payout + '%' : '-'}</td>
+    <td>${t.received_at ? t.received_at.replace('T', ' ').slice(0, 19) : '-'}</td>
+    <td id="shots-${t.id}" class="muted">-</td>
+  </tr>`).join('');
+
+  trades.forEach(t => loadScreenshotLinks(t.id));
+}
+
+async function loadScreenshotLinks(tradeId) {
+  const cell = document.getElementById(`shots-${tradeId}`);
+  if (!cell) return;
+  try {
+    const data = await fetchJSON(`/api/screenshots/${tradeId}`);
+    if (!data.screenshots.length) {
+      cell.textContent = '-';
+      return;
+    }
+    cell.innerHTML = data.screenshots.map(s =>
+      `<a href="#" class="thumb-link" onclick="showScreenshot('${s.url}'); return false;">${escapeHtml(s.label)}</a>`
+    ).join('');
+  } catch (e) {
+    cell.textContent = '-';
+  }
+}
+
+function showScreenshot(url) {
+  document.getElementById('screenshot-modal-img').src = url;
+  document.getElementById('screenshot-modal').style.display = 'flex';
+}
+
+function closeScreenshot() {
+  document.getElementById('screenshot-modal').style.display = 'none';
+  document.getElementById('screenshot-modal-img').src = '';
+}
+
+async function refreshDashboard() {
+  try {
+    const data = await fetchJSON('/api/dashboard');
+    renderDashboardSummary(data.statistics);
+    renderRecovery(data.recovery);
+    renderStageTable(data.timeline.stage_transitions);
+    renderRecent(data.recent_trades);
+  } catch (e) {
+    document.getElementById('daily-stats').textContent = 'Failed to load: ' + e.message;
+  }
+}
+
+async function runParseTest() {
+  const input = document.getElementById('parse-test-input').value;
+  const statusEl = document.getElementById('parse-test-status');
+  const resultEl = document.getElementById('parse-test-result');
+  if (!input.trim()) {
+    statusEl.textContent = 'Enter a message first.';
+    return;
+  }
+  statusEl.textContent = 'parsing...';
+  try {
+    const data = await fetchJSON('/api/parse-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: input }),
+    });
+    resultEl.style.display = 'block';
+    resultEl.textContent = JSON.stringify(data.parsed, null, 2);
+    statusEl.textContent = 'parsed';
+  } catch (e) {
+    statusEl.textContent = 'parse failed: ' + e.message;
+  }
+}
+
 refreshStatus();
 refreshChannels();
 refreshSettings();
 refreshPocketOption();
+refreshDashboard();
 setInterval(refreshStatus, 5000);
 setInterval(refreshPocketOption, 10000);
+setInterval(refreshDashboard, 15000);
 </script>
 </body>
 </html>
