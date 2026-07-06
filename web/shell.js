@@ -18,7 +18,7 @@ const AximShell = (() => {
 
   const NAV_ITEMS = [
     { key: "dashboard", label: "Dashboard", href: "/dashboard", icon: ICONS.dashboard },
-    { key: "sessions", label: "Trading Sessions", href: "/dashboard#sessions", icon: ICONS.sessions },
+    { key: "sessions", label: "Trading Sessions", href: "/sessions", icon: ICONS.sessions },
     { key: "telegram", label: "Telegram Sources", href: "/telegram", icon: ICONS.telegram },
     { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
     { key: "money", label: "Money Management", href: "/legacy#money", icon: ICONS.money },

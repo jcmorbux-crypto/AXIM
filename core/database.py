@@ -19,6 +19,7 @@ _NEW_COLUMNS = {
     "outcome_detection_ms": "REAL",
     "trade_timeline_json": "TEXT",
     "category_timings_json": "TEXT",
+    "session_id": "INTEGER",
 }
 
 # source_type: "passive" (default - existing behavior) | "bot_command"
@@ -170,6 +171,47 @@ def initialize_database():
     );
     """)
 
+    # Saved "Start New Session" templates (docs/AXIM_SESSION_ARCHITECTURE.md)
+    # - channel_ids_json is a JSON list of ui_channels.id values.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS session_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        channel_ids_json TEXT NOT NULL,
+        profit_target REAL DEFAULT 0,
+        loss_limit REAL DEFAULT 0,
+        max_trades INTEGER DEFAULT 0,
+        require_confirmation INTEGER DEFAULT 0,
+        created_at TEXT
+    );
+    """)
+
+    # One row per actual session run. Only one row may have status='active'
+    # at a time (enforced in start_trading_session, not a DB constraint -
+    # SQLite has no partial unique index short of a trigger, and the
+    # application is single-process anyway). trades_count/realized_pnl are
+    # the session-scoped counters core/session_manager.py checks against
+    # profit_target/loss_limit/max_trades before/after every trade.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS trading_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER,
+        name TEXT,
+        channel_ids_json TEXT NOT NULL,
+        account_mode TEXT,
+        profit_target REAL DEFAULT 0,
+        loss_limit REAL DEFAULT 0,
+        max_trades INTEGER DEFAULT 0,
+        require_confirmation INTEGER DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        trades_count INTEGER DEFAULT 0,
+        realized_pnl REAL DEFAULT 0,
+        started_at TEXT,
+        ended_at TEXT,
+        stop_reason TEXT
+    );
+    """)
+
     conn.execute("""
     CREATE TABLE IF NOT EXISTS ui_control_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -270,16 +312,16 @@ def initialize_database():
 
 
 @timed("database")
-def record_signal_received(signal, source=None, sender=None, message_id=None):
+def record_signal_received(signal, source=None, sender=None, message_id=None, session_id=None):
     from trade_lifecycle import TradeStatus
 
     conn = get_connection()
     cursor = conn.execute("""
     INSERT INTO signals (
         message_id, channel, sender, asset, direction, timeframe,
-        trade_amount, message, received_at, executed, execution_status
+        trade_amount, message, received_at, executed, execution_status, session_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
     """, (
         message_id,
         source,
@@ -291,6 +333,7 @@ def record_signal_received(signal, source=None, sender=None, message_id=None):
         signal["raw_message"],
         datetime.now().isoformat(),
         TradeStatus.SIGNAL_RECEIVED.value,
+        session_id,
     ))
     conn.commit()
     trade_id = cursor.lastrowid
@@ -896,6 +939,144 @@ def get_decrypted_telegram_credentials():
         secrets_store.decrypt(row["api_hash_encrypted"]),
         secrets_store.decrypt(row["phone_encrypted"]),
     )
+
+
+# ---------------------------------------------------------------------
+# Trading Sessions (docs/AXIM_SESSION_ARCHITECTURE.md) - api/sessions.py,
+# core/session_manager.py, core/telegram_listener.py
+# ---------------------------------------------------------------------
+
+def _session_row_to_dict(row):
+    d = dict(row)
+    d["channel_ids"] = json.loads(d.pop("channel_ids_json"))
+    return d
+
+
+@timed("database")
+def create_session_profile(name, channel_ids, profit_target=0, loss_limit=0, max_trades=0, require_confirmation=False):
+    conn = get_connection()
+    cursor = conn.execute("""
+        INSERT INTO session_profiles (name, channel_ids_json, profit_target, loss_limit, max_trades, require_confirmation, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (name, json.dumps(channel_ids), profit_target, loss_limit, max_trades, 1 if require_confirmation else 0, datetime.now().isoformat()))
+    conn.commit()
+    profile_id = cursor.lastrowid
+    conn.close()
+    return profile_id
+
+
+@timed("database")
+def list_session_profiles():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM session_profiles ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [_session_row_to_dict(r) for r in rows]
+
+
+@timed("database")
+def delete_session_profile(profile_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM session_profiles WHERE id = ?", (profile_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_active_trading_session():
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM trading_sessions WHERE status = 'active' ORDER BY id DESC LIMIT 1").fetchone()
+    conn.close()
+    return _session_row_to_dict(row) if row else None
+
+
+@timed("database")
+def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss_limit=0, max_trades=0,
+                           require_confirmation=False, profile_id=None):
+    """Raises ValueError if a session is already active - only one active
+    session at a time (single shared trading connection, see
+    docs/AXIM_APP_PLAN.md's "known gaps")."""
+    if get_active_trading_session() is not None:
+        raise ValueError("a session is already active - stop it before starting another")
+    if not channel_ids:
+        raise ValueError("a session must have at least one channel")
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute("""
+        INSERT INTO trading_sessions (
+            profile_id, name, channel_ids_json, account_mode, profit_target, loss_limit,
+            max_trades, require_confirmation, status, trades_count, realized_pnl, started_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?)
+    """, (profile_id, name, json.dumps(channel_ids), account_mode, profit_target, loss_limit,
+          max_trades, 1 if require_confirmation else 0, now))
+    conn.commit()
+    session_id = cursor.lastrowid
+    conn.close()
+    return session_id
+
+
+@timed("database")
+def get_trading_session(session_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM trading_sessions WHERE id = ?", (session_id,)).fetchone()
+    conn.close()
+    return _session_row_to_dict(row) if row else None
+
+
+@timed("database")
+def list_trading_sessions(limit=50):
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM trading_sessions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [_session_row_to_dict(r) for r in rows]
+
+
+_VALID_SESSION_STOP_STATUSES = {
+    "stopped_target", "stopped_loss_limit", "stopped_max_trades", "stopped_manual",
+    "stopped_emergency", "stopped_connection_lost", "stopped_parse_failures",
+}
+
+
+@timed("database")
+def stop_trading_session(session_id, status, stop_reason=None):
+    if status not in _VALID_SESSION_STOP_STATUSES:
+        raise ValueError(f"invalid session stop status: {status!r}")
+    conn = get_connection()
+    conn.execute(
+        "UPDATE trading_sessions SET status = ?, stop_reason = ?, ended_at = ? WHERE id = ? AND status = 'active'",
+        (status, stop_reason, datetime.now().isoformat(), session_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def record_session_trade(session_id):
+    """Increments trades_count - called once a signal actually reaches
+    execution (not on reject/ignore), matching "trades completed" as
+    shown in the Trading Sessions UI."""
+    conn = get_connection()
+    conn.execute("UPDATE trading_sessions SET trades_count = trades_count + 1 WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def update_session_pnl(session_id, profit_loss):
+    if profit_loss is None:
+        return
+    conn = get_connection()
+    conn.execute("UPDATE trading_sessions SET realized_pnl = realized_pnl + ? WHERE id = ?", (profit_loss, session_id))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_signal_session_id(trade_id):
+    conn = get_connection()
+    row = conn.execute("SELECT session_id FROM signals WHERE id = ?", (trade_id,)).fetchone()
+    conn.close()
+    return row["session_id"] if row else None
 
 
 # ---------------------------------------------------------------------

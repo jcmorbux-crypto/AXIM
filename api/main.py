@@ -54,6 +54,7 @@ from logger import get_logger
 import auth_routes as auth_module
 import admin as admin_module
 import telegram_admin as telegram_admin_module
+import sessions as sessions_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -90,6 +91,7 @@ app = FastAPI(title="AXIM Control API")
 app.include_router(auth_module.router)
 app.include_router(admin_module.router)
 app.include_router(telegram_admin_module.router)
+app.include_router(sessions_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -188,6 +190,11 @@ def telegram_page():
 @app.get("/inspector")
 def inspector_page():
     return _serve("inspector.html")
+
+
+@app.get("/sessions")
+def sessions_page():
+    return _serve("sessions.html")
 
 
 @app.get("/legacy")

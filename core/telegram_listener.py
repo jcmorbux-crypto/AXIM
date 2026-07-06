@@ -27,8 +27,10 @@ from browser_worker_pool import BrowserWorkerPool
 from timeline import TradeTimeline
 from settings import WATCH_CHANNELS, MAX_CONCURRENT_WORKERS
 from logger import get_logger
+from event_bus import get_event_bus
 import recovery
 import database
+import session_manager
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -154,7 +156,23 @@ async def handler(event):
             debug_signal = parse_signal(event.raw_text)
             print(f"[TELEGRAM_DEBUG] parser_decision: {'PARSED -> ' + repr(debug_signal) if debug_signal else 'REJECTED (returned None)'}")
 
-    if not channel_allowed(chat_title, chat_username):
+    # Resolved once, used for both the session-scope check below and the
+    # per-channel signal rules further down - same match precedence as
+    # record_channel_signal_seen (chat_id, then username, then title
+    # substring), so a channel seeded from .env without a real chat_id yet
+    # still matches.
+    channel_row = database.find_channel(chat_id=event.chat_id, username=chat_username, title=chat_title)
+
+    # When a Trading Session is active, IT is the authoritative allow-list
+    # for its duration - only its own channels execute, whether or not
+    # they're separately "enabled" in the channel manager. With no active
+    # session, existing global behavior (WATCH_CHANNELS/enabled channels)
+    # is unchanged - see docs/AXIM_SESSION_ARCHITECTURE.md.
+    active_session = session_manager.get_active_session()
+    if active_session:
+        if not session_manager.channel_in_session(active_session, channel_row):
+            return
+    elif not channel_allowed(chat_title, chat_username):
         return
 
     database.record_channel_signal_seen(chat_id=event.chat_id, username=chat_username, title=chat_title)
@@ -179,11 +197,8 @@ async def handler(event):
 
     # Channel-specific find/replace rules (Signal Inspector's "Save Rule
     # for This Channel") run BEFORE the real parser, never as a
-    # replacement for it - resolves the row the same way
-    # record_channel_signal_seen already does, so a channel seeded from
-    # .env without a real chat_id yet still matches by username/title.
+    # replacement for it.
     message_text = event.raw_text
-    channel_row = database.find_channel(chat_id=event.chat_id, username=chat_username, title=chat_title)
     if channel_row:
         rules = database.get_enabled_rules_for_channel(channel_row["id"])
         if rules:
@@ -200,6 +215,7 @@ async def handler(event):
             message_id=event.id,
             sent_at=event.date,
             timeline=timeline,
+            session_id=active_session["id"] if active_session else None,
         )
 
         print(f"Execution Status: {execution_result['status']}")
@@ -250,6 +266,7 @@ async def _startup():
     coordinator = TradeCoordinator(worker_pool, warmup_service)
     print("AXIM: worker pool ready, running startup recovery...")
     await recovery.run_recovery(warmup_service)
+    session_manager.register(get_event_bus())
     asyncio.create_task(_heartbeat_loop())
 
 

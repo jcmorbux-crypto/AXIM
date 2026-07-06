@@ -14,6 +14,7 @@ sys.path.insert(0, str(EXECUTION_DIR))
 
 import database
 import risk_manager
+import session_manager
 from trade_lifecycle import TradeStatus
 from event_bus import get_event_bus
 from timeline import TradeTimeline
@@ -59,7 +60,7 @@ class TradeCoordinator:
         )
 
     async def handle_signal(self, signal, source=None, sender=None, message_id=None,
-                             sent_at=None, timeline=None):
+                             sent_at=None, timeline=None, session_id=None):
         timeline = timeline or TradeTimeline()
         token = timeline.activate()
         try:
@@ -73,7 +74,9 @@ class TradeCoordinator:
             # otherwise "signals ignored"/"signals rejected" statistics would
             # have nothing to count.
             stage_t0 = time.monotonic()
-            trade_id = database.record_signal_received(signal, source=source, sender=sender, message_id=message_id)
+            trade_id = database.record_signal_received(
+                signal, source=source, sender=sender, message_id=message_id, session_id=session_id,
+            )
             timeline.trade_id = trade_id
             self._log_stage(trade_id, TradeStatus.SIGNAL_RECEIVED.value, "recorded", time.monotonic() - stage_t0)
             await self.event_bus.publish("trade.signal_received", {"trade_id": trade_id, "signal": signal})
@@ -114,6 +117,18 @@ class TradeCoordinator:
                     timeline.persist(database)
                     return self._reject(trade_id, violation, time.monotonic() - stage_t0)
                 self._log_stage(trade_id, "risk_manager", "passed", time.monotonic() - stage_t0)
+
+                # Stage: Session limits - no-op if session_id is None (no
+                # active session covers this signal). Layered alongside the
+                # global risk_manager checks above, never instead of them -
+                # see docs/AXIM_SESSION_ARCHITECTURE.md.
+                stage_t0 = time.monotonic()
+                try:
+                    session_manager.check_session_limits(session_id)
+                except session_manager.SessionLimitReached as violation:
+                    timeline.persist(database)
+                    return self._reject(trade_id, violation, time.monotonic() - stage_t0)
+                self._log_stage(trade_id, "session_manager", "passed", time.monotonic() - stage_t0)
 
                 # Stage: Duplicate Detection
                 stage_t0 = time.monotonic()
@@ -163,6 +178,13 @@ class TradeCoordinator:
                     self._log_stage(trade_id, "pocket_executor", "test_mode_skipped", 0.0)
                     timeline.persist(database)
                     return {"status": "test_mode", "trade_id": trade_id}
+
+                # Counts toward the session's max_trades the instant we
+                # commit to real execution - not on every signal received,
+                # and not gated behind the outcome (a trade that errors out
+                # after this point still counted as "a trade", same as
+                # trades_count everywhere else in this codebase).
+                session_manager.record_trade_started(session_id)
 
                 # Stage: Worker Pool - acquire one of N warm pages. Queues
                 # (FIFO) up to WORKER_ACQUIRE_TIMEOUT_SECONDS if all are busy;

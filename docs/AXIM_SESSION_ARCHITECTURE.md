@@ -226,21 +226,25 @@ schema or the trading loop today. Concretely, this touches:
 
 ## Suggested build order
 
-1. Schema: `trading_sessions` + `session_profiles` tables, `session_id`
-   on `signals`.
-2. Session-scoped risk checks in a new `core/session_manager.py`
+1. **DONE** - Schema: `trading_sessions` + `session_profiles` tables,
+   `session_id` on `signals`.
+2. **DONE** - Session-scoped risk checks in `core/session_manager.py`
    (mirrors `risk_manager.py`'s shape: small pure functions, one
-   `RiskViolation`-style exception), wired into
-   `trade_coordinator.handle_signal()` alongside (not instead of) the
-   existing global checks.
-3. Passive-channel sessions end-to-end first (start a session, trade
-   normally within it, hit a stop condition, session ends) - this alone
-   delivers sections 1/2/3/6/7/9/10 without touching Telegram-bot
-   interaction at all.
-4. Interactive Bot Command Channel workflow (sections 4/5/8) - the
-   send-command/await-reply loop - as its own phase after passive
-   sessions are proven live, since it's the riskiest new piece (a new
-   kind of Telegram interaction the account has never done before).
-5. Martingale/compounding/profit-vault money-management profile fields
-   (section 9's more advanced options) - additive on top of the existing
-   fixed/percent sizing already built.
+   `SessionLimitReached` exception matching `RiskViolation`'s `(rule,
+   reason)` shape), wired into `trade_coordinator.handle_signal()`
+   alongside (not instead of) the existing global checks. Session P&L
+   updates via the existing `event_bus` "trade.closed" event rather than
+   editing `execution/pocket_executor.py`.
+3. **DONE** - Passive-channel sessions end-to-end (start a session, trade
+   normally within it, hit a stop condition, session ends). Full detail
+   and what's still deferred in `docs/AXIM_APP_PLAN.md`'s Phase 3 section
+   - this delivered sections 1/2/3/6/7/9(partially)/10 without touching
+   Telegram-bot interaction at all, exactly as planned.
+4. **Not started** - Interactive Bot Command Channel workflow (sections
+   4/5/8) - the send-command/await-reply loop - as its own phase now that
+   passive sessions are proven live, since it's the riskiest new piece (a
+   new kind of Telegram interaction the account has never done before).
+5. **Not started** - Martingale/compounding/profit-vault money-management
+   profile fields (section 9's more advanced options) - additive on top
+   of the existing fixed/percent sizing already built. This is
+   `docs/AXIM_APP_PLAN.md`'s Phase 4.

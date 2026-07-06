@@ -175,6 +175,42 @@ class TradeCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["status"], "clicked")
         mock_prepare_trade.assert_awaited_once()
 
+    def test_session_limit_already_reached_rejects_before_worker_pool(self):
+        trade_coordinator.PREVIEW_ONLY = True
+        session_id = database.start_trading_session("Test", [1], "DEMO", profit_target=10)
+        database.update_session_pnl(session_id, 10)  # already at target
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal(), session_id=session_id))
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["rule"], "session_profit_target")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_target")
+        self.assertEqual(pool.released, [])
+
+    def test_session_id_recorded_on_signal_and_increments_trade_count(self):
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        session_id = database.start_trading_session("Test", [1], "DEMO", max_trades=5)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        pocket_executor.prepare_trade = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
+        try:
+            result = _run(coordinator.handle_signal(self._signal(), session_id=session_id))
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+
+        self.assertEqual(result["status"], "clicked")
+        self.assertEqual(database.get_signal_session_id(result["trade_id"]), session_id)
+        self.assertEqual(database.get_trading_session(session_id)["trades_count"], 1)
+
+    def test_no_active_session_leaves_session_id_null(self):
+        trade_coordinator.PREVIEW_ONLY = True
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal()))
+        self.assertIsNone(database.get_signal_session_id(result["trade_id"]))
+
     def test_full_success_path_delegates_to_pocket_executor_and_releases_nothing_extra(self):
         trade_coordinator.PREVIEW_ONLY = False
         trade_coordinator.AUTO_EXECUTE = True

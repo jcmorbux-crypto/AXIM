@@ -89,12 +89,69 @@ other `core/` change, not deployed automatically. Until restarted, the
 Signal Inspector's recent-messages/last-message features will show
 "never"/empty for channels even though the code is correct.
 
-### Phase 3 - Trading Sessions
-Full spec in `docs/AXIM_SESSION_ARCHITECTURE.md`. Not started. Suggested
-order there: session/profile DB schema -> session-scoped risk checks in a
-new `core/session_manager.py` -> passive-channel sessions end-to-end ->
-interactive Telegram-bot signal sourcing -> the martingale/compounding/
-vault fields below get attached to session profiles.
+### Phase 3 - DONE (passive-channel sessions) - Trading Sessions
+Full spec in `docs/AXIM_SESSION_ARCHITECTURE.md`. Built exactly in the
+suggested order there, through "passive-channel sessions end-to-end":
+
+- Schema: `session_profiles` (saved start-config templates) +
+  `trading_sessions` (one row per run: channel_ids, targets/limits,
+  status, trades_count, realized_pnl) + `session_id` on `signals`.
+- `core/session_manager.py`: `check_session_limits()` (profit target/loss
+  limit/max trades - mirrors `risk_manager.RiskViolation`'s shape as
+  `SessionLimitReached`, wired into `trade_coordinator.handle_signal()`
+  alongside, not instead of, the existing global risk checks) and
+  `channel_in_session()`. Session P&L updates via the EXISTING
+  `event_bus` "trade.closed" event (already published by
+  `execution/pocket_executor.py`) - zero changes to that hardened,
+  live-tested module; `session_manager.register()` just subscribes to it
+  at listener startup.
+- `core/telegram_listener.py`: when a session is active, it becomes the
+  authoritative channel allow-list for its duration (only its own
+  channels execute, enabled or not) - with no active session, existing
+  global `WATCH_CHANNELS`/enabled-channels behavior is completely
+  unchanged. `session_id` threaded into every `handle_signal()` call.
+- `api/sessions.py`: profile CRUD, start/stop/emergency-stop, active +
+  historical session listing with derived `remaining_to_target`/
+  `remaining_to_loss_limit`. `account_mode` is never client-supplied - it
+  always reflects the real, currently-connected `ACCOUNT`, same
+  discipline as `GET /api/pocket-option/status`.
+- `web/sessions.html`: Start New Session (channel picker, targets, Live-mode
+  double-confirmation reusing the established pattern), active-session
+  progress panel, saved profiles, session history. Listener process
+  Start/Stop also lives here now (a session can't run without it).
+  Dashboard's Current Session P/L card and header buttons now point at
+  real session data/the Sessions page instead of the Phase-1 placeholder.
+- 27 new tests (session DB CRUD, `session_manager` stop-condition logic,
+  `trade_coordinator` session integration). Verified live end-to-end
+  against the real production DB and real listener process: created a
+  real session (1 real channel, $1000 target/limit), confirmed the
+  Active Session panel showed correct real progress, confirmed Stop
+  Session correctly transitioned it to `stopped_manual` with a real
+  `ended_at` timestamp and cleared the active slot. Test session and
+  test account removed afterward.
+
+**Deliberately deferred to a later pass** (per the suggested build order
+- this is "the riskiest new piece" and warrants its own proven-live
+phase): the interactive Telegram-bot trigger-command workflow (sections
+4/5 of `docs/AXIM_SESSION_ARCHITECTURE.md` - send a command, await/parse
+a bot's reply, request the next signal). `ui_channels.source_type` /
+`trigger_command` / `command_wait_for_result` already exist (Phase 2) and
+a `bot_command` channel can be added to a session's channel list today,
+but nothing yet actually sends the trigger command - such a channel
+simply behaves like a passive one until that workflow is built.
+
+**Also not done:** per-trade "require confirmation before execution" in
+Live mode is stored on the session (`require_confirmation`) but not
+enforced - the execution engine doesn't pause for a blocking UI
+confirmation mid-signal, which would be a real architecture addition
+(and its own live-risk conversation) rather than a small feature.
+Martingale step tracking per session is Phase 4 (Money Management
+Center), not this one.
+
+**Follow-up needed, same as Phase 2:** the live listener process needs a
+restart to pick up all of the above - session-scoping, the event_bus
+subscription, everything. Until restarted, sessions can be created via
+the API/UI but won't actually gate/attribute real trades yet.
 
 ### Phase 4 - Money Management Center, Martingale Manager, Compounding Engine, Profit Vault
 Not started. Existing `ui_settings`-backed money management (Phase 2 of

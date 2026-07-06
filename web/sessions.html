@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trading Sessions - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .channel-picker { max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 10px; }
+  .channel-picker-item { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 13px; }
+  .progress-bar { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; margin-top: 6px; }
+  .progress-bar > div { height: 100%; background: var(--blue); }
+  .progress-bar.loss > div { background: var(--red); }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Trading Sessions</h1>
+        <div class="subtitle">Start -&gt; Execute Signals -&gt; Track Results -&gt; Stop at Target or Stop at Risk Limit.</div>
+      </div>
+      <div class="row">
+        Listener process: <span id="process-badge" class="badge off">loading...</span>
+        <button onclick="callControl('/api/process/start')">Start</button>
+        <button onclick="callControl('/api/process/stop')">Stop</button>
+      </div>
+    </div>
+    <div class="muted" style="margin-bottom:16px; font-size:12.5px;">A session can only run while the listener process is running - start it here if it's stopped.</div>
+
+    <div id="active-session-card" class="card full-width" style="margin-bottom:20px;">
+      <h3>Active Session</h3>
+      <div id="active-session-body" class="muted">Loading...</div>
+    </div>
+
+    <div class="grid">
+      <div class="card full-width" style="grid-column: span 2;">
+        <h3>Start New Session</h3>
+        <div class="field"><label>Session name</label><input type="text" id="new-session-name" placeholder="e.g. Morning Go+ Session"></div>
+
+        <div class="field"><label>Signal channels (select at least one)</label>
+          <div class="channel-picker" id="channel-picker"></div>
+        </div>
+
+        <div class="row">
+          <div class="field" style="width:140px;"><label>Profit target ($)</label><input type="number" id="new-profit-target" value="0" step="0.01"></div>
+          <div class="field" style="width:140px;"><label>Loss limit ($)</label><input type="number" id="new-loss-limit" value="0" step="0.01"></div>
+          <div class="field" style="width:140px;"><label>Max trades</label><input type="number" id="new-max-trades" value="0"></div>
+        </div>
+        <div class="field">
+          <label style="display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" id="new-require-confirmation" style="width:auto;">
+            Require confirmation before each trade in Live mode
+          </label>
+          <div class="muted" style="font-size:11.5px;">Stored with the session; per-trade confirmation prompts are not enforced by the execution engine yet.</div>
+        </div>
+        <div class="row" style="margin-bottom:10px;">
+          Account mode: <span id="new-account-mode" class="badge off">loading...</span>
+        </div>
+        <div class="row">
+          <button class="primary" onclick="confirmStartSession()">Start Session</button>
+          <span id="start-session-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Saved Profiles</h3>
+        <div id="profiles-list" class="muted">Loading...</div>
+        <div class="row" style="margin-top:12px;">
+          <button onclick="saveCurrentAsProfile()">Save current form as profile</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card solid full-width">
+      <h3>Session History</h3>
+      <table>
+        <thead><tr><th>Name</th><th>Status</th><th>Trades</th><th>P/L</th><th>Started</th><th>Ended</th></tr></thead>
+        <tbody id="history-body"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let allChannels = [];
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "-"; }
+function fmtMoney(n) { return (n === null || n === undefined) ? "-" : `${n > 0 ? "+" : ""}$${Number(n).toFixed(2)}`; }
+function plClass(v) { return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral"); }
+
+function statusBadge(status) {
+  const map = {
+    active: "on", stopped_target: "info", stopped_manual: "off",
+    stopped_loss_limit: "danger", stopped_max_trades: "info",
+    stopped_emergency: "danger", stopped_connection_lost: "warn", stopped_parse_failures: "warn",
+  };
+  return `<span class="badge ${map[status] || "off"}">${status.replace(/_/g, " ")}</span>`;
+}
+
+async function loadChannelPicker() {
+  allChannels = await fetchJSON("/api/channels");
+  const enabled = allChannels.filter(c => c.enabled);
+  const list = enabled.length ? enabled : allChannels;
+  document.getElementById("channel-picker").innerHTML = list.map(c => `
+    <div class="channel-picker-item">
+      <input type="checkbox" value="${c.id}" class="session-channel-checkbox" style="width:auto;">
+      <span>${escapeHtml(c.title || c.username || c.id)}</span>
+      <span class="muted" style="font-size:11px;">(${c.source_type})</span>
+    </div>
+  `).join("") || '<div class="empty">No channels yet - add some on the Telegram Sources page.</div>';
+}
+
+async function loadAccountMode() {
+  try {
+    const po = await fetchJSON("/api/pocket-option/status");
+    const badge = document.getElementById("new-account-mode");
+    badge.textContent = po.account_mode;
+    badge.className = "badge " + (po.account_mode === "DEMO" ? "on" : "danger");
+  } catch (e) {}
+}
+
+function selectedChannelIds() {
+  return Array.from(document.querySelectorAll(".session-channel-checkbox:checked")).map(el => parseInt(el.value, 10));
+}
+
+function currentFormValues() {
+  return {
+    name: document.getElementById("new-session-name").value || null,
+    channel_ids: selectedChannelIds(),
+    profit_target: parseFloat(document.getElementById("new-profit-target").value) || 0,
+    loss_limit: parseFloat(document.getElementById("new-loss-limit").value) || 0,
+    max_trades: parseInt(document.getElementById("new-max-trades").value, 10) || 0,
+    require_confirmation: document.getElementById("new-require-confirmation").checked,
+  };
+}
+
+async function confirmStartSession() {
+  const statusEl = document.getElementById("start-session-status");
+  const body = currentFormValues();
+  if (!body.channel_ids.length) { statusEl.textContent = "Select at least one channel."; return; }
+
+  let accountMode = "unknown";
+  try {
+    const po = await fetchJSON("/api/pocket-option/status");
+    accountMode = po.account_mode;
+  } catch (e) {}
+
+  const summary =
+    `Channels: ${body.channel_ids.length}\n` +
+    `Profit target: ${body.profit_target > 0 ? "$" + body.profit_target : "disabled"}\n` +
+    `Loss limit: ${body.loss_limit > 0 ? "$" + body.loss_limit : "disabled"}\n` +
+    `Max trades: ${body.max_trades > 0 ? body.max_trades : "unlimited"}\n` +
+    `Account mode: ${accountMode}`;
+  const liveWarning = accountMode === "LIVE" ? "\n\n*** THIS IS A LIVE (REAL MONEY) ACCOUNT ***\n" : "\n";
+  if (!confirm(`Start this session?${liveWarning}\n${summary}\n\nContinue?`)) return;
+
+  if (accountMode === "LIVE") {
+    const typed = prompt('This is a LIVE account. Type "START LIVE" to confirm:');
+    if (typed !== "START LIVE") { statusEl.textContent = "Cancelled."; return; }
+  }
+
+  statusEl.textContent = "starting...";
+  try {
+    await fetchJSON("/api/sessions/start", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    statusEl.textContent = "started";
+    await refreshActiveSession();
+    await refreshHistory();
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function refreshProcessStatus() {
+  const badge = document.getElementById("process-badge");
+  try {
+    const status = await fetchJSON("/api/status");
+    if (status.process.running) {
+      badge.textContent = `running (pid ${status.process.pids.join(", ")})`;
+      badge.className = "badge on";
+    } else {
+      badge.textContent = "stopped";
+      badge.className = "badge off";
+    }
+  } catch (e) {
+    badge.textContent = "unknown";
+  }
+}
+
+async function callControl(path) {
+  try {
+    await fetchJSON(path, { method: "POST" });
+  } catch (e) {
+    alert("Action failed: " + e.message);
+  }
+  refreshProcessStatus();
+}
+
+async function refreshActiveSession() {
+  const bodyEl = document.getElementById("active-session-body");
+  try {
+    const session = await fetchJSON("/api/sessions/active");
+    if (!session) {
+      bodyEl.innerHTML = '<div class="empty">No active session. Start one below.</div>';
+      return;
+    }
+    const tradesPct = session.max_trades > 0 ? Math.min(100, (session.trades_count / session.max_trades) * 100) : 0;
+    bodyEl.innerHTML = `
+      <div class="row" style="margin-bottom:10px;">
+        <strong>${escapeHtml(session.name || "(unnamed session)")}</strong> ${statusBadge(session.status)}
+        <span class="badge ${session.account_mode === "DEMO" ? "on" : "danger"}">${session.account_mode}</span>
+      </div>
+      <div class="grid" style="margin-bottom:10px;">
+        <div class="stat-row"><span class="stat-label">Current P/L</span><span class="stat-value ${plClass(session.realized_pnl)}">${fmtMoney(session.realized_pnl)}</span></div>
+        <div class="stat-row"><span class="stat-label">Trades completed</span><span class="stat-value">${session.trades_count}${session.max_trades > 0 ? " / " + session.max_trades : ""}</span></div>
+        <div class="stat-row"><span class="stat-label">Remaining to target</span><span class="stat-value">${session.remaining_to_target !== null ? "$" + session.remaining_to_target.toFixed(2) : "disabled"}</span></div>
+        <div class="stat-row"><span class="stat-label">Remaining to loss limit</span><span class="stat-value">${session.remaining_to_loss_limit !== null ? "$" + session.remaining_to_loss_limit.toFixed(2) : "disabled"}</span></div>
+      </div>
+      ${session.max_trades > 0 ? `<div class="progress-bar"><div style="width:${tradesPct}%;"></div></div>` : ""}
+      <div class="row" style="margin-top:14px;">
+        <button onclick="stopSession(${session.id})">Stop Session</button>
+        <button class="danger" onclick="emergencyStopSession(${session.id})">Emergency Stop</button>
+      </div>
+    `;
+  } catch (e) {
+    bodyEl.textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function stopSession(id) {
+  if (!confirm("Stop this session? No new signals will be requested/executed for it.")) return;
+  try {
+    await fetchJSON(`/api/sessions/${id}/stop`, { method: "POST" });
+    await refreshActiveSession();
+    await refreshHistory();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function emergencyStopSession(id) {
+  if (!confirm("EMERGENCY STOP: immediately halts ALL trading (not just this session). Continue?")) return;
+  try {
+    await fetchJSON(`/api/sessions/${id}/emergency-stop`, { method: "POST" });
+    await refreshActiveSession();
+    await refreshHistory();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function refreshHistory() {
+  const tbody = document.getElementById("history-body");
+  try {
+    const sessions = await fetchJSON("/api/sessions?limit=50");
+    if (!sessions.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No sessions yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = sessions.map(s => `
+      <tr>
+        <td>${escapeHtml(s.name || "(unnamed)")}</td>
+        <td>${statusBadge(s.status)}</td>
+        <td>${s.trades_count}${s.max_trades > 0 ? " / " + s.max_trades : ""}</td>
+        <td class="${plClass(s.realized_pnl)}">${fmtMoney(s.realized_pnl)}</td>
+        <td class="muted">${fmtTime(s.started_at)}</td>
+        <td class="muted">${fmtTime(s.ended_at)}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function refreshProfiles() {
+  const listEl = document.getElementById("profiles-list");
+  try {
+    const profiles = await fetchJSON("/api/sessions/profiles");
+    if (!profiles.length) {
+      listEl.innerHTML = '<div class="empty">No saved profiles yet.</div>';
+      return;
+    }
+    listEl.innerHTML = profiles.map(p => `
+      <div class="stat-row">
+        <span class="stat-label">${escapeHtml(p.name)} <span class="muted" style="font-size:11px;">(${p.channel_ids.length} channel(s))</span></span>
+        <span class="row">
+          <button class="subtle" onclick="useProfile(${p.id})">Use</button>
+          <button class="subtle" onclick="deleteProfile(${p.id})">Delete</button>
+        </span>
+      </div>
+    `).join("");
+  } catch (e) {
+    listEl.textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function useProfile(profileId) {
+  const profiles = await fetchJSON("/api/sessions/profiles");
+  const p = profiles.find(x => x.id === profileId);
+  if (!p) return;
+  document.getElementById("new-session-name").value = p.name;
+  document.getElementById("new-profit-target").value = p.profit_target;
+  document.getElementById("new-loss-limit").value = p.loss_limit;
+  document.getElementById("new-max-trades").value = p.max_trades;
+  document.getElementById("new-require-confirmation").checked = !!p.require_confirmation;
+  document.querySelectorAll(".session-channel-checkbox").forEach(el => {
+    el.checked = p.channel_ids.includes(parseInt(el.value, 10));
+  });
+}
+
+async function deleteProfile(profileId) {
+  if (!confirm("Delete this profile?")) return;
+  try {
+    await fetchJSON(`/api/sessions/profiles/${profileId}`, { method: "DELETE" });
+    await refreshProfiles();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function saveCurrentAsProfile() {
+  const body = currentFormValues();
+  if (!body.name) { alert("Enter a session name first - it'll be used as the profile name."); return; }
+  if (!body.channel_ids.length) { alert("Select at least one channel first."); return; }
+  try {
+    await fetchJSON("/api/sessions/profiles", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: body.name, channel_ids: body.channel_ids, profit_target: body.profit_target,
+                              loss_limit: body.loss_limit, max_trades: body.max_trades, require_confirmation: body.require_confirmation }),
+    });
+    await refreshProfiles();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "sessions" });
+  if (!user) return;
+  await loadChannelPicker();
+  loadAccountMode();
+  refreshProcessStatus();
+  refreshActiveSession();
+  refreshProfiles();
+  refreshHistory();
+  setInterval(refreshActiveSession, 5000);
+  setInterval(refreshProcessStatus, 10000);
+})();
+</script>
+</body>
+</html>

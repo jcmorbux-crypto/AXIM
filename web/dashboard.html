@@ -25,9 +25,9 @@
         <div class="subtitle">Is AXIM connected, safe, and ready to trade?</div>
       </div>
       <div class="row">
-        <button class="primary" onclick="confirmStart()">Start Session</button>
-        <button onclick="callControl('/api/control/pause')">Pause Session</button>
-        <button onclick="callControl('/api/process/stop')">Stop Session</button>
+        <button class="primary" onclick="window.location.href='/sessions'">Start Session</button>
+        <button onclick="callControl('/api/control/pause')">Pause</button>
+        <button onclick="window.location.href='/sessions'">Manage Session</button>
         <button class="danger" onclick="confirmEmergencyStop()">Emergency Stop</button>
       </div>
     </div>
@@ -68,8 +68,8 @@
       </div>
       <div class="card">
         <h3>Current Session P/L</h3>
-        <div class="stat-value-lg faint">Coming soon</div>
-        <div class="stat-caption">Ships with Trading Sessions</div>
+        <div class="stat-value-lg" id="session-pl">-</div>
+        <div class="stat-caption" id="session-pl-caption"><a href="/sessions" style="color:var(--blue); text-decoration:none;">Manage sessions &rarr;</a></div>
       </div>
       <div class="card">
         <h3>Win Rate (Today)</h3>
@@ -134,13 +134,23 @@ function plClass(v) {
 
 async function refreshAll() {
   try {
-    const [status, po, dash, channels, settings] = await Promise.all([
+    const [status, po, dash, channels, settings, activeSession] = await Promise.all([
       fetchJSON("/api/status"),
       fetchJSON("/api/pocket-option/status"),
       fetchJSON("/api/dashboard"),
       fetchJSON("/api/channels"),
       fetchJSON("/api/settings"),
+      fetchJSON("/api/sessions/active"),
     ]);
+
+    const sessionPlEl = document.getElementById("session-pl");
+    if (activeSession) {
+      sessionPlEl.textContent = fmtMoney(activeSession.realized_pnl);
+      sessionPlEl.className = "stat-value-lg " + plClass(activeSession.realized_pnl);
+    } else {
+      sessionPlEl.textContent = "No active session";
+      sessionPlEl.className = "stat-value-lg faint";
+    }
 
     // AXIM status
     const dot = document.getElementById("axim-status-dot");
@@ -247,31 +257,6 @@ function confirmEmergencyStop() {
   if (confirm("Emergency stop: no new signals will be executed until you clear it. Continue?")) {
     callControl("/api/control/emergency-stop");
   }
-}
-
-async function confirmStart() {
-  let summary = "(failed to load current risk settings)";
-  let accountMode = "unknown";
-  try {
-    const [settings, po] = await Promise.all([fetchJSON("/api/settings"), fetchJSON("/api/pocket-option/status")]);
-    accountMode = po.account_mode;
-    const e = settings.effective;
-    summary =
-      `Account mode: ${accountMode}\n` +
-      `Trade sizing: ${e.trade_sizing_mode === "percent" ? e.trade_sizing_percent + "% of bankroll" : "$" + e.fixed_trade_amount + " fixed"}\n` +
-      `Max trade amount: $${e.max_trade_amount}\n` +
-      `Daily loss limit: ${e.max_daily_loss > 0 ? "$" + e.max_daily_loss : "disabled"}\n` +
-      `Next trade would be sized at: $${settings.next_trade_amount_preview}`;
-  } catch (e) {}
-
-  const liveWarning = accountMode === "LIVE" ? "\n\n*** THIS IS A LIVE (REAL MONEY) ACCOUNT ***\n" : "\n";
-  if (!confirm(`Start AXIM with these current risk settings?${liveWarning}\n${summary}\n\nContinue?`)) return;
-
-  if (accountMode === "LIVE") {
-    const typed = prompt('This is a LIVE account. Type "START LIVE" to confirm:');
-    if (typed !== "START LIVE") { alert("Start cancelled."); return; }
-  }
-  await callControl("/api/process/start");
 }
 
 (async () => {
