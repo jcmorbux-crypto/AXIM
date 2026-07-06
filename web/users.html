@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Users / Access - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Users / Access</h1>
+        <div class="subtitle">Owner/Admin only - manage who can use AXIM and what they're allowed to do.</div>
+      </div>
+      <button class="primary" onclick="openCreateModal()">Add User</button>
+    </div>
+
+    <div class="card solid full-width">
+      <table>
+        <thead>
+          <tr>
+            <th>Email</th><th>Role</th><th>Tier</th><th>State</th>
+            <th>Demo only</th><th>Live allowed</th><th>Last login</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="users-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<!-- Create user modal -->
+<div class="modal-backdrop" id="create-modal">
+  <div class="modal">
+    <h2 style="margin-top:0;">Add User</h2>
+    <div class="field"><label>Email</label><input type="email" id="create-email"></div>
+    <div class="field"><label>Temporary password</label><input type="password" id="create-password" placeholder="At least 8 characters"></div>
+    <div class="field"><label>Role</label>
+      <select id="create-role">
+        <option value="user">User</option>
+        <option value="admin">Admin</option>
+        <option value="free_user">Free User</option>
+        <option value="trial_user">Trial User</option>
+        <option value="disabled_user">Disabled User</option>
+      </select>
+    </div>
+    <div class="field"><label>Access tier</label>
+      <select id="create-tier">
+        <option value="trial">Trial</option>
+        <option value="internal">Internal</option>
+        <option value="free_beta">Free Beta</option>
+        <option value="basic">Basic</option>
+        <option value="pro">Pro</option>
+        <option value="elite">Elite</option>
+      </select>
+    </div>
+    <div class="field"><label>Access state</label>
+      <select id="create-state">
+        <option value="pending_approval">Pending Approval</option>
+        <option value="active">Active</option>
+        <option value="free_access">Free Access</option>
+        <option value="trial">Trial</option>
+      </select>
+    </div>
+    <div id="create-error" class="banner danger" style="display:none;"></div>
+    <div class="row" style="justify-content:flex-end; margin-top:8px;">
+      <button class="subtle" onclick="closeModal('create-modal')">Cancel</button>
+      <button class="primary" onclick="submitCreate()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manage user modal -->
+<div class="modal-backdrop" id="manage-modal">
+  <div class="modal" style="width:520px;">
+    <h2 style="margin-top:0;" id="manage-email">-</h2>
+
+    <div class="field"><label>Role</label>
+      <select id="manage-role">
+        <option value="owner">Owner</option>
+        <option value="admin">Admin</option>
+        <option value="user">User</option>
+        <option value="free_user">Free User</option>
+        <option value="trial_user">Trial User</option>
+        <option value="disabled_user">Disabled User</option>
+      </select>
+    </div>
+    <div class="field"><label>Access tier</label>
+      <select id="manage-tier">
+        <option value="owner">Owner</option>
+        <option value="internal">Internal</option>
+        <option value="free_beta">Free Beta</option>
+        <option value="trial">Trial</option>
+        <option value="basic">Basic</option>
+        <option value="pro">Pro</option>
+        <option value="elite">Elite</option>
+        <option value="suspended">Suspended</option>
+      </select>
+    </div>
+    <div class="field"><label>Access state</label>
+      <select id="manage-state">
+        <option value="active">Active</option>
+        <option value="free_access">Free Access</option>
+        <option value="trial">Trial</option>
+        <option value="pending_approval">Pending Approval</option>
+        <option value="expired">Expired</option>
+        <option value="suspended">Suspended</option>
+        <option value="disabled">Disabled</option>
+      </select>
+    </div>
+    <div class="row" style="margin-bottom:14px;">
+      <button class="primary" onclick="saveManageEdits()">Save Changes</button>
+      <span id="manage-save-status" class="muted"></span>
+    </div>
+
+    <div class="row" style="margin-bottom:14px; flex-wrap:wrap;">
+      <button onclick="quickAction('activate')">Activate</button>
+      <button onclick="quickAction('disable')">Disable</button>
+      <button onclick="quickAction('grant-free-access')">Grant Free Access</button>
+      <button onclick="quickAction('force-demo')">Force Demo-Only</button>
+      <button onclick="quickAction('allow-live')">Allow Live Trading</button>
+      <button class="danger" onclick="quickAction('revoke-access')">Revoke Access Now</button>
+    </div>
+
+    <div class="row" style="margin-bottom:14px;">
+      <input type="date" id="trial-date" style="width:auto;">
+      <button onclick="submitSetTrial()">Set Trial Expiration</button>
+    </div>
+
+    <div class="row" style="margin-bottom:14px;">
+      <input type="password" id="reset-password-input" placeholder="New password (8+ chars)">
+      <button onclick="submitResetPassword()">Reset Password</button>
+    </div>
+
+    <div class="card" style="margin-bottom:12px;">
+      <h3>Account detail</h3>
+      <div id="manage-detail" class="muted">Loading...</div>
+    </div>
+
+    <div class="row" style="justify-content:flex-end;">
+      <button class="subtle" onclick="closeModal('manage-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let allUsers = [];
+let manageUserId = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
+
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
+
+function openCreateModal() {
+  document.getElementById("create-error").style.display = "none";
+  openModal("create-modal");
+}
+
+async function submitCreate() {
+  const errEl = document.getElementById("create-error");
+  errEl.style.display = "none";
+  try {
+    await fetchJSON("/api/admin/users", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("create-email").value,
+        password: document.getElementById("create-password").value,
+        role: document.getElementById("create-role").value,
+        access_tier: document.getElementById("create-tier").value,
+        access_state: document.getElementById("create-state").value,
+      }),
+    });
+    closeModal("create-modal");
+    await refreshUsers();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  }
+}
+
+async function refreshUsers() {
+  const tbody = document.getElementById("users-body");
+  try {
+    allUsers = await fetchJSON("/api/admin/users");
+    if (!allUsers.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">No users yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = allUsers.map(u => `
+      <tr>
+        <td>${escapeHtml(u.email)}</td>
+        <td><span class="badge info">${u.role}</span></td>
+        <td>${u.access_tier}</td>
+        <td>${stateBadge(u.access_state)}</td>
+        <td>${u.demo_only_forced ? '<span class="badge warn">forced</span>' : '<span class="badge off">no</span>'}</td>
+        <td>${u.live_trading_allowed ? '<span class="badge on">yes</span>' : '<span class="badge off">no</span>'}</td>
+        <td class="muted">${fmtTime(u.last_login_at)}</td>
+        <td><button class="subtle" onclick="openManageModal(${u.id})">Manage</button></td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" class="empty">Failed to load users: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function stateBadge(state) {
+  const cls = { active: "on", free_access: "on", trial: "info", pending_approval: "warn", expired: "off", suspended: "danger", disabled: "danger" }[state] || "off";
+  return `<span class="badge ${cls}">${state.replace("_", " ")}</span>`;
+}
+
+function escapeHtml(s) {
+  const div = document.createElement("div");
+  div.textContent = s;
+  return div.innerHTML;
+}
+
+async function openManageModal(userId) {
+  manageUserId = userId;
+  const user = allUsers.find(u => u.id === userId);
+  document.getElementById("manage-email").textContent = user.email;
+  document.getElementById("manage-role").value = user.role;
+  document.getElementById("manage-tier").value = user.access_tier;
+  document.getElementById("manage-state").value = user.access_state;
+  document.getElementById("manage-save-status").textContent = "";
+  document.getElementById("manage-detail").textContent = "Loading...";
+  openModal("manage-modal");
+
+  try {
+    const detail = await fetchJSON(`/api/admin/users/${userId}`);
+    const sessions = detail.sessions;
+    const conn = detail.shared_connection;
+    document.getElementById("manage-detail").innerHTML = `
+      <div class="stat-row"><span class="stat-label">Active sessions</span><span class="stat-value">${sessions.length}</span></div>
+      <div class="stat-row"><span class="stat-label">Telegram / Pocket Option</span><span class="stat-value">${conn.process_running ? "shared connection running" : "not running"}</span></div>
+      <div class="stat-row"><span class="stat-label">Trade count</span><span class="stat-value">${detail.trade_count ?? "N/A - shared account, not yet per-user"}</span></div>
+      <div class="stat-row"><span class="stat-label">P/L summary</span><span class="stat-value">${detail.pl_summary ?? "N/A - shared account, not yet per-user"}</span></div>
+    `;
+  } catch (e) {
+    document.getElementById("manage-detail").textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function saveManageEdits() {
+  const statusEl = document.getElementById("manage-save-status");
+  statusEl.textContent = "saving...";
+  try {
+    await fetchJSON(`/api/admin/users/${manageUserId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        role: document.getElementById("manage-role").value,
+        access_tier: document.getElementById("manage-tier").value,
+        access_state: document.getElementById("manage-state").value,
+      }),
+    });
+    statusEl.textContent = "saved";
+    await refreshUsers();
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function quickAction(action) {
+  try {
+    await fetchJSON(`/api/admin/users/${manageUserId}/${action}`, { method: "POST" });
+    await refreshUsers();
+    await openManageModal(manageUserId);
+  } catch (e) {
+    alert("Action failed: " + e.message);
+  }
+}
+
+async function submitSetTrial() {
+  const date = document.getElementById("trial-date").value;
+  if (!date) { alert("Pick a date first."); return; }
+  try {
+    await fetchJSON(`/api/admin/users/${manageUserId}/set-trial`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trial_expires_at: date }),
+    });
+    await refreshUsers();
+    await openManageModal(manageUserId);
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function submitResetPassword() {
+  const pw = document.getElementById("reset-password-input").value;
+  if (pw.length < 8) { alert("Password must be at least 8 characters."); return; }
+  try {
+    await fetchJSON(`/api/admin/users/${manageUserId}/reset-password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_password: pw }),
+    });
+    document.getElementById("reset-password-input").value = "";
+    alert("Password reset - all of this user's sessions were revoked.");
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "users" });
+  if (!user) return;
+  if (user.role !== "owner" && user.role !== "admin") {
+    document.querySelector(".main").innerHTML = '<div class="banner danger">Owner/Admin access required.</div>';
+    return;
+  }
+  refreshUsers();
+})();
+</script>
+</body>
+</html>

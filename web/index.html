@@ -339,13 +339,28 @@
 let allChannels = [];
 
 async function fetchJSON(url, opts) {
-  const res = await fetch(url, opts);
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
   if (!res.ok) {
+    if (res.status === 401) window.location.href = "/login";
     const body = await res.text();
     throw new Error(`${url} -> ${res.status}: ${body}`);
   }
   return res.json();
 }
+
+// This page predates the light-theme rebuild (docs/AXIM_UI_PLAN.md /
+// docs/AXIM_APP_PLAN.md) and is being relocated into per-page, auth-gated
+// light-theme screens - kept reachable at /legacy in the meantime, but
+// still requires login like every other page.
+(async () => {
+  try {
+    await fetch("/api/auth/me", { credentials: "same-origin" }).then(r => {
+      if (!r.ok) throw new Error("not authenticated");
+    });
+  } catch (e) {
+    window.location.href = "/login";
+  }
+})();
 
 function fmtTime(iso) {
   if (!iso) return "never";

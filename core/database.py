@@ -145,6 +145,56 @@ def initialize_database():
     );
     """)
 
+    # Auth/access-control layer (docs/AXIM_APP_PLAN.md) - who may log into
+    # the control UI at all, separate from the single shared Telegram/
+    # Pocket Option trading connection every user currently sees. role is
+    # the in-app permission level (owner/admin/user/free_user/trial_user/
+    # disabled_user); access_tier is the plan/tier assignment (owner/
+    # internal/free_beta/trial/basic/pro/elite/suspended) - kept ready for
+    # a future Stripe integration without being wired to one yet;
+    # access_state is the actual current usability of the account (active/
+    # free_access/trial/pending_approval/expired/suspended/disabled).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'user',
+        access_tier TEXT NOT NULL DEFAULT 'trial',
+        access_state TEXT NOT NULL DEFAULT 'pending_approval',
+        trial_expires_at TEXT,
+        demo_only_forced INTEGER DEFAULT 0,
+        live_trading_allowed INTEGER DEFAULT 0,
+        created_at TEXT,
+        last_login_at TEXT
+    );
+    """)
+
+    # token_hash only - the raw bearer token lives in the browser's cookie
+    # and is never persisted, same reasoning as password_hash: a DB read
+    # alone can't be replayed as a valid session (see core/auth.py).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token_hash TEXT UNIQUE NOT NULL,
+        created_at TEXT,
+        last_seen_at TEXT,
+        expires_at TEXT
+    );
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS admin_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_user_id INTEGER,
+        target_user_id INTEGER,
+        action TEXT NOT NULL,
+        detail TEXT,
+        created_at TEXT
+    );
+    """)
+
     conn.commit()
     conn.close()
 
@@ -639,6 +689,218 @@ def get_listener_heartbeat():
     row = conn.execute("SELECT * FROM ui_listener_heartbeat WHERE id = 1").fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+# ---------------------------------------------------------------------
+# Users / auth / admin actions - api/auth.py, api/admin.py
+#
+# get_user_by_email/get_user_by_id/list_users return every column
+# including password_hash - callers that expose this over HTTP (api/)
+# are responsible for whitelisting fields on the way out. Kept this way
+# (rather than a DB-layer redaction) because password verification
+# itself needs the hash, so the DB layer can't strip it unconditionally.
+# ---------------------------------------------------------------------
+
+_USER_UPDATABLE_FIELDS = {
+    "role", "access_tier", "access_state", "trial_expires_at",
+    "demo_only_forced", "live_trading_allowed",
+}
+
+
+@timed("database")
+def create_user(email, password, role="user", access_tier="trial", access_state="pending_approval"):
+    import auth
+    conn = get_connection()
+    cursor = conn.execute(
+        """INSERT INTO users (email, password_hash, role, access_tier, access_state, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (email.lower().strip(), auth.hash_password(password), role, access_tier, access_state, datetime.now().isoformat()),
+    )
+    conn.commit()
+    user_id = cursor.lastrowid
+    conn.close()
+    return user_id
+
+
+@timed("database")
+def get_user_by_email(email):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM users WHERE email = ?", (email.lower().strip(),)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def get_user_by_id(user_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def list_users():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM users ORDER BY created_at").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def count_users():
+    conn = get_connection()
+    row = conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()
+    conn.close()
+    return row["n"]
+
+
+@timed("database")
+def update_user(user_id, **fields):
+    for key in fields:
+        if key not in _USER_UPDATABLE_FIELDS:
+            raise ValueError(f"Unknown user field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [user_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def set_user_password(user_id, new_password):
+    import auth
+    conn = get_connection()
+    conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (auth.hash_password(new_password), user_id))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def verify_user_credentials(email, password):
+    """Returns the user dict if email+password are correct AND the
+    account isn't locked out, else None. Does not itself check
+    access_state beyond that - callers (api/auth.py) decide what each
+    access_state is allowed to do (e.g. 'pending_approval' can log in
+    but sees a waiting screen, 'disabled' can't log in at all)."""
+    import auth
+    user = get_user_by_email(email)
+    if user is None:
+        return None
+    if not auth.verify_password(password, user["password_hash"]):
+        return None
+    return user
+
+
+@timed("database")
+def record_login(user_id):
+    conn = get_connection()
+    conn.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (datetime.now().isoformat(), user_id))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def create_session(user_id, expires_hours=720):
+    """Default 30-day expiry (720h) - a local single-operator-class tool
+    with a 'remember me' checkbox on login, not a bank session timeout."""
+    import auth
+    raw_token, token_hash = auth.generate_session_token()
+    now = datetime.now()
+    expires_at = (now + timedelta(hours=expires_hours)).isoformat()
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO auth_sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (user_id, token_hash, now.isoformat(), now.isoformat(), expires_at),
+    )
+    conn.commit()
+    conn.close()
+    return raw_token
+
+
+@timed("database")
+def get_session_user(raw_token):
+    """Returns the user dict for a valid, non-expired session token, and
+    bumps last_seen_at - or None if the token is missing/expired/revoked.
+    Callers must treat None as 'not authenticated', not distinguish why."""
+    import auth
+    token_hash = auth.hash_token(raw_token)
+    conn = get_connection()
+    row = conn.execute(
+        """SELECT s.expires_at, u.* FROM auth_sessions s
+           JOIN users u ON u.id = s.user_id
+           WHERE s.token_hash = ?""",
+        (token_hash,),
+    ).fetchone()
+    if row is None:
+        conn.close()
+        return None
+    if datetime.fromisoformat(row["expires_at"]) < datetime.now():
+        conn.close()
+        return None
+    conn.execute("UPDATE auth_sessions SET last_seen_at = ? WHERE token_hash = ?",
+                 (datetime.now().isoformat(), token_hash))
+    conn.commit()
+    user = dict(row)
+    del user["expires_at"]
+    conn.close()
+    return user
+
+
+@timed("database")
+def delete_session(raw_token):
+    import auth
+    token_hash = auth.hash_token(raw_token)
+    conn = get_connection()
+    conn.execute("DELETE FROM auth_sessions WHERE token_hash = ?", (token_hash,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_user_sessions(user_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, created_at, last_seen_at, expires_at FROM auth_sessions WHERE user_id = ? ORDER BY last_seen_at DESC",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def revoke_all_sessions(user_id):
+    """Used by the admin 'revoke access immediately' action - deletes
+    every active session for this user, forcing re-login everywhere."""
+    conn = get_connection()
+    conn.execute("DELETE FROM auth_sessions WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def record_admin_action(actor_user_id, target_user_id, action, detail=None):
+    conn = get_connection()
+    conn.execute(
+        """INSERT INTO admin_actions (actor_user_id, target_user_id, action, detail, created_at)
+           VALUES (?, ?, ?, ?, ?)""",
+        (actor_user_id, target_user_id, action, detail, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_admin_actions(limit=200):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM admin_actions ORDER BY created_at DESC LIMIT ?", (limit,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 if __name__ == "__main__":

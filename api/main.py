@@ -30,8 +30,9 @@ sys.path.insert(0, str(PARSERS_DIR))
 
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import database
@@ -48,6 +49,10 @@ from settings import (
     TRADE_AMOUNT,
 )
 from logger import get_logger
+
+import auth_routes as auth_module
+import admin as admin_module
+from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
 # slow tick before treating the heartbeat as genuinely stale.
@@ -73,13 +78,30 @@ _SETTING_STATIC_DEFAULTS = {
     "duplicate_signal_window_seconds": DUPLICATE_SIGNAL_WINDOW_SECONDS,
 }
 
+AXIM_VERSION = "0.9.0-dev"  # pre-release - see docs/AXIM_APP_PLAN.md build order
+
 logger = get_logger("axim.ui", filename="ui.log")
 
 database.initialize_database()
 
 app = FastAPI(title="AXIM Control API")
+app.include_router(auth_module.router)
+app.include_router(admin_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
+
+# Static assets only (theme.css, shell.js, images) - HTML pages are served
+# through their own explicit routes below (not from this mount), so every
+# page load goes through a single, auditable list of routes rather than
+# "whatever file happens to sit in web/".
+app.mount("/web", StaticFiles(directory=WEB_DIR), name="web-static")
+
+
+def _serve(filename):
+    path = WEB_DIR / filename
+    if not path.exists():
+        raise HTTPException(status_code=500, detail=f"web/{filename} not found")
+    return FileResponse(path)
 
 
 class ChannelToggle(BaseModel):
@@ -109,21 +131,49 @@ class MoneyManagementSettings(BaseModel):
     duplicate_signal_window_seconds: Optional[int] = None
 
 
+@app.get("/api/version")
+def version():
+    return {"version": AXIM_VERSION}
+
+
 @app.get("/")
 def index():
-    index_path = WEB_DIR / "index.html"
-    if not index_path.exists():
-        raise HTTPException(status_code=500, detail="web/index.html not found")
-    return FileResponse(index_path)
+    # Client-side redirect chain: login.html calls /api/auth/bootstrap-status
+    # and /api/auth/me to decide whether to show the bootstrap-owner form,
+    # the login form, or bounce straight to dashboard.html.
+    return _serve("login.html")
+
+
+@app.get("/login")
+def login_page():
+    return _serve("login.html")
+
+
+@app.get("/dashboard")
+def dashboard_page():
+    return _serve("dashboard.html")
+
+
+@app.get("/users")
+def users_page():
+    return _serve("users.html")
+
+
+@app.get("/legacy")
+def legacy_page():
+    """The original dark-theme single-page control UI - kept reachable
+    (not deleted) while its panels are migrated into the new light-theme
+    per-page structure (docs/AXIM_UI_PLAN.md)."""
+    return _serve("index.html")
 
 
 @app.get("/api/channels")
-def list_channels():
+def list_channels(user=Depends(get_current_user)):
     return database.list_channels()
 
 
 @app.post("/api/channels/sync")
-async def sync_channels():
+async def sync_channels(user=Depends(require_admin)):
     """Triggers a real Telethon dialog fetch via the dedicated UI session
     (core/telegram_channels.py) - never touches enabled flags, only
     identity (chat_id/username/title). Requires axim_ui_session.session to
@@ -138,65 +188,69 @@ async def sync_channels():
 
 
 @app.patch("/api/channels/{channel_id}")
-def set_channel_enabled(channel_id: int, body: ChannelToggle):
+def set_channel_enabled(channel_id: int, body: ChannelToggle, user=Depends(require_admin)):
     database.set_channel_enabled(channel_id, body.enabled)
     return {"id": channel_id, "enabled": body.enabled}
 
 
 @app.get("/api/control")
-def get_control_state():
+def get_control_state(user=Depends(get_current_user)):
     return database.get_control_state()
 
 
 @app.post("/api/control/pause")
-def pause():
+def pause(user=Depends(require_admin)):
     database.set_control_state(paused=True)
-    logger.info("api: trading paused via UI")
+    logger.info("api: trading paused via UI by %s", user["email"])
     return database.get_control_state()
 
 
 @app.post("/api/control/resume")
-def resume():
+def resume(user=Depends(require_admin)):
     database.set_control_state(paused=False)
-    logger.info("api: trading resumed via UI")
+    logger.info("api: trading resumed via UI by %s", user["email"])
     return database.get_control_state()
 
 
 @app.post("/api/control/emergency-stop")
-def emergency_stop():
+def emergency_stop(user=Depends(get_current_user)):
+    # Deliberately just get_current_user, not require_admin - ANY logged-in
+    # user must be able to halt trading immediately; requiring admin here
+    # would be a safety regression (a non-admin who spots a problem
+    # couldn't stop it). Every other mutating control stays admin-only.
     database.set_control_state(paused=True, emergency_stop=True)
-    logger.warning("api: EMERGENCY STOP triggered via UI")
+    logger.warning("api: EMERGENCY STOP triggered via UI by %s", user["email"])
     return database.get_control_state()
 
 
 @app.post("/api/control/clear-emergency-stop")
-def clear_emergency_stop():
+def clear_emergency_stop(user=Depends(require_admin)):
     database.set_control_state(emergency_stop=False)
-    logger.info("api: emergency stop cleared via UI")
+    logger.info("api: emergency stop cleared via UI by %s", user["email"])
     return database.get_control_state()
 
 
 @app.post("/api/control/test-mode/enable")
-def enable_test_mode():
+def enable_test_mode(user=Depends(require_admin)):
     """Test mode: signals still go through parsing/risk-evaluation/asset
     resolution exactly as normal, but trade_coordinator.py stops one step
     short of pocket_executor.prepare_trade (the actual browser click) -
     same shape as the existing static PREVIEW_ONLY/AUTO_EXECUTE .env gate,
     just runtime-flippable from the UI instead of requiring a restart."""
     database.set_control_state(test_mode=True)
-    logger.info("api: test mode enabled via UI")
+    logger.info("api: test mode enabled via UI by %s", user["email"])
     return database.get_control_state()
 
 
 @app.post("/api/control/test-mode/disable")
-def disable_test_mode():
+def disable_test_mode(user=Depends(require_admin)):
     database.set_control_state(test_mode=False)
-    logger.info("api: test mode disabled via UI")
+    logger.info("api: test mode disabled via UI by %s", user["email"])
     return database.get_control_state()
 
 
 @app.get("/api/status")
-def status():
+def status(user=Depends(get_current_user)):
     process_status = process_control.get_status()
     control_state = database.get_control_state()
     return {
@@ -208,17 +262,17 @@ def status():
 
 
 @app.post("/api/process/start")
-def start_process():
+def start_process(user=Depends(require_admin)):
     return process_control.start_listener()
 
 
 @app.post("/api/process/stop")
-def stop_process():
+def stop_process(user=Depends(require_admin)):
     return process_control.stop_listener()
 
 
 @app.get("/api/settings")
-def get_settings():
+def get_settings(user=Depends(get_current_user)):
     """Returns the EFFECTIVE value of every money-management setting -
     whatever's actually enforced right now, whether that's a UI override
     or the static .env-derived default - plus the live-computed current
@@ -242,18 +296,18 @@ def get_settings():
 
 
 @app.put("/api/settings")
-def put_settings(body: MoneyManagementSettings):
+def put_settings(body: MoneyManagementSettings, user=Depends(require_admin)):
     updated = {}
     for key, value in body.model_dump(exclude_unset=True).items():
         if value is not None:
             database.set_setting(key, value)
             updated[key] = value
-    logger.info("api: settings updated via UI: %s", updated)
+    logger.info("api: settings updated via UI by %s: %s", user["email"], updated)
     return {"updated": updated}
 
 
 @app.get("/api/pocket-option/status")
-def pocket_option_status():
+def pocket_option_status(user=Depends(get_current_user)):
     """Session/worker health for the Pocket Option connection panel.
     Sourced from ui_listener_heartbeat, which the (separate-process)
     listener writes every 30s - not a live query against the browser
@@ -280,7 +334,7 @@ def pocket_option_status():
 
 
 @app.get("/api/dashboard")
-def dashboard():
+def dashboard(user=Depends(get_current_user)):
     """Same data core/dashboard_server.py's /api/data has always served
     (daily/weekly stats, recovery-rate data, P50/P95/P99 latency, recent
     signals) - reusing those exact functions, not a re-implementation.
@@ -296,7 +350,7 @@ def dashboard():
 
 
 @app.post("/api/parse-test")
-def parse_test(body: ParseTestRequest):
+def parse_test(body: ParseTestRequest, user=Depends(get_current_user)):
     """Runs the REAL parsers/signal_parser.parse_signal() against a
     pasted sample message - not a mock or a re-implementation, the exact
     function the live listener calls on every incoming message."""
@@ -305,7 +359,7 @@ def parse_test(body: ParseTestRequest):
 
 
 @app.get("/api/screenshots/{trade_id}")
-def list_trade_screenshots(trade_id: int):
+def list_trade_screenshots(trade_id: int, user=Depends(get_current_user)):
     conn = database.get_connection()
     row = conn.execute("SELECT screenshot_paths FROM signals WHERE id = ?", (trade_id,)).fetchone()
     conn.close()
@@ -322,7 +376,7 @@ def list_trade_screenshots(trade_id: int):
 
 
 @app.get("/api/screenshots/{trade_id}/{filename}")
-def get_trade_screenshot(trade_id: int, filename: str):
+def get_trade_screenshot(trade_id: int, filename: str, user=Depends(get_current_user)):
     # filename must be exactly one of the two labels prepare_trade ever
     # writes (execution/pocket_executor.py's _capture_screenshot_background
     # calls) - rejects anything else outright rather than trying to

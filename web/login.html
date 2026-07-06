@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  body {
+    min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(180deg, #fafbfc 0%, #f3f5f8 100%);
+  }
+  .auth-card {
+    width: 380px; max-width: 92vw;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    padding: 32px 32px 24px 32px;
+  }
+  .auth-logo {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 22px;
+  }
+  .auth-logo .mark {
+    width: 32px; height: 32px; background: var(--blue); border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    color: white; font-weight: 700; font-size: 15px;
+  }
+  .auth-logo .name { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  h1 { font-size: 18px; margin: 0 0 4px 0; font-weight: 650; }
+  .auth-subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 22px; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); margin-bottom: 16px; }
+  .checkbox-row input { width: auto; }
+  .auth-footer { display: flex; justify-content: space-between; align-items: center; margin-top: 18px; font-size: 12px; color: var(--text-faint); }
+  .auth-footer a { color: var(--blue); text-decoration: none; }
+  #error-banner { display: none; }
+  .waiting-icon { font-size: 32px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+
+<div class="auth-card">
+  <div class="auth-logo"><span class="mark">A</span><span class="name">AXIM</span></div>
+
+  <div id="bootstrap-view" style="display:none;">
+    <h1>Create your Owner account</h1>
+    <div class="auth-subtitle">No accounts exist yet - this one will have full unrestricted access.</div>
+    <div id="error-banner" class="banner danger"></div>
+    <form id="bootstrap-form">
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="bootstrap-email" required autocomplete="email">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="bootstrap-password" required minlength="8" autocomplete="new-password" placeholder="At least 8 characters">
+      </div>
+      <button type="submit" class="primary" style="width:100%;">Create Owner Account</button>
+    </form>
+  </div>
+
+  <div id="login-view" style="display:none;">
+    <h1>Sign in</h1>
+    <div class="auth-subtitle">Welcome back to AXIM.</div>
+    <div id="login-error" class="banner danger" style="display:none;"></div>
+    <form id="login-form">
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="login-email" required autocomplete="email">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="login-password" required autocomplete="current-password">
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" id="remember-me"> <label for="remember-me" style="margin:0;">Remember me</label>
+      </div>
+      <button type="submit" class="primary" style="width:100%;">Sign In</button>
+    </form>
+    <div style="margin-top:12px; text-align:center;">
+      <a href="#" style="font-size:12.5px; color:var(--text-faint);" onclick="alert('Password reset isn\'t wired up yet - ask your Owner/Admin to reset it from Users / Access.'); return false;">Forgot password?</a>
+    </div>
+  </div>
+
+  <div id="waiting-view" style="display:none; text-align:center; padding: 12px 0;">
+    <div class="waiting-icon">&#9203;</div>
+    <h1>Pending approval</h1>
+    <div class="auth-subtitle">Your account is waiting for an Owner/Admin to activate it.</div>
+    <button class="subtle" onclick="AximShell ? AximShell.logout() : doLogout()">Sign out</button>
+  </div>
+
+  <div class="auth-footer">
+    <span>AXIM <span id="version-tag">&nbsp;</span></span>
+    <span>Local build</span>
+  </div>
+</div>
+
+<script>
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  const isJson = (res.headers.get("content-type") || "").includes("application/json");
+  const body = isJson ? await res.json() : null;
+  if (!res.ok) {
+    const err = new Error((body && body.detail) || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+async function doLogout() {
+  try { await fetchJSON("/api/auth/logout", { method: "POST" }); } catch (e) {}
+  location.reload();
+}
+
+function show(viewId) {
+  ["bootstrap-view", "login-view", "waiting-view"].forEach(id => {
+    document.getElementById(id).style.display = id === viewId ? "block" : "none";
+  });
+}
+
+async function boot() {
+  try {
+    const v = await fetchJSON("/api/version");
+    document.getElementById("version-tag").textContent = "v" + v.version;
+  } catch (e) {}
+
+  // Already logged in? Skip straight past the login form.
+  try {
+    const me = await fetchJSON("/api/auth/me");
+    if (me.access_state === "pending_approval") {
+      show("waiting-view");
+    } else {
+      window.location.href = "/dashboard";
+    }
+    return;
+  } catch (e) {
+    // not authenticated - fall through to login/bootstrap
+  }
+
+  const status = await fetchJSON("/api/auth/bootstrap-status");
+  show(status.needs_bootstrap ? "bootstrap-view" : "login-view");
+}
+
+document.getElementById("bootstrap-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const banner = document.getElementById("error-banner");
+  banner.style.display = "none";
+  try {
+    await fetchJSON("/api/auth/bootstrap-owner", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("bootstrap-email").value,
+        password: document.getElementById("bootstrap-password").value,
+      }),
+    });
+    window.location.href = "/dashboard";
+  } catch (err) {
+    banner.textContent = err.message;
+    banner.style.display = "block";
+  }
+});
+
+document.getElementById("login-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const banner = document.getElementById("login-error");
+  banner.style.display = "none";
+  try {
+    const user = await fetchJSON("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("login-email").value,
+        password: document.getElementById("login-password").value,
+        remember_me: document.getElementById("remember-me").checked,
+      }),
+    });
+    if (user.access_state === "pending_approval") {
+      show("waiting-view");
+    } else {
+      window.location.href = "/dashboard";
+    }
+  } catch (err) {
+    banner.textContent = err.message;
+    banner.style.display = "block";
+  }
+});
+
+boot();
+</script>
+</body>
+</html>

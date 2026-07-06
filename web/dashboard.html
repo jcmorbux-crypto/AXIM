@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Dashboard - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+  .status-dot.on { background: var(--green); }
+  .status-dot.off { background: var(--text-faint); }
+  .status-dot.warn { background: var(--yellow); }
+  .status-dot.danger { background: var(--red); }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div id="emergency-banner" class="banner danger" style="display:none;">EMERGENCY STOP IS ACTIVE - AXIM is not requesting or executing any signals.</div>
+
+    <div class="page-header">
+      <div>
+        <h1>Dashboard</h1>
+        <div class="subtitle">Is AXIM connected, safe, and ready to trade?</div>
+      </div>
+      <div class="row">
+        <button class="primary" onclick="confirmStart()">Start Session</button>
+        <button onclick="callControl('/api/control/pause')">Pause Session</button>
+        <button onclick="callControl('/api/process/stop')">Stop Session</button>
+        <button class="danger" onclick="confirmEmergencyStop()">Emergency Stop</button>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>AXIM Status</h3>
+        <div class="stat-value-lg"><span id="axim-status-dot" class="status-dot off"></span><span id="axim-status-text">Loading...</span></div>
+        <div class="stat-caption" id="axim-status-caption">&nbsp;</div>
+      </div>
+      <div class="card">
+        <h3>Demo / Live Mode</h3>
+        <div class="stat-value-lg" id="account-mode">-</div>
+        <div class="stat-caption">Set via .env - not switchable in-app yet</div>
+      </div>
+      <div class="card">
+        <h3>Telegram Status</h3>
+        <div class="stat-value-lg"><span id="telegram-dot" class="status-dot off"></span><span id="telegram-status">-</span></div>
+        <div class="stat-caption" id="telegram-caption">&nbsp;</div>
+      </div>
+      <div class="card">
+        <h3>Pocket Option Status</h3>
+        <div class="stat-value-lg"><span id="po-dot" class="status-dot off"></span><span id="po-status">-</span></div>
+        <div class="stat-caption" id="po-caption">&nbsp;</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Current Balance</h3>
+        <div class="stat-value-lg" id="balance">-</div>
+        <div class="stat-caption">Live DOM read not yet implemented</div>
+      </div>
+      <div class="card">
+        <h3>Today's P/L</h3>
+        <div class="stat-value-lg" id="daily-pl">-</div>
+        <div class="stat-caption" id="daily-pl-caption">&nbsp;</div>
+      </div>
+      <div class="card">
+        <h3>Current Session P/L</h3>
+        <div class="stat-value-lg faint">Coming soon</div>
+        <div class="stat-caption">Ships with Trading Sessions</div>
+      </div>
+      <div class="card">
+        <h3>Win Rate (Today)</h3>
+        <div class="stat-value-lg" id="win-rate">-</div>
+        <div class="stat-caption" id="win-rate-caption">&nbsp;</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Trades Today</h3>
+        <div class="stat-value-lg" id="trades-today">-</div>
+      </div>
+      <div class="card">
+        <h3>Active Signal Source</h3>
+        <div class="stat-value-lg" id="active-source" style="font-size:16px;">-</div>
+      </div>
+      <div class="card">
+        <h3>Last Signal</h3>
+        <div class="stat-value-lg" id="last-signal" style="font-size:16px;">-</div>
+        <div class="stat-caption" id="last-signal-caption">&nbsp;</div>
+      </div>
+      <div class="card">
+        <h3>Last Trade Result</h3>
+        <div class="stat-value-lg" id="last-result">-</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card full-width">
+        <h3>Risk Status</h3>
+        <div class="row" id="risk-status-row">
+          <span class="badge off">loading...</span>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let currentUser = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${url} -> ${res.status}: ${body}`);
+  }
+  return res.json();
+}
+
+function fmtMoney(n) {
+  if (n === null || n === undefined) return "-";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}$${Number(n).toFixed(2)}`;
+}
+function plClass(v) {
+  if (v === null || v === undefined) return "neutral";
+  return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral");
+}
+
+async function refreshAll() {
+  try {
+    const [status, po, dash, channels, settings] = await Promise.all([
+      fetchJSON("/api/status"),
+      fetchJSON("/api/pocket-option/status"),
+      fetchJSON("/api/dashboard"),
+      fetchJSON("/api/channels"),
+      fetchJSON("/api/settings"),
+    ]);
+
+    // AXIM status
+    const dot = document.getElementById("axim-status-dot");
+    const text = document.getElementById("axim-status-text");
+    const banner = document.getElementById("emergency-banner");
+    if (status.control.emergency_stop) {
+      dot.className = "status-dot danger"; text.textContent = "Emergency Stop"; banner.style.display = "block";
+    } else if (status.control.paused) {
+      dot.className = "status-dot warn"; text.textContent = "Paused"; banner.style.display = "none";
+    } else if (status.process.running) {
+      dot.className = "status-dot on"; text.textContent = "Running"; banner.style.display = "none";
+    } else {
+      dot.className = "status-dot off"; text.textContent = "Stopped"; banner.style.display = "none";
+    }
+    document.getElementById("axim-status-caption").textContent =
+      status.control.test_mode ? "Test mode is ON - trades stop short of execution" : `${status.enabled_channel_count} channel(s) enabled`;
+
+    document.getElementById("account-mode").textContent = po.account_mode;
+
+    // Telegram status (shares the same listener process/heartbeat as PO today)
+    const tgDot = document.getElementById("telegram-dot");
+    const tgText = document.getElementById("telegram-status");
+    if (status.process.running && !po.heartbeat_stale) {
+      tgDot.className = "status-dot on"; tgText.textContent = "Connected";
+    } else if (status.process.running) {
+      tgDot.className = "status-dot warn"; tgText.textContent = "Reconnecting";
+    } else {
+      tgDot.className = "status-dot off"; tgText.textContent = "Disconnected";
+    }
+    document.getElementById("telegram-caption").textContent = status.process.running ? `pid ${status.process.pids.join(", ")}` : "listener not running";
+
+    // Pocket Option status
+    const poDot = document.getElementById("po-dot");
+    const poText = document.getElementById("po-status");
+    if (!po.process_running) {
+      poDot.className = "status-dot off"; poText.textContent = "Not running";
+    } else if (po.heartbeat_stale) {
+      poDot.className = "status-dot warn"; poText.textContent = "Stale";
+    } else {
+      poDot.className = "status-dot on"; poText.textContent = "Healthy";
+    }
+    document.getElementById("po-caption").textContent = po.heartbeat ? `${po.heartbeat.worker_count} worker(s)` : "no heartbeat yet";
+
+    document.getElementById("balance").textContent = po.balance !== null ? "$" + po.balance : "—";
+
+    const daily = dash.statistics.daily;
+    document.getElementById("daily-pl").textContent = fmtMoney(daily.profit_loss);
+    document.getElementById("daily-pl").className = "stat-value-lg " + plClass(daily.profit_loss);
+    document.getElementById("daily-pl-caption").textContent = `${daily.wins}W / ${daily.losses}L / ${daily.draws}D`;
+
+    document.getElementById("win-rate").textContent = daily.win_rate !== null ? (daily.win_rate * 100).toFixed(1) + "%" : "-";
+    document.getElementById("win-rate-caption").textContent = daily.average_payout !== null ? `avg payout ${daily.average_payout.toFixed(1)}%` : "";
+    document.getElementById("trades-today").textContent = daily.total_closed;
+
+    const enabled = channels.filter(c => c.enabled);
+    document.getElementById("active-source").textContent = enabled.length
+      ? enabled.map(c => c.title || c.username).join(", ")
+      : "None selected";
+
+    const recent = dash.recent_trades;
+    if (recent.length) {
+      const last = recent[0];
+      document.getElementById("last-signal").textContent = `${last.asset || "-"} ${last.direction || ""}`;
+      document.getElementById("last-signal-caption").textContent = last.received_at ? last.received_at.replace("T", " ").slice(0, 19) : "";
+      const resultEl = document.getElementById("last-result");
+      if (last.execution_status === "result_win") { resultEl.textContent = "WIN"; resultEl.className = "stat-value-lg pos"; }
+      else if (last.execution_status === "result_loss") { resultEl.textContent = "LOSS"; resultEl.className = "stat-value-lg neg"; }
+      else { resultEl.textContent = last.execution_status || "-"; resultEl.className = "stat-value-lg neutral"; }
+    } else {
+      document.getElementById("last-signal").textContent = "No signals yet";
+    }
+
+    // Risk status - plain-language read of real, already-fetched numbers,
+    // not a new risk engine: emergency stop > daily loss proximity > normal.
+    const riskRow = document.getElementById("risk-status-row");
+    const maxLoss = settings.effective.max_daily_loss;
+    let badges = [];
+    if (status.control.emergency_stop) {
+      badges.push('<span class="badge danger">Emergency stop active</span>');
+    } else if (maxLoss > 0 && daily.profit_loss <= -0.8 * maxLoss) {
+      badges.push(`<span class="badge warn">Approaching daily loss limit ($${daily.profit_loss.toFixed(2)} of -$${maxLoss})</span>`);
+    } else {
+      badges.push('<span class="badge on">Normal</span>');
+    }
+    if (status.control.test_mode) badges.push('<span class="badge info">Test mode</span>');
+    badges.push(`<span class="badge off">Max trade $${settings.effective.max_trade_amount}</span>`);
+    badges.push(`<span class="badge off">Max trades/day ${settings.effective.max_trades_per_day || "unlimited"}</span>`);
+    riskRow.innerHTML = badges.join(" ");
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function callControl(path) {
+  try {
+    await fetchJSON(path, { method: "POST" });
+  } catch (e) {
+    alert("Action failed: " + e.message);
+  }
+  refreshAll();
+}
+
+function confirmEmergencyStop() {
+  if (confirm("Emergency stop: no new signals will be executed until you clear it. Continue?")) {
+    callControl("/api/control/emergency-stop");
+  }
+}
+
+async function confirmStart() {
+  let summary = "(failed to load current risk settings)";
+  let accountMode = "unknown";
+  try {
+    const [settings, po] = await Promise.all([fetchJSON("/api/settings"), fetchJSON("/api/pocket-option/status")]);
+    accountMode = po.account_mode;
+    const e = settings.effective;
+    summary =
+      `Account mode: ${accountMode}\n` +
+      `Trade sizing: ${e.trade_sizing_mode === "percent" ? e.trade_sizing_percent + "% of bankroll" : "$" + e.fixed_trade_amount + " fixed"}\n` +
+      `Max trade amount: $${e.max_trade_amount}\n` +
+      `Daily loss limit: ${e.max_daily_loss > 0 ? "$" + e.max_daily_loss : "disabled"}\n` +
+      `Next trade would be sized at: $${settings.next_trade_amount_preview}`;
+  } catch (e) {}
+
+  const liveWarning = accountMode === "LIVE" ? "\n\n*** THIS IS A LIVE (REAL MONEY) ACCOUNT ***\n" : "\n";
+  if (!confirm(`Start AXIM with these current risk settings?${liveWarning}\n${summary}\n\nContinue?`)) return;
+
+  if (accountMode === "LIVE") {
+    const typed = prompt('This is a LIVE account. Type "START LIVE" to confirm:');
+    if (typed !== "START LIVE") { alert("Start cancelled."); return; }
+  }
+  await callControl("/api/process/start");
+}
+
+(async () => {
+  currentUser = await AximShell.init({ active: "dashboard" });
+  if (!currentUser) return;
+  refreshAll();
+  setInterval(refreshAll, 5000);
+})();
+</script>
+</body>
+</html>

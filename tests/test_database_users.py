@@ -1,0 +1,137 @@
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "core"))
+
+import database
+
+
+class UserAccountTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_create_and_fetch_user(self):
+        user_id = database.create_user("owner@example.com", "supersecret1", role="owner",
+                                         access_tier="owner", access_state="active")
+        user = database.get_user_by_id(user_id)
+        self.assertEqual(user["email"], "owner@example.com")
+        self.assertEqual(user["role"], "owner")
+        self.assertNotEqual(user["password_hash"], "supersecret1")  # never stored raw
+
+    def test_email_lookup_is_case_insensitive(self):
+        database.create_user("Owner@Example.com", "supersecret1")
+        user = database.get_user_by_email("owner@example.com")
+        self.assertIsNotNone(user)
+
+    def test_count_users(self):
+        self.assertEqual(database.count_users(), 0)
+        database.create_user("a@example.com", "supersecret1")
+        self.assertEqual(database.count_users(), 1)
+
+    def test_verify_user_credentials_correct_and_incorrect(self):
+        database.create_user("a@example.com", "supersecret1")
+        self.assertIsNotNone(database.verify_user_credentials("a@example.com", "supersecret1"))
+        self.assertIsNone(database.verify_user_credentials("a@example.com", "wrongpassword"))
+        self.assertIsNone(database.verify_user_credentials("nobody@example.com", "supersecret1"))
+
+    def test_update_user_rejects_unknown_field(self):
+        user_id = database.create_user("a@example.com", "supersecret1")
+        with self.assertRaises(ValueError):
+            database.update_user(user_id, password_hash="hijacked")
+
+    def test_update_user_partial_update(self):
+        user_id = database.create_user("a@example.com", "supersecret1")
+        database.update_user(user_id, access_state="active")
+        user = database.get_user_by_id(user_id)
+        self.assertEqual(user["access_state"], "active")
+        self.assertEqual(user["access_tier"], "trial")  # untouched default
+
+    def test_set_user_password_changes_credential(self):
+        user_id = database.create_user("a@example.com", "supersecret1")
+        database.set_user_password(user_id, "newpassword2")
+        self.assertIsNone(database.verify_user_credentials("a@example.com", "supersecret1"))
+        self.assertIsNotNone(database.verify_user_credentials("a@example.com", "newpassword2"))
+
+    def test_record_login_sets_last_login_at(self):
+        user_id = database.create_user("a@example.com", "supersecret1")
+        self.assertIsNone(database.get_user_by_id(user_id)["last_login_at"])
+        database.record_login(user_id)
+        self.assertIsNotNone(database.get_user_by_id(user_id)["last_login_at"])
+
+
+class SessionTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.user_id = database.create_user("a@example.com", "supersecret1")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_create_session_and_resolve_user(self):
+        raw_token = database.create_session(self.user_id)
+        user = database.get_session_user(raw_token)
+        self.assertIsNotNone(user)
+        self.assertEqual(user["id"], self.user_id)
+
+    def test_invalid_token_resolves_to_none(self):
+        self.assertIsNone(database.get_session_user("not-a-real-token"))
+
+    def test_expired_session_resolves_to_none(self):
+        raw_token = database.create_session(self.user_id, expires_hours=-1)
+        self.assertIsNone(database.get_session_user(raw_token))
+
+    def test_delete_session_invalidates_token(self):
+        raw_token = database.create_session(self.user_id)
+        database.delete_session(raw_token)
+        self.assertIsNone(database.get_session_user(raw_token))
+
+    def test_revoke_all_sessions(self):
+        token1 = database.create_session(self.user_id)
+        token2 = database.create_session(self.user_id)
+        database.revoke_all_sessions(self.user_id)
+        self.assertIsNone(database.get_session_user(token1))
+        self.assertIsNone(database.get_session_user(token2))
+
+    def test_list_user_sessions(self):
+        database.create_session(self.user_id)
+        database.create_session(self.user_id)
+        self.assertEqual(len(database.list_user_sessions(self.user_id)), 2)
+
+
+class AdminActionTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_record_and_list_admin_actions(self):
+        admin_id = database.create_user("admin@example.com", "supersecret1", role="admin")
+        target_id = database.create_user("user@example.com", "supersecret1")
+        database.record_admin_action(admin_id, target_id, "disable", "reason: nonpayment")
+        actions = database.list_admin_actions()
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["action"], "disable")
+        self.assertEqual(actions[0]["target_user_id"], target_id)
+
+
+if __name__ == "__main__":
+    unittest.main()
