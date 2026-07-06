@@ -155,6 +155,30 @@
     <h2>Summary</h2>
     <div class="muted" id="summary-line">loading...</div>
   </div>
+
+  <div class="panel">
+    <h2>Pocket Option</h2>
+    <div class="row" style="margin-bottom:10px;">
+      Account: <span id="account-badge" class="badge off">unknown</span>
+      Session: <span id="po-badge" class="badge off">unknown</span>
+    </div>
+    <div class="muted" id="po-detail" style="margin-bottom:10px;">loading...</div>
+    <div class="row">
+      <button onclick="reconnect()">Manual Reconnect</button>
+    </div>
+  </div>
+</div>
+
+<div class="panel" style="margin-bottom:20px;">
+  <h2>Money Management</h2>
+  <div class="muted" id="mm-preview" style="margin-bottom:14px;"></div>
+  <table>
+    <tbody id="settings-body"></tbody>
+  </table>
+  <div class="row" style="margin-top:14px;">
+    <button class="primary" onclick="saveSettings()">Save Settings</button>
+    <span id="settings-status" class="muted"></span>
+  </div>
 </div>
 
 <div class="panel">
@@ -326,9 +350,119 @@ async function syncChannels() {
   }
 }
 
+const SETTINGS_FIELDS = [
+  { key: "starting_bankroll", label: "Starting bankroll ($)", step: "0.01" },
+  { key: "trade_sizing_mode", label: "Trade sizing mode (fixed | percent)", type: "text" },
+  { key: "fixed_trade_amount", label: "Fixed trade amount ($)", step: "0.01" },
+  { key: "trade_sizing_percent", label: "Percent of bankroll per trade (%)", step: "0.01" },
+  { key: "max_trade_amount", label: "Max trade amount ($)", step: "0.01" },
+  { key: "max_daily_loss", label: "Daily loss limit ($, 0 = disabled)", step: "0.01" },
+  { key: "daily_profit_target", label: "Daily profit target ($, 0 = disabled)", step: "0.01" },
+  { key: "max_trades_per_hour", label: "Max trades per hour" },
+  { key: "max_trades_per_day", label: "Max trades per day (0 = disabled)" },
+  { key: "max_consecutive_losses", label: "Stop after N consecutive losses" },
+  { key: "cooldown_after_loss_seconds", label: "Cooldown after loss (seconds)" },
+  { key: "minimum_payout", label: "Minimum payout (%)" },
+  { key: "duplicate_signal_window_seconds", label: "Duplicate signal window (seconds)" },
+];
+let currentSettings = {};
+
+async function refreshSettings() {
+  try {
+    const data = await fetchJSON("/api/settings");
+    currentSettings = data.effective;
+    document.getElementById("mm-preview").innerHTML =
+      `Current bankroll: <b>$${data.current_bankroll.toFixed(2)}</b> ` +
+      `(lifetime realized P/L: $${data.lifetime_realized_pnl.toFixed(2)}) - ` +
+      `next trade would be sized at <b>$${data.next_trade_amount_preview}</b>`;
+    renderSettings(data.overridden_keys);
+  } catch (e) {
+    document.getElementById("mm-preview").textContent = "Failed to load settings: " + e.message;
+  }
+}
+
+function renderSettings(overriddenKeys) {
+  const tbody = document.getElementById("settings-body");
+  tbody.innerHTML = SETTINGS_FIELDS.map(f => `
+    <tr>
+      <td style="width:320px;">${f.label}${overriddenKeys.includes(f.key) ? ' <span class="badge on" style="font-size:10px;">customized</span>' : ""}</td>
+      <td>
+        <input type="${f.type || 'number'}" ${f.step ? `step="${f.step}"` : ""}
+               id="setting-${f.key}" value="${currentSettings[f.key]}" style="width:160px;">
+      </td>
+    </tr>
+  `).join("");
+}
+
+async function saveSettings() {
+  const statusEl = document.getElementById("settings-status");
+  const body = {};
+  for (const f of SETTINGS_FIELDS) {
+    const el = document.getElementById(`setting-${f.key}`);
+    const raw = el.value;
+    if (f.type === "text") {
+      body[f.key] = raw;
+    } else {
+      const n = parseFloat(raw);
+      if (!isNaN(n)) body[f.key] = n;
+    }
+  }
+  statusEl.textContent = "saving...";
+  try {
+    await fetchJSON("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    statusEl.textContent = "saved";
+    await refreshSettings();
+  } catch (e) {
+    statusEl.textContent = "save failed: " + e.message;
+  }
+}
+
+async function refreshPocketOption() {
+  try {
+    const data = await fetchJSON("/api/pocket-option/status");
+    const accountBadge = document.getElementById("account-badge");
+    accountBadge.textContent = data.account_mode;
+    accountBadge.className = data.account_mode === "DEMO" ? "badge on" : "badge danger";
+
+    const poBadge = document.getElementById("po-badge");
+    if (!data.process_running) {
+      poBadge.textContent = "not running";
+      poBadge.className = "badge off";
+    } else if (data.heartbeat_stale) {
+      poBadge.textContent = "stale / reconnecting";
+      poBadge.className = "badge warn";
+    } else {
+      poBadge.textContent = "healthy";
+      poBadge.className = "badge on";
+    }
+
+    const hb = data.heartbeat;
+    document.getElementById("po-detail").innerHTML = hb
+      ? `Workers: ${hb.worker_count} | Generation: ${hb.generation} | Last heartbeat: ${fmtTime(hb.updated_at)}<br>` +
+        `Balance: ${data.balance !== null ? "$" + data.balance : "not yet implemented"}`
+      : "No heartbeat recorded yet.";
+  } catch (e) {
+    document.getElementById("po-detail").textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function reconnect() {
+  if (!confirm("Manual reconnect restarts the whole listener process (stop, then start). Continue?")) return;
+  await callControl("/api/process/stop");
+  await new Promise(r => setTimeout(r, 2000));
+  await callControl("/api/process/start");
+}
+
 refreshStatus();
 refreshChannels();
+refreshSettings();
+refreshPocketOption();
 setInterval(refreshStatus, 5000);
+setInterval(refreshPocketOption, 10000);
 </script>
 </body>
 </html>

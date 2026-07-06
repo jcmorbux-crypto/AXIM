@@ -108,6 +108,33 @@ def initialize_database():
     # callers never have to special-case "no row yet".
     conn.execute("INSERT OR IGNORE INTO ui_control_state (id, paused, emergency_stop) VALUES (1, 0, 0)")
 
+    # Key-value store for UI-editable money-management settings - values
+    # are JSON-encoded so one table covers numbers/bools/strings alike.
+    # risk_manager.py reads these dynamically (falling back to the static
+    # .env-derived config/settings.py constant if a key was never set),
+    # so a change here takes effect on the very next signal, no restart.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS ui_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT
+    );
+    """)
+
+    # Singleton heartbeat row - core/telegram_listener.py writes this
+    # periodically so the (separate-process) API/UI has something to show
+    # for "is the browser/worker pool actually healthy right now" without
+    # sharing memory with the listener process.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS ui_listener_heartbeat (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        generation INTEGER,
+        worker_count INTEGER,
+        demo_mode_verified INTEGER,
+        updated_at TEXT
+    );
+    """)
+
     _migrate_schema(conn)
 
     conn.commit()
@@ -521,6 +548,83 @@ def set_control_state(paused=None, emergency_stop=None):
     )
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------
+# UI-editable money-management settings - api/, risk_manager.py, trade_coordinator.py
+# ---------------------------------------------------------------------
+
+@timed("database")
+def get_setting(key, default=None):
+    """Returns the decoded value if this key was ever explicitly set via
+    the UI, else `default` (the caller passes its own static config/
+    settings.py constant as that default, so an unconfigured setting
+    behaves exactly as it did before the UI existed)."""
+    conn = get_connection()
+    row = conn.execute("SELECT value FROM ui_settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    if row is None:
+        return default
+    return json.loads(row["value"])
+
+
+@timed("database")
+def set_setting(key, value):
+    conn = get_connection()
+    conn.execute("""
+        INSERT INTO ui_settings (key, value, updated_at) VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    """, (key, json.dumps(value), datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_all_settings():
+    conn = get_connection()
+    rows = conn.execute("SELECT key, value, updated_at FROM ui_settings").fetchall()
+    conn.close()
+    return {row["key"]: json.loads(row["value"]) for row in rows}
+
+
+@timed("database")
+def get_lifetime_realized_pnl():
+    """Sum of profit_loss across every closed trade, ever - used to
+    compute "current bankroll" (starting_bankroll setting + this) for
+    percentage-of-bankroll position sizing."""
+    conn = get_connection()
+    row = conn.execute("SELECT SUM(profit_loss) AS total FROM signals WHERE profit_loss IS NOT NULL").fetchone()
+    conn.close()
+    return row["total"] if row["total"] is not None else 0.0
+
+
+# ---------------------------------------------------------------------
+# Listener heartbeat - telegram_listener.py writes, api/ reads
+# ---------------------------------------------------------------------
+
+@timed("database")
+def update_listener_heartbeat(generation, worker_count, demo_mode_verified):
+    conn = get_connection()
+    conn.execute("""
+        UPDATE ui_listener_heartbeat
+        SET generation = ?, worker_count = ?, demo_mode_verified = ?, updated_at = ?
+        WHERE id = 1
+    """, (generation, worker_count, 1 if demo_mode_verified else 0, datetime.now().isoformat()))
+    if conn.total_changes == 0:
+        conn.execute("""
+            INSERT INTO ui_listener_heartbeat (id, generation, worker_count, demo_mode_verified, updated_at)
+            VALUES (1, ?, ?, ?, ?)
+        """, (generation, worker_count, 1 if demo_mode_verified else 0, datetime.now().isoformat()))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_listener_heartbeat():
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM ui_listener_heartbeat WHERE id = 1").fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 if __name__ == "__main__":

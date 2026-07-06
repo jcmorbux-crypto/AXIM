@@ -166,6 +166,80 @@ class RiskManagerTests(unittest.TestCase):
     def test_evaluate_all_passes_clean_signal(self):
         risk_manager.evaluate_all("GBP/USD OTC", "SELL", "5 Minute", 1)
 
+    # -- Phase 2 UI settings: dynamic override --------------------------
+
+    def test_max_trade_amount_reads_ui_setting_override(self):
+        database.set_setting("max_trade_amount", 5)
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_max_trade_amount(10)
+        self.assertEqual(ctx.exception.rule, "max_trade_amount")
+        risk_manager.check_max_trade_amount(4)  # must not raise
+
+    def test_max_trade_amount_falls_back_to_static_default_when_unset(self):
+        risk_manager.check_max_trade_amount(risk_manager.MAX_TRADE_AMOUNT - 1)  # must not raise
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_trade_amount(risk_manager.MAX_TRADE_AMOUNT + 1)
+
+    # -- max_trades_per_day (new) ----------------------------------------
+
+    def test_max_trades_per_day_disabled_by_default(self):
+        for _ in range(20):
+            self._insert_signal()
+        risk_manager.check_max_trades_per_day()  # must not raise - disabled (0)
+
+    def test_max_trades_per_day_trips_once_configured(self):
+        database.set_setting("max_trades_per_day", 3)
+        for _ in range(3):
+            self._insert_signal()
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_max_trades_per_day()
+        self.assertEqual(ctx.exception.rule, "max_trades_per_day")
+
+    # -- daily_profit_target (new) ----------------------------------------
+
+    def test_daily_profit_target_disabled_by_default(self):
+        self._insert_signal(result="win", profit_loss=1000)
+        risk_manager.check_daily_profit_target()  # must not raise - disabled (0)
+
+    def test_daily_profit_target_trips_once_reached(self):
+        database.set_setting("daily_profit_target", 10)
+        self._insert_signal(result="win", profit_loss=6)
+        self._insert_signal(result="win", profit_loss=5)
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_daily_profit_target()
+        self.assertEqual(ctx.exception.rule, "daily_profit_target")
+
+    def test_daily_profit_target_not_reached_yet(self):
+        database.set_setting("daily_profit_target", 100)
+        self._insert_signal(result="win", profit_loss=6)
+        risk_manager.check_daily_profit_target()  # must not raise
+
+    # -- compute_trade_amount (new position sizing) -----------------------
+
+    def test_compute_trade_amount_fixed_mode_default(self):
+        self.assertEqual(risk_manager.compute_trade_amount(7), 7)
+
+    def test_compute_trade_amount_percent_mode(self):
+        database.set_setting("trade_sizing_mode", "percent")
+        database.set_setting("starting_bankroll", 1000)
+        database.set_setting("trade_sizing_percent", 2)
+        # No trades yet - lifetime P/L is 0, bankroll = 1000 -> 2% = 20.
+        self.assertEqual(risk_manager.compute_trade_amount(7), 20.0)
+
+    def test_compute_trade_amount_percent_mode_accounts_for_realized_pnl(self):
+        database.set_setting("trade_sizing_mode", "percent")
+        database.set_setting("starting_bankroll", 1000)
+        database.set_setting("trade_sizing_percent", 10)
+        self._insert_signal(result="loss", profit_loss=-500)
+        # bankroll = 1000 - 500 = 500 -> 10% = 50.
+        self.assertEqual(risk_manager.compute_trade_amount(7), 50.0)
+
+    def test_compute_trade_amount_percent_mode_falls_back_when_bankroll_not_positive(self):
+        database.set_setting("trade_sizing_mode", "percent")
+        database.set_setting("starting_bankroll", 0)
+        database.set_setting("trade_sizing_percent", 5)
+        self.assertEqual(risk_manager.compute_trade_amount(7), 7)
+
 
 if __name__ == "__main__":
     unittest.main()

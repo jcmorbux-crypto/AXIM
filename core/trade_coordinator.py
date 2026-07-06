@@ -79,7 +79,10 @@ class TradeCoordinator:
             await self.event_bus.publish("trade.signal_received", {"trade_id": trade_id, "signal": signal})
 
             asset, direction, expiry = signal["asset"], signal["direction"], signal["expiry"]
-            amount = TRADE_AMOUNT
+            # Fixed TRADE_AMOUNT by default, or a percentage of current
+            # bankroll if the operator configured that via the UI - see
+            # risk_manager.compute_trade_amount's own docstring.
+            amount = risk_manager.compute_trade_amount(TRADE_AMOUNT)
 
             try:
                 # Stage: Validation (freshness)
@@ -102,9 +105,11 @@ class TradeCoordinator:
                     risk_manager.check_demo_only()
                     risk_manager.check_max_trade_amount(amount)
                     risk_manager.check_max_trades_per_hour()
+                    risk_manager.check_max_trades_per_day()
                     risk_manager.check_max_consecutive_losses()
                     risk_manager.check_cooldown_after_loss()
                     risk_manager.check_max_daily_loss()
+                    risk_manager.check_daily_profit_target()
                 except risk_manager.RiskViolation as violation:
                     timeline.persist(database)
                     return self._reject(trade_id, violation, time.monotonic() - stage_t0)

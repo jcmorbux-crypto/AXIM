@@ -13,6 +13,7 @@ the existing core/dashboard_server.py.
 Run: python -m uvicorn api.main:app --host 127.0.0.1 --port 8090
 """
 import sys
+from datetime import datetime
 from pathlib import Path
 
 API_DIR = Path(__file__).resolve().parent
@@ -24,6 +25,8 @@ sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CONFIG_DIR))
 sys.path.insert(0, str(API_DIR))
 
+from typing import Optional
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -31,8 +34,38 @@ from pydantic import BaseModel
 import database
 import telegram_channels
 import process_control
-from settings import WATCH_CHANNELS
+import risk_manager
+from settings import (
+    WATCH_CHANNELS, ACCOUNT, MAX_TRADE_AMOUNT, MAX_TRADES_PER_HOUR,
+    MAX_CONSECUTIVE_LOSSES, COOLDOWN_AFTER_LOSS_SECONDS,
+    DUPLICATE_SIGNAL_WINDOW_SECONDS, MINIMUM_PAYOUT, MAX_DAILY_LOSS,
+    TRADE_AMOUNT,
+)
 from logger import get_logger
+
+# 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
+# slow tick before treating the heartbeat as genuinely stale.
+HEARTBEAT_STALE_THRESHOLD_SECONDS = 45
+
+# key -> static .env-derived fallback, used to compute the EFFECTIVE value
+# (what's actually enforced right now) for GET /api/settings - mirrors
+# risk_manager._setting's own (key, static_default) pairs exactly, so this
+# can never silently drift out of sync with what's really enforced.
+_SETTING_STATIC_DEFAULTS = {
+    "starting_bankroll": 0,
+    "trade_sizing_mode": "fixed",
+    "fixed_trade_amount": TRADE_AMOUNT,
+    "trade_sizing_percent": 1.0,
+    "max_trade_amount": MAX_TRADE_AMOUNT,
+    "max_daily_loss": MAX_DAILY_LOSS,
+    "daily_profit_target": 0,
+    "max_trades_per_hour": MAX_TRADES_PER_HOUR,
+    "max_trades_per_day": 0,
+    "max_consecutive_losses": MAX_CONSECUTIVE_LOSSES,
+    "cooldown_after_loss_seconds": COOLDOWN_AFTER_LOSS_SECONDS,
+    "minimum_payout": MINIMUM_PAYOUT,
+    "duplicate_signal_window_seconds": DUPLICATE_SIGNAL_WINDOW_SECONDS,
+}
 
 logger = get_logger("axim.ui", filename="ui.log")
 
@@ -45,6 +78,25 @@ WEB_DIR = PROJECT_ROOT / "web"
 
 class ChannelToggle(BaseModel):
     enabled: bool
+
+
+# Every field optional - PUT /api/settings only overwrites the keys the
+# caller actually sends, matching database.set_setting's per-key model
+# rather than requiring the whole settings object every time.
+class MoneyManagementSettings(BaseModel):
+    starting_bankroll: Optional[float] = None
+    trade_sizing_mode: Optional[str] = None       # "fixed" | "percent"
+    fixed_trade_amount: Optional[float] = None
+    trade_sizing_percent: Optional[float] = None
+    max_trade_amount: Optional[float] = None
+    max_daily_loss: Optional[float] = None
+    daily_profit_target: Optional[float] = None
+    max_trades_per_hour: Optional[int] = None
+    max_trades_per_day: Optional[int] = None
+    max_consecutive_losses: Optional[int] = None
+    cooldown_after_loss_seconds: Optional[int] = None
+    minimum_payout: Optional[int] = None
+    duplicate_signal_window_seconds: Optional[int] = None
 
 
 @app.get("/")
@@ -134,3 +186,65 @@ def start_process():
 @app.post("/api/process/stop")
 def stop_process():
     return process_control.stop_listener()
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Returns the EFFECTIVE value of every money-management setting -
+    whatever's actually enforced right now, whether that's a UI override
+    or the static .env-derived default - plus the live-computed current
+    bankroll and what the next trade would actually be sized at
+    (risk_manager.compute_trade_amount, the exact real function
+    trade_coordinator.py calls, not a re-implementation of its logic)."""
+    overrides = database.get_all_settings()
+    effective = {
+        key: overrides.get(key, static_default)
+        for key, static_default in _SETTING_STATIC_DEFAULTS.items()
+    }
+    lifetime_pnl = database.get_lifetime_realized_pnl()
+    current_bankroll = effective["starting_bankroll"] + lifetime_pnl
+    return {
+        "effective": effective,
+        "overridden_keys": list(overrides.keys()),
+        "lifetime_realized_pnl": lifetime_pnl,
+        "current_bankroll": current_bankroll,
+        "next_trade_amount_preview": risk_manager.compute_trade_amount(TRADE_AMOUNT),
+    }
+
+
+@app.put("/api/settings")
+def put_settings(body: MoneyManagementSettings):
+    updated = {}
+    for key, value in body.model_dump(exclude_unset=True).items():
+        if value is not None:
+            database.set_setting(key, value)
+            updated[key] = value
+    logger.info("api: settings updated via UI: %s", updated)
+    return {"updated": updated}
+
+
+@app.get("/api/pocket-option/status")
+def pocket_option_status():
+    """Session/worker health for the Pocket Option connection panel.
+    Sourced from ui_listener_heartbeat, which the (separate-process)
+    listener writes every 30s - not a live query against the browser
+    itself, since this API process never touches the browser. A stale
+    heartbeat (no update in a while) is the signal something's wrong even
+    if the OS process is still technically running.
+
+    Live account balance is NOT yet implemented - no DOM selector for it
+    has been built/verified yet (flagged in docs/AXIM_UI_PLAN.md as a
+    follow-up), so this deliberately does not fabricate a number."""
+    heartbeat = database.get_listener_heartbeat()
+    process_status = process_control.get_status()
+    stale = True
+    if heartbeat and heartbeat.get("updated_at"):
+        age_seconds = (datetime.now() - datetime.fromisoformat(heartbeat["updated_at"])).total_seconds()
+        stale = age_seconds > HEARTBEAT_STALE_THRESHOLD_SECONDS
+    return {
+        "process_running": process_status["running"],
+        "account_mode": ACCOUNT,
+        "heartbeat": heartbeat,
+        "heartbeat_stale": stale,
+        "balance": None,  # not yet implemented - see docstring above
+    }

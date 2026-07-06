@@ -44,16 +44,38 @@ and safety confirmations before anything live-money-adjacent.
      resume/emergency-stop, start/stop (via Scheduled Task)
    - `web/index.html`: channel manager + status/control panel
 
-2. **Money management + Pocket Option panel**
-   - `ui_settings` table + endpoints for starting bankroll, fixed/percent
-     trade sizing, max trade amount, daily loss limit, daily profit
-     target, max trades/day, cooldown, consecutive-loss stop, demo/live
-     toggle - wired into `risk_manager.py` so changes take effect without
-     a restart
-   - New risk concepts not yet in `risk_manager.py`: bankroll-percentage
-     position sizing, daily profit target (stop-on-target, not just
-     stop-on-loss), max trades/day (currently only per-hour exists)
-   - Pocket Option panel: session/balance/worker status via a lightweight
+2. **Money management + Pocket Option panel - DONE (partially)**
+   - `ui_settings` table + `GET`/`PUT /api/settings`: starting bankroll,
+     fixed/percent trade sizing, max trade amount, daily loss limit, daily
+     profit target, max trades/day, cooldown, consecutive-loss stop,
+     minimum payout, duplicate-signal window - all wired into
+     `risk_manager.py` dynamically (`_setting()`, falls back to the
+     static `.env`-derived default), so a change takes effect on the very
+     next signal, no restart. Verified live against the real running
+     listener.
+   - New risk concepts added: `check_max_trades_per_day` (off by default,
+     0 - a genuinely new cap, unlike the existing per-hour one),
+     `check_daily_profit_target` (the upside mirror of the existing
+     drawdown breaker, off by default), `compute_trade_amount` (fixed vs.
+     percentage-of-bankroll sizing, bankroll = starting_bankroll +
+     lifetime realized P/L).
+   - **Demo/live toggle: deliberately NOT wired to actually flip
+     `ACCOUNT`.** The UI shows current demo/live status
+     (`GET /api/pocket-option/status`), but flipping real-money trading on
+     is exactly the kind of decision this project's whole safety
+     discipline has treated as requiring a real, explicit conversation -
+     not a checkbox with a confirm dialog. Held back pending that
+     conversation rather than silently building the write-path.
+   - Pocket Option panel: session/worker status via a real heartbeat
+     (`ui_listener_heartbeat`, written every 30s by the listener, read by
+     the API) - verified live (fresh, non-stale heartbeat after a
+     restart). **Balance display: not yet implemented** - no DOM selector
+     for it has been discovered/verified yet; the API/UI honestly report
+     `null`/"not yet implemented" rather than fabricate a number. Manual
+     reconnect currently restarts the whole listener process (stop+start)
+     - a lighter-weight "just reconnect the browser" action would need a
+     dedicated IPC path into the running process, not built yet.
+   - Old, superseded plan text below kept for reference:
      read from the browser layer's own state
 
 3. **Live dashboard + signal parsing tool**

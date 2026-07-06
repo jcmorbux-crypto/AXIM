@@ -1,4 +1,5 @@
 from telethon import TelegramClient, events
+import asyncio
 import os
 import sys
 import time
@@ -186,6 +187,30 @@ async def handler(event):
         print(f"Expiry    : {signal['expiry']}")
 
 
+HEARTBEAT_INTERVAL_SECONDS = 30
+
+
+async def _heartbeat_loop():
+    """Periodically writes generation/worker-count/demo-mode-verified to
+    ui_listener_heartbeat - the (separate-process) API/UI's only way to
+    show "is the browser/worker pool actually healthy right now" without
+    sharing memory with this process. Runs for the life of the asyncio
+    loop; a new one is implicitly started by the next _startup() call
+    after a process-level restart, so nothing needs explicit cancellation
+    here - the old loop (and this task with it) is simply gone by then."""
+    while True:
+        try:
+            if warmup_service is not None and worker_pool is not None:
+                database.update_listener_heartbeat(
+                    generation=warmup_service.generation,
+                    worker_count=worker_pool.num_workers,
+                    demo_mode_verified=True,
+                )
+        except Exception as e:
+            logger.error("telegram_listener: heartbeat write failed: %s", e)
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+
+
 async def _startup():
     """(Re)builds the browser/worker-pool stack and runs startup recovery.
     Called both on first launch and after every process-level restart -
@@ -202,6 +227,7 @@ async def _startup():
     coordinator = TradeCoordinator(worker_pool, warmup_service)
     print("AXIM: worker pool ready, running startup recovery...")
     await recovery.run_recovery(warmup_service)
+    asyncio.create_task(_heartbeat_loop())
 
 
 async def _shutdown():
