@@ -198,7 +198,7 @@
       Listener: <span id="process-badge" class="badge off">unknown</span>
     </div>
     <div class="row">
-      <button class="primary" onclick="callControl('/api/process/start')">Start</button>
+      <button class="primary" onclick="confirmStart()">Start</button>
       <button onclick="callControl('/api/process/stop')">Stop</button>
     </div>
   </div>
@@ -207,10 +207,13 @@
     <h2>Trading</h2>
     <div class="row" style="margin-bottom:10px;">
       State: <span id="trading-badge" class="badge off">unknown</span>
+      Test mode: <span id="test-mode-badge" class="badge off">unknown</span>
     </div>
     <div class="row">
       <button onclick="callControl('/api/control/pause')">Pause</button>
       <button onclick="callControl('/api/control/resume')">Resume</button>
+      <button id="test-mode-on-btn" onclick="callControl('/api/control/test-mode/enable')">Enable Test Mode</button>
+      <button id="test-mode-off-btn" style="display:none" onclick="callControl('/api/control/test-mode/disable')">Disable Test Mode</button>
       <button class="danger" onclick="confirmEmergencyStop()">Emergency Stop</button>
       <button id="clear-estop-btn" style="display:none" onclick="callControl('/api/control/clear-emergency-stop')">Clear Emergency Stop</button>
     </div>
@@ -388,9 +391,66 @@ async function refreshStatus() {
     document.getElementById("summary-line").innerHTML =
       `.env WATCH_CHANNELS: <code>${status.watch_channels_env.join(", ") || "(empty)"}</code><br>` +
       `UI-enabled channels: ${status.enabled_channel_count}`;
+
+    const testModeBadge = document.getElementById("test-mode-badge");
+    const testOnBtn = document.getElementById("test-mode-on-btn");
+    const testOffBtn = document.getElementById("test-mode-off-btn");
+    if (status.control.test_mode) {
+      testModeBadge.textContent = "ON - trades stop short of execution";
+      testModeBadge.className = "badge warn";
+      testOnBtn.style.display = "none";
+      testOffBtn.style.display = "inline-block";
+    } else {
+      testModeBadge.textContent = "off";
+      testModeBadge.className = "badge off";
+      testOnBtn.style.display = "inline-block";
+      testOffBtn.style.display = "none";
+    }
   } catch (e) {
     document.getElementById("status-line").textContent = "status unavailable: " + e.message;
   }
+}
+
+async function confirmStart() {
+  let settingsSummary = "(failed to load current risk settings)";
+  let accountMode = "unknown";
+  try {
+    const [settings, po] = await Promise.all([
+      fetchJSON("/api/settings"),
+      fetchJSON("/api/pocket-option/status"),
+    ]);
+    accountMode = po.account_mode;
+    const e = settings.effective;
+    settingsSummary =
+      `Account mode: ${accountMode}\n` +
+      `Trade sizing: ${e.trade_sizing_mode === "percent" ? e.trade_sizing_percent + "% of bankroll" : "$" + e.fixed_trade_amount + " fixed"}\n` +
+      `Max trade amount: $${e.max_trade_amount}\n` +
+      `Daily loss limit: ${e.max_daily_loss > 0 ? "$" + e.max_daily_loss : "disabled"}\n` +
+      `Max trades/day: ${e.max_trades_per_day > 0 ? e.max_trades_per_day : "disabled"}\n` +
+      `Stop after consecutive losses: ${e.max_consecutive_losses}\n` +
+      `Next trade would be sized at: $${settings.next_trade_amount_preview}`;
+  } catch (e) {
+    // fall through with the placeholder summary above - still show the dialog
+  }
+
+  const liveWarning = accountMode === "LIVE"
+    ? "\n\n*** THIS IS A LIVE (REAL MONEY) ACCOUNT ***\n"
+    : "\n";
+
+  const proceed = confirm(
+    `Start AXIM with these current risk settings?${liveWarning}\n${settingsSummary}\n\nContinue?`
+  );
+  if (!proceed) return;
+
+  if (accountMode === "LIVE") {
+    const typed = prompt('This is a LIVE account. Type "START LIVE" (without quotes) to confirm:');
+    if (typed !== "START LIVE") {
+      alert("Start cancelled - confirmation text did not match.");
+      return;
+    }
+  }
+
+  await callControl("/api/process/start");
 }
 
 async function callControl(path) {

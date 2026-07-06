@@ -35,6 +35,10 @@ def _migrate_schema(conn):
         if column not in existing:
             conn.execute(f"ALTER TABLE signals ADD COLUMN {column} {sql_type}")
 
+    control_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ui_control_state)")}
+    if "test_mode" not in control_columns:
+        conn.execute("ALTER TABLE ui_control_state ADD COLUMN test_mode INTEGER DEFAULT 0")
+
 
 def initialize_database():
     conn = get_connection()
@@ -101,12 +105,18 @@ def initialize_database():
         id INTEGER PRIMARY KEY CHECK (id = 1),
         paused INTEGER DEFAULT 0,
         emergency_stop INTEGER DEFAULT 0,
+        test_mode INTEGER DEFAULT 0,
         updated_at TEXT
     );
     """)
+    # Adds any columns missing on a pre-existing table (e.g. test_mode on a
+    # DB created before it existed) BEFORE the seed INSERT below references
+    # them - a fresh CREATE TABLE IF NOT EXISTS is a no-op against an
+    # existing table, so this can't be deferred to the end of the function.
+    _migrate_schema(conn)
     # Singleton row - every read/write targets id=1, created once here so
     # callers never have to special-case "no row yet".
-    conn.execute("INSERT OR IGNORE INTO ui_control_state (id, paused, emergency_stop) VALUES (1, 0, 0)")
+    conn.execute("INSERT OR IGNORE INTO ui_control_state (id, paused, emergency_stop, test_mode) VALUES (1, 0, 0, 0)")
 
     # Key-value store for UI-editable money-management settings - values
     # are JSON-encoded so one table covers numbers/bools/strings alike.
@@ -134,8 +144,6 @@ def initialize_database():
         updated_at TEXT
     );
     """)
-
-    _migrate_schema(conn)
 
     conn.commit()
     conn.close()
@@ -521,30 +529,36 @@ def record_channel_signal_seen(chat_id=None, username=None, title=None):
 
 
 # ---------------------------------------------------------------------
-# UI control state (pause/resume/emergency-stop) - api/, telegram_listener.py
+# UI control state (pause/resume/emergency-stop/test-mode) - api/, telegram_listener.py
 # ---------------------------------------------------------------------
 
 @timed("database")
 def get_control_state():
     conn = get_connection()
-    row = conn.execute("SELECT paused, emergency_stop, updated_at FROM ui_control_state WHERE id = 1").fetchone()
+    row = conn.execute(
+        "SELECT paused, emergency_stop, test_mode, updated_at FROM ui_control_state WHERE id = 1"
+    ).fetchone()
     conn.close()
     return {
         "paused": bool(row["paused"]),
         "emergency_stop": bool(row["emergency_stop"]),
+        "test_mode": bool(row["test_mode"]),
         "updated_at": row["updated_at"],
     }
 
 
 @timed("database")
-def set_control_state(paused=None, emergency_stop=None):
+def set_control_state(paused=None, emergency_stop=None, test_mode=None):
     conn = get_connection()
-    current = conn.execute("SELECT paused, emergency_stop FROM ui_control_state WHERE id = 1").fetchone()
+    current = conn.execute(
+        "SELECT paused, emergency_stop, test_mode FROM ui_control_state WHERE id = 1"
+    ).fetchone()
     new_paused = current["paused"] if paused is None else (1 if paused else 0)
     new_emergency = current["emergency_stop"] if emergency_stop is None else (1 if emergency_stop else 0)
+    new_test_mode = current["test_mode"] if test_mode is None else (1 if test_mode else 0)
     conn.execute(
-        "UPDATE ui_control_state SET paused = ?, emergency_stop = ?, updated_at = ? WHERE id = 1",
-        (new_paused, new_emergency, datetime.now().isoformat()),
+        "UPDATE ui_control_state SET paused = ?, emergency_stop = ?, test_mode = ?, updated_at = ? WHERE id = 1",
+        (new_paused, new_emergency, new_test_mode, datetime.now().isoformat()),
     )
     conn.commit()
     conn.close()

@@ -148,10 +148,21 @@ class TradeCoordinator:
                 # Stage: Trade Lifecycle - cleared for execution
                 self._log_stage(trade_id, "trade_lifecycle", "cleared_for_execution", 0.0)
 
+                # database.get_control_state()["test_mode"] is a UI-flippable
+                # runtime override - it can only ADD a reason to skip real
+                # execution, never remove the static PREVIEW_ONLY/AUTO_EXECUTE
+                # .env gate above. Same everything-up-to-execution behavior as
+                # PREVIEW_ONLY, distinctly labeled so it's not confused with
+                # the .env-level setting in logs/dashboard.
                 if PREVIEW_ONLY or not AUTO_EXECUTE:
                     self._log_stage(trade_id, "pocket_executor", "preview_only", 0.0)
                     timeline.persist(database)
                     return {"status": "preview", "trade_id": trade_id}
+
+                if database.get_control_state().get("test_mode"):
+                    self._log_stage(trade_id, "pocket_executor", "test_mode_skipped", 0.0)
+                    timeline.persist(database)
+                    return {"status": "test_mode", "trade_id": trade_id}
 
                 # Stage: Worker Pool - acquire one of N warm pages. Queues
                 # (FIFO) up to WORKER_ACQUIRE_TIMEOUT_SECONDS if all are busy;

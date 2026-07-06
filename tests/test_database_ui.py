@@ -67,6 +67,7 @@ class DatabaseUITests(unittest.TestCase):
         state = database.get_control_state()
         self.assertFalse(state["paused"])
         self.assertFalse(state["emergency_stop"])
+        self.assertFalse(state["test_mode"])
 
     def test_set_control_state_pause_and_resume(self):
         database.set_control_state(paused=True)
@@ -80,6 +81,17 @@ class DatabaseUITests(unittest.TestCase):
         state = database.get_control_state()
         self.assertTrue(state["paused"])
         self.assertTrue(state["emergency_stop"])
+
+    def test_set_control_state_test_mode_preserves_paused_and_emergency_stop(self):
+        database.set_control_state(paused=True, emergency_stop=True)
+        database.set_control_state(test_mode=True)
+        state = database.get_control_state()
+        self.assertTrue(state["test_mode"])
+        self.assertTrue(state["paused"])
+        self.assertTrue(state["emergency_stop"])
+
+        database.set_control_state(test_mode=False)
+        self.assertFalse(database.get_control_state()["test_mode"])
 
 
 if __name__ == "__main__":

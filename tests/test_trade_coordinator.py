@@ -147,6 +147,34 @@ class TradeCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["status"], "rejected")
         self.assertEqual(result["rule"], "all_workers_busy")
 
+    def test_test_mode_short_circuits_before_worker_pool(self):
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        database.set_control_state(test_mode=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal()))
+        self.assertEqual(result["status"], "test_mode")
+        self.assertEqual(pool.released, [])  # never touched the pool at all
+
+    def test_test_mode_off_reaches_pocket_executor_normally(self):
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        database.set_control_state(test_mode=False)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        mock_prepare_trade = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
+        pocket_executor.prepare_trade = mock_prepare_trade
+        try:
+            result = _run(coordinator.handle_signal(self._signal()))
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+
+        self.assertEqual(result["status"], "clicked")
+        mock_prepare_trade.assert_awaited_once()
+
     def test_full_success_path_delegates_to_pocket_executor_and_releases_nothing_extra(self):
         trade_coordinator.PREVIEW_ONLY = False
         trade_coordinator.AUTO_EXECUTE = True

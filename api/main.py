@@ -176,6 +176,25 @@ def clear_emergency_stop():
     return database.get_control_state()
 
 
+@app.post("/api/control/test-mode/enable")
+def enable_test_mode():
+    """Test mode: signals still go through parsing/risk-evaluation/asset
+    resolution exactly as normal, but trade_coordinator.py stops one step
+    short of pocket_executor.prepare_trade (the actual browser click) -
+    same shape as the existing static PREVIEW_ONLY/AUTO_EXECUTE .env gate,
+    just runtime-flippable from the UI instead of requiring a restart."""
+    database.set_control_state(test_mode=True)
+    logger.info("api: test mode enabled via UI")
+    return database.get_control_state()
+
+
+@app.post("/api/control/test-mode/disable")
+def disable_test_mode():
+    database.set_control_state(test_mode=False)
+    logger.info("api: test mode disabled via UI")
+    return database.get_control_state()
+
+
 @app.get("/api/status")
 def status():
     process_status = process_control.get_status()
