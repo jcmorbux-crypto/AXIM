@@ -1,11 +1,68 @@
 # AXIM App Plan - Commercial Product Build
 
-Product name: **AXIM**. Product type: Telegram Signals Copier +
-Session-Based Trading Platform + Bankroll/Risk Engine. Full spec as given
-by the product owner; this document tracks what's built vs. planned.
-`docs/AXIM_SESSION_ARCHITECTURE.md` remains the detailed spec for the
-Trading Sessions engine (build order item 3 below) and is not duplicated
-here.
+Product name: **AXIM**. Product type: a full Trading Operations Platform
+(not "a Telegram copier") - Users/Licensing, Telegram Integration, Signal
+Automation, Trading Sessions, Risk Engine, Statistics/Performance, Broker
+Connections, and (future) AI signal generation, all modular and
+expandable. Full spec as given by the product owner; this document
+tracks what's built vs. planned. `docs/AXIM_SESSION_ARCHITECTURE.md`
+remains the detailed spec for the Trading Sessions engine (build order
+item 3 below) and is not duplicated here.
+
+Bar for every feature: "Would someone pay for this?" Premium fintech feel
+(Stripe/Mercury/Apple/Notion/TradingView/Linear), never developer/hacker-
+dashboard aesthetics. Developer/technical concepts (raw API IDs, DB
+internals, log tails) stay behind a **Developer Mode** toggle in Settings
+- off by default, never shown to a normal end user.
+
+## Terminology rebrand (nav + page names)
+
+The product vocabulary was elevated to feel like a commercial platform
+rather than a personal tool. Existing pages/concepts are renamed, not
+rebuilt - the mapping:
+
+| Old name (Phases 1-3) | New name |
+|---|---|
+| Dashboard | **Mission Control** |
+| Telegram Sources | **Signal Sources** |
+| Money Management (Phase 4, planned) | **Risk Engine** (flagship feature) |
+| Live Trades | **Trade Center** |
+| Statistics | **Performance** |
+| Pocket Option | **Broker** |
+| Users / Access | **Users** (Licensing lives under it/Settings) |
+
+Signal Inspector, Trading Sessions, Logs, Settings keep their names.
+Applied to `web/shell.js`'s sidebar first (see below) - a pure relabeling,
+zero backend change, so it's done immediately rather than staged into a
+later phase.
+
+## New phases added by the rebrand (sequenced after existing Phase 3)
+
+- **Phase 4 - Risk Engine** (was "Money Management Center") - see below,
+  now explicitly the flagship feature: unlimited profiles with copy/
+  duplicate/export/import, Kelly-criterion sizing added alongside fixed/
+  percent/dynamic, plus Martingale/Compounding/Vault exactly as already
+  planned.
+- **Phase 4.5 - Setup Wizard** - first-run experience (Create Owner ->
+  Connect Telegram -> Connect Broker -> First Risk Profile -> Select
+  Channels -> First Session -> Demo Test -> Ready). Sequenced after the
+  Risk Engine and Signal Sources exist for real, since the wizard is
+  just guided navigation through already-built real flows, not new
+  backend capability - building it before those pages exist would mean
+  wiring it twice.
+- **Phase 4.75 - Rule Builder** - visual IF/THEN automation ("IF daily
+  profit >= target THEN stop session", "IF 3 wins in a row THEN increase
+  risk 10%", "IF source win rate falls below threshold THEN disable
+  source"). Genuinely new engineering (a small rules-evaluation engine
+  that can read session/statistics state and call the same mutation
+  functions Settings/Sessions already expose) - its own phase, after the
+  Risk Engine and Sessions it needs to act on both exist.
+- **Licensing** - the `access_tier` enum already built in Phase 1
+  (owner/internal/free_beta/trial/basic/pro/elite/suspended) is the
+  licensing model; this rebrand adds user-facing tier names (Free/Trial/
+  Basic/Professional/Elite/Enterprise) and a dedicated Licensing view
+  under Users - no schema change needed, Stripe still explicitly
+  deferred (Phase 6).
 
 Visual direction: light theme, white background, soft gray cards,
 rounded corners, subtle shadows, blue primary accent, green/red reserved
@@ -153,15 +210,25 @@ restart to pick up all of the above - session-scoping, the event_bus
 subscription, everything. Until restarted, sessions can be created via
 the API/UI but won't actually gate/attribute real trades yet.
 
-### Phase 4 - Money Management Center, Martingale Manager, Compounding Engine, Profit Vault
-Not started. Existing `ui_settings`-backed money management (Phase 2 of
+### Phase 4 - IN PROGRESS - Risk Engine (Martingale, Compounding, Profit Vault)
+Existing `ui_settings`-backed money management (Phase 2 of
 `docs/AXIM_UI_PLAN.md`, still live at `/legacy`) is a single global
 profile with fixed/percent sizing only - no martingale, no compounding,
 no vault, no saved/named profiles. This phase replaces "one global
-settings row" with `money_profiles` + `martingale_settings` +
-`compounding_settings` + `profit_vault` tables, profile CRUD, and the
-starter template names (Capital Shield, Vault Builder, Snowball Mode,
-etc. - full list in the product spec) as seed data.
+settings row" with real profiles:
+
+- `risk_profiles` (bankroll, sizing mode - fixed/percent/dynamic/Kelly -
+  max trade, daily loss, session loss, profit target, max trades, demo/
+  live permission), `martingale_settings`, `compounding_settings`,
+  `profit_vault_settings` - one-to-one with a profile.
+- Profile CRUD + **copy/duplicate/export/import** (JSON) - explicit new
+  requirement from the rebrand, not in the original Phase 4 scope.
+- Kelly-criterion sizing as a 4th mode alongside fixed/percent/dynamic.
+- Starter templates (Capital Shield, Vault Builder, Snowball, etc. - full
+  list in the product spec) seeded as read-only example profiles a user
+  can duplicate and edit, not silently-active defaults.
+- Sessions gain a `risk_profile_id` (nullable - falls back to the
+  existing global `ui_settings` sizing if unset, so nothing regresses).
 
 ### Phase 5 - Live Trades, Statistics, Logs, Pocket Option status page
 Partially exists today (dark theme, `/legacy`): live trades table with

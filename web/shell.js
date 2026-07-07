@@ -17,15 +17,15 @@ const AximShell = (() => {
   };
 
   const NAV_ITEMS = [
-    { key: "dashboard", label: "Dashboard", href: "/dashboard", icon: ICONS.dashboard },
+    { key: "dashboard", label: "Mission Control", href: "/dashboard", icon: ICONS.dashboard },
     { key: "sessions", label: "Trading Sessions", href: "/sessions", icon: ICONS.sessions },
-    { key: "telegram", label: "Telegram Sources", href: "/telegram", icon: ICONS.telegram },
+    { key: "telegram", label: "Signal Sources", href: "/telegram", icon: ICONS.telegram },
     { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
-    { key: "money", label: "Money Management", href: "/legacy#money", icon: ICONS.money },
-    { key: "trades", label: "Live Trades", href: "/legacy#trades", icon: ICONS.trades },
-    { key: "stats", label: "Statistics", href: "/legacy#trades", icon: ICONS.stats },
-    { key: "pocketoption", label: "Pocket Option", href: "/legacy#po", icon: ICONS.pocketoption },
-    { key: "users", label: "Users / Access", href: "/users", icon: ICONS.users, adminOnly: true },
+    { key: "money", label: "Risk Engine", href: "/legacy#money", icon: ICONS.money },
+    { key: "trades", label: "Trade Center", href: "/legacy#trades", icon: ICONS.trades },
+    { key: "stats", label: "Performance", href: "/legacy#trades", icon: ICONS.stats },
+    { key: "pocketoption", label: "Broker", href: "/legacy#po", icon: ICONS.pocketoption },
+    { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
     { key: "logs", label: "Logs", href: "/legacy#logs", icon: ICONS.logs },
     { key: "settings", label: "Settings", href: "/legacy#money", icon: ICONS.settings },
   ];
