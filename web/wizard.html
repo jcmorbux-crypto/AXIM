@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Setup - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  body { min-height: 100vh; }
+  .wizard-shell { max-width: 640px; margin: 40px auto; padding: 0 20px; }
+  .wizard-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; }
+  .wizard-logo .mark { width: 32px; height: 32px; background: var(--blue); border-radius: 9px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; }
+  .wizard-logo .name { font-weight: 700; font-size: 18px; }
+  .step-track { display: flex; gap: 6px; margin-bottom: 24px; }
+  .step-dot { flex: 1; height: 4px; border-radius: 999px; background: var(--border); }
+  .step-dot.done { background: var(--green); }
+  .step-dot.current { background: var(--blue); }
+  .wizard-card { background: var(--bg); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); padding: 32px; }
+  .wizard-card h2 { margin: 0 0 6px 0; font-size: 19px; }
+  .wizard-subtitle { color: var(--text-dim); font-size: 13.5px; margin-bottom: 22px; }
+  .channel-item, .template-item { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+  .channel-item:last-child, .template-item:last-child { border-bottom: none; }
+  .wizard-nav { display: flex; justify-content: space-between; margin-top: 24px; }
+</style>
+</head>
+<body>
+
+<div class="wizard-shell">
+  <div class="wizard-logo"><span class="mark">A</span><span class="name">AXIM Setup</span></div>
+  <div class="step-track" id="step-track"></div>
+
+  <div class="wizard-card">
+    <div id="step-content"></div>
+    <div class="wizard-nav" id="wizard-nav">
+      <button class="subtle" id="back-btn" onclick="goBack()" style="visibility:hidden;">Back</button>
+      <button class="primary" id="next-btn" onclick="goNext()">Continue</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const STEP_NAMES = ["Owner Account", "Telegram", "Pocket Option", "Risk Profile", "Channels", "Session", "Demo Test", "Ready"];
+let currentStep = 0;
+let wizardState = { channelIds: [], riskProfileId: null };
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  const isJson = (res.headers.get("content-type") || "").includes("application/json");
+  const body = isJson ? await res.json() : null;
+  if (!res.ok) {
+    const err = new Error((body && body.detail) || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+
+function renderTrack() {
+  document.getElementById("step-track").innerHTML = STEP_NAMES.map((_, i) =>
+    `<div class="step-dot ${i < currentStep ? "done" : i === currentStep ? "current" : ""}"></div>`
+  ).join("");
+}
+
+async function renderStep() {
+  renderTrack();
+  document.getElementById("back-btn").style.visibility = currentStep === 0 ? "hidden" : "visible";
+  const content = document.getElementById("step-content");
+  const nextBtn = document.getElementById("next-btn");
+  nextBtn.textContent = "Continue";
+  nextBtn.disabled = false;
+
+  if (currentStep === 0) {
+    const status = await fetchJSON("/api/auth/bootstrap-status");
+    if (!status.needs_bootstrap) {
+      content.innerHTML = `<h2>Owner account</h2><div class="wizard-subtitle">Already created - continuing.</div>`;
+      setTimeout(goNext, 400);
+      return;
+    }
+    content.innerHTML = `
+      <h2>Create your Owner account</h2>
+      <div class="wizard-subtitle">This account will have full, permanent control over AXIM.</div>
+      <div class="field"><label>Email</label><input type="email" id="w-email"></div>
+      <div class="field"><label>Password</label><input type="password" id="w-password" placeholder="At least 8 characters"></div>
+      <div id="w-error" class="banner danger" style="display:none;"></div>
+    `;
+    nextBtn.textContent = "Create Account";
+  }
+
+  else if (currentStep === 1) {
+    const status = await fetchJSON("/api/telegram/connection-status");
+    if (status.authorized) {
+      content.innerHTML = `
+        <h2>Connect Telegram</h2>
+        <div class="wizard-subtitle">Already connected.</div>
+        <div class="banner info">Connected as ${escapeHtml(status.account_name || "your account")}${status.username ? " (@" + escapeHtml(status.username) + ")" : ""}.</div>
+      `;
+    } else {
+      content.innerHTML = `
+        <h2>Connect Telegram</h2>
+        <div class="wizard-subtitle">AXIM reads trading signals from your Telegram channels. Connect your account to get started.</div>
+        <div class="banner warn">Not connected yet - head to <a href="/telegram" style="color:inherit;">Signal Sources</a> to connect, then come back and continue.</div>
+      `;
+    }
+  }
+
+  else if (currentStep === 2) {
+    const status = await fetchJSON("/api/pocket-option/status");
+    const healthy = status.process_running && !status.heartbeat_stale;
+    content.innerHTML = `
+      <h2>Connect Pocket Option</h2>
+      <div class="wizard-subtitle">AXIM needs its trading engine running to place trades.</div>
+      <div class="banner ${healthy ? "info" : "warn"}">
+        ${healthy ? "Running and healthy." : status.process_running ? "Running, waiting for a healthy heartbeat..." : "Not running yet."}
+      </div>
+      <div class="stat-row"><span class="stat-label">Account mode</span><span class="stat-value">${status.account_mode}</span></div>
+      ${!status.process_running ? '<button onclick="startListener()">Start</button><span id="listener-status" class="muted"></span>' : ""}
+    `;
+  }
+
+  else if (currentStep === 3) {
+    const templates = (await fetchJSON("/api/risk-profiles")).filter(p => p.is_template);
+    content.innerHTML = `
+      <h2>Choose a starting Risk Profile</h2>
+      <div class="wizard-subtitle">Controls trade sizing, Martingale, Compounding, and Profit Vault. You can change this anytime in Risk Engine.</div>
+      <div style="max-height:260px; overflow-y:auto;">
+        ${templates.slice(0, 8).map(t => `
+          <div class="channel-item">
+            <input type="radio" name="w-template" value="${t.id}" id="tpl-${t.id}" style="width:auto;">
+            <label for="tpl-${t.id}"><strong>${escapeHtml(t.name)}</strong> - ${escapeHtml(t.description || "")}</label>
+          </div>
+        `).join("")}
+      </div>
+      <div class="muted" style="margin-top:10px; font-size:12px;">Or skip to use the global default sizing (Settings &gt; Trading).</div>
+    `;
+    nextBtn.textContent = "Continue";
+  }
+
+  else if (currentStep === 4) {
+    const channels = await fetchJSON("/api/channels");
+    content.innerHTML = `
+      <h2>Select signal channels</h2>
+      <div class="wizard-subtitle">Choose which Telegram channels AXIM should follow.</div>
+      <div style="max-height:280px; overflow-y:auto;">
+        ${channels.length ? channels.slice(0, 30).map(c => `
+          <div class="channel-item">
+            <input type="checkbox" class="w-channel" value="${c.id}" data-was-enabled="${c.enabled ? "1" : "0"}" id="ch-${c.id}" ${c.enabled ? "checked" : ""} style="width:auto;">
+            <label for="ch-${c.id}">${escapeHtml(c.title || c.username || c.id)}</label>
+          </div>
+        `).join("") : '<div class="empty">No channels found yet - sync from Signal Sources first.</div>'}
+      </div>
+    `;
+  }
+
+  else if (currentStep === 5) {
+    content.innerHTML = `
+      <h2>Create your first Trading Session</h2>
+      <div class="wizard-subtitle">Sessions are how AXIM trades - bounded by a profit target, loss limit, or trade count, not "running forever."</div>
+      <div class="field"><label>Session name</label><input type="text" id="w-session-name" placeholder="My First Session"></div>
+      <div class="row">
+        <div class="field"><label>Profit target ($)</label><input type="number" id="w-profit-target" value="0"></div>
+        <div class="field"><label>Loss limit ($)</label><input type="number" id="w-loss-limit" value="0"></div>
+        <div class="field"><label>Max trades</label><input type="number" id="w-max-trades" value="0"></div>
+      </div>
+      <div class="muted" style="font-size:12px;">You can skip this and start a session later from Trading Sessions.</div>
+    `;
+  }
+
+  else if (currentStep === 6) {
+    const status = await fetchJSON("/api/pocket-option/status");
+    if (status.account_mode !== "DEMO") {
+      content.innerHTML = `<h2>Demo test</h2><div class="wizard-subtitle">Skipped - this account is in LIVE mode, so a test trade isn't offered here for safety.</div>`;
+    } else {
+      content.innerHTML = `
+        <h2>Run a demo test trade</h2>
+        <div class="wizard-subtitle">Places one real trade on your DEMO account through AXIM's live pipeline, so you can see the whole flow work end to end.</div>
+        <button class="primary" onclick="runDemoTest()">Run Test Trade</button>
+        <span id="demo-test-status" class="muted"></span>
+        <div id="demo-test-result" class="muted" style="margin-top:10px; display:none;"></div>
+      `;
+    }
+  }
+
+  else if (currentStep === 7) {
+    content.innerHTML = `
+      <h2>AXIM is ready</h2>
+      <div class="wizard-subtitle">Setup complete. Head to Mission Control to see everything live.</div>
+    `;
+    nextBtn.textContent = "Go to Mission Control";
+  }
+}
+
+async function startListener() {
+  const statusEl = document.getElementById("listener-status");
+  statusEl.textContent = "starting...";
+  try {
+    await fetchJSON("/api/process/start", { method: "POST" });
+    statusEl.textContent = "started - waiting for heartbeat...";
+    setTimeout(renderStep, 4000);
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function runDemoTest() {
+  const statusEl = document.getElementById("demo-test-status");
+  const resultEl = document.getElementById("demo-test-result");
+  statusEl.textContent = "requesting...";
+  try {
+    await fetchJSON("/api/broker/test-trade", { method: "POST" });
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 3000));
+      const status = await fetchJSON("/api/broker/test-trade");
+      if (status.status === "completed" || status.status === "error") {
+        statusEl.textContent = status.status;
+        resultEl.style.display = "block";
+        resultEl.textContent = JSON.stringify(status.result, null, 2);
+        return;
+      }
+    }
+    statusEl.textContent = "timed out - check Trade Center later.";
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function goBack() {
+  if (currentStep > 0) { currentStep--; await renderStep(); }
+}
+
+async function goNext() {
+  const nextBtn = document.getElementById("next-btn");
+  try {
+    if (currentStep === 0) {
+      const status = await fetchJSON("/api/auth/bootstrap-status");
+      if (status.needs_bootstrap) {
+        const email = document.getElementById("w-email").value;
+        const password = document.getElementById("w-password").value;
+        nextBtn.disabled = true;
+        await fetchJSON("/api/auth/bootstrap-owner", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password }),
+        });
+      }
+    } else if (currentStep === 3) {
+      const picked = document.querySelector("input[name='w-template']:checked");
+      if (picked) {
+        const created = await fetchJSON(`/api/risk-profiles/${picked.value}/duplicate`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ new_name: "My First Risk Profile" }),
+        });
+        wizardState.riskProfileId = created.id;
+      }
+    } else if (currentStep === 4) {
+      const checked = Array.from(document.querySelectorAll(".w-channel:checked")).map(el => parseInt(el.value, 10));
+      // Only PATCH channels whose state actually changed, and run them
+      // concurrently - looping sequentially through every rendered
+      // channel (up to 30) with an awaited round-trip each was slow
+      // enough to be a real UX problem, found during live verification.
+      const changed = Array.from(document.querySelectorAll(".w-channel")).filter(el => {
+        const shouldEnable = checked.includes(parseInt(el.value, 10));
+        const wasEnabled = el.dataset.wasEnabled === "1";
+        return shouldEnable !== wasEnabled;
+      });
+      await Promise.all(changed.map(el => fetchJSON(`/api/channels/${el.value}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: checked.includes(parseInt(el.value, 10)) }),
+      })));
+      wizardState.channelIds = checked;
+    } else if (currentStep === 5) {
+      const name = document.getElementById("w-session-name").value;
+      if (name && wizardState.channelIds.length) {
+        await fetchJSON("/api/sessions/start", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name, channel_ids: wizardState.channelIds,
+            profit_target: parseFloat(document.getElementById("w-profit-target").value) || 0,
+            loss_limit: parseFloat(document.getElementById("w-loss-limit").value) || 0,
+            max_trades: parseInt(document.getElementById("w-max-trades").value, 10) || 0,
+            risk_profile_id: wizardState.riskProfileId,
+          }),
+        });
+      }
+    } else if (currentStep === 7) {
+      window.location.href = "/dashboard";
+      return;
+    }
+    nextBtn.disabled = false;
+  } catch (e) {
+    const errEl = document.getElementById("w-error");
+    if (errEl) { errEl.textContent = e.message; errEl.style.display = "block"; }
+    else alert("Failed: " + e.message);
+    nextBtn.disabled = false;
+    return;
+  }
+  currentStep++;
+  await renderStep();
+}
+
+renderStep();
+</script>
+</body>
+</html>

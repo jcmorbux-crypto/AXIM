@@ -235,6 +235,11 @@ def settings_page():
     return _serve("settings.html")
 
 
+@app.get("/wizard")
+def wizard_page():
+    return _serve("wizard.html")
+
+
 @app.get("/legacy")
 def legacy_page():
     """The original dark-theme single-page control UI - kept reachable

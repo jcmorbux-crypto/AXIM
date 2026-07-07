@@ -343,6 +343,47 @@ meaningful yet).
   explicitly says "not built yet" rather than showing inert toggles, since
   AXIM has no email/push/webhook sending capability to back them.
 
+### Setup Wizard - DONE - guided first-run flow
+`web/wizard.html`, an 8-step guided flow, built only after its
+prerequisites (Risk Engine, Sessions, Signal Sources) were real - every
+step calls the exact same already-tested endpoints those pages use, no
+new backend capability. `login.html`'s bootstrap-owner success now
+redirects to `/wizard` instead of straight to `/dashboard`; re-runnable
+anytime from Settings > General.
+
+Steps: Create Owner Account (skipped if already bootstrapped) -> Connect
+Telegram (status-only here; the real connect flow lives on Signal
+Sources) -> Connect Pocket Option (starts the listener, shows real
+heartbeat status) -> Choose a starting Risk Profile (duplicates a
+template) -> Select signal channels (enables/disables real channels) ->
+Create first Trading Session (real `POST /api/sessions/start`) -> Run a
+demo test trade (reuses Broker's Test Trade, skipped entirely if
+`ACCOUNT` isn't DEMO) -> Ready.
+
+Found and fixed two real bugs during live verification, not test
+artifacts:
+1. The channel-selection step looped through every rendered channel
+   (up to 30) with a sequentially-awaited PATCH each, even for channels
+   whose state didn't change - slow enough to look like a stuck/broken
+   step. Fixed to only PATCH channels that actually changed, concurrently
+   via `Promise.all`.
+2. Confirmed (by deliberately shortening a verification wait) that a
+   step transition briefly shows the previous step's stale content while
+   its own `await fetch(...)` is in flight - inherent to the render-then-
+   fetch pattern every page in this app already uses, not unique to the
+   wizard; noted here rather than "fixed" since forcing every step to
+   block on a loading spinner isn't worth the complexity for an internal
+   tool at this stage.
+
+Verified live end-to-end multiple times against the real production DB:
+real owner bootstrap through the wizard itself, real Telegram/Pocket
+Option status, real risk profile duplication, real channel enable state
+(confirmed unrelated channels were untouched), real session creation
+(correctly blocked by the existing single-active-session rule when a
+prior test session was still open - the real safety mechanism working
+exactly as designed, not a wizard bug). Test session, test account, and
+channel state all cleaned up afterward.
+
 ### Phase 6 - Packaging, Stripe
 Not started. Desktop packaging (Tauri), Windows startup support,
 and payments are explicitly deferred - the access-tier/access-state

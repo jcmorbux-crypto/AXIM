@@ -157,7 +157,7 @@ document.getElementById("bootstrap-form").addEventListener("submit", async (e) =
         password: document.getElementById("bootstrap-password").value,
       }),
     });
-    window.location.href = "/dashboard";
+    window.location.href = "/wizard";
   } catch (err) {
     banner.textContent = err.message;
     banner.style.display = "block";
