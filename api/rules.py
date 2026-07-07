@@ -1,0 +1,121 @@
+"""Rule Builder API (docs/AXIM_APP_PLAN.md) - visual IF/THEN automation.
+core/rule_engine.py owns the actual condition/action logic and the
+CONDITION_TYPES/ACTION_TYPES catalogs; this router is the HTTP surface
+over core/database.py's rules table, plus a read-only catalog endpoint
+so web/rules.html can render dropdowns without hardcoding the schema
+twice.
+"""
+import sys
+from pathlib import Path
+
+API_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = API_DIR.parent
+CORE_DIR = PROJECT_ROOT / "core"
+sys.path.insert(0, str(CORE_DIR))
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+import database
+import rule_engine
+from auth_routes import get_current_user, require_admin
+
+router = APIRouter(prefix="/api/rules", tags=["rules"])
+
+
+class RuleCreate(BaseModel):
+    name: str
+    condition_type: str
+    condition_params: dict = {}
+    action_type: str
+    action_params: dict = {}
+    enabled: bool = True
+
+
+class RuleUpdate(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    condition_type: Optional[str] = None
+    condition_params: Optional[dict] = None
+    action_type: Optional[str] = None
+    action_params: Optional[dict] = None
+
+
+def _validate_types(condition_type, action_type):
+    if condition_type is not None and condition_type not in rule_engine.CONDITION_TYPES:
+        raise HTTPException(status_code=400, detail=f"unknown condition_type: {condition_type!r}")
+    if action_type is not None and action_type not in rule_engine.ACTION_TYPES:
+        raise HTTPException(status_code=400, detail=f"unknown action_type: {action_type!r}")
+
+
+def _get_or_404(rule_id):
+    rule = database.get_rule(rule_id)
+    if rule is None:
+        raise HTTPException(status_code=404, detail="rule not found")
+    return rule
+
+
+@router.get("/catalog")
+def get_catalog(user=Depends(get_current_user)):
+    """Condition/action types with their label + param schema, so the
+    builder UI can render dropdowns and the right inputs per param type
+    (number/percent/channel/risk_profile) without any hardcoded copy."""
+    return {
+        "conditions": {
+            key: {"label": v["label"], "params": v["params"]}
+            for key, v in rule_engine.CONDITION_TYPES.items()
+        },
+        "actions": {
+            key: {"label": v["label"], "params": v["params"]}
+            for key, v in rule_engine.ACTION_TYPES.items()
+        },
+    }
+
+
+@router.get("")
+def list_rules(user=Depends(get_current_user)):
+    return database.list_rules()
+
+
+@router.post("")
+def create_rule(body: RuleCreate, user=Depends(require_admin)):
+    _validate_types(body.condition_type, body.action_type)
+    rule_id = database.create_rule(
+        body.name, body.condition_type, body.condition_params,
+        body.action_type, body.action_params, enabled=body.enabled,
+    )
+    return database.get_rule(rule_id)
+
+
+@router.get("/{rule_id}")
+def get_rule(rule_id: int, user=Depends(get_current_user)):
+    return _get_or_404(rule_id)
+
+
+@router.patch("/{rule_id}")
+def update_rule(rule_id: int, body: RuleUpdate, user=Depends(require_admin)):
+    _get_or_404(rule_id)
+    _validate_types(body.condition_type, body.action_type)
+    updates = body.model_dump(exclude_unset=True, exclude={"condition_params", "action_params"})
+    database.update_rule(rule_id, condition_params=body.condition_params, action_params=body.action_params, **updates)
+    return database.get_rule(rule_id)
+
+
+@router.delete("/{rule_id}")
+def delete_rule(rule_id: int, user=Depends(require_admin)):
+    _get_or_404(rule_id)
+    database.delete_rule(rule_id)
+    return {"status": "deleted"}
+
+
+@router.post("/{rule_id}/evaluate-now")
+def evaluate_now(rule_id: int, user=Depends(require_admin)):
+    """Manual "test this rule against current state" trigger for the
+    builder UI - runs the exact same evaluate_rule() path the live
+    trade.closed event uses, so what the user sees here is guaranteed to
+    match real behavior."""
+    rule = _get_or_404(rule_id)
+    fired = rule_engine.evaluate_rule(rule)
+    return {"fired": fired, "rule": database.get_rule(rule_id)}

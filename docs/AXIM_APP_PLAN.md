@@ -384,6 +384,59 @@ prior test session was still open - the real safety mechanism working
 exactly as designed, not a wizard bug). Test session, test account, and
 channel state all cleaned up afterward.
 
+### Rule Builder - DONE - visual IF/THEN automation
+`core/rule_engine.py` (condition/action catalogs + evaluator), `rules`
+table + CRUD in `core/database.py`, `api/rules.py` (`/api/rules`,
+`/api/rules/catalog`, `/api/rules/{id}/evaluate-now`), `web/rules.html`
+(dropdown-only builder, no code editor). Hooked into the same
+`event_bus` `"trade.closed"` subscription `core/session_manager.py`
+already owns (`rule_engine.evaluate_all()`, called right after the
+existing Risk Engine and session-limit checks) - no new event path.
+
+7 condition types (`daily_profit_gte`, `daily_loss_gte`,
+`consecutive_wins_eq`, `consecutive_losses_eq`, `session_profit_gte`,
+`session_loss_gte`, `lifetime_profit_gte`, `source_win_rate_below` - 8
+total) and 5 action types (`stop_active_session`, `emergency_stop`,
+`increase_risk_profile_percent`, `switch_session_risk_profile`,
+`disable_channel`), every action calling an existing real mutation
+function (`session_manager.end_session`, `database.set_control_state`,
+`database.update_risk_profile`, `database.set_session_risk_profile`,
+`database.set_channel_enabled`) - no new mutation path invented.
+
+Named `lifetime_profit_gte` rather than a "bankroll milestone" -
+AXIM doesn't track a live broker account balance anywhere, so this is
+honestly scoped to cumulative realized P/L, the only real number
+available.
+
+Anti-spam design: edge-triggering. Each rule stores
+`last_condition_state`; the action only fires on a false->true
+transition (`database.record_rule_evaluation`), not on every evaluation
+where the condition happens to still be true. This is what stops
+"daily profit >= $100" firing again on every subsequent trade once the
+target is hit, and lets "3 wins in a row" fire again the *next* time a
+3-streak occurs after breaking - without per-condition-type cooldown
+logic.
+
+Tested: `tests/test_rule_engine.py` (20 tests - every condition
+evaluator, every action executor, edge-trigger fire-once/refire-on-new-
+edge behavior, disabled-rule skip, full CRUD). Live-verified against the
+real production DB/API via Playwright using the throwaway
+`verification-test@axim.local` account: created a real rule through the
+UI, confirmed the rendered IF/THEN sentence matches its real params,
+toggled it off (badge flips to Paused), edited it (params correctly
+pre-filled from the stored row), deleted it. Test rule and test account
+cleaned up afterward. Did not trigger a real end-to-end live trade close
+to watch a rule fire against a real signal - the DB-layer tests already
+exercise `evaluate_rule`/`evaluate_all` against a real schema, and doing
+so live would require an actual Telegram signal and Pocket Option trade
+cycle, out of scope for this pass.
+
+Known gap: rules have no explicit `scope` (global vs. one specific
+session/profile) - conditions like `session_profit_gte` always read
+whatever session is currently active, which is correct given the
+existing single-active-session-at-a-time rule, but would need real
+scoping if that constraint is ever relaxed.
+
 ### Phase 6 - Packaging, Stripe
 Not started. Desktop packaging (Tauri), Windows startup support,
 and payments are explicitly deferred - the access-tier/access-state

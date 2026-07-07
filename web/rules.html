@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rule Builder - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .rule-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    margin-bottom: 10px; background: var(--bg);
+  }
+  .rule-row .rule-main { flex: 1; min-width: 0; }
+  .rule-row .rule-name { font-weight: 650; font-size: 14px; margin-bottom: 3px; }
+  .rule-row .rule-logic { font-size: 12.5px; color: var(--text-dim); }
+  .rule-row .rule-logic b { color: var(--text); font-weight: 600; }
+  .rule-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .rule-meta { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; }
+  .if-then-editor { display: flex; flex-direction: column; gap: 14px; }
+  .if-then-block { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; }
+  .if-then-block .kw { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--blue); font-weight: 700; margin-bottom: 8px; }
+  .param-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+  .param-row .field { flex: 1; min-width: 140px; }
+  #empty-state { text-align: center; padding: 40px 20px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Rule Builder</h1>
+        <div class="subtitle">Visual IF/THEN automation - no code, just dropdowns.</div>
+      </div>
+      <button class="primary" onclick="openEditor(null)">New Rule</button>
+    </div>
+
+    <div class="card solid">
+      <div id="rules-list" class="muted">Loading...</div>
+      <div id="empty-state" style="display:none;">
+        No rules yet. Rules watch every closed trade and can stop a session, resize risk, switch profiles, or disable a signal source automatically.
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="modal-backdrop" id="editor-backdrop">
+  <div class="modal" style="width:560px;">
+    <h2 style="margin-top:0;" id="editor-title">New Rule</h2>
+    <div class="field"><label>Rule name</label><input type="text" id="r-name" placeholder="e.g. Stop at daily target"></div>
+
+    <div class="if-then-editor">
+      <div class="if-then-block">
+        <div class="kw">If</div>
+        <select id="r-condition-type" onchange="renderConditionParams()"></select>
+        <div class="param-row" id="condition-params"></div>
+      </div>
+      <div class="if-then-block">
+        <div class="kw">Then</div>
+        <select id="r-action-type" onchange="renderActionParams()"></select>
+        <div class="param-row" id="action-params"></div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:14px; align-items:center; justify-content:space-between;">
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="r-enabled" style="width:auto;" checked> Enabled
+      </label>
+      <span id="editor-error" class="muted" style="color:var(--red);"></span>
+    </div>
+
+    <div class="row" style="justify-content:flex-end; margin-top:16px;">
+      <button class="subtle" id="delete-rule-btn" onclick="deleteCurrentRule()" style="display:none;">Delete</button>
+      <button class="subtle" onclick="closeEditor()">Cancel</button>
+      <button class="primary" onclick="saveRule()">Save Rule</button>
+    </div>
+  </div>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let catalog = { conditions: {}, actions: {} };
+let allRules = [];
+let allChannels = [];
+let allRiskProfiles = [];
+let currentRuleId = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+
+async function refreshAll() {
+  [catalog, allRules, allChannels, allRiskProfiles] = await Promise.all([
+    fetchJSON("/api/rules/catalog"),
+    fetchJSON("/api/rules"),
+    fetchJSON("/api/channels"),
+    fetchJSON("/api/risk-profiles"),
+  ]);
+  renderRulesList();
+}
+
+function describeParams(type, catalogEntry, params) {
+  const parts = Object.keys(catalogEntry.params).map(key => {
+    const kind = catalogEntry.params[key];
+    let val = params[key];
+    if (kind === "channel") {
+      const c = allChannels.find(c => c.id === val);
+      val = c ? c.title : "(none)";
+    } else if (kind === "risk_profile") {
+      const p = allRiskProfiles.find(p => p.id === val);
+      val = p ? p.name : "(none)";
+    } else if (kind === "percent") {
+      val = `${val}%`;
+    }
+    return `<b>${escapeHtml(String(val))}</b>`;
+  });
+  return parts.join(", ");
+}
+
+function renderRulesList() {
+  const container = document.getElementById("rules-list");
+  const empty = document.getElementById("empty-state");
+  if (allRules.length === 0) {
+    container.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  container.innerHTML = allRules.map(r => {
+    const cond = catalog.conditions[r.condition_type];
+    const act = catalog.actions[r.action_type];
+    const condLabel = cond ? cond.label : r.condition_type;
+    const actLabel = act ? act.label : r.action_type;
+    const condDesc = cond ? describeParams(r.condition_type, cond, r.condition_params) : "";
+    const actDesc = act ? describeParams(r.action_type, act, r.action_params) : "";
+    const lastFired = r.last_triggered_at ? new Date(r.last_triggered_at).toLocaleString() : "never";
+    return `
+      <div class="rule-row">
+        <label class="toggle"><input type="checkbox" ${r.enabled ? "checked" : ""} onchange="toggleRule(${r.id}, this.checked)"><span class="slider"></span></label>
+        <div class="rule-main">
+          <div class="rule-name">${escapeHtml(r.name)}</div>
+          <div class="rule-logic">If <b>${escapeHtml(condLabel)}</b> ${condDesc} &rarr; ${escapeHtml(actLabel)} ${actDesc}</div>
+          <div class="rule-meta">Fired ${r.trigger_count} time${r.trigger_count === 1 ? "" : "s"} &middot; last: ${lastFired}</div>
+        </div>
+        <div class="rule-actions">
+          <span class="badge ${r.enabled ? "on" : "off"}">${r.enabled ? "Active" : "Paused"}</span>
+          <button class="subtle" onclick="openEditor(${r.id})">Edit</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+function paramInputHtml(prefix, key, kind) {
+  const id = `${prefix}-${key}`;
+  if (kind === "channel") {
+    const opts = allChannels.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join("");
+    return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><select id="${id}"><option value="">Select a source</option>${opts}</select></div>`;
+  }
+  if (kind === "risk_profile") {
+    const opts = allRiskProfiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+    return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><select id="${id}"><option value="">Select a profile</option>${opts}</select></div>`;
+  }
+  return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><input type="number" id="${id}" step="any"></div>`;
+}
+
+function renderConditionParams(existingParams) {
+  const type = document.getElementById("r-condition-type").value;
+  const entry = catalog.conditions[type];
+  const container = document.getElementById("condition-params");
+  if (!entry) { container.innerHTML = ""; return; }
+  container.innerHTML = Object.keys(entry.params).map(key => paramInputHtml("cp", key, entry.params[key])).join("");
+  if (existingParams) {
+    Object.keys(entry.params).forEach(key => {
+      const el = document.getElementById(`cp-${key}`);
+      if (el && existingParams[key] !== undefined && existingParams[key] !== null) el.value = existingParams[key];
+    });
+  }
+}
+
+function renderActionParams(existingParams) {
+  const type = document.getElementById("r-action-type").value;
+  const entry = catalog.actions[type];
+  const container = document.getElementById("action-params");
+  if (!entry) { container.innerHTML = ""; return; }
+  container.innerHTML = Object.keys(entry.params).map(key => paramInputHtml("ap", key, entry.params[key])).join("");
+  if (existingParams) {
+    Object.keys(entry.params).forEach(key => {
+      const el = document.getElementById(`ap-${key}`);
+      if (el && existingParams[key] !== undefined && existingParams[key] !== null) el.value = existingParams[key];
+    });
+  }
+}
+
+function collectParams(prefix, entry) {
+  const params = {};
+  Object.keys(entry.params).forEach(key => {
+    const el = document.getElementById(`${prefix}-${key}`);
+    if (!el || el.value === "") return;
+    const kind = entry.params[key];
+    params[key] = (kind === "channel" || kind === "risk_profile") ? parseInt(el.value, 10) : parseFloat(el.value);
+  });
+  return params;
+}
+
+function openEditor(ruleId) {
+  currentRuleId = ruleId;
+  document.getElementById("editor-error").textContent = "";
+  const condSelect = document.getElementById("r-condition-type");
+  const actSelect = document.getElementById("r-action-type");
+  condSelect.innerHTML = Object.keys(catalog.conditions).map(k => `<option value="${k}">${escapeHtml(catalog.conditions[k].label)}</option>`).join("");
+  actSelect.innerHTML = Object.keys(catalog.actions).map(k => `<option value="${k}">${escapeHtml(catalog.actions[k].label)}</option>`).join("");
+
+  if (ruleId) {
+    const rule = allRules.find(r => r.id === ruleId);
+    document.getElementById("editor-title").textContent = "Edit Rule";
+    document.getElementById("delete-rule-btn").style.display = "inline-block";
+    document.getElementById("r-name").value = rule.name;
+    document.getElementById("r-enabled").checked = rule.enabled;
+    condSelect.value = rule.condition_type;
+    actSelect.value = rule.action_type;
+    renderConditionParams(rule.condition_params);
+    renderActionParams(rule.action_params);
+  } else {
+    document.getElementById("editor-title").textContent = "New Rule";
+    document.getElementById("delete-rule-btn").style.display = "none";
+    document.getElementById("r-name").value = "";
+    document.getElementById("r-enabled").checked = true;
+    renderConditionParams();
+    renderActionParams();
+  }
+  openModal("editor-backdrop");
+}
+
+function closeEditor() {
+  closeModal("editor-backdrop");
+  currentRuleId = null;
+}
+
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
+
+async function saveRule() {
+  const name = document.getElementById("r-name").value.trim();
+  const conditionType = document.getElementById("r-condition-type").value;
+  const actionType = document.getElementById("r-action-type").value;
+  const enabled = document.getElementById("r-enabled").checked;
+  const errorEl = document.getElementById("editor-error");
+
+  if (!name) { errorEl.textContent = "Name is required."; return; }
+
+  const body = {
+    name,
+    condition_type: conditionType,
+    condition_params: collectParams("cp", catalog.conditions[conditionType]),
+    action_type: actionType,
+    action_params: collectParams("ap", catalog.actions[actionType]),
+    enabled,
+  };
+
+  try {
+    if (currentRuleId) {
+      await fetchJSON(`/api/rules/${currentRuleId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+    } else {
+      await fetchJSON("/api/rules", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+    }
+    closeEditor();
+    await refreshAll();
+  } catch (e) {
+    errorEl.textContent = e.message;
+  }
+}
+
+async function deleteCurrentRule() {
+  if (!currentRuleId) return;
+  if (!confirm("Delete this rule? This cannot be undone.")) return;
+  await fetchJSON(`/api/rules/${currentRuleId}`, { method: "DELETE" });
+  closeEditor();
+  await refreshAll();
+}
+
+async function toggleRule(ruleId, enabled) {
+  await fetchJSON(`/api/rules/${ruleId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+  });
+  await refreshAll();
+}
+
+(async () => {
+  await AximShell.init({ active: "rules" });
+  await refreshAll();
+})();
+</script>
+</body>
+</html>

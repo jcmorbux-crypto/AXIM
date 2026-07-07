@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import database
 import risk_engine
+import rule_engine
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
@@ -105,6 +106,7 @@ async def _on_trade_closed(payload):
         check_session_limits(session_id)
     except SessionLimitReached as e:
         logger.info("session_manager: trade_id=%s closed session %s: %s", trade_id, session_id, e.reason)
+    rule_engine.evaluate_all()
 
 
 def register(event_bus):

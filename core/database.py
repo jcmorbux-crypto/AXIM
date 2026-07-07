@@ -361,6 +361,31 @@ def initialize_database():
     """)
     conn.execute("INSERT OR IGNORE INTO pending_test_trade (id, status) VALUES (1, 'none')")
 
+    # Rule Builder (docs/AXIM_APP_PLAN.md) - visual IF/THEN automation.
+    # Every condition evaluator is a pure function returning (bool, ...)
+    # and every action executor calls an existing real mutation function
+    # (session_manager.end_session, database.update_risk_profile, etc.) -
+    # see core/rule_engine.py. last_condition_state implements edge
+    # triggering (fire only on false->true transitions) so a rule whose
+    # condition stays true across many trades (e.g. daily_profit_gte
+    # after the target is hit) fires once, not on every subsequent trade.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        condition_type TEXT NOT NULL,
+        condition_params_json TEXT DEFAULT '{}',
+        action_type TEXT NOT NULL,
+        action_params_json TEXT DEFAULT '{}',
+        last_condition_state INTEGER DEFAULT 0,
+        last_triggered_at TEXT,
+        trigger_count INTEGER DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
+    );
+    """)
+
     # Auth/access-control layer (docs/AXIM_APP_PLAN.md) - who may log into
     # the control UI at all, separate from the single shared Telegram/
     # Pocket Option trading connection every user currently sees. role is
@@ -1169,7 +1194,7 @@ def list_trading_sessions(limit=50):
 
 _VALID_SESSION_STOP_STATUSES = {
     "stopped_target", "stopped_loss_limit", "stopped_max_trades", "stopped_manual",
-    "stopped_emergency", "stopped_connection_lost", "stopped_parse_failures",
+    "stopped_emergency", "stopped_connection_lost", "stopped_parse_failures", "stopped_rule",
 }
 
 
@@ -1691,6 +1716,109 @@ def fail_test_trade(error_message):
         "UPDATE pending_test_trade SET status = 'error', result_json = ?, completed_at = ? WHERE id = 1",
         (json.dumps({"error": error_message}), datetime.now().isoformat()),
     )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------
+# Rule Builder (docs/AXIM_APP_PLAN.md) - core/rule_engine.py owns the
+# actual condition/action logic; this is just the CRUD + row shaping
+# layer, matching every other feature table in this module.
+# ---------------------------------------------------------------------
+
+def _rule_row_to_dict(row):
+    d = dict(row)
+    d["condition_params"] = json.loads(d["condition_params_json"]) if d["condition_params_json"] else {}
+    d["action_params"] = json.loads(d["action_params_json"]) if d["action_params_json"] else {}
+    d["last_condition_state"] = bool(d["last_condition_state"])
+    return d
+
+
+@timed("database")
+def create_rule(name, condition_type, condition_params, action_type, action_params, enabled=True):
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute("""
+        INSERT INTO rules (
+            name, enabled, condition_type, condition_params_json,
+            action_type, action_params_json, last_condition_state, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+    """, (name, 1 if enabled else 0, condition_type, json.dumps(condition_params),
+          action_type, json.dumps(action_params), now, now))
+    conn.commit()
+    rule_id = cursor.lastrowid
+    conn.close()
+    return rule_id
+
+
+@timed("database")
+def get_rule(rule_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM rules WHERE id = ?", (rule_id,)).fetchone()
+    conn.close()
+    return _rule_row_to_dict(row) if row else None
+
+
+@timed("database")
+def list_rules():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM rules ORDER BY id DESC").fetchall()
+    conn.close()
+    return [_rule_row_to_dict(r) for r in rows]
+
+
+_RULE_UPDATABLE_FIELDS = {"name", "enabled", "condition_type", "action_type"}
+
+
+@timed("database")
+def update_rule(rule_id, condition_params=None, action_params=None, **fields):
+    for key in fields:
+        if key not in _RULE_UPDATABLE_FIELDS:
+            raise ValueError(f"Unknown rule field: {key!r}")
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values())
+    if condition_params is not None:
+        set_clauses.append("condition_params_json = ?")
+        params.append(json.dumps(condition_params))
+    if action_params is not None:
+        set_clauses.append("action_params_json = ?")
+        params.append(json.dumps(action_params))
+    if not set_clauses:
+        return
+    set_clauses.append("updated_at = ?")
+    params.append(datetime.now().isoformat())
+    params.append(rule_id)
+    conn = get_connection()
+    conn.execute(f"UPDATE rules SET {', '.join(set_clauses)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def delete_rule(rule_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def record_rule_evaluation(rule_id, condition_state, fired):
+    """Always updates last_condition_state (the edge-trigger memory);
+    only bumps trigger_count/last_triggered_at when the action actually
+    fired this evaluation."""
+    conn = get_connection()
+    if fired:
+        conn.execute(
+            "UPDATE rules SET last_condition_state = ?, trigger_count = trigger_count + 1, "
+            "last_triggered_at = ? WHERE id = ?",
+            (1 if condition_state else 0, datetime.now().isoformat(), rule_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE rules SET last_condition_state = ? WHERE id = ?",
+            (1 if condition_state else 0, rule_id),
+        )
     conn.commit()
     conn.close()
 

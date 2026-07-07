@@ -59,6 +59,7 @@ import sessions as sessions_module
 import risk_engine_routes as risk_engine_module
 import trades as trades_module
 import backups as backups_module
+import rules as rules_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -100,6 +101,7 @@ app.include_router(sessions_module.router)
 app.include_router(risk_engine_module.router)
 app.include_router(trades_module.router)
 app.include_router(backups_module.router)
+app.include_router(rules_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -223,6 +225,11 @@ def performance_page():
 @app.get("/broker")
 def broker_page():
     return _serve("broker.html")
+
+
+@app.get("/rules")
+def rules_page():
+    return _serve("rules.html")
 
 
 @app.get("/logs")
