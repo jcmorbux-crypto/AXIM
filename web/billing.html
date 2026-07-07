@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Plan & Billing - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .plan-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; margin-top: 16px; }
+  .plan-card {
+    border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 18px;
+    display: flex; flex-direction: column; gap: 10px; background: var(--bg);
+  }
+  .plan-card.current { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+  .plan-name { font-weight: 700; font-size: 15px; }
+  .plan-price { font-size: 22px; font-weight: 700; }
+  .plan-price span { font-size: 12px; font-weight: 500; color: var(--text-dim); }
+  .plan-features { list-style: none; padding: 0; margin: 0; font-size: 12.5px; color: var(--text-dim); display: flex; flex-direction: column; gap: 5px; }
+  .plan-features li:before { content: "\2713"; color: var(--green); margin-right: 6px; }
+  #checkout-message { font-size: 12.5px; color: var(--text-dim); margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Plan &amp; Billing</h1>
+        <div class="subtitle">Your current plan and available pricing tiers.</div>
+      </div>
+    </div>
+
+    <div id="not-configured-banner" class="banner info" style="display:none; margin-bottom:16px;">
+      Billing isn't connected to a live payment provider yet. Plan changes are made by your Owner/Admin from the Users page.
+    </div>
+
+    <div class="card solid" style="margin-bottom:20px;">
+      <h3>Current Plan</h3>
+      <div class="stat-row"><span class="stat-label">Plan</span><span class="stat-value" id="current-plan-name">-</span></div>
+      <div class="stat-row"><span class="stat-label">Status</span><span class="stat-value"><span class="badge" id="current-plan-badge">-</span></span></div>
+      <div class="stat-row" id="trial-row" style="display:none;"><span class="stat-label">Trial ends</span><span class="stat-value" id="trial-expires">-</span></div>
+    </div>
+
+    <div class="card solid">
+      <h3>Pricing</h3>
+      <div class="muted" style="font-size:12px;">Feature lists describe AXIM's planned tier differentiation - today, every signed-in account can use every feature; tiers only affect demo/live trading permission and account status.</div>
+      <div class="plan-grid" id="plans-grid"></div>
+      <div id="checkout-message"></div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let billingStatus = null;
+let plansData = { configured: false, plans: [] };
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+
+async function refreshAll() {
+  [billingStatus, plansData] = await Promise.all([
+    fetchJSON("/api/billing/status"),
+    fetchJSON("/api/billing/plans"),
+  ]);
+  render();
+}
+
+function render() {
+  document.getElementById("not-configured-banner").style.display = billingStatus.configured ? "none" : "block";
+  document.getElementById("current-plan-name").textContent = billingStatus.display_name;
+  const badge = document.getElementById("current-plan-badge");
+  const activeStates = ["active", "free_access", "trial"];
+  badge.textContent = billingStatus.access_state;
+  badge.className = "badge " + (activeStates.includes(billingStatus.access_state) ? "on" : "off");
+
+  if (billingStatus.access_tier === "trial" && billingStatus.trial_expires_at) {
+    document.getElementById("trial-row").style.display = "flex";
+    document.getElementById("trial-expires").textContent = new Date(billingStatus.trial_expires_at).toLocaleString();
+  }
+
+  document.getElementById("plans-grid").innerHTML = plansData.plans.map(p => {
+    const isCurrent = p.tier === billingStatus.access_tier && !p.contact_only;
+    const priceHtml = p.price_usd_monthly === null
+      ? "Contact us"
+      : `$${p.price_usd_monthly}<span>/mo</span>`;
+    const btnHtml = isCurrent
+      ? `<button class="subtle" disabled>Current Plan</button>`
+      : `<button class="primary" onclick="upgrade('${p.tier}', ${p.contact_only})">${p.contact_only ? "Contact Us" : "Choose Plan"}</button>`;
+    return `
+      <div class="plan-card ${isCurrent ? "current" : ""}">
+        <div class="plan-name">${escapeHtml(p.display_name)}</div>
+        <div class="plan-price">${priceHtml}</div>
+        <ul class="plan-features">${p.features.map(f => `<li>${escapeHtml(f)}</li>`).join("")}</ul>
+        ${btnHtml}
+      </div>
+    `;
+  }).join("");
+}
+
+async function upgrade(tier, contactOnly) {
+  const msgEl = document.getElementById("checkout-message");
+  msgEl.textContent = "";
+  if (contactOnly) {
+    msgEl.textContent = "Contact your AXIM representative to discuss Enterprise terms.";
+    return;
+  }
+  try {
+    const result = await fetchJSON("/api/billing/checkout", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tier }),
+    });
+    if (result.checkout_url) {
+      window.location.href = result.checkout_url;
+    } else {
+      msgEl.textContent = result.message || "Unable to start checkout.";
+    }
+  } catch (e) {
+    msgEl.textContent = e.message;
+  }
+}
+
+(async () => {
+  await AximShell.init({ active: "settings" });
+  await refreshAll();
+})();
+</script>
+</body>
+</html>

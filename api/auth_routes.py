@@ -69,6 +69,9 @@ def get_current_user(axim_session: Optional[str] = Cookie(default=None)):
     user = database.get_session_user(axim_session)
     if user is None:
         raise HTTPException(status_code=401, detail="session expired or invalid")
+    user = database.check_and_expire_trial(user)
+    if user["access_state"] in _BLOCKED_ACCESS_STATES:
+        raise HTTPException(status_code=403, detail=f"account is {user['access_state']}")
     return user
 
 
@@ -120,6 +123,7 @@ def login(body: LoginRequest, response: Response):
     user = database.verify_user_credentials(body.email, body.password)
     if user is None:
         raise HTTPException(status_code=401, detail="incorrect email or password")
+    user = database.check_and_expire_trial(user)
     if user["access_state"] in _BLOCKED_ACCESS_STATES:
         raise HTTPException(status_code=403, detail=f"account is {user['access_state']}")
 

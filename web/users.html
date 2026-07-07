@@ -15,7 +15,10 @@
         <h1>Users</h1>
         <div class="subtitle">Owner/Admin only - manage who can use AXIM and what they're allowed to do.</div>
       </div>
-      <button class="primary" onclick="openCreateModal()">Add User</button>
+      <div class="row">
+        <a href="/billing" class="btn subtle">Licensing &amp; Plans</a>
+        <button class="primary" onclick="openCreateModal()">Add User</button>
+      </div>
     </div>
 
     <div class="card solid full-width">
@@ -163,6 +166,15 @@ async function fetchJSON(url, opts) {
 
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
 
+// Mirrors core/billing.py's TIER_DISPLAY_NAMES - the raw access_tier enum
+// value stays the source of truth (and what Manage's dropdown writes),
+// this is display-only.
+const TIER_DISPLAY_NAMES = {
+  owner: "Owner", internal: "Internal", free_beta: "Free", trial: "Trial",
+  basic: "Basic", pro: "Professional", elite: "Elite", suspended: "Suspended",
+};
+function tierLabel(tier) { return TIER_DISPLAY_NAMES[tier] || tier; }
+
 function openModal(id) { document.getElementById(id).style.display = "flex"; }
 function closeModal(id) { document.getElementById(id).style.display = "none"; }
 
@@ -206,7 +218,7 @@ async function refreshUsers() {
       <tr>
         <td>${escapeHtml(u.email)}</td>
         <td><span class="badge info">${u.role}</span></td>
-        <td>${u.access_tier}</td>
+        <td>${escapeHtml(tierLabel(u.access_tier))}</td>
         <td>${stateBadge(u.access_state)}</td>
         <td>${u.demo_only_forced ? '<span class="badge warn">forced</span>' : '<span class="badge off">no</span>'}</td>
         <td>${u.live_trading_allowed ? '<span class="badge on">yes</span>' : '<span class="badge off">no</span>'}</td>

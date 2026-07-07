@@ -40,6 +40,14 @@ _NEW_SESSION_COLUMNS = {
     "vaulted_amount": "REAL DEFAULT 0",
 }
 
+# Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - links a user to a
+# Stripe customer/subscription once real keys are configured. NULL for
+# every existing user until then; core/billing.py is the only writer.
+_NEW_USER_COLUMNS = {
+    "stripe_customer_id": "TEXT",
+    "stripe_subscription_id": "TEXT",
+}
+
 
 def get_connection():
     DB_FILE.parent.mkdir(exist_ok=True)
@@ -410,6 +418,10 @@ def initialize_database():
         last_login_at TEXT
     );
     """)
+    user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    for column, sql_type in _NEW_USER_COLUMNS.items():
+        if column not in user_columns:
+            conn.execute(f"ALTER TABLE users ADD COLUMN {column} {sql_type}")
 
     # token_hash only - the raw bearer token lives in the browser's cookie
     # and is never persisted, same reasoning as password_hash: a DB read
@@ -1836,6 +1848,7 @@ def record_rule_evaluation(rule_id, condition_state, fired):
 _USER_UPDATABLE_FIELDS = {
     "role", "access_tier", "access_state", "trial_expires_at",
     "demo_only_forced", "live_trading_allowed",
+    "stripe_customer_id", "stripe_subscription_id",
 }
 
 
@@ -1899,6 +1912,34 @@ def update_user(user_id, **fields):
     conn.execute(f"UPDATE users SET {', '.join(set_clauses)} WHERE id = ?", params)
     conn.commit()
     conn.close()
+
+
+@timed("database")
+def get_user_by_stripe_customer_id(stripe_customer_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM users WHERE stripe_customer_id = ?", (stripe_customer_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def check_and_expire_trial(user):
+    """Real trial-expiration enforcement (docs/AXIM_APP_PLAN.md Phase 6) -
+    called on every login and every authenticated request. If a
+    trial-tier user's trial_expires_at has passed and they aren't
+    already expired/disabled/suspended, flips access_state to 'expired'
+    (already one of auth_routes._BLOCKED_ACCESS_STATES, so this alone is
+    enough to lock the account out - no separate cron process needed).
+    Returns the (possibly updated) user dict. Does not touch access_tier
+    itself - Owner can still see what plan a now-expired user was on."""
+    if user["access_tier"] != "trial" or not user["trial_expires_at"]:
+        return user
+    if user["access_state"] in ("expired", "disabled", "suspended"):
+        return user
+    if datetime.now().isoformat() < user["trial_expires_at"]:
+        return user
+    update_user(user["id"], access_state="expired")
+    return get_user_by_id(user["id"])
 
 
 @timed("database")

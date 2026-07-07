@@ -64,3 +64,15 @@ WORKER_ACQUIRE_TIMEOUT_SECONDS = float(os.getenv("WORKER_ACQUIRE_TIMEOUT_SECONDS
 # the same signals.db every other tool already reads
 ENABLE_DASHBOARD = os.getenv("ENABLE_DASHBOARD", "true").lower() == "true"
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 8080))
+
+# Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - core/billing.py treats
+# an unset STRIPE_SECRET_KEY as "billing not configured" and disables real
+# Stripe calls entirely; Owner manual tier activation (api/admin.py) remains
+# the only way to change a user's access_tier until real keys are set here.
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY")
+STRIPE_PRICE_BASIC = os.getenv("STRIPE_PRICE_BASIC")
+STRIPE_PRICE_PRO = os.getenv("STRIPE_PRICE_PRO")
+STRIPE_PRICE_ELITE = os.getenv("STRIPE_PRICE_ELITE")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://127.0.0.1:8090")

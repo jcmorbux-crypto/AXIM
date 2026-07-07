@@ -438,11 +438,83 @@ existing single-active-session-at-a-time rule, but would need real
 scoping if that constraint is ever relaxed.
 
 ### Phase 6 - Packaging, Stripe
-Not started. Desktop packaging (Tauri), Windows startup support,
-and payments are explicitly deferred - the access-tier/access-state
-schema built in Phase 1 is ready to support a Stripe integration later
-without another schema migration. Backup/restore itself is no longer
-"not started" - see the Settings page section above.
+
+#### Billing scaffold - DONE (deliberately not wired to live Stripe keys)
+Built the full billing architecture with zero live Stripe calls, per an
+explicit decision to scaffold now and connect real keys later: `core/
+billing.py` (pricing catalog, checkout-session creation, webhook event
+handling, trial-expiration check), `api/billing_routes.py` (`/api/
+billing/plans`, `/status`, `/checkout`, `/webhook`), `web/billing.html`
+(pricing cards + current-plan status + "not configured" banner), linked
+from Settings > General and from Users ("Licensing & Plans").
+
+- **Pricing plans**: 6 user-facing plans (Free/Trial/Basic/Professional/
+  Elite/Enterprise) mapped onto the existing `access_tier` enum with no
+  schema change - Enterprise is a display-only, contact-us row that
+  grants the same `elite` tier under the hood.
+- **Access tiers**: reused as-is; billing never invents a new tier value.
+- **Checkout session placeholder**: `create_checkout_session()` checks
+  `is_configured()` (whether `STRIPE_SECRET_KEY` is set) first and
+  returns an honest `{configured: false, checkout_url: null, message}`
+  rather than raising - real `stripe.checkout.Session.create()` code
+  exists and runs once a key and Stripe Price IDs are set, untested
+  against the real Stripe API since no test account is configured yet.
+- **Webhook handler placeholder**: `handle_webhook_event()` verifies the
+  signature via `STRIPE_WEBHOOK_SECRET` (raises `BillingNotConfiguredError`
+  -> HTTP 503 if unset, never processes an unverified payload) and
+  handles `checkout.session.completed` (activate a paid tier) and
+  `customer.subscription.{updated,deleted}` (soft-downgrade to
+  `free_beta`/`free_access` on cancellation).
+- **License status updates**: `GET /api/billing/status` (current user)
+  and the existing `api/admin.py` tier endpoints (unchanged) both read/
+  write the same `access_tier`/`access_state` columns - one source of
+  truth either way.
+- **Trial expiration logic**: real, not a placeholder. `database.
+  check_and_expire_trial()` runs on every login and every authenticated
+  request (`api/auth_routes.py`'s `get_current_user`); a trial past its
+  `trial_expires_at` flips to `access_state='expired'`, which was
+  already in `_BLOCKED_ACCESS_STATES` - no new enforcement mechanism, no
+  cron process. Incidental fix found along the way: `get_current_user`
+  didn't previously re-check blocked states on already-issued session
+  cookies (only `login()` did), so an account an Owner suspends mid-
+  session kept working until the cookie itself expired - now closed for
+  every blocked state, not just `expired`.
+- **Billing page UI**: `web/billing.html` - pricing grid, current plan/
+  status card, trial countdown, "Choose Plan" (real checkout call, shows
+  the honest not-configured message today) / "Contact Us" for Enterprise.
+- **"Billing not configured" state**: shown in both the API response
+  shape (`configured: false`) and a UI banner - never a raw error.
+- **Env vars**: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
+  `STRIPE_PUBLISHABLE_KEY`, `STRIPE_PRICE_BASIC/PRO/ELITE`,
+  `APP_BASE_URL` added to `config/settings.py` - all `None`/unset by
+  default, nothing activates until real values are supplied.
+
+**Owner manual activation remains the source of truth** - every
+existing `api/admin.py` tier action (`set-tier`, `set-trial`,
+`grant-free-access`, `activate`, `disable`, `revoke-access`) is
+untouched and still the only way tiers actually change today, since
+billing is inert without real keys.
+
+Tested: `tests/test_billing.py` (18 tests - configuration gating,
+pricing catalog integrity incl. "no tier value outside the existing
+enum", checkout not-configured/unknown-plan/contact-only paths,
+subscription activation + cancellation downgrade, webhook rejects when
+unconfigured, and 5 trial-expiration scenarios). Live-verified via
+Playwright against the real DB/API: pricing grid renders all 6 plans
+with real feature text, "Choose Plan" shows the honest not-configured
+message, "Contact Us" shows the Enterprise message, Settings and Users
+both link to `/billing`, Users table shows friendly tier names
+(`Owner`, not `owner`). Verification account cleaned up afterward.
+
+Known gap: pricing-plan feature bullets describe planned tier
+differentiation, not technically-enforced limits - `access_tier` today
+only gates login (blocked states) and demo/live trading permission
+(pre-existing `demo_only_forced`/`live_trading_allowed` flags), nothing
+else in the app actually checks a user's tier.
+
+#### Desktop packaging (Tauri) + Windows startup - not started
+Explicitly deferred until the billing scaffold above was in place;
+picking these up next.
 
 ## Known gaps / honest state as of Phase 1
 
