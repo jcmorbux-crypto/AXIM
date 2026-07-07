@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trade Center - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  tbody tr.trade-row { cursor: pointer; }
+  td.result-cell {
+    max-width: 260px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap !important;
+  }
+  pre.result-detail {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 10px; font-size: 11.5px; white-space: pre-wrap; word-break: break-word;
+    max-height: 160px; overflow-y: auto; margin: 0;
+  }
+  .timeline-row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .timeline-row:last-child { border-bottom: none; }
+  .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .screenshot-thumb { max-width: 100%; border-radius: var(--radius-sm); border: 1px solid var(--border); cursor: zoom-in; margin-top: 8px; }
+  pre.raw-message { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Trade Center</h1>
+        <div class="subtitle">Every trade AXIM has executed - click a row for full detail.</div>
+      </div>
+      <button onclick="refreshTrades()">Refresh</button>
+    </div>
+
+    <div class="card solid full-width">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th><th>Source</th><th>Asset</th><th>Dir</th><th>Amount</th>
+            <th>Expiry</th><th>Status</th><th>Result</th><th>P/L</th><th>Session</th>
+          </tr>
+        </thead>
+        <tbody id="trades-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<div class="modal-backdrop" id="detail-modal">
+  <div class="modal" style="width:760px; max-height:88vh; overflow-y:auto;">
+    <h2 style="margin-top:0;" id="detail-title">Trade Detail</h2>
+    <div class="detail-grid">
+      <div>
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Original Signal</div>
+        <pre class="raw-message" id="detail-raw-message"></pre>
+
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:14px 0 8px 0;">Parsed Data</div>
+        <div id="detail-parsed"></div>
+
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:14px 0 8px 0;">Money Management Decision</div>
+        <div id="detail-money"></div>
+      </div>
+      <div>
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Execution Log</div>
+        <div id="detail-timeline"></div>
+
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:14px 0 8px 0;">Result</div>
+        <div id="detail-result"></div>
+
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:14px 0 8px 0;">Screenshots</div>
+        <div id="detail-screenshots"></div>
+      </div>
+    </div>
+    <div class="row" style="justify-content:flex-end; margin-top:16px;">
+      <button class="subtle" onclick="closeModal('detail-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<div id="screenshot-modal" class="modal-backdrop" onclick="closeModal('screenshot-modal')">
+  <img id="screenshot-modal-img" src="" style="max-width:92vw; max-height:92vh; border-radius:8px;">
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "-"; }
+function fmtMoney(n) { return (n === null || n === undefined) ? "-" : `${n > 0 ? "+" : ""}$${Number(n).toFixed(2)}`; }
+function plClass(v) { return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral"); }
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
+
+function resultBadge(status) {
+  if (status === "result_win") return '<span class="badge on">WIN</span>';
+  if (status === "result_loss") return '<span class="badge danger">LOSS</span>';
+  if (status === "result_draw") return '<span class="badge warn">DRAW</span>';
+  if (status === "error") return '<span class="badge off">error</span>';
+  return `<span class="badge info">${escapeHtml(status || "-")}</span>`;
+}
+
+async function refreshTrades() {
+  const tbody = document.getElementById("trades-body");
+  try {
+    const trades = await fetchJSON("/api/trades?limit=50");
+    if (!trades.length) {
+      tbody.innerHTML = '<tr><td colspan="10" class="empty">No trades yet.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = trades.map(t => `
+      <tr class="trade-row" onclick="openDetail(${t.id})">
+        <td class="muted">${fmtTime(t.received_at)}</td>
+        <td class="title-cell">${escapeHtml(t.channel || "-")}</td>
+        <td>${escapeHtml(t.asset || "-")}</td>
+        <td>${escapeHtml(t.direction || "-")}</td>
+        <td>${t.trade_amount !== null && t.trade_amount !== undefined ? "$" + t.trade_amount : "-"}</td>
+        <td>${escapeHtml(t.timeframe || "-")}</td>
+        <td>${resultBadge(t.execution_status)}</td>
+        <td class="result-cell">${escapeHtml(t.result || "-")}</td>
+        <td class="${plClass(t.profit_loss)}">${t.profit_loss !== null ? fmtMoney(t.profit_loss) : "-"}</td>
+        <td class="muted">${t.session_id ? "#" + t.session_id : "-"}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="10" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function openDetail(tradeId) {
+  document.getElementById("detail-title").textContent = `Trade #${tradeId}`;
+  openModal("detail-modal");
+  try {
+    const t = await fetchJSON(`/api/trades/${tradeId}`);
+
+    document.getElementById("detail-raw-message").textContent = t.message || "(no message captured)";
+
+    document.getElementById("detail-parsed").innerHTML = `
+      <div class="stat-row"><span class="stat-label">Asset</span><span class="stat-value">${escapeHtml(t.asset || "-")}</span></div>
+      <div class="stat-row"><span class="stat-label">Direction</span><span class="stat-value">${escapeHtml(t.direction || "-")}</span></div>
+      <div class="stat-row"><span class="stat-label">Expiry</span><span class="stat-value">${escapeHtml(t.timeframe || "-")}</span></div>
+      <div class="stat-row"><span class="stat-label">Source</span><span class="stat-value">${escapeHtml(t.channel || "-")}</span></div>
+    `;
+
+    let moneyHtml = `<div class="stat-row"><span class="stat-label">Amount used</span><span class="stat-value">${t.trade_amount !== null ? "$" + t.trade_amount : "-"}</span></div>`;
+    if (t.session) {
+      moneyHtml += `<div class="stat-row"><span class="stat-label">Session</span><span class="stat-value">${escapeHtml(t.session.name || "(unnamed)")}</span></div>`;
+      if (t.session.risk_profile_id) {
+        moneyHtml += `<div class="stat-row"><span class="stat-label">Session's current Martingale step</span><span class="stat-value">${t.session.current_martingale_step} <span class="faint" style="font-size:11px;">(now, not necessarily at trade time)</span></span></div>`;
+      }
+    } else {
+      moneyHtml += `<div class="empty">Not part of a trading session.</div>`;
+    }
+    document.getElementById("detail-money").innerHTML = moneyHtml;
+
+    const timelineEl = document.getElementById("detail-timeline");
+    if (t.trade_timeline) {
+      timelineEl.innerHTML = Object.entries(t.trade_timeline).map(([stage, ts]) => `
+        <div class="timeline-row"><span class="muted">${escapeHtml(stage)}</span><span>${fmtTime(ts)}</span></div>
+      `).join("");
+    } else {
+      timelineEl.innerHTML = '<div class="empty">No timeline recorded.</div>';
+    }
+
+    const resultIsLong = (t.result || "").length > 100;
+    document.getElementById("detail-result").innerHTML = `
+      <div class="stat-row"><span class="stat-label">Status</span><span class="stat-value">${resultBadge(t.execution_status)}</span></div>
+      <div class="stat-row"><span class="stat-label">P/L</span><span class="stat-value ${plClass(t.profit_loss)}">${t.profit_loss !== null ? fmtMoney(t.profit_loss) : "-"}</span></div>
+      <div class="stat-row"><span class="stat-label">Payout</span><span class="stat-value">${t.payout !== null && t.payout !== undefined ? t.payout + "%" : "-"}</span></div>
+      <div class="stat-label" style="margin-top:8px; margin-bottom:4px;">Result detail</div>
+      ${resultIsLong
+        ? `<pre class="result-detail">${escapeHtml(t.result)}</pre>`
+        : `<div class="stat-value">${escapeHtml(t.result || "-")}</div>`}
+    `;
+
+    const shotsEl = document.getElementById("detail-screenshots");
+    if (t.screenshot_urls && t.screenshot_urls.length) {
+      shotsEl.innerHTML = t.screenshot_urls.map(s => `
+        <div>
+          <span class="muted" style="font-size:12px;">${escapeHtml(s.label)}</span>
+          <img class="screenshot-thumb" src="${s.url}" onclick="showScreenshot('${s.url}')">
+        </div>
+      `).join("");
+    } else {
+      shotsEl.innerHTML = '<div class="empty">No screenshots for this trade.</div>';
+    }
+  } catch (e) {
+    document.getElementById("detail-raw-message").textContent = "Failed to load: " + e.message;
+  }
+}
+
+function showScreenshot(url) {
+  document.getElementById("screenshot-modal-img").src = url;
+  openModal("screenshot-modal");
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "trades" });
+  if (!user) return;
+  refreshTrades();
+  setInterval(refreshTrades, 10000);
+})();
+</script>
+</body>
+</html>

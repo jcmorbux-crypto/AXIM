@@ -272,17 +272,52 @@ rate/payout are user-supplied estimates, not derived from a live
 empirical win rate (too little per-profile trade data for that to be
 meaningful yet).
 
-### Phase 5 - Live Trades, Statistics, Logs, Pocket Option status page
-Partially exists today (dark theme, `/legacy`): live trades table with
-screenshots, daily/weekly stats, recovery health, latency percentiles,
-Pocket Option heartbeat status. This phase re-themes those into their own
-light-theme pages (`web/trades.html`, `web/statistics.html`,
-`web/pocket-option.html`) and adds the analytics not yet built (profit by
-channel/asset/strategy/session, martingale performance, compounding
-growth, drawdown, best/worst channel, best time of day, streaks) plus a
-real Logs page reading from `admin_actions` + the existing log files
-(`logs/lifecycle.log`, `logs/ui.log`, etc.) with the filter set from the
-spec (date/severity/module/user/session/channel).
+### Phase 5 - DONE - Trade Center, Performance, Broker, Logs
+- **Trade Center** (`web/trades.html`, `api/trades.py`): live trades
+  table (time/source/asset/direction/amount/expiry/status/result/P&L/
+  session) + a full trade-detail view (raw Telegram message, parsed
+  fields, real execution timeline from `TradeTimeline.persist`'s stage
+  timestamps, screenshots, result). Money-management/Martingale-step
+  detail is honestly scoped: `trade_amount` is the real figure used, but
+  the martingale STEP at the time of that specific historical trade
+  isn't separately recorded (only the session's current step) - the UI
+  labels it "now, not necessarily at trade time" rather than imply
+  precision that doesn't exist. Caught and fixed a real bug during live
+  verification: a handful of historical `result` values are 2-3KB single-
+  line accessibility-tree error dumps that, with the table's default
+  `white-space: nowrap`, blew the page out to 18000+px wide - fixed with
+  a truncating cell class in the table and a scrollable `<pre>` in the
+  detail view for long values.
+- **Performance** (`web/performance.html`, `core/trade_statistics.py`'s
+  new `performance_report()`): daily/weekly/monthly/yearly/lifetime,
+  best/worst channel/asset/time-of-day (filtered to a 3+ trade minimum
+  so a single lucky/unlucky trade can't crown a "best"), max drawdown
+  (real peak-to-trough over the cumulative P&L curve), longest win/loss
+  streaks ever, per-session performance, and an honestly-scoped
+  Martingale/Compounding summary - real per-session current state, not a
+  fabricated step-by-step historical backtest (see
+  `martingale_and_compounding_performance()`'s own docstring for exactly
+  why).
+- **Broker** (`web/broker.html`): connection/balance/worker-pool/
+  heartbeat status, Reconnect, and two care-scoped destructive actions -
+  **Clear Session** (deletes `sessions/pocket_browser`, blocked while the
+  listener is running) and **Test Trade (Demo Only)**. Test Trade is
+  architecturally interesting: the API process never calls the trading
+  engine directly (a rule held throughout this whole build), so a click
+  writes a `pending_test_trade` request that `core/telegram_listener.py`'s
+  own new poll loop picks up and runs through the SAME live coordinator/
+  worker_pool already running there - hard-blocked on `ACCOUNT != DEMO`
+  independently at both the API layer and the listener's poll loop.
+- **Logs** (`web/logs.html`, `core/log_reader.py`): real entries parsed
+  from every log file `core/logger.py` writes, merged with
+  `admin_actions`, filterable by date/level/module/free-text search
+  (session/channel filtering is covered by the free-text search rather
+  than dedicated structured filters, since log lines aren't parsed down
+  to a structured session_id/channel_id). Owner/Admin only.
+- 24 new tests (performance analytics math, test-trade queue state
+  machine, log parsing/filtering including multi-line entries). 201
+  total passing. Verified live against the real production DB and
+  listener across all four pages.
 
 ### Phase 6 - Packaging, Stripe
 Not started. Desktop packaging (Tauri), Windows startup support,

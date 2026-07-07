@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Performance - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Performance</h1>
+        <div class="subtitle">Win rate, ROI, drawdown, and where your edge (or lack of one) actually comes from.</div>
+      </div>
+      <button onclick="refreshAll()">Refresh</button>
+    </div>
+
+    <div class="grid" id="period-cards"></div>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Best / Worst Source</h3>
+        <div id="channel-perf" class="muted">Loading...</div>
+      </div>
+      <div class="card">
+        <h3>Best / Worst Asset</h3>
+        <div id="asset-perf" class="muted">Loading...</div>
+      </div>
+      <div class="card">
+        <h3>Best / Worst Time of Day</h3>
+        <div id="tod-perf" class="muted">Loading...</div>
+      </div>
+      <div class="card">
+        <h3>Risk</h3>
+        <div id="risk-perf" class="muted">Loading...</div>
+      </div>
+    </div>
+
+    <div class="card solid full-width" style="margin-bottom:20px;">
+      <h3>Sessions</h3>
+      <table>
+        <thead><tr><th>Name</th><th>Status</th><th>Trades</th><th>Win Rate</th><th>P/L</th></tr></thead>
+        <tbody id="sessions-body"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="card solid full-width">
+      <h3>Risk Engine Activity</h3>
+      <div class="grid">
+        <div>
+          <div class="muted" style="font-size:12px; margin-bottom:8px;">Martingale-enabled sessions</div>
+          <div id="martingale-list" class="muted">Loading...</div>
+        </div>
+        <div>
+          <div class="muted" style="font-size:12px; margin-bottom:8px;">Compounding-enabled sessions</div>
+          <div id="compounding-list" class="muted">Loading...</div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function fmtMoney(n) { return (n === null || n === undefined) ? "-" : `${n > 0 ? "+" : ""}$${Number(n).toFixed(2)}`; }
+function fmtPct(n) { return (n === null || n === undefined) ? "-" : (n * 100).toFixed(1) + "%"; }
+function plClass(v) { return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral"); }
+
+function periodCard(title, stats) {
+  return `
+    <div class="card">
+      <h3>${title}</h3>
+      <div class="stat-row"><span class="stat-label">Closed trades</span><span class="stat-value">${stats.total_closed}</span></div>
+      <div class="stat-row"><span class="stat-label">Win rate</span><span class="stat-value">${fmtPct(stats.win_rate)}</span></div>
+      <div class="stat-row"><span class="stat-label">P/L</span><span class="stat-value ${plClass(stats.profit_loss)}">${fmtMoney(stats.profit_loss)}</span></div>
+      <div class="stat-row"><span class="stat-label">ROI</span><span class="stat-value ${plClass(stats.roi)}">${fmtPct(stats.roi)}</span></div>
+    </div>
+  `;
+}
+
+function bestWorstBlock(bw, unitLabel) {
+  if (!bw.best && !bw.worst) return '<div class="empty">Not enough data yet (need 3+ closed trades per group).</div>';
+  const row = (label, entry) => entry ? `
+    <div class="stat-row">
+      <span class="stat-label">${label}: ${escapeHtml(String(entry.name))}${unitLabel || ""}</span>
+      <span class="stat-value ${plClass(entry.profit_loss)}">${fmtMoney(entry.profit_loss)} (${fmtPct(entry.win_rate)}, n=${entry.total_closed})</span>
+    </div>` : "";
+  return row("Best", bw.best) + row("Worst", bw.worst);
+}
+
+async function refreshAll() {
+  try {
+    const perf = await fetchJSON("/api/performance");
+
+    document.getElementById("period-cards").innerHTML =
+      periodCard("Today", perf.daily) + periodCard("This Week", perf.weekly) +
+      periodCard("This Month", perf.monthly) + periodCard("This Year", perf.yearly) +
+      periodCard("Lifetime", perf.lifetime);
+
+    document.getElementById("channel-perf").innerHTML = bestWorstBlock(perf.by_channel);
+    document.getElementById("asset-perf").innerHTML = bestWorstBlock(perf.by_asset);
+    document.getElementById("tod-perf").innerHTML = bestWorstBlock(perf.best_time_of_day, ":00");
+
+    document.getElementById("risk-perf").innerHTML = `
+      <div class="stat-row"><span class="stat-label">Max drawdown</span><span class="stat-value neg">$${perf.max_drawdown.toFixed(2)}</span></div>
+      <div class="stat-row"><span class="stat-label">Longest win streak</span><span class="stat-value pos">${perf.streaks.longest_win_streak}</span></div>
+      <div class="stat-row"><span class="stat-label">Longest loss streak</span><span class="stat-value neg">${perf.streaks.longest_loss_streak}</span></div>
+    `;
+
+    const sessionsBody = document.getElementById("sessions-body");
+    if (!perf.sessions.length) {
+      sessionsBody.innerHTML = '<tr><td colspan="5" class="empty">No sessions yet.</td></tr>';
+    } else {
+      sessionsBody.innerHTML = perf.sessions.map(s => `
+        <tr>
+          <td>${escapeHtml(s.name || "(unnamed)")}</td>
+          <td><span class="badge ${s.status === "active" ? "on" : "off"}">${s.status.replace(/_/g, " ")}</span></td>
+          <td>${s.total_closed}</td>
+          <td>${fmtPct(s.win_rate)}</td>
+          <td class="${plClass(s.realized_pnl)}">${fmtMoney(s.realized_pnl)}</td>
+        </tr>
+      `).join("");
+    }
+
+    const mgList = document.getElementById("martingale-list");
+    mgList.innerHTML = perf.risk_engine.martingale_sessions.length
+      ? perf.risk_engine.martingale_sessions.map(m => `
+          <div class="stat-row"><span class="stat-label">${escapeHtml(m.name || "(unnamed)")} - ${escapeHtml(m.profile_name)}</span>
+          <span class="stat-value">step ${m.current_step}, ${fmtMoney(m.realized_pnl)}</span></div>
+        `).join("")
+      : '<div class="empty">No sessions using a Martingale-enabled profile yet.</div>';
+
+    const cpList = document.getElementById("compounding-list");
+    cpList.innerHTML = perf.risk_engine.compounding_sessions.length
+      ? perf.risk_engine.compounding_sessions.map(c => `
+          <div class="stat-row"><span class="stat-label">${escapeHtml(c.name || "(unnamed)")} - ${escapeHtml(c.profile_name)}</span>
+          <span class="stat-value">base ${c.base_risk_percent}%, ${fmtMoney(c.realized_pnl)}</span></div>
+        `).join("")
+      : '<div class="empty">No sessions using a Compounding-enabled profile yet.</div>';
+  } catch (e) {
+    document.getElementById("period-cards").innerHTML = `<div class="card"><div class="empty">Failed to load: ${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "stats" });
+  if (!user) return;
+  refreshAll();
+})();
+</script>
+</body>
+</html>

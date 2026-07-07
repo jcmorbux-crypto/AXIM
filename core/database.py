@@ -343,6 +343,24 @@ def initialize_database():
     );
     """)
 
+    # Singleton "Test Trade" request queue (Broker page) - the API process
+    # never imports/calls the trading engine directly (see docs/AXIM_APP_PLAN.md's
+    # architecture notes), so a manual test trade is requested here and
+    # core/telegram_listener.py's own poll loop picks it up and runs it
+    # through the SAME real coordinator/worker_pool already running in
+    # that process - not a second, API-side execution path.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS pending_test_trade (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        status TEXT DEFAULT 'none',
+        requested_by TEXT,
+        requested_at TEXT,
+        result_json TEXT,
+        completed_at TEXT
+    );
+    """)
+    conn.execute("INSERT OR IGNORE INTO pending_test_trade (id, status) VALUES (1, 'none')")
+
     # Auth/access-control layer (docs/AXIM_APP_PLAN.md) - who may log into
     # the control UI at all, separate from the single shared Telegram/
     # Pocket Option trading connection every user currently sees. role is
@@ -624,12 +642,40 @@ def get_recent_signals(limit=25):
     conn = get_connection()
     rows = conn.execute(
         "SELECT id, asset, direction, timeframe, channel, execution_status, result, "
-        "profit_loss, payout, received_at, opened_at, closed_at FROM signals "
+        "profit_loss, payout, received_at, opened_at, closed_at, trade_amount, session_id FROM signals "
         "ORDER BY id DESC LIMIT ?",
         (limit,),
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+@timed("database")
+def get_signal_detail(trade_id):
+    """Full detail for the Trade Center's trade-detail view: raw message,
+    parsed fields, the real execution timeline (stage -> timestamp, from
+    core/timeline.py's TradeTimeline.persist), category timings, result,
+    and - if this trade belonged to a session - the session's name/risk
+    profile. Money-management/martingale-step display is honestly scoped:
+    trade_amount is the real dollar figure actually used, but the
+    martingale STEP at the time of THIS specific trade isn't separately
+    recorded, only the session's current step - the caller should label
+    it as such, not claim per-trade historical precision that doesn't
+    exist."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM signals WHERE id = ?", (trade_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    detail = dict(row)
+    detail["trade_timeline"] = json.loads(detail["trade_timeline_json"]) if detail["trade_timeline_json"] else None
+    detail["category_timings"] = json.loads(detail["category_timings_json"]) if detail["category_timings_json"] else None
+    detail["screenshots"] = json.loads(detail["screenshot_paths"]) if detail["screenshot_paths"] else []
+    if detail["session_id"] is not None:
+        detail["session"] = get_trading_session(detail["session_id"])
+    else:
+        detail["session"] = None
+    return detail
 
 
 @timed("database")
@@ -1594,6 +1640,59 @@ def get_listener_heartbeat():
     row = conn.execute("SELECT * FROM ui_listener_heartbeat WHERE id = 1").fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+@timed("database")
+def request_test_trade(requested_by):
+    """Raises ValueError if one is already pending - only one test trade
+    in flight at a time, same single-worker-pool reasoning as trading
+    sessions."""
+    conn = get_connection()
+    current = conn.execute("SELECT status FROM pending_test_trade WHERE id = 1").fetchone()
+    if current and current["status"] == "pending":
+        conn.close()
+        raise ValueError("a test trade is already pending")
+    conn.execute(
+        "UPDATE pending_test_trade SET status = 'pending', requested_by = ?, requested_at = ?, "
+        "result_json = NULL, completed_at = NULL WHERE id = 1",
+        (requested_by, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_pending_test_trade():
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM pending_test_trade WHERE id = 1").fetchone()
+    conn.close()
+    if row is None:
+        return None
+    d = dict(row)
+    d["result"] = json.loads(d["result_json"]) if d["result_json"] else None
+    return d
+
+
+@timed("database")
+def complete_test_trade(result):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE pending_test_trade SET status = 'completed', result_json = ?, completed_at = ? WHERE id = 1",
+        (json.dumps(result), datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def fail_test_trade(error_message):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE pending_test_trade SET status = 'error', result_json = ?, completed_at = ? WHERE id = 1",
+        (json.dumps({"error": error_message}), datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
 
 
 # ---------------------------------------------------------------------

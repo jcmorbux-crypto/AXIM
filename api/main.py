@@ -42,6 +42,7 @@ import process_control
 import risk_manager
 import trade_statistics
 import timeline_report
+import log_reader
 from signal_parser import parse_signal
 from settings import (
     WATCH_CHANNELS, ACCOUNT, MAX_TRADE_AMOUNT, MAX_TRADES_PER_HOUR,
@@ -56,6 +57,7 @@ import admin as admin_module
 import telegram_admin as telegram_admin_module
 import sessions as sessions_module
 import risk_engine_routes as risk_engine_module
+import trades as trades_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -95,6 +97,7 @@ app.include_router(admin_module.router)
 app.include_router(telegram_admin_module.router)
 app.include_router(sessions_module.router)
 app.include_router(risk_engine_module.router)
+app.include_router(trades_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -203,6 +206,26 @@ def sessions_page():
 @app.get("/risk")
 def risk_page():
     return _serve("risk.html")
+
+
+@app.get("/trades")
+def trades_page():
+    return _serve("trades.html")
+
+
+@app.get("/performance")
+def performance_page():
+    return _serve("performance.html")
+
+
+@app.get("/broker")
+def broker_page():
+    return _serve("broker.html")
+
+
+@app.get("/logs")
+def logs_page():
+    return _serve("logs.html")
 
 
 @app.get("/legacy")
@@ -439,6 +462,45 @@ def pocket_option_status(user=Depends(get_current_user)):
     }
 
 
+@app.post("/api/broker/test-trade")
+def request_test_trade(user=Depends(require_admin)):
+    """Queues a real test trade for core/telegram_listener.py's own poll
+    loop to execute through the SAME live coordinator/worker_pool - this
+    API process never calls the trading engine directly. Hard-blocked
+    here AND independently in the listener's poll loop if ACCOUNT isn't
+    DEMO (belt and suspenders on anything that can place a real trade)."""
+    if ACCOUNT.upper() != "DEMO":
+        raise HTTPException(status_code=403, detail=f"refused: ACCOUNT is {ACCOUNT!r}, not DEMO")
+    try:
+        database.request_test_trade(user["email"])
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    logger.info("api: test trade requested by %s", user["email"])
+    return database.get_pending_test_trade()
+
+
+@app.get("/api/broker/test-trade")
+def get_test_trade_status(user=Depends(get_current_user)):
+    return database.get_pending_test_trade()
+
+
+@app.post("/api/broker/clear-session")
+def clear_broker_session(user=Depends(require_admin)):
+    """Deletes the persistent Chrome profile (sessions/pocket_browser) so
+    the next listener start requires a completely fresh Pocket Option
+    login - destructive, only allowed while the listener process is
+    stopped (a running Chrome process has these files open; deleting out
+    from under it would corrupt the profile, not just log it out)."""
+    if process_control.get_status()["running"]:
+        raise HTTPException(status_code=409, detail="stop the listener process first")
+    profile_dir = PROJECT_ROOT / "sessions" / "pocket_browser"
+    if profile_dir.exists():
+        import shutil
+        shutil.rmtree(profile_dir, ignore_errors=True)
+    logger.warning("api: Pocket Option browser session cleared via UI by %s", user["email"])
+    return {"status": "cleared"}
+
+
 @app.get("/api/dashboard")
 def dashboard(user=Depends(get_current_user)):
     """Same data core/dashboard_server.py's /api/data has always served
@@ -453,6 +515,30 @@ def dashboard(user=Depends(get_current_user)):
         "timeline": timeline_aggregate,
         "recent_trades": database.get_recent_signals(25),
     }
+
+
+@app.get("/api/performance")
+def performance(user=Depends(get_current_user)):
+    """Full Performance page report (docs/AXIM_APP_PLAN.md Phase 5):
+    daily/weekly/monthly/yearly/lifetime, best/worst channel/asset/time-
+    of-day, max drawdown, longest streaks, per-session performance, and
+    an honestly-scoped Martingale/Compounding summary (see
+    core/trade_statistics.martingale_and_compounding_performance's own
+    docstring for exactly what is and isn't tracked historically)."""
+    return trade_statistics.performance_report()
+
+
+@app.get("/api/logs")
+def logs(since: str = None, until: str = None, level: str = None, module: str = None,
+         search: str = None, limit: int = 200, user=Depends(require_admin)):
+    """Real log entries (core/logger.py's own rotating files) + admin_actions,
+    merged and filterable - Owner/Admin only, since raw logs can contain
+    operational detail (session IDs, asset names, error internals) not
+    meant for a general User role. Session/channel filtering is covered
+    by `search` (free text) rather than dedicated structured filters -
+    log lines aren't parsed down to a structured session_id/channel_id
+    today, see core/log_reader.py's own docstring."""
+    return log_reader.read_logs(since=since, until=until, level=level, module=module, search=search, limit=limit)
 
 
 @app.post("/api/parse-test")

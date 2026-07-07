@@ -25,7 +25,7 @@ from trade_coordinator import TradeCoordinator
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
 from timeline import TradeTimeline
-from settings import WATCH_CHANNELS, MAX_CONCURRENT_WORKERS
+from settings import WATCH_CHANNELS, MAX_CONCURRENT_WORKERS, ACCOUNT
 from logger import get_logger
 from event_bus import get_event_bus
 import recovery
@@ -250,6 +250,43 @@ async def _heartbeat_loop():
         await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
 
+TEST_TRADE_POLL_INTERVAL_SECONDS = 3
+# Fixed, always-tradeable test signal (Broker page's "Test Trade" button) -
+# deliberately hardcoded rather than user-configurable, so this feature
+# can never become a general-purpose "type any signal and execute it"
+# bypass around the real Telegram-sourced pipeline.
+_TEST_TRADE_SIGNAL = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "manual test trade"}
+
+
+async def _test_trade_poll_loop():
+    """Broker page's "Test Trade (Demo Only)" button writes a pending
+    request via database.request_test_trade() - the API process never
+    calls into the trading engine directly (see docs/AXIM_APP_PLAN.md's
+    architecture notes), so this poll loop is what actually runs it,
+    through the SAME real coordinator/worker_pool already live in this
+    process. Hard-blocks on ACCOUNT != DEMO as a second, independent gate
+    on top of the API layer's own check - belt and suspenders for
+    anything that can place a real trade."""
+    while True:
+        try:
+            pending = database.get_pending_test_trade()
+            if pending and pending["status"] == "pending":
+                if ACCOUNT.upper() != "DEMO":
+                    database.fail_test_trade(f"refused: ACCOUNT is {ACCOUNT!r}, not DEMO")
+                elif coordinator is None:
+                    database.fail_test_trade("listener not fully started yet")
+                else:
+                    result = await coordinator.handle_signal(dict(_TEST_TRADE_SIGNAL), source="manual-test-trade")
+                    database.complete_test_trade(result)
+        except Exception as e:
+            logger.error("telegram_listener: test trade poll failed: %s", e)
+            try:
+                database.fail_test_trade(str(e))
+            except Exception:
+                pass
+        await asyncio.sleep(TEST_TRADE_POLL_INTERVAL_SECONDS)
+
+
 async def _startup():
     """(Re)builds the browser/worker-pool stack and runs startup recovery.
     Called both on first launch and after every process-level restart -
@@ -268,6 +305,7 @@ async def _startup():
     await recovery.run_recovery(warmup_service)
     session_manager.register(get_event_bus())
     asyncio.create_task(_heartbeat_loop())
+    asyncio.create_task(_test_trade_poll_loop())
 
 
 async def _shutdown():
