@@ -21,13 +21,13 @@ const AximShell = (() => {
     { key: "sessions", label: "Trading Sessions", href: "/sessions", icon: ICONS.sessions },
     { key: "telegram", label: "Signal Sources", href: "/telegram", icon: ICONS.telegram },
     { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
-    { key: "money", label: "Risk Engine", href: "/legacy#money", icon: ICONS.money },
+    { key: "money", label: "Risk Engine", href: "/risk", icon: ICONS.money },
     { key: "trades", label: "Trade Center", href: "/legacy#trades", icon: ICONS.trades },
     { key: "stats", label: "Performance", href: "/legacy#trades", icon: ICONS.stats },
     { key: "pocketoption", label: "Broker", href: "/legacy#po", icon: ICONS.pocketoption },
     { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
     { key: "logs", label: "Logs", href: "/legacy#logs", icon: ICONS.logs },
-    { key: "settings", label: "Settings", href: "/legacy#money", icon: ICONS.settings },
+    { key: "settings", label: "Settings", href: "/legacy", icon: ICONS.settings },
   ];
 
   async function fetchJSON(url, opts) {

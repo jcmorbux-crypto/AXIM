@@ -55,6 +55,7 @@ import auth_routes as auth_module
 import admin as admin_module
 import telegram_admin as telegram_admin_module
 import sessions as sessions_module
+import risk_engine_routes as risk_engine_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -86,12 +87,14 @@ AXIM_VERSION = "0.9.0-dev"  # pre-release - see docs/AXIM_APP_PLAN.md build orde
 logger = get_logger("axim.ui", filename="ui.log")
 
 database.initialize_database()
+database.seed_risk_profile_templates()
 
 app = FastAPI(title="AXIM Control API")
 app.include_router(auth_module.router)
 app.include_router(admin_module.router)
 app.include_router(telegram_admin_module.router)
 app.include_router(sessions_module.router)
+app.include_router(risk_engine_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -195,6 +198,11 @@ def inspector_page():
 @app.get("/sessions")
 def sessions_page():
     return _serve("sessions.html")
+
+
+@app.get("/risk")
+def risk_page():
+    return _serve("risk.html")
 
 
 @app.get("/legacy")

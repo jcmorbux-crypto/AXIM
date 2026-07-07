@@ -210,25 +210,67 @@ restart to pick up all of the above - session-scoping, the event_bus
 subscription, everything. Until restarted, sessions can be created via
 the API/UI but won't actually gate/attribute real trades yet.
 
-### Phase 4 - IN PROGRESS - Risk Engine (Martingale, Compounding, Profit Vault)
+### Phase 4 - DONE - Risk Engine (Martingale, Compounding, Profit Vault)
 Existing `ui_settings`-backed money management (Phase 2 of
-`docs/AXIM_UI_PLAN.md`, still live at `/legacy`) is a single global
+`docs/AXIM_UI_PLAN.md`, still live at `/legacy`) was a single global
 profile with fixed/percent sizing only - no martingale, no compounding,
-no vault, no saved/named profiles. This phase replaces "one global
+no vault, no saved/named profiles. This phase replaced "one global
 settings row" with real profiles:
 
 - `risk_profiles` (bankroll, sizing mode - fixed/percent/dynamic/Kelly -
   max trade, daily loss, session loss, profit target, max trades, demo/
   live permission), `martingale_settings`, `compounding_settings`,
   `profit_vault_settings` - one-to-one with a profile.
-- Profile CRUD + **copy/duplicate/export/import** (JSON) - explicit new
-  requirement from the rebrand, not in the original Phase 4 scope.
-- Kelly-criterion sizing as a 4th mode alongside fixed/percent/dynamic.
-- Starter templates (Capital Shield, Vault Builder, Snowball, etc. - full
-  list in the product spec) seeded as read-only example profiles a user
-  can duplicate and edit, not silently-active defaults.
-- Sessions gain a `risk_profile_id` (nullable - falls back to the
-  existing global `ui_settings` sizing if unset, so nothing regresses).
+- Profile CRUD + **copy/duplicate/export/import** (JSON), fully wired in
+  `web/risk.html` (Export downloads a `.axim-risk-profile.json` file;
+  Duplicate prompts for a new name and copies all four tables).
+- **Real, enforced sizing math** in `core/risk_engine.py` - not just
+  stored config: fixed/percent/dynamic/Kelly (`f* = p - (1-p)/b`,
+  fractional multiplier, clamped to 0 on a negative edge), Martingale
+  stepping (multiplier or custom dollar ladder, `max_steps`/
+  `max_total_exposure` caps), Compounding (profit-milestone risk-percent
+  steps, drawdown reset), and Profit Vault skimming (every-winning-
+  session trigger on session end, milestone-based trigger per trade
+  close). Wired into `trade_coordinator.py` via
+  `risk_engine.compute_position_size(session_id, ...)`, which falls
+  through to the unchanged `risk_manager.compute_trade_amount` when a
+  session has no `risk_profile_id` - nothing regresses for sessions not
+  using a profile. Vault/Martingale state updates hook into the SAME
+  `event_bus` "trade.closed" subscription `core/session_manager.py`
+  already had - a new `core/session_manager.end_session()` centralizes
+  the "every winning session" vault trigger so it fires no matter which
+  of the three stop paths (limit breach, manual, emergency) ends a
+  session.
+- 27 starter templates (Capital Shield, Vault Builder, Snowball, etc.)
+  seeded as read-only example profiles with genuinely varied configs
+  (conservative/balanced/aggressive/martingale/vault/compounding-focused
+  archetypes inferred from each name) - a user duplicates one to start
+  customizing; templates themselves reject edits/deletes (400).
+- `web/risk.html`: template gallery, profile list, and a full editor
+  (Basic Info, Martingale with a live Projected Exposure preview,
+  Compounding, Profit Vault) - each section saves independently via its
+  own endpoint. Wired into `web/sessions.html`'s Start form (a session
+  optionally attaches one `risk_profile_id`).
+- 38 new tests (20 in `test_risk_engine.py` covering the sizing math
+  precisely - including a hand-computed Kelly formula check - plus DB
+  CRUD/duplicate/export/import tests). Verified live against the real
+  production DB: duplicated the "Shielded Martingale" template, confirmed
+  its exact custom ladder (`[10, 22, 48, 105]`) round-tripped correctly
+  through save and the Projected Exposure preview (`$10/$22/$48/$105,
+  total $185`), confirmed the risk-profile picker on the Sessions page
+  lists real profiles. Test profile and test account removed afterward.
+
+**Not enforced yet, honestly scoped in `core/risk_engine.py`'s own
+docstring:** Martingale's `same_asset_only`/`same_source_only` (would
+need last-trade asset/source tracking per session); Compounding's
+"daily"/"weekly" modes and the Vault's "daily_target"/"weekly_target"
+triggers use the session's own realized P&L rather than a true
+calendar-spanning aggregate across sessions (sessions are this system's
+trading unit, not calendar days - true daily/weekly tracking across
+multiple sessions is a bigger follow-up, not built here). Kelly's win-
+rate/payout are user-supplied estimates, not derived from a live
+empirical win rate (too little per-profile trade data for that to be
+meaningful yet).
 
 ### Phase 5 - Live Trades, Statistics, Logs, Pocket Option status page
 Partially exists today (dark theme, `/legacy`): live trades table with

@@ -34,6 +34,12 @@ _NEW_CHANNEL_COLUMNS = {
     "max_requests_per_session": "INTEGER",
 }
 
+_NEW_SESSION_COLUMNS = {
+    "risk_profile_id": "INTEGER",
+    "current_martingale_step": "INTEGER DEFAULT 0",
+    "vaulted_amount": "REAL DEFAULT 0",
+}
+
 
 def get_connection():
     DB_FILE.parent.mkdir(exist_ok=True)
@@ -56,6 +62,11 @@ def _migrate_schema(conn):
     for column, sql_type in _NEW_CHANNEL_COLUMNS.items():
         if column not in channel_columns:
             conn.execute(f"ALTER TABLE ui_channels ADD COLUMN {column} {sql_type}")
+
+    session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(trading_sessions)")}
+    for column, sql_type in _NEW_SESSION_COLUMNS.items():
+        if column not in session_columns:
+            conn.execute(f"ALTER TABLE trading_sessions ADD COLUMN {column} {sql_type}")
 
 
 def initialize_database():
@@ -208,7 +219,82 @@ def initialize_database():
         realized_pnl REAL DEFAULT 0,
         started_at TEXT,
         ended_at TEXT,
-        stop_reason TEXT
+        stop_reason TEXT,
+        risk_profile_id INTEGER,
+        current_martingale_step INTEGER DEFAULT 0,
+        vaulted_amount REAL DEFAULT 0
+    );
+    """)
+
+    # Risk Engine (docs/AXIM_APP_PLAN.md Phase 4) - risk_profiles is the
+    # unlimited, copyable/exportable sizing+limits profile; the three
+    # settings tables are 1:1 sub-configs always created alongside a
+    # profile (see create_risk_profile) so callers never have to
+    # special-case "no martingale row yet". is_template=1 rows are the
+    # 28 starter templates - read-only in the API layer, meant to be
+    # duplicated before editing.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS risk_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        is_template INTEGER DEFAULT 0,
+        bankroll REAL DEFAULT 0,
+        sizing_mode TEXT DEFAULT 'fixed',
+        fixed_amount REAL DEFAULT 1,
+        percent_of_bankroll REAL DEFAULT 1,
+        kelly_win_rate_estimate REAL,
+        kelly_payout_estimate REAL,
+        kelly_fraction_multiplier REAL DEFAULT 0.5,
+        max_trade_amount REAL DEFAULT 0,
+        max_daily_loss REAL DEFAULT 0,
+        max_session_loss REAL DEFAULT 0,
+        profit_target REAL DEFAULT 0,
+        max_trades INTEGER DEFAULT 0,
+        live_allowed INTEGER DEFAULT 0,
+        created_at TEXT,
+        updated_at TEXT
+    );
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS martingale_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        max_steps INTEGER DEFAULT 0,
+        multiplier REAL DEFAULT 2.0,
+        custom_ladder_json TEXT,
+        reset_after_win INTEGER DEFAULT 1,
+        reset_after_session INTEGER DEFAULT 1,
+        max_total_exposure REAL DEFAULT 0,
+        confidence_threshold REAL,
+        same_asset_only INTEGER DEFAULT 0,
+        same_source_only INTEGER DEFAULT 0
+    );
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS compounding_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        mode TEXT DEFAULT 'disabled',
+        base_risk_percent REAL DEFAULT 2.0,
+        steps_json TEXT,
+        drawdown_reset_percent REAL DEFAULT 0,
+        max_risk_percent REAL DEFAULT 0,
+        min_risk_percent REAL DEFAULT 0
+    );
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS profit_vault_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        vault_percent REAL DEFAULT 0,
+        trigger_event TEXT DEFAULT 'every_winning_session',
+        milestone_amount REAL DEFAULT 0
     );
     """)
 
@@ -991,10 +1077,13 @@ def get_active_trading_session():
 
 @timed("database")
 def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss_limit=0, max_trades=0,
-                           require_confirmation=False, profile_id=None):
+                           require_confirmation=False, profile_id=None, risk_profile_id=None):
     """Raises ValueError if a session is already active - only one active
     session at a time (single shared trading connection, see
-    docs/AXIM_APP_PLAN.md's "known gaps")."""
+    docs/AXIM_APP_PLAN.md's "known gaps"). profile_id is the Phase 3
+    session_profiles start-config template; risk_profile_id is the Risk
+    Engine sizing/martingale/compounding/vault profile - two independent,
+    optional attachments, not the same concept."""
     if get_active_trading_session() is not None:
         raise ValueError("a session is already active - stop it before starting another")
     if not channel_ids:
@@ -1004,11 +1093,12 @@ def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss
     cursor = conn.execute("""
         INSERT INTO trading_sessions (
             profile_id, name, channel_ids_json, account_mode, profit_target, loss_limit,
-            max_trades, require_confirmation, status, trades_count, realized_pnl, started_at
+            max_trades, require_confirmation, status, trades_count, realized_pnl, started_at,
+            risk_profile_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?)
     """, (profile_id, name, json.dumps(channel_ids), account_mode, profit_target, loss_limit,
-          max_trades, 1 if require_confirmation else 0, now))
+          max_trades, 1 if require_confirmation else 0, now, risk_profile_id))
     conn.commit()
     session_id = cursor.lastrowid
     conn.close()
@@ -1077,6 +1167,320 @@ def get_signal_session_id(trade_id):
     row = conn.execute("SELECT session_id FROM signals WHERE id = ?", (trade_id,)).fetchone()
     conn.close()
     return row["session_id"] if row else None
+
+
+# ---------------------------------------------------------------------
+# Risk Engine (docs/AXIM_APP_PLAN.md Phase 4) - api/risk_engine.py,
+# core/risk_engine.py. Every risk_profiles row always has exactly one
+# martingale_settings/compounding_settings/profit_vault_settings row,
+# created alongside it with safe (disabled) defaults - callers never have
+# to special-case "no sub-config yet".
+# ---------------------------------------------------------------------
+
+_RISK_PROFILE_FIELDS = {
+    "name", "description", "bankroll", "sizing_mode", "fixed_amount", "percent_of_bankroll",
+    "kelly_win_rate_estimate", "kelly_payout_estimate", "kelly_fraction_multiplier",
+    "max_trade_amount", "max_daily_loss", "max_session_loss", "profit_target", "max_trades",
+    "live_allowed",
+}
+_MARTINGALE_FIELDS = {
+    "enabled", "max_steps", "multiplier", "custom_ladder_json", "reset_after_win",
+    "reset_after_session", "max_total_exposure", "confidence_threshold",
+    "same_asset_only", "same_source_only",
+}
+_COMPOUNDING_FIELDS = {
+    "mode", "base_risk_percent", "steps_json", "drawdown_reset_percent",
+    "max_risk_percent", "min_risk_percent",
+}
+_VAULT_FIELDS = {"enabled", "vault_percent", "trigger_event", "milestone_amount"}
+
+
+def _risk_profile_row_to_dict(row):
+    d = dict(row)
+    d["martingale"] = get_martingale_settings(d["id"])
+    d["compounding"] = get_compounding_settings(d["id"])
+    d["profit_vault"] = get_profit_vault_settings(d["id"])
+    return d
+
+
+@timed("database")
+def create_risk_profile(name, is_template=False, description=None, **fields):
+    for key in fields:
+        if key not in _RISK_PROFILE_FIELDS:
+            raise ValueError(f"Unknown risk profile field: {key!r}")
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    columns = ["name", "description", "is_template", "created_at", "updated_at"] + list(fields.keys())
+    placeholders = ", ".join("?" for _ in columns)
+    values = [name, description, 1 if is_template else 0, now, now] + list(fields.values())
+    cursor = conn.execute(f"INSERT INTO risk_profiles ({', '.join(columns)}) VALUES ({placeholders})", values)
+    profile_id = cursor.lastrowid
+    conn.execute("INSERT INTO martingale_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO compounding_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO profit_vault_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.commit()
+    conn.close()
+    return profile_id
+
+
+@timed("database")
+def get_risk_profile(profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM risk_profiles WHERE id = ?", (profile_id,)).fetchone()
+    conn.close()
+    return _risk_profile_row_to_dict(row) if row else None
+
+
+@timed("database")
+def list_risk_profiles(include_templates=True):
+    conn = get_connection()
+    if include_templates:
+        rows = conn.execute("SELECT * FROM risk_profiles ORDER BY is_template, name").fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM risk_profiles WHERE is_template = 0 ORDER BY name").fetchall()
+    conn.close()
+    return [_risk_profile_row_to_dict(r) for r in rows]
+
+
+@timed("database")
+def update_risk_profile(profile_id, **fields):
+    for key in fields:
+        if key not in _RISK_PROFILE_FIELDS:
+            raise ValueError(f"Unknown risk profile field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields] + ["updated_at = ?"]
+    params = list(fields.values()) + [datetime.now().isoformat(), profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE risk_profiles SET {', '.join(set_clauses)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def delete_risk_profile(profile_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM martingale_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM compounding_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM profit_vault_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM risk_profiles WHERE id = ?", (profile_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def duplicate_risk_profile(profile_id, new_name):
+    """Always creates a non-template, independent copy - duplicating a
+    starter template is how a user is meant to start customizing one."""
+    source = get_risk_profile(profile_id)
+    if source is None:
+        raise ValueError(f"no risk profile with id {profile_id}")
+    new_id = create_risk_profile(
+        new_name, is_template=False, description=source["description"],
+        **{k: source[k] for k in _RISK_PROFILE_FIELDS if k not in ("name", "description")},
+    )
+    update_martingale_settings(new_id, **{k: source["martingale"][k] for k in _MARTINGALE_FIELDS})
+    update_compounding_settings(new_id, **{k: source["compounding"][k] for k in _COMPOUNDING_FIELDS})
+    update_profit_vault_settings(new_id, **{k: source["profit_vault"][k] for k in _VAULT_FIELDS})
+    return new_id
+
+
+@timed("database")
+def export_risk_profile(profile_id):
+    """Portable JSON-serializable dict - no id/timestamps, so it can be
+    imported into any AXIM instance as a brand-new profile."""
+    profile = get_risk_profile(profile_id)
+    if profile is None:
+        raise ValueError(f"no risk profile with id {profile_id}")
+    return {
+        "name": profile["name"],
+        "description": profile["description"],
+        "profile": {k: profile[k] for k in _RISK_PROFILE_FIELDS if k not in ("name", "description")},
+        "martingale": {k: profile["martingale"][k] for k in _MARTINGALE_FIELDS},
+        "compounding": {k: profile["compounding"][k] for k in _COMPOUNDING_FIELDS},
+        "profit_vault": {k: profile["profit_vault"][k] for k in _VAULT_FIELDS},
+    }
+
+
+@timed("database")
+def import_risk_profile(data, name=None):
+    profile_name = name or data.get("name") or "Imported Profile"
+    new_id = create_risk_profile(profile_name, is_template=False, description=data.get("description"),
+                                  **data.get("profile", {}))
+    if data.get("martingale"):
+        update_martingale_settings(new_id, **data["martingale"])
+    if data.get("compounding"):
+        update_compounding_settings(new_id, **data["compounding"])
+    if data.get("profit_vault"):
+        update_profit_vault_settings(new_id, **data["profit_vault"])
+    return new_id
+
+
+@timed("database")
+def get_martingale_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM martingale_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_martingale_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _MARTINGALE_FIELDS:
+            raise ValueError(f"Unknown martingale field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE martingale_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_compounding_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM compounding_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_compounding_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _COMPOUNDING_FIELDS:
+            raise ValueError(f"Unknown compounding field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE compounding_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_profit_vault_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM profit_vault_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_profit_vault_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _VAULT_FIELDS:
+            raise ValueError(f"Unknown profit vault field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE profit_vault_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def set_session_risk_profile(session_id, risk_profile_id):
+    conn = get_connection()
+    conn.execute("UPDATE trading_sessions SET risk_profile_id = ? WHERE id = ?", (risk_profile_id, session_id))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def advance_martingale_step(session_id):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE trading_sessions SET current_martingale_step = current_martingale_step + 1 WHERE id = ?",
+        (session_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def reset_martingale_step(session_id):
+    conn = get_connection()
+    conn.execute("UPDATE trading_sessions SET current_martingale_step = 0 WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def add_to_vault(session_id, amount):
+    conn = get_connection()
+    conn.execute("UPDATE trading_sessions SET vaulted_amount = vaulted_amount + ? WHERE id = ?", (amount, session_id))
+    conn.commit()
+    conn.close()
+
+
+# name, description, percent_of_bankroll, martingale(enabled, steps, multiplier),
+# compounding(mode, base_risk_percent), vault(enabled, percent, trigger_event).
+# bankroll is deliberately 0 on every template (read-only, meant to be
+# duplicated - the user sets their own bankroll on the copy). Grouped by
+# risk archetype implied by each name rather than hand-tuned individually
+# - real differentiation (conservative/balanced/aggressive/martingale/
+# vault-focused/compounding-focused) rather than 27 copies of one config.
+_RISK_PROFILE_TEMPLATES = [
+    ("Capital Shield", "Capital preservation first - small stakes, no martingale, vaults every win.", 1.0, (False, 0, 2.0), ("disabled", 1.0), (True, 25, "every_winning_session")),
+    ("Vault Builder", "Aggressively protects profit with a large vault skim at every milestone.", 1.5, (False, 0, 2.0), ("disabled", 1.5), (True, 35, "milestone_based")),
+    ("Balanced Builder", "Even mix of growth and protection - the default starting point.", 2.0, (True, 2, 1.8), ("target_based", 2.0), (True, 10, "daily_target")),
+    ("Momentum Rider", "Rides winning streaks - compounds after every win, no brakes.", 2.5, (False, 0, 2.0), ("every_win", 2.0), (False, 0, "every_winning_session")),
+    ("Target Hunter", "Fixed daily profit target, stops the moment it's hit.", 2.0, (False, 0, 2.0), ("disabled", 2.0), (False, 0, "daily_target")),
+    ("Session Closer", "Tight session profit/loss limits - built for short, decisive sessions.", 2.0, (False, 0, 2.0), ("disabled", 2.0), (False, 0, "every_winning_session")),
+    ("Growth Engine", "Milestone-based compounding for steady bankroll growth.", 2.5, (False, 0, 2.0), ("milestone_based", 2.0), (False, 0, "milestone_based")),
+    ("Recovery Guard", "Conservative martingale strictly capped - built to recover, not chase.", 1.0, (True, 3, 1.7), ("disabled", 1.0), (True, 15, "every_winning_session")),
+    ("Precision Compounding", "Kelly-criterion sizing for mathematically precise position sizes.", 0, (False, 0, 2.0), ("disabled", 2.0), (False, 0, "every_winning_session")),
+    ("Greenline Builder", "Smart compounding that only ever risks realized profit.", 2.0, (False, 0, 2.0), ("smart", 2.0), (True, 20, "every_winning_session")),
+    ("SafeStack", "Stacks small, steady wins - minimal risk per trade.", 0.75, (False, 0, 2.0), ("disabled", 0.75), (True, 30, "every_winning_session")),
+    ("Mission Control", "Full-visibility balanced profile for hands-on operators.", 2.0, (False, 0, 2.0), ("daily", 2.0), (False, 0, "daily_target")),
+    ("Signal Sprint", "Fast, frequent small trades - built for high-signal-volume sources.", 1.5, (False, 0, 2.0), ("disabled", 1.5), (False, 0, "every_winning_session")),
+    ("Daily Climb", "Daily compounding - risk steps up once per day, resets each morning.", 2.0, (False, 0, 2.0), ("daily", 2.0), (False, 0, "daily_target")),
+    ("Lock & Grow", "Vaults profit weekly while letting the trading balance compound.", 2.0, (False, 0, 2.0), ("weekly", 2.0), (True, 20, "weekly_target")),
+    ("RiskBound", "Hard risk ceiling - risk % never exceeds a strict cap regardless of streak.", 2.0, (False, 0, 2.0), ("target_based", 2.0), (False, 0, "every_winning_session")),
+    ("Base Camp", "Minimal-risk starting profile for new, unproven signal sources.", 1.0, (False, 0, 2.0), ("disabled", 1.0), (False, 0, "every_winning_session")),
+    ("StepUp", "Fixed-ladder risk increases after each profit milestone.", 2.0, (False, 0, 2.0), ("milestone_based", 2.0), (False, 0, "milestone_based")),
+    ("Snowball", "Classic compounding snowball - every win increases the next stake.", 2.0, (False, 0, 2.0), ("every_win", 2.0), (False, 0, "every_winning_session")),
+    ("TargetRun", "Sprints toward a fixed profit target then stops cold.", 2.5, (False, 0, 2.0), ("disabled", 2.5), (False, 0, "daily_target")),
+    ("Shielded Martingale", "Martingale with a hard exposure cap and same-asset-only guard.", 1.0, (True, 4, 2.0), ("disabled", 1.0), (False, 0, "every_winning_session")),
+    ("Controlled Recovery", "Short martingale ladder that resets after every session regardless of outcome.", 1.0, (True, 3, 1.9), ("disabled", 1.0), (False, 0, "every_winning_session")),
+    ("Profit Staircase", "Risk climbs one step at a time as profit milestones are reached.", 1.5, (False, 0, 2.0), ("milestone_based", 1.5), (False, 0, "milestone_based")),
+    ("Bankroll Architect", "Structures the bankroll into trading and protected balances from day one.", 1.5, (False, 0, 2.0), ("disabled", 1.5), (True, 25, "milestone_based")),
+    ("AutoPilot Conservative", "Set-and-forget low-risk defaults for unattended sessions.", 1.0, (False, 0, 2.0), ("disabled", 1.0), (True, 20, "every_winning_session")),
+    ("AutoPilot Growth", "Set-and-forget growth defaults - smart compounding, no martingale.", 2.5, (False, 0, 2.0), ("smart", 2.5), (False, 0, "every_winning_session")),
+    ("Elite Session", "Premium high-conviction profile for the most trusted signal sources.", 3.0, (False, 0, 2.0), ("smart", 3.0), (True, 15, "every_winning_session")),
+]
+
+
+@timed("database")
+def seed_risk_profile_templates():
+    """Populates the 27 starter templates - a no-op if any template
+    already exists, same one-time-migration pattern as
+    seed_channels_from_env."""
+    conn = get_connection()
+    count = conn.execute("SELECT COUNT(*) AS n FROM risk_profiles WHERE is_template = 1").fetchone()["n"]
+    conn.close()
+    if count > 0:
+        return
+
+    for name, description, percent, martingale, compounding, vault in _RISK_PROFILE_TEMPLATES:
+        sizing_mode = "kelly" if name == "Precision Compounding" else "percent"
+        kwargs = dict(sizing_mode=sizing_mode, percent_of_bankroll=percent)
+        if sizing_mode == "kelly":
+            kwargs.update(kelly_win_rate_estimate=0.55, kelly_payout_estimate=0.85, kelly_fraction_multiplier=0.5)
+        profile_id = create_risk_profile(name, is_template=True, description=description, **kwargs)
+        m_enabled, m_steps, m_mult = martingale
+        update_martingale_settings(profile_id, enabled=m_enabled, max_steps=m_steps, multiplier=m_mult)
+        c_mode, c_base = compounding
+        update_compounding_settings(profile_id, mode=c_mode, base_risk_percent=c_base)
+        v_enabled, v_pct, v_trigger = vault
+        update_profit_vault_settings(profile_id, enabled=v_enabled, vault_percent=v_pct, trigger_event=v_trigger)
 
 
 # ---------------------------------------------------------------------

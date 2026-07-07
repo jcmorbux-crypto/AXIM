@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Risk Engine - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .template-card {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 14px; cursor: pointer; transition: border-color 0.1s;
+  }
+  .template-card:hover { border-color: var(--blue); }
+  .template-card h4 { margin: 0 0 6px 0; font-size: 13.5px; }
+  .template-card p { margin: 0; font-size: 12px; color: var(--text-dim); line-height: 1.4; }
+  .profile-list-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer;
+  }
+  .profile-list-item:hover { background: var(--surface); }
+  .profile-list-item.active { background: var(--blue-soft); }
+  .sizing-field { display: none; }
+  .sizing-field.visible { display: block; }
+  .ladder-preview { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .ladder-step {
+    background: var(--blue-soft); color: var(--blue); border-radius: var(--radius-sm);
+    padding: 4px 10px; font-size: 12px; font-weight: 600;
+  }
+  .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); font-weight: 650; margin: 18px 0 10px 0; }
+  .section-title:first-child { margin-top: 0; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Risk Engine</h1>
+        <div class="subtitle">Bankroll, sizing, Martingale, Compounding, and Profit Vault - the flagship feature.</div>
+      </div>
+      <button class="primary" onclick="newProfile()">New Profile</button>
+    </div>
+
+    <div class="section-title">Starter Templates</div>
+    <div class="template-grid" id="templates-grid" style="margin-bottom:24px;"></div>
+
+    <div class="grid" style="grid-template-columns: 280px 1fr;">
+      <div class="card solid">
+        <h3>My Profiles</h3>
+        <div id="profiles-list" class="muted">Loading...</div>
+      </div>
+
+      <div class="card solid" id="editor-panel" style="display:none;">
+        <div class="row" style="justify-content:space-between; margin-bottom:4px;">
+          <h3 id="editor-title" style="margin:0;">Profile</h3>
+          <div class="row">
+            <button class="subtle" onclick="exportCurrentProfile()">Export</button>
+            <button class="subtle" onclick="duplicateCurrentProfile()">Duplicate</button>
+            <button class="subtle" onclick="deleteCurrentProfile()" id="delete-profile-btn">Delete</button>
+          </div>
+        </div>
+
+        <div class="section-title">Basic Info</div>
+        <div class="row">
+          <div class="field" style="flex:2;"><label>Name</label><input type="text" id="p-name"></div>
+          <div class="field" style="flex:1;"><label>Bankroll ($)</label><input type="number" id="p-bankroll" step="0.01"></div>
+        </div>
+        <div class="field"><label>Description</label><input type="text" id="p-description"></div>
+
+        <div class="section-title">Position Sizing</div>
+        <div class="field"><label>Sizing mode</label>
+          <select id="p-sizing-mode" onchange="onSizingModeChange()">
+            <option value="fixed">Fixed amount</option>
+            <option value="percent">Percent of bankroll (static)</option>
+            <option value="dynamic">Percent of bankroll (dynamic - grows/shrinks with session P/L)</option>
+            <option value="kelly">Kelly criterion</option>
+          </select>
+        </div>
+        <div class="sizing-field" data-mode="fixed"><div class="field"><label>Fixed amount ($)</label><input type="number" id="p-fixed-amount" step="0.01"></div></div>
+        <div class="sizing-field" data-mode="percent dynamic"><div class="field"><label>Percent of bankroll (%)</label><input type="number" id="p-percent" step="0.01"></div></div>
+        <div class="sizing-field" data-mode="kelly">
+          <div class="row">
+            <div class="field"><label>Estimated win rate (0-1)</label><input type="number" id="p-kelly-winrate" step="0.01"></div>
+            <div class="field"><label>Estimated payout (0-1)</label><input type="number" id="p-kelly-payout" step="0.01"></div>
+            <div class="field"><label>Kelly fraction (0.5 = half-Kelly)</label><input type="number" id="p-kelly-fraction" step="0.05"></div>
+          </div>
+        </div>
+
+        <div class="section-title">Limits</div>
+        <div class="row">
+          <div class="field"><label>Max trade ($, 0=off)</label><input type="number" id="p-max-trade" step="0.01"></div>
+          <div class="field"><label>Max daily loss ($, 0=off)</label><input type="number" id="p-max-daily-loss" step="0.01"></div>
+          <div class="field"><label>Max session loss ($, 0=off)</label><input type="number" id="p-max-session-loss" step="0.01"></div>
+        </div>
+        <div class="row">
+          <div class="field"><label>Profit target ($, 0=off)</label><input type="number" id="p-profit-target" step="0.01"></div>
+          <div class="field"><label>Max trades (0=off)</label><input type="number" id="p-max-trades"></div>
+          <div class="field"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="p-live-allowed" style="width:auto;"> Live trading allowed</label></div>
+        </div>
+        <button class="primary" onclick="saveBasic()">Save Basic Info</button>
+        <span id="basic-save-status" class="muted"></span>
+
+        <div class="section-title">Martingale</div>
+        <div class="row"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="m-enabled" style="width:auto;"> Enabled</label></div>
+        <div class="row">
+          <div class="field"><label>Max steps</label><input type="number" id="m-max-steps"></div>
+          <div class="field"><label>Multiplier</label><input type="number" id="m-multiplier" step="0.1"></div>
+          <div class="field"><label>Max total exposure ($, 0=off)</label><input type="number" id="m-max-exposure" step="0.01"></div>
+        </div>
+        <div class="field"><label>Custom ladder (JSON array, optional - overrides multiplier)</label><input type="text" id="m-ladder" placeholder="[10, 22, 48, 105]"></div>
+        <div class="row">
+          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-reset-win" style="width:auto;"> Reset after win</label>
+          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-reset-session" style="width:auto;"> Reset after session</label>
+          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-same-asset" style="width:auto;"> Same asset only</label>
+          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-same-source" style="width:auto;"> Same source only</label>
+        </div>
+        <div class="row">
+          <button class="primary" onclick="saveMartingale()">Save Martingale</button>
+          <button onclick="previewExposure()">Preview Projected Exposure</button>
+          <span id="martingale-save-status" class="muted"></span>
+        </div>
+        <div class="ladder-preview" id="exposure-preview"></div>
+
+        <div class="section-title">Compounding</div>
+        <div class="field"><label>Mode</label>
+          <select id="c-mode">
+            <option value="disabled">Disabled</option>
+            <option value="every_win">Every win</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="target_based">Target-based</option>
+            <option value="milestone_based">Milestone-based</option>
+            <option value="smart">Smart</option>
+          </select>
+        </div>
+        <div class="row">
+          <div class="field"><label>Base risk (%)</label><input type="number" id="c-base-risk" step="0.01"></div>
+          <div class="field"><label>Max risk (%, 0=off)</label><input type="number" id="c-max-risk" step="0.01"></div>
+          <div class="field"><label>Min risk (%, 0=off)</label><input type="number" id="c-min-risk" step="0.01"></div>
+          <div class="field"><label>Drawdown reset (%, 0=off)</label><input type="number" id="c-drawdown-reset" step="0.01"></div>
+        </div>
+        <div class="field"><label>Profit-milestone steps (JSON array)</label>
+          <input type="text" id="c-steps" placeholder='[{"profit_threshold":50,"risk_percent":2.25},{"profit_threshold":100,"risk_percent":2.5}]'>
+        </div>
+        <button class="primary" onclick="saveCompounding()">Save Compounding</button>
+        <span id="compounding-save-status" class="muted"></span>
+
+        <div class="section-title">Profit Vault</div>
+        <div class="row"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="v-enabled" style="width:auto;"> Enabled</label></div>
+        <div class="row">
+          <div class="field"><label>Vault percent (%)</label><input type="number" id="v-percent" step="0.01"></div>
+          <div class="field"><label>Trigger</label>
+            <select id="v-trigger">
+              <option value="every_winning_session">Every winning session</option>
+              <option value="daily_target">Daily target reached</option>
+              <option value="weekly_target">Weekly target reached</option>
+              <option value="milestone_based">Bankroll milestone</option>
+            </select>
+          </div>
+          <div class="field"><label>Milestone amount ($)</label><input type="number" id="v-milestone" step="0.01"></div>
+        </div>
+        <button class="primary" onclick="saveVault()">Save Profit Vault</button>
+        <span id="vault-save-status" class="muted"></span>
+      </div>
+
+      <div class="card solid" id="empty-state">
+        <div class="empty">Select a profile on the left, duplicate a template above, or create a new profile.</div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let allProfiles = [];
+let currentProfileId = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+
+async function refreshAll() {
+  allProfiles = await fetchJSON("/api/risk-profiles");
+  renderTemplates();
+  renderProfileList();
+}
+
+function renderTemplates() {
+  const templates = allProfiles.filter(p => p.is_template);
+  document.getElementById("templates-grid").innerHTML = templates.map(t => `
+    <div class="template-card" onclick="useTemplate(${t.id}, '${escapeHtml(t.name).replace(/'/g, "")}')">
+      <h4>${escapeHtml(t.name)}</h4>
+      <p>${escapeHtml(t.description || "")}</p>
+    </div>
+  `).join("");
+}
+
+function renderProfileList() {
+  const profiles = allProfiles.filter(p => !p.is_template);
+  const listEl = document.getElementById("profiles-list");
+  if (!profiles.length) {
+    listEl.innerHTML = '<div class="empty">No profiles yet - duplicate a template to get started.</div>';
+    return;
+  }
+  listEl.innerHTML = profiles.map(p => `
+    <div class="profile-list-item ${p.id === currentProfileId ? "active" : ""}" onclick="selectProfile(${p.id})">
+      <span>${escapeHtml(p.name)}</span>
+      <span class="badge off">${p.sizing_mode}</span>
+    </div>
+  `).join("");
+}
+
+async function useTemplate(templateId, name) {
+  const newName = prompt(`New profile name (duplicating "${name}"):`, name + " (copy)");
+  if (!newName) return;
+  try {
+    const created = await fetchJSON(`/api/risk-profiles/${templateId}/duplicate`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: newName }),
+    });
+    await refreshAll();
+    selectProfile(created.id);
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+function newProfile() {
+  currentProfileId = null;
+  document.getElementById("empty-state").style.display = "none";
+  document.getElementById("editor-panel").style.display = "block";
+  document.getElementById("editor-title").textContent = "New Profile";
+  document.getElementById("delete-profile-btn").style.display = "none";
+  ["p-name", "p-description", "m-ladder", "c-steps"].forEach(id => document.getElementById(id).value = "");
+  document.getElementById("p-bankroll").value = 0;
+  document.getElementById("p-sizing-mode").value = "fixed";
+  document.getElementById("p-fixed-amount").value = 1;
+  document.getElementById("p-percent").value = 1;
+  onSizingModeChange();
+}
+
+async function selectProfile(id) {
+  currentProfileId = id;
+  renderProfileList();
+  const p = await fetchJSON(`/api/risk-profiles/${id}`);
+  document.getElementById("empty-state").style.display = "none";
+  document.getElementById("editor-panel").style.display = "block";
+  document.getElementById("editor-title").textContent = p.name;
+  document.getElementById("delete-profile-btn").style.display = "inline-block";
+
+  document.getElementById("p-name").value = p.name;
+  document.getElementById("p-description").value = p.description || "";
+  document.getElementById("p-bankroll").value = p.bankroll;
+  document.getElementById("p-sizing-mode").value = p.sizing_mode;
+  document.getElementById("p-fixed-amount").value = p.fixed_amount;
+  document.getElementById("p-percent").value = p.percent_of_bankroll;
+  document.getElementById("p-kelly-winrate").value = p.kelly_win_rate_estimate ?? "";
+  document.getElementById("p-kelly-payout").value = p.kelly_payout_estimate ?? "";
+  document.getElementById("p-kelly-fraction").value = p.kelly_fraction_multiplier;
+  document.getElementById("p-max-trade").value = p.max_trade_amount;
+  document.getElementById("p-max-daily-loss").value = p.max_daily_loss;
+  document.getElementById("p-max-session-loss").value = p.max_session_loss;
+  document.getElementById("p-profit-target").value = p.profit_target;
+  document.getElementById("p-max-trades").value = p.max_trades;
+  document.getElementById("p-live-allowed").checked = !!p.live_allowed;
+  onSizingModeChange();
+
+  const m = p.martingale;
+  document.getElementById("m-enabled").checked = !!m.enabled;
+  document.getElementById("m-max-steps").value = m.max_steps;
+  document.getElementById("m-multiplier").value = m.multiplier;
+  document.getElementById("m-max-exposure").value = m.max_total_exposure;
+  document.getElementById("m-ladder").value = m.custom_ladder_json || "";
+  document.getElementById("m-reset-win").checked = !!m.reset_after_win;
+  document.getElementById("m-reset-session").checked = !!m.reset_after_session;
+  document.getElementById("m-same-asset").checked = !!m.same_asset_only;
+  document.getElementById("m-same-source").checked = !!m.same_source_only;
+  document.getElementById("exposure-preview").innerHTML = "";
+
+  const c = p.compounding;
+  document.getElementById("c-mode").value = c.mode;
+  document.getElementById("c-base-risk").value = c.base_risk_percent;
+  document.getElementById("c-max-risk").value = c.max_risk_percent;
+  document.getElementById("c-min-risk").value = c.min_risk_percent;
+  document.getElementById("c-drawdown-reset").value = c.drawdown_reset_percent;
+  document.getElementById("c-steps").value = c.steps_json || "";
+
+  const v = p.profit_vault;
+  document.getElementById("v-enabled").checked = !!v.enabled;
+  document.getElementById("v-percent").value = v.vault_percent;
+  document.getElementById("v-trigger").value = v.trigger_event;
+  document.getElementById("v-milestone").value = v.milestone_amount;
+}
+
+function onSizingModeChange() {
+  const mode = document.getElementById("p-sizing-mode").value;
+  document.querySelectorAll(".sizing-field").forEach(el => {
+    el.classList.toggle("visible", el.dataset.mode.split(" ").includes(mode));
+  });
+}
+
+function basicFormValues() {
+  return {
+    name: document.getElementById("p-name").value,
+    description: document.getElementById("p-description").value || null,
+    bankroll: parseFloat(document.getElementById("p-bankroll").value) || 0,
+    sizing_mode: document.getElementById("p-sizing-mode").value,
+    fixed_amount: parseFloat(document.getElementById("p-fixed-amount").value) || 0,
+    percent_of_bankroll: parseFloat(document.getElementById("p-percent").value) || 0,
+    kelly_win_rate_estimate: document.getElementById("p-kelly-winrate").value ? parseFloat(document.getElementById("p-kelly-winrate").value) : null,
+    kelly_payout_estimate: document.getElementById("p-kelly-payout").value ? parseFloat(document.getElementById("p-kelly-payout").value) : null,
+    kelly_fraction_multiplier: parseFloat(document.getElementById("p-kelly-fraction").value) || 0.5,
+    max_trade_amount: parseFloat(document.getElementById("p-max-trade").value) || 0,
+    max_daily_loss: parseFloat(document.getElementById("p-max-daily-loss").value) || 0,
+    max_session_loss: parseFloat(document.getElementById("p-max-session-loss").value) || 0,
+    profit_target: parseFloat(document.getElementById("p-profit-target").value) || 0,
+    max_trades: parseInt(document.getElementById("p-max-trades").value, 10) || 0,
+    live_allowed: document.getElementById("p-live-allowed").checked,
+  };
+}
+
+async function saveBasic() {
+  const statusEl = document.getElementById("basic-save-status");
+  statusEl.textContent = "saving...";
+  try {
+    const body = basicFormValues();
+    if (currentProfileId === null) {
+      const created = await fetchJSON("/api/risk-profiles", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      currentProfileId = created.id;
+      await refreshAll();
+      await selectProfile(currentProfileId);
+    } else {
+      await fetchJSON(`/api/risk-profiles/${currentProfileId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+      await refreshAll();
+    }
+    statusEl.textContent = "saved";
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function saveMartingale() {
+  if (currentProfileId === null) { alert("Save Basic Info first to create the profile."); return; }
+  const statusEl = document.getElementById("martingale-save-status");
+  statusEl.textContent = "saving...";
+  try {
+    await fetchJSON(`/api/risk-profiles/${currentProfileId}/martingale`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.getElementById("m-enabled").checked,
+        max_steps: parseInt(document.getElementById("m-max-steps").value, 10) || 0,
+        multiplier: parseFloat(document.getElementById("m-multiplier").value) || 2.0,
+        custom_ladder_json: document.getElementById("m-ladder").value || null,
+        max_total_exposure: parseFloat(document.getElementById("m-max-exposure").value) || 0,
+        reset_after_win: document.getElementById("m-reset-win").checked,
+        reset_after_session: document.getElementById("m-reset-session").checked,
+        same_asset_only: document.getElementById("m-same-asset").checked,
+        same_source_only: document.getElementById("m-same-source").checked,
+      }),
+    });
+    statusEl.textContent = "saved";
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function previewExposure() {
+  if (currentProfileId === null) { alert("Save the profile first."); return; }
+  await saveMartingale();
+  const baseAmount = parseFloat(document.getElementById("p-fixed-amount").value) || 10;
+  try {
+    const result = await fetchJSON(`/api/risk-profiles/${currentProfileId}/projected-exposure?base_amount=${baseAmount}`);
+    const el = document.getElementById("exposure-preview");
+    if (!result.steps.length) { el.innerHTML = '<span class="muted">Martingale is disabled.</span>'; return; }
+    el.innerHTML = result.steps.map((s, i) => `<span class="ladder-step">Step ${i}: $${s}</span>`).join("") +
+      `<span class="ladder-step" style="background:var(--yellow-soft); color:var(--yellow);">Total: $${result.total_exposure}</span>`;
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function saveCompounding() {
+  if (currentProfileId === null) { alert("Save Basic Info first to create the profile."); return; }
+  const statusEl = document.getElementById("compounding-save-status");
+  statusEl.textContent = "saving...";
+  try {
+    await fetchJSON(`/api/risk-profiles/${currentProfileId}/compounding`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: document.getElementById("c-mode").value,
+        base_risk_percent: parseFloat(document.getElementById("c-base-risk").value) || 0,
+        max_risk_percent: parseFloat(document.getElementById("c-max-risk").value) || 0,
+        min_risk_percent: parseFloat(document.getElementById("c-min-risk").value) || 0,
+        drawdown_reset_percent: parseFloat(document.getElementById("c-drawdown-reset").value) || 0,
+        steps_json: document.getElementById("c-steps").value || null,
+      }),
+    });
+    statusEl.textContent = "saved";
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function saveVault() {
+  if (currentProfileId === null) { alert("Save Basic Info first to create the profile."); return; }
+  const statusEl = document.getElementById("vault-save-status");
+  statusEl.textContent = "saving...";
+  try {
+    await fetchJSON(`/api/risk-profiles/${currentProfileId}/vault`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.getElementById("v-enabled").checked,
+        vault_percent: parseFloat(document.getElementById("v-percent").value) || 0,
+        trigger_event: document.getElementById("v-trigger").value,
+        milestone_amount: parseFloat(document.getElementById("v-milestone").value) || 0,
+      }),
+    });
+    statusEl.textContent = "saved";
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function duplicateCurrentProfile() {
+  if (currentProfileId === null) return;
+  const name = prompt("New profile name:");
+  if (!name) return;
+  try {
+    const created = await fetchJSON(`/api/risk-profiles/${currentProfileId}/duplicate`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: name }),
+    });
+    await refreshAll();
+    selectProfile(created.id);
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function exportCurrentProfile() {
+  if (currentProfileId === null) return;
+  const data = await fetchJSON(`/api/risk-profiles/${currentProfileId}/export`);
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${data.name.replace(/\s+/g, "_")}.axim-risk-profile.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function deleteCurrentProfile() {
+  if (currentProfileId === null) return;
+  if (!confirm("Delete this risk profile? Sessions using it will fall back to default sizing.")) return;
+  try {
+    await fetchJSON(`/api/risk-profiles/${currentProfileId}`, { method: "DELETE" });
+    currentProfileId = null;
+    document.getElementById("editor-panel").style.display = "none";
+    document.getElementById("empty-state").style.display = "block";
+    await refreshAll();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "money" });
+  if (!user) return;
+  refreshAll();
+})();
+</script>
+</body>
+</html>

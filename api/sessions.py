@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import database
+import session_manager
 from settings import ACCOUNT
 from auth_routes import get_current_user, require_admin
 
@@ -43,6 +44,11 @@ class SessionStart(BaseModel):
     max_trades: int = 0
     require_confirmation: bool = False
     profile_id: Optional[int] = None
+    risk_profile_id: Optional[int] = None
+
+
+class AttachRiskProfile(BaseModel):
+    risk_profile_id: Optional[int] = None
 
 
 def _with_progress(session):
@@ -117,9 +123,21 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
             name=body.name, channel_ids=body.channel_ids, account_mode=ACCOUNT,
             profit_target=body.profit_target, loss_limit=body.loss_limit, max_trades=body.max_trades,
             require_confirmation=body.require_confirmation, profile_id=body.profile_id,
+            risk_profile_id=body.risk_profile_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    return _with_progress(database.get_trading_session(session_id))
+
+
+@router.patch("/{session_id}/risk-profile")
+def attach_risk_profile(session_id: int, body: AttachRiskProfile, user=Depends(require_admin)):
+    session = database.get_trading_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    if body.risk_profile_id is not None and database.get_risk_profile(body.risk_profile_id) is None:
+        raise HTTPException(status_code=404, detail="risk profile not found")
+    database.set_session_risk_profile(session_id, body.risk_profile_id)
     return _with_progress(database.get_trading_session(session_id))
 
 
@@ -130,7 +148,7 @@ def stop_session(session_id: int, user=Depends(require_admin)):
         raise HTTPException(status_code=404, detail="session not found")
     if session["status"] != "active":
         raise HTTPException(status_code=400, detail=f"session is already {session['status']}")
-    database.stop_trading_session(session_id, "stopped_manual", f"stopped by {user['email']}")
+    session_manager.end_session(session_id, "stopped_manual", f"stopped by {user['email']}")
     return _with_progress(database.get_trading_session(session_id))
 
 
@@ -149,5 +167,5 @@ def emergency_stop_session(session_id: int, user=Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="session not found")
     database.set_control_state(paused=True, emergency_stop=True)
     if session["status"] == "active":
-        database.stop_trading_session(session_id, "stopped_emergency", f"emergency stop by {user['email']}")
+        session_manager.end_session(session_id, "stopped_emergency", f"emergency stop by {user['email']}")
     return _with_progress(database.get_trading_session(session_id))

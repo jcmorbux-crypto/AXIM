@@ -15,6 +15,7 @@ sys.path.insert(0, str(EXECUTION_DIR))
 import database
 import risk_manager
 import session_manager
+import risk_engine
 from trade_lifecycle import TradeStatus
 from event_bus import get_event_bus
 from timeline import TradeTimeline
@@ -82,10 +83,12 @@ class TradeCoordinator:
             await self.event_bus.publish("trade.signal_received", {"trade_id": trade_id, "signal": signal})
 
             asset, direction, expiry = signal["asset"], signal["direction"], signal["expiry"]
-            # Fixed TRADE_AMOUNT by default, or a percentage of current
-            # bankroll if the operator configured that via the UI - see
-            # risk_manager.compute_trade_amount's own docstring.
-            amount = risk_manager.compute_trade_amount(TRADE_AMOUNT)
+            # risk_engine.compute_position_size falls through to the
+            # exact same risk_manager.compute_trade_amount (fixed amount
+            # or percent-of-bankroll from the UI) when this session has no
+            # risk_profile_id attached - a profile-less session's sizing
+            # is completely unchanged by the Risk Engine.
+            amount = risk_engine.compute_position_size(session_id, TRADE_AMOUNT)
 
             try:
                 # Stage: Validation (freshness)
