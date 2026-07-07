@@ -27,7 +27,7 @@ const AximShell = (() => {
     { key: "pocketoption", label: "Broker", href: "/broker", icon: ICONS.pocketoption },
     { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
     { key: "logs", label: "Logs", href: "/logs", icon: ICONS.logs, adminOnly: true },
-    { key: "settings", label: "Settings", href: "/legacy", icon: ICONS.settings },
+    { key: "settings", label: "Settings", href: "/settings", icon: ICONS.settings },
   ];
 
   async function fetchJSON(url, opts) {

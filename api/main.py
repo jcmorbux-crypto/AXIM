@@ -58,6 +58,7 @@ import telegram_admin as telegram_admin_module
 import sessions as sessions_module
 import risk_engine_routes as risk_engine_module
 import trades as trades_module
+import backups as backups_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -98,6 +99,7 @@ app.include_router(telegram_admin_module.router)
 app.include_router(sessions_module.router)
 app.include_router(risk_engine_module.router)
 app.include_router(trades_module.router)
+app.include_router(backups_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -226,6 +228,11 @@ def broker_page():
 @app.get("/logs")
 def logs_page():
     return _serve("logs.html")
+
+
+@app.get("/settings")
+def settings_page():
+    return _serve("settings.html")
 
 
 @app.get("/legacy")
@@ -398,6 +405,23 @@ def start_process(user=Depends(require_admin)):
 @app.post("/api/process/stop")
 def stop_process(user=Depends(require_admin)):
     return process_control.stop_listener()
+
+
+@app.get("/api/settings/developer-mode")
+def get_developer_mode(user=Depends(get_current_user)):
+    """System-wide flag (not per-user) that reveals developer/technical
+    detail elsewhere in the app - e.g. Trade Center's raw trade_id/
+    session_id - to anyone logged in while it's on, matching "Never
+    expose developer tools ... unless they intentionally enter Developer
+    Mode" rather than gating it per-role."""
+    return {"enabled": bool(database.get_setting("developer_mode", default=False))}
+
+
+@app.put("/api/settings/developer-mode")
+def set_developer_mode(body: dict, user=Depends(require_admin)):
+    database.set_setting("developer_mode", bool(body.get("enabled")))
+    logger.info("api: developer mode set to %s by %s", body.get("enabled"), user["email"])
+    return {"enabled": bool(database.get_setting("developer_mode", default=False))}
 
 
 @app.get("/api/settings")

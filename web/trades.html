@@ -137,8 +137,10 @@ async function refreshTrades() {
   }
 }
 
+let developerModeEnabled = false;
+
 async function openDetail(tradeId) {
-  document.getElementById("detail-title").textContent = `Trade #${tradeId}`;
+  document.getElementById("detail-title").textContent = developerModeEnabled ? `Trade #${tradeId}` : "Trade Detail";
   openModal("detail-modal");
   try {
     const t = await fetchJSON(`/api/trades/${tradeId}`);
@@ -154,12 +156,15 @@ async function openDetail(tradeId) {
 
     let moneyHtml = `<div class="stat-row"><span class="stat-label">Amount used</span><span class="stat-value">${t.trade_amount !== null ? "$" + t.trade_amount : "-"}</span></div>`;
     if (t.session) {
-      moneyHtml += `<div class="stat-row"><span class="stat-label">Session</span><span class="stat-value">${escapeHtml(t.session.name || "(unnamed)")}</span></div>`;
+      moneyHtml += `<div class="stat-row"><span class="stat-label">Session</span><span class="stat-value">${escapeHtml(t.session.name || "(unnamed)")}${developerModeEnabled ? " (#" + t.session.id + ")" : ""}</span></div>`;
       if (t.session.risk_profile_id) {
         moneyHtml += `<div class="stat-row"><span class="stat-label">Session's current Martingale step</span><span class="stat-value">${t.session.current_martingale_step} <span class="faint" style="font-size:11px;">(now, not necessarily at trade time)</span></span></div>`;
       }
     } else {
       moneyHtml += `<div class="empty">Not part of a trading session.</div>`;
+    }
+    if (developerModeEnabled) {
+      moneyHtml += `<div class="stat-row"><span class="stat-label faint">Trade ID (developer mode)</span><span class="stat-value faint">${t.id}</span></div>`;
     }
     document.getElementById("detail-money").innerHTML = moneyHtml;
 
@@ -207,6 +212,9 @@ function showScreenshot(url) {
 (async () => {
   const user = await AximShell.init({ active: "trades" });
   if (!user) return;
+  try {
+    developerModeEnabled = (await fetchJSON("/api/settings/developer-mode")).enabled;
+  } catch (e) {}
   refreshTrades();
   setInterval(refreshTrades, 10000);
 })();

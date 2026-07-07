@@ -43,6 +43,11 @@ class LoginRequest(BaseModel):
     remember_me: bool = False
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 def public_user(user):
     """Whitelisted fields safe to return over HTTP - never password_hash."""
     return {
@@ -137,3 +142,17 @@ def logout(response: Response, axim_session: Optional[str] = Cookie(default=None
 @router.get("/me")
 def me(user=Depends(get_current_user)):
     return public_user(user)
+
+
+@router.post("/change-password")
+def change_password(body: ChangePasswordRequest, user=Depends(get_current_user)):
+    """Self-service password change - distinct from
+    api/admin.py's reset_password (an Owner/Admin resetting SOMEONE
+    ELSE'S password without knowing the old one). This always requires
+    the current password first, even for an Owner changing their own."""
+    if database.verify_user_credentials(user["email"], body.current_password) is None:
+        raise HTTPException(status_code=401, detail="current password is incorrect")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="new password must be at least 8 characters")
+    database.set_user_password(user["id"], body.new_password)
+    return {"status": "password changed"}

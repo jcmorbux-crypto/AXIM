@@ -319,12 +319,36 @@ meaningful yet).
   total passing. Verified live against the real production DB and
   listener across all four pages.
 
+### Settings page - DONE - last legacy content migrated off /legacy
+- Self-service password change (`POST /api/auth/change-password`) -
+  distinct from `api/admin.py`'s Owner/Admin reset-someone-else's-password,
+  always requires the current password first.
+- Telegram credential rotation surfaced directly in the UI for the first
+  time (`POST /api/telegram/credentials` already existed from Phase 2 but
+  was only ever called implicitly via the Connect flow).
+- Real Backups tab: lists `backups/` directory contents and runs the
+  existing `scripts/backup_axim_state.ps1` via `subprocess` rather than
+  reimplementing backup logic in Python - verified live with a real
+  412MB backup run that produced a genuine new timestamped folder.
+- Real, persisted **Developer Mode** toggle (`ui_settings` key, system-
+  wide not per-user) with one real, verified visible effect: Trade
+  Center's detail modal shows the raw trade ID in its title only when
+  enabled ("Trade #468" vs. generic "Trade Detail") - confirmed live in
+  both states, not an inert checkbox.
+- Trading tab migrates the last remaining legacy-page content (the
+  global money-management fallback settings) - `/legacy` now has nothing
+  left that isn't also reachable from a real light-theme page.
+- Telegram/Notifications tabs are honestly light-touch: Telegram links out
+  to Signal Sources + this page's own credential rotation; Notifications
+  explicitly says "not built yet" rather than showing inert toggles, since
+  AXIM has no email/push/webhook sending capability to back them.
+
 ### Phase 6 - Packaging, Stripe
 Not started. Desktop packaging (Tauri), Windows startup support,
-backup/restore (scripts already exist: `scripts/backup_axim_state.ps1`),
 and payments are explicitly deferred - the access-tier/access-state
 schema built in Phase 1 is ready to support a Stripe integration later
-without another schema migration.
+without another schema migration. Backup/restore itself is no longer
+"not started" - see the Settings page section above.
 
 ## Known gaps / honest state as of Phase 1
 

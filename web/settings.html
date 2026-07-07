@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; flex-wrap: wrap; }
+  .tab-btn {
+    background: none; border: none; border-bottom: 2px solid transparent;
+    border-radius: 0; padding: 10px 14px; color: var(--text-dim); font-weight: 550; cursor: pointer;
+  }
+  .tab-btn:hover { color: var(--text); background: none; }
+  .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+  .backup-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Settings</h1>
+        <div class="subtitle">General, security, trading defaults, backups, and developer options.</div>
+      </div>
+    </div>
+
+    <div class="tabs" id="tabs">
+      <button class="tab-btn active" data-tab="general">General</button>
+      <button class="tab-btn" data-tab="security">Security</button>
+      <button class="tab-btn" data-tab="trading">Trading</button>
+      <button class="tab-btn" data-tab="telegram">Telegram</button>
+      <button class="tab-btn" data-tab="notifications">Notifications</button>
+      <button class="tab-btn" data-tab="backups">Backups</button>
+      <button class="tab-btn" data-tab="developer">Developer</button>
+    </div>
+
+    <div class="tab-panel active" id="tab-general">
+      <div class="card solid">
+        <h3>About</h3>
+        <div class="stat-row"><span class="stat-label">Version</span><span class="stat-value" id="app-version">-</span></div>
+        <div class="stat-row"><span class="stat-label">Signed in as</span><span class="stat-value" id="current-user-email">-</span></div>
+        <div class="stat-row"><span class="stat-label">Role</span><span class="stat-value" id="current-user-role">-</span></div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-security">
+      <div class="card solid" style="margin-bottom:16px;">
+        <h3>Change Password</h3>
+        <div class="field"><label>Current password</label><input type="password" id="current-password"></div>
+        <div class="field"><label>New password</label><input type="password" id="new-password" placeholder="At least 8 characters"></div>
+        <button class="primary" onclick="changePassword()">Change Password</button>
+        <span id="password-status" class="muted"></span>
+      </div>
+      <div class="card solid">
+        <h3>Telegram API Credentials</h3>
+        <div class="muted" style="margin-bottom:12px;" id="telegram-cred-status">Loading...</div>
+        <div class="row">
+          <input type="text" id="rotate-api-id" placeholder="API ID" style="width:140px;">
+          <input type="text" id="rotate-api-hash" placeholder="API Hash" style="width:220px;">
+          <input type="text" id="rotate-phone" placeholder="Phone (+countrycode...)" style="width:180px;">
+          <button onclick="rotateCredentials()">Save (Rotate)</button>
+        </div>
+        <div class="muted" style="font-size:11.5px; margin-top:6px;">Encrypted at rest. Saving new credentials doesn't disconnect the current session - use Signal Sources' Connect flow to re-authenticate with them.</div>
+        <span id="rotate-status" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-trading">
+      <div class="card solid">
+        <h3>Global Money Management Defaults</h3>
+        <div class="muted" style="margin-bottom:14px;">Used by any session that doesn't have a Risk Engine profile attached - see the Risk Engine page for full profiles with Martingale/Compounding/Vault.</div>
+        <div class="muted" id="mm-preview" style="margin-bottom:14px;"></div>
+        <table><tbody id="settings-body"></tbody></table>
+        <div class="row" style="margin-top:14px;">
+          <button class="primary" onclick="saveTradingSettings()">Save Settings</button>
+          <span id="trading-settings-status" class="muted"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-telegram">
+      <div class="card solid">
+        <h3>Telegram</h3>
+        <div class="empty">Manage Telegram connection, channels, and credential rotation from <a href="/telegram" style="color:var(--blue);">Signal Sources</a> and the Security tab above.</div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-notifications">
+      <div class="card solid">
+        <h3>Notifications</h3>
+        <div class="empty">Not built yet - AXIM has no email/push/webhook sending capability today, so this tab intentionally shows no toggles rather than controls that wouldn't do anything.</div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-backups">
+      <div class="card solid" style="margin-bottom:16px;">
+        <h3>Run Backup</h3>
+        <div class="muted" style="margin-bottom:12px;">Copies the database, Telegram session, and Pocket Option browser profile to a timestamped folder (scripts/backup_axim_state.ps1).</div>
+        <button class="primary" onclick="runBackup()">Run Backup Now</button>
+        <span id="backup-run-status" class="muted"></span>
+      </div>
+      <div class="card solid">
+        <h3>Existing Backups</h3>
+        <div id="backups-list" class="muted">Loading...</div>
+      </div>
+    </div>
+
+    <div class="tab-panel" id="tab-developer">
+      <div class="card solid">
+        <h3>Developer Mode</h3>
+        <div class="muted" style="margin-bottom:12px;">Reveals raw internal IDs (trade/session) in a few places, e.g. Trade Center's detail view. Off by default - AXIM doesn't expose developer/technical concepts to end users otherwise.</div>
+        <label style="display:flex; align-items:center; gap:8px;">
+          <input type="checkbox" id="dev-mode-toggle" style="width:auto;" onchange="toggleDeveloperMode()">
+          Enable Developer Mode
+        </label>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let currentUser = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+
+document.getElementById("tabs").addEventListener("click", (e) => {
+  if (!e.target.dataset.tab) return;
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === e.target));
+  document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + e.target.dataset.tab));
+});
+
+async function loadGeneral() {
+  const v = await fetchJSON("/api/version");
+  document.getElementById("app-version").textContent = "v" + v.version;
+  document.getElementById("current-user-email").textContent = currentUser.email;
+  document.getElementById("current-user-role").textContent = currentUser.role;
+}
+
+async function changePassword() {
+  const statusEl = document.getElementById("password-status");
+  const current = document.getElementById("current-password").value;
+  const next = document.getElementById("new-password").value;
+  if (!current || !next) { statusEl.textContent = "Fill in both fields."; return; }
+  statusEl.textContent = "saving...";
+  try {
+    await fetchJSON("/api/auth/change-password", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ current_password: current, new_password: next }),
+    });
+    statusEl.textContent = "Password changed.";
+    document.getElementById("current-password").value = "";
+    document.getElementById("new-password").value = "";
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+async function loadTelegramCredStatus() {
+  try {
+    const status = await fetchJSON("/api/telegram/credentials-status");
+    document.getElementById("telegram-cred-status").textContent = status.configured
+      ? `Configured - phone ending in ${status.phone_masked}, last updated ${new Date(status.updated_at).toLocaleString()}`
+      : "Not configured yet via UI - falling back to .env credentials if present.";
+  } catch (e) {
+    document.getElementById("telegram-cred-status").textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function rotateCredentials() {
+  const statusEl = document.getElementById("rotate-status");
+  const apiId = document.getElementById("rotate-api-id").value;
+  const apiHash = document.getElementById("rotate-api-hash").value;
+  const phone = document.getElementById("rotate-phone").value;
+  if (!apiId || !apiHash || !phone) { statusEl.textContent = "Fill in all three fields."; return; }
+  statusEl.textContent = "saving...";
+  try {
+    await fetchJSON("/api/telegram/credentials", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_id: parseInt(apiId, 10), api_hash: apiHash, phone }),
+    });
+    statusEl.textContent = "Saved.";
+    document.getElementById("rotate-api-id").value = "";
+    document.getElementById("rotate-api-hash").value = "";
+    document.getElementById("rotate-phone").value = "";
+    loadTelegramCredStatus();
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+const SETTINGS_FIELDS = [
+  { key: "starting_bankroll", label: "Starting bankroll ($)", step: "0.01" },
+  { key: "trade_sizing_mode", label: "Trade sizing mode (fixed | percent)", type: "text" },
+  { key: "fixed_trade_amount", label: "Fixed trade amount ($)", step: "0.01" },
+  { key: "trade_sizing_percent", label: "Percent of bankroll per trade (%)", step: "0.01" },
+  { key: "max_trade_amount", label: "Max trade amount ($)", step: "0.01" },
+  { key: "max_daily_loss", label: "Daily loss limit ($, 0 = disabled)", step: "0.01" },
+  { key: "daily_profit_target", label: "Daily profit target ($, 0 = disabled)", step: "0.01" },
+  { key: "max_trades_per_hour", label: "Max trades per hour" },
+  { key: "max_trades_per_day", label: "Max trades per day (0 = disabled)" },
+  { key: "max_consecutive_losses", label: "Stop after N consecutive losses" },
+  { key: "cooldown_after_loss_seconds", label: "Cooldown after loss (seconds)" },
+  { key: "minimum_payout", label: "Minimum payout (%)" },
+  { key: "duplicate_signal_window_seconds", label: "Duplicate signal window (seconds)" },
+];
+let currentSettings = {};
+
+async function loadTradingSettings() {
+  try {
+    const data = await fetchJSON("/api/settings");
+    currentSettings = data.effective;
+    document.getElementById("mm-preview").innerHTML =
+      `Current bankroll: <b>$${data.current_bankroll.toFixed(2)}</b> (lifetime realized P/L: $${data.lifetime_realized_pnl.toFixed(2)}) - next trade without a Risk Engine profile would be sized at <b>$${data.next_trade_amount_preview}</b>`;
+    const tbody = document.getElementById("settings-body");
+    tbody.innerHTML = SETTINGS_FIELDS.map(f => `
+      <tr>
+        <td style="width:320px;">${f.label}${data.overridden_keys.includes(f.key) ? ' <span class="badge on" style="font-size:10px;">customized</span>' : ""}</td>
+        <td><input type="${f.type || 'number'}" ${f.step ? `step="${f.step}"` : ""} id="setting-${f.key}" value="${currentSettings[f.key]}" style="width:160px;"></td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    document.getElementById("mm-preview").textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function saveTradingSettings() {
+  const statusEl = document.getElementById("trading-settings-status");
+  const body = {};
+  for (const f of SETTINGS_FIELDS) {
+    const el = document.getElementById(`setting-${f.key}`);
+    const raw = el.value;
+    if (f.type === "text") { body[f.key] = raw; }
+    else { const n = parseFloat(raw); if (!isNaN(n)) body[f.key] = n; }
+  }
+  statusEl.textContent = "saving...";
+  try {
+    await fetchJSON("/api/settings", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    statusEl.textContent = "saved";
+    loadTradingSettings();
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+function fmtBytes(n) {
+  if (n > 1e9) return (n / 1e9).toFixed(2) + " GB";
+  if (n > 1e6) return (n / 1e6).toFixed(1) + " MB";
+  if (n > 1e3) return (n / 1e3).toFixed(0) + " KB";
+  return n + " B";
+}
+
+async function loadBackups() {
+  const listEl = document.getElementById("backups-list");
+  try {
+    const backups = await fetchJSON("/api/backups");
+    listEl.innerHTML = backups.length
+      ? backups.map(b => `<div class="backup-row"><span>${escapeHtml(b.name)}</span><span class="muted">${fmtBytes(b.size_bytes)}</span></div>`).join("")
+      : '<div class="empty">No backups yet.</div>';
+  } catch (e) {
+    listEl.textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function runBackup() {
+  const statusEl = document.getElementById("backup-run-status");
+  statusEl.textContent = "running (this can take a moment)...";
+  try {
+    await fetchJSON("/api/backups/run", { method: "POST" });
+    statusEl.textContent = "backup completed";
+    loadBackups();
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
+async function loadDeveloperMode() {
+  const status = await fetchJSON("/api/settings/developer-mode");
+  document.getElementById("dev-mode-toggle").checked = status.enabled;
+}
+
+async function toggleDeveloperMode() {
+  const enabled = document.getElementById("dev-mode-toggle").checked;
+  try {
+    await fetchJSON("/api/settings/developer-mode", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+    });
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+(async () => {
+  currentUser = await AximShell.init({ active: "settings" });
+  if (!currentUser) return;
+  loadGeneral();
+  loadTelegramCredStatus();
+  loadTradingSettings();
+  loadBackups();
+  loadDeveloperMode();
+})();
+</script>
+</body>
+</html>
