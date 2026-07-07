@@ -512,9 +512,34 @@ only gates login (blocked states) and demo/live trading permission
 (pre-existing `demo_only_forced`/`live_trading_allowed` flags), nothing
 else in the app actually checks a user's tier.
 
-#### Desktop packaging (Tauri) + Windows startup - not started
-Explicitly deferred until the billing scaffold above was in place;
-picking these up next.
+#### Windows startup support - DONE
+`scripts/install_scheduled_task.ps1` (already existed, covers `core/
+telegram_listener.py`) plus a new companion `scripts/
+install_api_scheduled_task.ps1` (covers `api/main.py` via uvicorn) and
+`scripts/uninstall_startup_tasks.ps1` - both register a Windows
+Scheduled Task with a logon trigger and restart-on-failure (999
+retries, 1 minute apart), documented in `DEPLOYMENT.md`'s "Process
+supervision / Windows startup" section.
+
+**Not enabled by default** - registering a persistent auto-start
+Scheduled Task for a trading-capable app is a real system-level change
+with real consequences (it would start on every future login without
+an active choice that day), so these scripts are opt-in, matching the
+existing `install_scheduled_task.ps1`'s own "review before running"
+framing. Verified live: registered the API task, confirmed via
+`Get-ScheduledTask`/`Get-ScheduledTaskInfo` that the executable,
+arguments, and working directory were exactly right, then removed it
+via the uninstall script. Found and removed a pre-existing "AXIM
+Listener" task during that same cleanup pass that predated this
+session's Phase 6 work - flagged to the user rather than silently
+re-added, since its origin (an earlier manual run, or an earlier part
+of this same session) isn't known and reboot-triggered auto-start of a
+live-capable trading bot isn't something to restore without being asked.
+
+#### Desktop packaging (Tauri) - not started
+Rust/Cargo is not present in this environment - picking this up next
+(installing the toolchain, then scaffolding a Tauri shell around the
+existing FastAPI + web UI).
 
 ## Known gaps / honest state as of Phase 1
 

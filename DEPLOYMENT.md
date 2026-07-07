@@ -6,7 +6,7 @@ single-terminal usage covered in `USER_GUIDE.md`. Read
 what has and hasn't been validated, and the known limitations referenced
 below.
 
-## Process supervision
+## Process supervision / Windows startup
 
 `core/telegram_listener.py`'s `run_forever()` already handles in-process
 recovery: a crashed browser, a dropped Telegram connection, or an unhandled
@@ -14,14 +14,33 @@ exception all trigger an automatic restart of the affected layer with
 exponential backoff, without the OS process itself dying. What it does
 **not** handle is the OS process being killed outright (a reboot, an OOM
 kill, a segfault in a native dependency) - for that, wrap it in an actual
-process supervisor:
+process supervisor.
 
-- **Windows Task Scheduler**: create a task that runs
-  `python core/telegram_listener.py`, with "restart on failure" configured
-  and triggered at logon/on a schedule. This is the simplest option for a
-  single Windows host.
-- **NSSM** (Non-Sucking Service Manager) if you want it running as a true
-  Windows service.
+Two ready-to-run scripts register Windows Scheduled Tasks (one per
+process, matching how they're run manually today) that start at logon
+and restart automatically on failure:
+
+```powershell
+powershell -File scripts\install_scheduled_task.ps1       # core/telegram_listener.py
+powershell -File scripts\install_api_scheduled_task.ps1   # api/main.py (the control UI, 127.0.0.1:8090)
+```
+
+Both are genuine system-level changes (a persistent Scheduled Task under
+your Windows user account, running on every future login) - read the
+script before running it. Remove either or both later with:
+
+```powershell
+powershell -File scripts\uninstall_startup_tasks.ps1
+```
+
+or manage them individually via `Get-ScheduledTask -TaskName "AXIM Listener"` /
+`"AXIM API"` and `Unregister-ScheduledTask`. **AXIM is not registered
+to start automatically by default** - these scripts only take effect
+when you explicitly run them.
+
+If you'd rather run it as a true Windows service (restarts even if no
+user is logged in), use **NSSM** (Non-Sucking Service Manager) pointed
+at the same `venv\Scripts\python.exe` + arguments the scripts above use.
 
 Whatever you use, make sure it sends a clean stop signal (equivalent to
 Ctrl+C) rather than force-killing, per the note in `USER_GUIDE.md` - this
