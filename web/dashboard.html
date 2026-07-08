@@ -164,7 +164,9 @@ async function refreshForFund(fundId) {
   sessionPlEl.className = "value " + plClass(report.balances.trading_balance - report.fund.starting_balance);
 
   const riskLine = document.getElementById("risk-line");
-  riskLine.innerHTML = '<span class="dot on"></span> Protected balance: ' + fmtMoney(report.balances.protected_balance);
+  riskLine.innerHTML = report.balances.protected_balance > 0
+    ? `<span class="badge gold">Protected: ${fmtMoney(report.balances.protected_balance)}</span>`
+    : '<span class="dot on"></span> No funds in the vault yet';
   document.getElementById("risk-details").innerHTML = `
     <div>Total account value: ${fmtMoney(report.balances.total_account_value)}</div>
     <div>Starting balance: ${fmtMoney(report.fund.starting_balance)}</div>

@@ -24,6 +24,13 @@
   --red-soft: #fbeeed;
   --yellow: #92610a;
   --yellow-soft: #fdf6e8;
+  /* Distinct from --yellow (warning) even though the hue family is
+     related - gold is a deliberate, separate semantic: vault/protected
+     balance and premium status, never a caution state. See .badge.gold
+     and .box.gold below - docs/AXIM_APP_PLAN.md's color-treatment spec. */
+  --gold: #8a6a17;
+  --gold-soft: #faf1d6;
+  --gold-border: #eddfa8;
   --radius: 14px;
   --radius-sm: 9px;
   --shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.03);
@@ -192,12 +199,20 @@ a { color: inherit; }
    rather than a wall of equally-weighted stat cards. ---- */
 
 .hero-panel {
-  background: var(--bg);
+  background: linear-gradient(165deg, #fbfcff 0%, var(--bg) 55%);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   padding: 28px 32px;
   margin-bottom: 24px;
+  position: relative;
+  overflow: hidden;
+}
+.hero-panel:before {
+  content: "";
+  position: absolute; top: 0; right: 0; width: 220px; height: 220px;
+  background: radial-gradient(circle at top right, var(--blue-soft) 0%, transparent 70%);
+  opacity: 0.6; pointer-events: none;
 }
 .hero-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); font-weight: 650; margin-bottom: 10px; }
 .hero-value { font-size: 44px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.1; }
@@ -287,6 +302,15 @@ button.subtle:hover { background: var(--surface); color: var(--text); }
 .badge.warn { background: var(--yellow-soft); color: var(--yellow); }
 .badge.danger { background: var(--red-soft); color: var(--red); }
 .badge.info { background: var(--blue-soft); color: var(--blue); }
+.badge.gold { background: var(--gold-soft); color: var(--gold); }
+
+/* Reusable "protected/premium" stat treatment - vault balances,
+   premium plan badges. Gold, never used for a warning or an error. */
+.box.gold, .card.gold {
+  background: var(--gold-soft);
+  border-color: var(--gold-border);
+}
+.box.gold .value, .card.gold .stat-value-lg { color: var(--gold); }
 
 /* ---- Forms ---- */
 

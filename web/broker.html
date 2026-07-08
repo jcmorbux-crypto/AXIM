@@ -32,7 +32,7 @@
     <div class="grid">
       <div class="card solid">
         <h3>Account Mode</h3>
-        <div class="stat-value-lg" id="account-mode">-</div>
+        <div class="stat-value-lg"><span class="badge" id="account-mode">-</span></div>
       </div>
       <div class="card solid">
         <h3>Balance</h3>
@@ -76,7 +76,9 @@ async function fetchJSON(url, opts) {
 async function refreshStatus() {
   try {
     const s = await fetchJSON("/api/pocket-option/status");
-    document.getElementById("account-mode").textContent = s.account_mode;
+    const accountModeBadge = document.getElementById("account-mode");
+    accountModeBadge.textContent = s.account_mode;
+    accountModeBadge.className = "badge " + (s.account_mode === "DEMO" ? "info" : "danger");
     document.getElementById("live-warning").style.display = s.account_mode === "LIVE" ? "block" : "none";
 
     const dot = document.getElementById("conn-dot");

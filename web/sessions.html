@@ -168,7 +168,7 @@ async function loadAccountMode() {
     const po = await fetchJSON("/api/pocket-option/status");
     const badge = document.getElementById("new-account-mode");
     badge.textContent = po.account_mode;
-    badge.className = "badge " + (po.account_mode === "DEMO" ? "on" : "danger");
+    badge.className = "badge " + (po.account_mode === "DEMO" ? "info" : "danger");
   } catch (e) {}
 }
 
@@ -269,7 +269,7 @@ async function refreshActiveSession() {
     bodyEl.innerHTML = `
       <div class="row" style="margin-bottom:10px;">
         <strong>${escapeHtml(session.name || "(unnamed session)")}</strong> ${statusBadge(session.status)}
-        <span class="badge ${session.account_mode === "DEMO" ? "on" : "danger"}">${session.account_mode}</span>
+        <span class="badge ${session.account_mode === "DEMO" ? "info" : "danger"}">${session.account_mode}</span>
       </div>
       <div class="grid" style="margin-bottom:10px;">
         <div class="stat-row"><span class="stat-label">Current P/L</span><span class="stat-value ${plClass(session.realized_pnl)}">${fmtMoney(session.realized_pnl)}</span></div>

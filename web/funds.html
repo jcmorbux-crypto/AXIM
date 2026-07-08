@@ -18,8 +18,6 @@
   .balance-trio .box { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; }
   .balance-trio .box .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); font-weight: 650; margin-bottom: 4px; }
   .balance-trio .box .value { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
-  .balance-trio .box.vault { background: var(--yellow-soft); border-color: #f5e0a8; }
-  .balance-trio .box.vault .value { color: var(--yellow); }
 </style>
 </head>
 <body>
@@ -52,7 +50,7 @@
 
         <div class="balance-trio">
           <div class="box"><div class="label">Trading Balance</div><div class="value" id="d-trading-balance">-</div></div>
-          <div class="box vault"><div class="label">Protected / Vault</div><div class="value" id="d-protected-balance">-</div></div>
+          <div class="box gold"><div class="label">Protected / Vault</div><div class="value" id="d-protected-balance">-</div></div>
           <div class="box"><div class="label">Total Account Value</div><div class="value" id="d-total-value">-</div></div>
         </div>
 
