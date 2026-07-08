@@ -79,6 +79,8 @@ const AximShell = (() => {
     window.location.href = "/login";
   }
 
+  let developerMode = false;
+
   async function init(opts) {
     let user;
     try {
@@ -86,6 +88,11 @@ const AximShell = (() => {
     } catch (e) {
       window.location.href = "/login";
       return null;
+    }
+    try {
+      developerMode = (await fetchJSON("/api/settings/developer-mode")).enabled;
+    } catch (e) {
+      developerMode = false;
     }
     const shellRoot = document.getElementById("app-shell");
     shellRoot.classList.add("app-shell");
@@ -97,5 +104,13 @@ const AximShell = (() => {
     return user;
   }
 
-  return { init, logout, fetchJSON };
+  // Every technical/operational surface (raw ids, pids, heartbeats,
+  // process internals) should check this before rendering rather than
+  // being on by default - see docs/AXIM_APP_PLAN.md's design principle
+  // that AXIM reads like a wealth management platform, not a monitoring
+  // dashboard, unless the operator has explicitly opted into
+  // Settings > Developer.
+  function isDeveloperMode() { return developerMode; }
+
+  return { init, logout, fetchJSON, isDeveloperMode };
 })();

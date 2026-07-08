@@ -123,7 +123,7 @@
     <div class="tab-panel" id="tab-developer">
       <div class="card solid">
         <h3>Developer Mode</h3>
-        <div class="muted" style="margin-bottom:12px;">Reveals raw internal IDs (trade/session) in a few places, e.g. Trade Center's detail view. Off by default - AXIM doesn't expose developer/technical concepts to end users otherwise.</div>
+        <div class="muted" style="margin-bottom:12px;">Reveals raw technical detail in a few places for troubleshooting - internal trade/session IDs in Trade Center, and raw result data on Broker's test trades. Off by default: AXIM's day-to-day screens stay focused on your trading operation, not its internals. System diagnostics (process status, connection health) are always available in a collapsed "diagnostics" section on Mission Control and Broker, independent of this toggle.</div>
         <label style="display:flex; align-items:center; gap:8px;">
           <input type="checkbox" id="dev-mode-toggle" style="width:auto;" onchange="toggleDeveloperMode()">
           Enable Developer Mode

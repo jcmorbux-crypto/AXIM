@@ -13,7 +13,7 @@
     <div class="page-header">
       <div>
         <h1>Broker</h1>
-        <div class="subtitle">Pocket Option connection - session, balance, and browser worker health.</div>
+        <div class="subtitle">Your Pocket Option connection.</div>
       </div>
     </div>
 
@@ -21,41 +21,42 @@
       This account is connected in LIVE mode - real money is at risk. Handle Reconnect/Clear Session with care.
     </div>
 
-    <div class="grid">
-      <div class="card">
-        <h3>Connection</h3>
-        <div class="row" style="margin-bottom:10px;">
-          <span id="conn-dot" class="badge off">unknown</span>
-        </div>
-        <div class="muted" id="conn-detail">Loading...</div>
+    <div class="status-line">
+      <span id="conn-dot" class="dot off"></span>
+      <div>
+        <div class="headline" id="conn-headline">Loading...</div>
+        <div class="detail" id="conn-detail">&nbsp;</div>
       </div>
-      <div class="card">
+    </div>
+
+    <div class="grid">
+      <div class="card solid">
         <h3>Account Mode</h3>
         <div class="stat-value-lg" id="account-mode">-</div>
       </div>
-      <div class="card">
+      <div class="card solid">
         <h3>Balance</h3>
         <div class="stat-value-lg" id="balance">-</div>
-        <div class="stat-caption">Live DOM read not yet implemented</div>
-      </div>
-      <div class="card">
-        <h3>Browser Worker Pool</h3>
-        <div class="stat-value-lg" id="worker-count">-</div>
-        <div class="stat-caption" id="heartbeat-age">-</div>
+        <div class="stat-caption">Not tracked yet - coming in a future update.</div>
       </div>
     </div>
+
+    <details class="diagnostics" style="margin-bottom:24px;">
+      <summary>Connection diagnostics</summary>
+      <div class="diagnostics-body" id="conn-diagnostics"></div>
+    </details>
 
     <div class="card solid full-width" style="margin-bottom:20px;">
       <h3>Controls</h3>
       <div class="row" style="margin-bottom:14px;">
-        <button onclick="reconnect()">Reconnect (restart listener)</button>
-        <button class="danger" onclick="clearSession()">Clear Session (destructive)</button>
+        <button onclick="reconnect()">Reconnect</button>
+        <button class="danger" onclick="clearSession()">Clear Session</button>
       </div>
       <div class="row">
-        <button class="primary" onclick="runTestTrade()" id="test-trade-btn">Test Trade (Demo Only)</button>
+        <button class="primary" onclick="runTestTrade()" id="test-trade-btn">Run a Test Trade (Demo Only)</button>
         <span id="test-trade-status" class="muted"></span>
       </div>
-      <div id="test-trade-result" class="muted" style="margin-top:10px; display:none;"></div>
+      <div id="test-trade-result" class="muted" style="margin-top:10px; display:none; white-space:pre-wrap;"></div>
     </div>
   </main>
 </div>
@@ -79,28 +80,34 @@ async function refreshStatus() {
     document.getElementById("live-warning").style.display = s.account_mode === "LIVE" ? "block" : "none";
 
     const dot = document.getElementById("conn-dot");
+    const headline = document.getElementById("conn-headline");
     const detail = document.getElementById("conn-detail");
     if (!s.process_running) {
-      dot.textContent = "not running"; dot.className = "badge off";
-      detail.textContent = "Listener process is not running.";
+      dot.className = "dot off"; headline.textContent = "Not connected";
+      detail.textContent = "AXIM isn't running - start it from Mission Control.";
     } else if (s.heartbeat_stale) {
-      dot.textContent = "stale"; dot.className = "badge warn";
-      detail.textContent = "Listener is running but hasn't reported a heartbeat recently.";
+      dot.className = "dot warn"; headline.textContent = "Reconnecting";
+      detail.textContent = "AXIM is running but re-establishing its Pocket Option connection.";
     } else {
-      dot.textContent = "healthy"; dot.className = "badge on";
-      detail.textContent = s.heartbeat ? `Generation ${s.heartbeat.generation}` : "";
+      dot.className = "dot on"; headline.textContent = "Connected";
+      detail.textContent = "Your Pocket Option connection is healthy.";
     }
 
-    document.getElementById("balance").textContent = s.balance !== null ? "$" + s.balance : "not available";
-    document.getElementById("worker-count").textContent = s.heartbeat ? s.heartbeat.worker_count : "-";
-    document.getElementById("heartbeat-age").textContent = s.heartbeat ? "last heartbeat " + new Date(s.heartbeat.updated_at).toLocaleTimeString() : "no heartbeat yet";
+    document.getElementById("balance").textContent = s.balance !== null ? "$" + s.balance : "-";
+    const workerInfo = s.process_running && s.heartbeat ? `${s.heartbeat.worker_count} browser worker(s)` : "not currently running";
+    const lastHeartbeat = s.heartbeat ? new Date(s.heartbeat.updated_at).toLocaleTimeString() : "none yet";
+    document.getElementById("conn-diagnostics").innerHTML = `
+      <div>Worker pool: ${workerInfo}</div>
+      <div>Last heartbeat seen: ${lastHeartbeat}</div>
+      <div>Connection generation: ${s.heartbeat ? s.heartbeat.generation : "-"}</div>
+    `;
   } catch (e) {
     document.getElementById("conn-detail").textContent = "Failed to load: " + e.message;
   }
 }
 
 async function reconnect() {
-  if (!confirm("Reconnect restarts the whole listener process (stop, then start). Continue?")) return;
+  if (!confirm("Reconnect restarts your Pocket Option connection. Continue?")) return;
   try {
     await fetchJSON("/api/process/stop", { method: "POST" });
     await new Promise(r => setTimeout(r, 2000));
@@ -112,7 +119,7 @@ async function reconnect() {
 }
 
 async function clearSession() {
-  const typed = prompt('This deletes the saved Pocket Option browser login - you\'ll need to log in again on the next start. The listener must be stopped first. Type "CLEAR SESSION" to confirm:');
+  const typed = prompt('This deletes your saved Pocket Option login - you\'ll need to log in again on the next start. AXIM must be stopped first. Type "CLEAR SESSION" to confirm:');
   if (typed !== "CLEAR SESSION") return;
   try {
     await fetchJSON("/api/broker/clear-session", { method: "POST" });
@@ -122,8 +129,20 @@ async function clearSession() {
   }
 }
 
+function summarizeTestTradeResult(result) {
+  if (!result) return "No result data returned.";
+  if (result.error) return `Failed: ${result.error}`;
+  if (result.reason) return `Not placed: ${result.reason}`;
+  if (result.result) {
+    const outcome = result.result === "win" ? "Won" : (result.result === "loss" ? "Lost" : result.result);
+    const pl = result.profit_loss !== undefined && result.profit_loss !== null ? ` (${result.profit_loss > 0 ? "+" : ""}$${Number(result.profit_loss).toFixed(2)})` : "";
+    return `${outcome}${pl}`;
+  }
+  return "Trade recorded - see Trade Center for full details.";
+}
+
 async function runTestTrade() {
-  if (!confirm("Place a real test trade on the DEMO account (EUR/USD OTC, BUY, 1 Minute) through the live trading pipeline? This is blocked entirely if the account is LIVE.")) return;
+  if (!confirm("Place a real test trade on the DEMO account (EUR/USD OTC, BUY, 1 Minute)? This is blocked entirely if the account is LIVE.")) return;
   const btn = document.getElementById("test-trade-btn");
   const statusEl = document.getElementById("test-trade-status");
   const resultEl = document.getElementById("test-trade-result");
@@ -132,14 +151,17 @@ async function runTestTrade() {
   resultEl.style.display = "none";
   try {
     await fetchJSON("/api/broker/test-trade", { method: "POST" });
-    statusEl.textContent = "queued - waiting for the listener to run it...";
+    statusEl.textContent = "waiting for a result...";
     for (let i = 0; i < 20; i++) {
       await new Promise(r => setTimeout(r, 3000));
       const status = await fetchJSON("/api/broker/test-trade");
       if (status.status === "completed" || status.status === "error") {
-        statusEl.textContent = status.status;
+        statusEl.textContent = "";
         resultEl.style.display = "block";
-        resultEl.textContent = JSON.stringify(status.result, null, 2);
+        resultEl.textContent = summarizeTestTradeResult(status.result);
+        if (AximShell.isDeveloperMode()) {
+          resultEl.textContent += "\n\n" + JSON.stringify(status.result, null, 2);
+        }
         btn.disabled = false;
         return;
       }

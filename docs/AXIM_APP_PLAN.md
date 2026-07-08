@@ -536,10 +536,94 @@ re-added, since its origin (an earlier manual run, or an earlier part
 of this same session) isn't known and reboot-triggered auto-start of a
 live-capable trading bot isn't something to restore without being asked.
 
-#### Desktop packaging (Tauri) - not started
-Rust/Cargo is not present in this environment - picking this up next
-(installing the toolchain, then scaffolding a Tauri shell around the
-existing FastAPI + web UI).
+#### Desktop packaging (Tauri) - in progress
+Installed the Rust toolchain (rustup) and Visual Studio Build Tools'
+C++ workload (neither present in this environment beforehand) and
+scaffolded `axim-desktop/` - a thin Tauri window around the existing
+FastAPI control UI + listener (`axim-desktop/src-tauri/src/lib.rs`
+spawns both via the same `venv\Scripts\python.exe` commands used
+manually, polls the API port until it actually accepts connections
+before loading the window - a fixed sleep proved unreliable under
+load and was replaced - and kills both processes on window close).
+`npm run tauri dev` verified live: real window, real AXIM login page,
+both backend processes spawned and confirmed via `netstat`/process
+list, screenshotted via `PrintWindow` (GDI `CopyFromScreen` can't
+capture WebView2's hardware-accelerated surface - a capture-tooling
+gotcha, not an app bug). Window-close process cleanup partially
+verified (child processes confirmed killed) but the main window
+process itself lingering briefly after close is still open - not yet
+run through `tauri build` for a real installer. Known limitation:
+this is not a self-contained installer - it requires the AXIM project
+checkout and its venv already set up on the target machine (resolved
+via `AXIM_PROJECT_ROOT` env var, falling back to a hardcoded dev path).
+
+### Design pass - calmer, hierarchy-driven UI
+Reworked the visual system and Mission Control (the primary screen)
+away from a systems-monitoring feel toward the "premium wealth
+management platform, not a monitoring dashboard" bar - explicit
+product direction, not a schema/backend change.
+
+- `web/theme.css`: warmer neutral palette, larger radius/shadow depth,
+  new reusable patterns - `.hero-panel` (one large, confident number
+  per screen instead of a wall of equally-weighted stat cards),
+  `.status-line` (a single plain-language health read), `.diagnostics`
+  (a `<details>`-based disclosure for technical detail, collapsed by
+  default).
+- `web/dashboard.html`: rebuilt around one status line ("Running
+  normally" / "Reconnecting" / etc., replacing four separate
+  AXIM/Telegram/Pocket Option status cards), one hero panel (Today's
+  Performance), a Risk card in plain language ("Within all your risk
+  limits" first, numbers on a details toggle), and a Recent Activity
+  feed (replacing three separate "Active Source"/"Last Signal"/"Last
+  Result" cards). All PID/heartbeat/worker/generation detail moved
+  into a collapsed "System diagnostics" section.
+- `web/broker.html`: same treatment - one status line instead of a
+  "Browser Worker Pool" card, "Live DOM read not yet implemented"
+  (developer jargon - DOM means nothing to a trader) replaced with
+  "Not tracked yet", raw heartbeat/worker/generation numbers moved to
+  a diagnostics disclosure. Test Trade results now show a plain-
+  language summary (Won/Lost/error) with the raw JSON gated behind
+  Developer Mode via the new `AximShell.isDeveloperMode()`.
+- `web/sessions.html`: raw `running (pid 1234)` badge text replaced
+  with "connected" (pid kept as a hover tooltip for anyone who wants
+  it, not deleted).
+- `web/shell.js`: `AximShell.init()` now also fetches
+  `/api/settings/developer-mode` once and exposes
+  `AximShell.isDeveloperMode()`, so any page can gate technical detail
+  consistently instead of each page doing its own fetch.
+- `web/settings.html`: Developer Mode's description updated to state
+  explicitly that system diagnostics are available independent of the
+  toggle (in a collapsed disclosure), and what the toggle itself now
+  covers.
+
+Real bug found and fixed during live verification, not a cosmetic
+miss: the new diagnostics panels showed stale heartbeat/worker-count
+data (`"Pocket Option: not running - 6 worker(s)..."`) whenever the
+listener process wasn't currently running, because the template
+string appended heartbeat detail whenever a heartbeat row existed in
+the database at all, regardless of whether the process spawning that
+heartbeat was still alive. Fixed in both `dashboard.html` and
+`broker.html` to only show live worker/generation detail when the
+process is actually running.
+
+Verified live via Playwright against the real DB/API using a
+throwaway admin account created directly through `database.
+create_user()` (bootstrap-owner was unavailable - a real owner account
+already exists in this installation from actual use, and was never
+touched). Confirmed: status line reflects real state ("Not running"
+when the listener is down), hero panel shows real daily P/L, risk card
+defaults to "Within all your risk limits", recent activity renders
+real historical trades, diagnostics disclosures are collapsed by
+default and show correct (non-stale) content when expanded, Developer
+Mode tab describes the new scope accurately. Test account and session
+cleaned up afterward.
+
+**Explicitly out of scope for this pass**: Trading Sessions, Risk
+Engine, Trade Center, Performance, Rule Builder, and Users still use
+the original denser, tabular treatment - appropriate for operational/
+tool screens (a trade blotter is supposed to be dense), not redesigned
+in this pass. If the "calm, hierarchy-driven" treatment should extend
+further, that's a follow-up, not assumed here.
 
 ## Known gaps / honest state as of Phase 1
 

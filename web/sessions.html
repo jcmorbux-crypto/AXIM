@@ -206,11 +206,13 @@ async function refreshProcessStatus() {
   try {
     const status = await fetchJSON("/api/status");
     if (status.process.running) {
-      badge.textContent = `running (pid ${status.process.pids.join(", ")})`;
+      badge.textContent = "connected";
       badge.className = "badge on";
+      badge.title = `pid ${status.process.pids.join(", ")}`;
     } else {
-      badge.textContent = "stopped";
+      badge.textContent = "not connected";
       badge.className = "badge off";
+      badge.title = "";
     }
   } catch (e) {
     badge.textContent = "unknown";
