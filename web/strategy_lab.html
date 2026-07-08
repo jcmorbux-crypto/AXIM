@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Strategy Lab - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; flex-wrap: wrap; }
+  .tab-btn { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 4px; margin-right: 18px; color: var(--text-dim); font-weight: 600; cursor: pointer; }
+  .tab-btn:hover { color: var(--text); background: none; }
+  .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .strategy-checklist { display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; }
+  .strategy-checklist label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 500; color: var(--text); cursor: pointer; }
+  .strategy-checklist input { width: auto; }
+
+  .compare-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin: 20px 0; }
+  .compare-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; background: var(--bg); box-shadow: var(--shadow-sm); position: relative; }
+  .compare-card.rank-1 { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+  .compare-card .crown { position: absolute; top: 14px; right: 14px; font-size: 11px; font-weight: 700; color: var(--blue); }
+  .compare-card h4 { margin: 0 0 4px 0; font-size: 14.5px; }
+  .compare-card .best-for { color: var(--text-dim); font-size: 12px; margin-bottom: 12px; }
+  .compare-card .metric-row { display: flex; justify-content: space-between; font-size: 13px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+  .compare-card .metric-row:last-child { border-bottom: none; }
+  .compare-card .metric-row .label { color: var(--text-dim); }
+  .compare-card .metric-row .value { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .signal-table-wrap { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  #chart-container { width: 100%; overflow-x: auto; }
+  #chart-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12.5px; }
+  #chart-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Strategy Lab</h1>
+        <div class="subtitle">Test how different bankroll strategies would have performed on your historical signals - before risking real money.</div>
+      </div>
+    </div>
+
+    <div class="banner warn">
+      Past results do not guarantee future results. Backtests are simulations based on recorded signals and the assumptions you select - not a prediction.
+    </div>
+
+    <div class="tabs" id="tabs">
+      <button class="tab-btn active" data-tab="run">Run Backtest</button>
+      <button class="tab-btn" data-tab="signals">Historical Signals</button>
+      <button class="tab-btn" data-tab="history">Past Runs</button>
+    </div>
+
+    <!-- ============ RUN BACKTEST ============ -->
+    <div class="tab-panel active" id="tab-run">
+      <div class="grid" style="grid-template-columns: 1fr 1fr;">
+        <div class="card solid">
+          <h3>Backtest Setup</h3>
+          <div class="field"><label>Run name</label><input type="text" id="r-name" placeholder="e.g. Go+ Channel - January"></div>
+          <div class="row">
+            <div class="field" style="flex:1;"><label>Signal source</label>
+              <select id="r-source">
+                <option value="both">Live + Imported</option>
+                <option value="live">Live only</option>
+                <option value="imported">Imported only</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1;"><label>Channel (optional)</label>
+              <select id="r-channel"><option value="">All channels</option></select>
+            </div>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1;"><label>From date</label><input type="date" id="r-date-from"></div>
+            <div class="field" style="flex:1;"><label>To date</label><input type="date" id="r-date-to"></div>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1;"><label>Starting bankroll ($)</label><input type="number" id="r-bankroll" value="1000" step="1"></div>
+            <div class="field" style="flex:1;"><label>Default payout (%, used when a signal has none)</label><input type="number" id="r-payout" value="85" step="1"></div>
+          </div>
+          <div class="field"><label>Session window</label>
+            <select id="r-window">
+              <option value="daily">One session per day</option>
+              <option value="all">Entire range as one session</option>
+            </select>
+          </div>
+          <div class="stat-caption" id="signal-count-preview">&nbsp;</div>
+        </div>
+
+        <div class="card solid">
+          <h3>Strategies to Compare</h3>
+          <div class="stat-caption" style="margin-bottom:10px;">Pick two or more Risk Engine profiles to compare side by side.</div>
+          <div class="strategy-checklist" id="strategy-checklist">Loading...</div>
+        </div>
+      </div>
+
+      <button class="primary" id="run-btn" onclick="runBacktest()">Run Backtest</button>
+      <span id="run-status" class="muted"></span>
+
+      <div id="results-section" style="display:none; margin-top:28px;">
+        <div class="row" style="justify-content:space-between; align-items:center;">
+          <h2 style="margin:0; font-size:18px;">Results</h2>
+          <div class="row">
+            <button class="subtle" onclick="exportRun('csv')">Export CSV</button>
+            <button class="subtle" onclick="exportRun('json')">Export JSON</button>
+          </div>
+        </div>
+
+        <div class="compare-grid" id="compare-grid"></div>
+
+        <div class="card solid" style="margin-bottom:20px;">
+          <h3>Equity Curve</h3>
+          <div id="chart-legend"></div>
+          <div id="chart-container"></div>
+        </div>
+
+        <div class="card solid full-width">
+          <h3>Session-by-Session Results</h3>
+          <div class="field" style="max-width:320px;"><label>Strategy</label><select id="session-strategy-select" onchange="loadSessions()"></select></div>
+          <div class="signal-table-wrap">
+            <table>
+              <thead><tr><th>#</th><th>Started</th><th>Status</th><th>Trades</th><th>P/L</th><th>Vaulted</th></tr></thead>
+              <tbody id="session-table-body"><tr><td colspan="6" class="empty">Run a backtest first.</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ HISTORICAL SIGNALS ============ -->
+    <div class="tab-panel" id="tab-signals">
+      <div class="grid" style="grid-template-columns: 1fr 1fr;">
+        <div class="card solid">
+          <h3>Import from CSV</h3>
+          <div class="stat-caption" style="margin-bottom:10px;">Columns (any order, case-insensitive): channel/source, asset, direction, expiry, timestamp, result (win/loss/draw, optional), payout (optional).</div>
+          <input type="file" id="csv-file" accept=".csv" style="margin-bottom:10px;">
+          <button id="csv-import-btn" onclick="importCsv()">Import</button>
+          <div id="csv-import-status" class="muted" style="margin-top:10px;"></div>
+        </div>
+        <div class="card solid">
+          <h3>Add a Signal Manually</h3>
+          <div class="row">
+            <div class="field" style="flex:1;"><label>Source</label><input type="text" id="m-source" placeholder="e.g. Manual Entry"></div>
+            <div class="field" style="flex:1;"><label>Asset</label><input type="text" id="m-asset" placeholder="EUR/USD OTC"></div>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:1;"><label>Direction</label>
+              <select id="m-direction"><option>BUY</option><option>SELL</option></select>
+            </div>
+            <div class="field" style="flex:1;"><label>Expiry</label><input type="text" id="m-expiry" placeholder="1 Minute"></div>
+          </div>
+          <div class="field"><label>Timestamp</label><input type="datetime-local" id="m-timestamp"></div>
+          <div class="row">
+            <div class="field" style="flex:1;"><label>Result</label>
+              <select id="m-result"><option value="">Ungraded</option><option value="win">Win</option><option value="loss">Loss</option><option value="draw">Draw</option></select>
+            </div>
+            <div class="field" style="flex:1;"><label>Payout (%)</label><input type="number" id="m-payout" placeholder="85"></div>
+          </div>
+          <button class="primary" onclick="addManualSignal()">Add Signal</button>
+          <span id="manual-add-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="card solid full-width" style="margin-top:16px;">
+        <h3>Imported Signals</h3>
+        <div class="signal-table-wrap">
+          <table>
+            <thead><tr><th>Source</th><th>Asset</th><th>Direction</th><th>Timestamp</th><th>Result</th><th>Payout</th><th></th></tr></thead>
+            <tbody id="imported-signals-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ PAST RUNS ============ -->
+    <div class="tab-panel" id="tab-history">
+      <div class="card solid full-width">
+        <h3>Past Backtest Runs</h3>
+        <div class="signal-table-wrap">
+          <table>
+            <thead><tr><th>Name</th><th>Status</th><th>Bankroll</th><th>Created</th><th></th></tr></thead>
+            <tbody id="runs-history-body"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let allProfiles = [];
+let currentRunId = null;
+let currentReport = null;
+const STRATEGY_COLORS = ["#2452eb", "#14804a", "#b3261e", "#92610a", "#7c3aed", "#0891b2", "#db2777"];
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function fmtMoney(n) { if (n === null || n === undefined) return "-"; const sign = n > 0 ? "+" : ""; return `${sign}$${Number(n).toFixed(2)}`; }
+
+document.getElementById("tabs").addEventListener("click", (e) => {
+  if (!e.target.dataset.tab) return;
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === e.target));
+  document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + e.target.dataset.tab));
+  if (e.target.dataset.tab === "signals") loadImportedSignals();
+  if (e.target.dataset.tab === "history") loadRunsHistory();
+});
+
+// ---------- Setup ----------
+
+async function loadSetupData() {
+  const [profiles, sources] = await Promise.all([
+    fetchJSON("/api/risk-profiles"),
+    fetchJSON("/api/backtest/sources"),
+  ]);
+  allProfiles = profiles;
+
+  document.getElementById("strategy-checklist").innerHTML = profiles.map(p => `
+    <label><input type="checkbox" value="${p.id}" ${p.is_template ? "" : "checked"}> ${escapeHtml(p.name)}${p.is_template ? " <span class=\"faint\">(template)</span>" : ""}</label>
+  `).join("") || '<div class="empty">No risk profiles yet - create one in Risk Engine first.</div>';
+
+  const channelSelect = document.getElementById("r-channel");
+  channelSelect.innerHTML = '<option value="">All channels</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+}
+
+async function runBacktest() {
+  const selectedIds = Array.from(document.querySelectorAll("#strategy-checklist input:checked")).map(el => parseInt(el.value, 10));
+  if (selectedIds.length === 0) { alert("Select at least one strategy to compare."); return; }
+
+  const name = document.getElementById("r-name").value.trim() || `Backtest ${new Date().toLocaleString()}`;
+  const body = {
+    name,
+    source: document.getElementById("r-source").value,
+    channel_filter: document.getElementById("r-channel").value ? [document.getElementById("r-channel").value] : null,
+    date_from: document.getElementById("r-date-from").value || null,
+    date_to: document.getElementById("r-date-to").value || null,
+    starting_bankroll: parseFloat(document.getElementById("r-bankroll").value) || 1000,
+    default_payout_percent: parseFloat(document.getElementById("r-payout").value) || 85,
+    session_window: document.getElementById("r-window").value,
+    risk_profile_ids: selectedIds,
+  };
+
+  const btn = document.getElementById("run-btn");
+  const statusEl = document.getElementById("run-status");
+  btn.disabled = true;
+  statusEl.textContent = "Running simulation...";
+  try {
+    const report = await fetchJSON("/api/backtest/runs", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    statusEl.textContent = "";
+    currentRunId = report.run.id;
+    currentReport = report;
+    await renderResults(report);
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------- Results rendering ----------
+
+async function renderResults(report) {
+  document.getElementById("results-section").style.display = "block";
+  const strategies = report.strategies;
+
+  document.getElementById("compare-grid").innerHTML = strategies.map(s => {
+    const m = s.metrics || {};
+    const isTop = m.rank_overall === 1;
+    return `
+      <div class="compare-card ${isTop ? "rank-1" : ""}">
+        ${isTop ? '<span class="crown">#1 OVERALL</span>' : ""}
+        <h4>${escapeHtml(s.label)}</h4>
+        <div class="best-for">Best for: ${escapeHtml(m.best_for_label || "-")}</div>
+        <div class="metric-row"><span class="label">Final Bankroll</span><span class="value">${fmtMoney(m.final_bankroll)}</span></div>
+        <div class="metric-row"><span class="label">ROI</span><span class="value ${m.roi_percent >= 0 ? "pos" : "neg"}">${m.roi_percent >= 0 ? "+" : ""}${m.roi_percent}%</span></div>
+        <div class="metric-row"><span class="label">Max Drawdown</span><span class="value neg">-${m.max_drawdown_percent}%</span></div>
+        <div class="metric-row"><span class="label">Win Rate</span><span class="value">${m.win_rate !== null ? (m.win_rate * 100).toFixed(1) + "%" : "-"}</span></div>
+        <div class="metric-row"><span class="label">Risk Score</span><span class="badge ${m.risk_score === "Low" ? "on" : (m.risk_score === "Medium" ? "warn" : "danger")}">${m.risk_score || "-"}</span></div>
+        <div class="metric-row"><span class="label">Safest Rank</span><span class="value">#${m.rank_safest ?? "-"}</span></div>
+        <div class="metric-row"><span class="label">Highest Growth Rank</span><span class="value">#${m.rank_highest_growth ?? "-"}</span></div>
+      </div>
+    `;
+  }).join("");
+
+  const sessionSelect = document.getElementById("session-strategy-select");
+  sessionSelect.innerHTML = strategies.map(s => `<option value="${s.id}">${escapeHtml(s.label)}</option>`).join("");
+
+  await renderEquityCurve(strategies);
+  if (strategies.length) await loadSessions();
+}
+
+async function renderEquityCurve(strategies) {
+  const legend = document.getElementById("chart-legend");
+  legend.innerHTML = strategies.map((s, i) => `<span><span class="swatch" style="background:${STRATEGY_COLORS[i % STRATEGY_COLORS.length]}"></span>${escapeHtml(s.label)}</span>`).join("");
+
+  const allSeries = await Promise.all(strategies.map(s =>
+    fetchJSON(`/api/backtest/runs/${currentRunId}/strategies/${s.id}/trades`)
+  ));
+
+  const width = 900, height = 280, pad = 36;
+  const maxLen = Math.max(1, ...allSeries.map(t => t.length));
+  const allValues = allSeries.flat().map(t => t.running_balance);
+  if (!allValues.length) { document.getElementById("chart-container").innerHTML = '<div class="empty">No trades to chart.</div>'; return; }
+  const minY = Math.min(...allValues), maxY = Math.max(...allValues);
+  const yRange = (maxY - minY) || 1;
+
+  const xFor = (i, len) => pad + (i / Math.max(1, len - 1)) * (width - 2 * pad);
+  const yFor = (v) => height - pad - ((v - minY) / yRange) * (height - 2 * pad);
+
+  let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="font-family:inherit;">`;
+  svg += `<line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" stroke="var(--border)" />`;
+  svg += `<line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" stroke="var(--border)" />`;
+  svg += `<text x="${pad}" y="${pad - 8}" font-size="11" fill="#6b7078">${maxY.toFixed(0)}</text>`;
+  svg += `<text x="${pad}" y="${height - pad + 16}" font-size="11" fill="#6b7078">${minY.toFixed(0)}</text>`;
+
+  allSeries.forEach((trades, i) => {
+    if (!trades.length) return;
+    const color = STRATEGY_COLORS[i % STRATEGY_COLORS.length];
+    const points = trades.map((t, idx) => `${xFor(idx, trades.length)},${yFor(t.running_balance)}`).join(" ");
+    svg += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" />`;
+  });
+  svg += `</svg>`;
+  document.getElementById("chart-container").innerHTML = svg;
+}
+
+async function loadSessions() {
+  const strategyId = document.getElementById("session-strategy-select").value;
+  if (!strategyId) return;
+  const sessions = await fetchJSON(`/api/backtest/runs/${currentRunId}/strategies/${strategyId}/sessions`);
+  const body = document.getElementById("session-table-body");
+  if (!sessions.length) { body.innerHTML = '<tr><td colspan="6" class="empty">No sessions.</td></tr>'; return; }
+  body.innerHTML = sessions.map(s => `
+    <tr>
+      <td>${s.session_index + 1}</td>
+      <td>${(s.started_at || "").replace("T", " ")}</td>
+      <td><span class="badge ${s.status === "completed" ? "on" : (s.status === "stopped_target" ? "info" : "warn")}">${s.status.replace("stopped_", "").replace("_", " ")}</span></td>
+      <td>${s.trades_count}</td>
+      <td class="${s.realized_pnl >= 0 ? "pos" : "neg"}">${fmtMoney(s.realized_pnl)}</td>
+      <td>${fmtMoney(s.ending_vaulted_amount)}</td>
+    </tr>
+  `).join("");
+}
+
+async function exportRun(format) {
+  if (!currentRunId) return;
+  window.location.href = `/api/backtest/runs/${currentRunId}/export?format=${format}`;
+}
+
+// ---------- Historical signals ----------
+
+async function loadImportedSignals() {
+  const signals = await fetchJSON("/api/backtest/signals/imported");
+  const body = document.getElementById("imported-signals-body");
+  if (!signals.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No imported signals yet.</td></tr>'; return; }
+  body.innerHTML = signals.map(s => `
+    <tr>
+      <td>${escapeHtml(s.source_label)}</td>
+      <td>${escapeHtml(s.asset)}</td>
+      <td>${escapeHtml(s.direction)}</td>
+      <td>${(s.received_at || "").replace("T", " ")}</td>
+      <td>${s.result ? `<span class="badge ${s.result === "win" ? "on" : (s.result === "loss" ? "danger" : "off")}">${s.result}</span>` : '<span class="badge off">ungraded</span>'}</td>
+      <td>${s.payout_percent !== null ? s.payout_percent + "%" : "-"}</td>
+      <td><button class="subtle" onclick="deleteSignal(${s.id})">Delete</button></td>
+    </tr>
+  `).join("");
+}
+
+async function importCsv() {
+  const fileInput = document.getElementById("csv-file");
+  const statusEl = document.getElementById("csv-import-status");
+  if (!fileInput.files.length) { statusEl.textContent = "Choose a CSV file first."; return; }
+  const text = await fileInput.files[0].text();
+  statusEl.textContent = "Importing...";
+  try {
+    const result = await fetchJSON("/api/backtest/signals/import-csv", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ csv_text: text }),
+    });
+    statusEl.textContent = `Imported ${result.imported} signal(s).` + (result.errors.length ? ` ${result.errors.length} row(s) had errors.` : "");
+    loadImportedSignals();
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+async function addManualSignal() {
+  const statusEl = document.getElementById("manual-add-status");
+  const timestamp = document.getElementById("m-timestamp").value;
+  if (!timestamp) { statusEl.textContent = "Timestamp is required."; return; }
+  const body = {
+    source_label: document.getElementById("m-source").value || "Manual Entry",
+    asset: document.getElementById("m-asset").value,
+    direction: document.getElementById("m-direction").value,
+    expiry: document.getElementById("m-expiry").value || null,
+    received_at: timestamp,
+    result: document.getElementById("m-result").value || null,
+    payout_percent: document.getElementById("m-payout").value ? parseFloat(document.getElementById("m-payout").value) : null,
+  };
+  try {
+    await fetchJSON("/api/backtest/signals/manual", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    statusEl.textContent = "Added.";
+    // Clear the result-specific fields (payout/result) so a stale value
+    // doesn't silently carry over into the next signal entered - keep
+    // source/asset/direction/expiry, since consecutive entries usually
+    // share those.
+    document.getElementById("m-result").value = "";
+    document.getElementById("m-payout").value = "";
+    document.getElementById("m-timestamp").value = "";
+    loadImportedSignals();
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+async function deleteSignal(id) {
+  if (!confirm("Delete this imported signal?")) return;
+  await fetchJSON(`/api/backtest/signals/${id}`, { method: "DELETE" });
+  loadImportedSignals();
+}
+
+// ---------- Past runs ----------
+
+async function loadRunsHistory() {
+  const runs = await fetchJSON("/api/backtest/runs");
+  const body = document.getElementById("runs-history-body");
+  if (!runs.length) { body.innerHTML = '<tr><td colspan="5" class="empty">No backtests yet.</td></tr>'; return; }
+  body.innerHTML = runs.map(r => `
+    <tr>
+      <td>${escapeHtml(r.name)}</td>
+      <td><span class="badge ${r.status === "completed" ? "on" : (r.status === "failed" ? "danger" : "off")}">${r.status}</span></td>
+      <td>$${r.starting_bankroll}</td>
+      <td>${(r.created_at || "").replace("T", " ").slice(0, 16)}</td>
+      <td><button class="subtle" onclick="viewRun(${r.id})">View</button></td>
+    </tr>
+  `).join("");
+}
+
+async function viewRun(runId) {
+  currentRunId = runId;
+  const report = await fetchJSON(`/api/backtest/runs/${runId}`);
+  currentReport = report;
+  document.querySelector('.tab-btn[data-tab="run"]').click();
+  await renderResults(report);
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "lab" });
+  if (!user) return;
+  await loadSetupData();
+})();
+</script>
+</body>
+</html>

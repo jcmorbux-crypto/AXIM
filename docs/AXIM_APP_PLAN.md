@@ -625,6 +625,118 @@ tool screens (a trade blotter is supposed to be dense), not redesigned
 in this pass. If the "calm, hierarchy-driven" treatment should extend
 further, that's a follow-up, not assumed here.
 
+### Backtest Engine / Strategy Lab - DONE (CSV/manual import; Excel + live Telegram-history import deferred)
+Replays a pool of historical, resolved signals through one or more Risk
+Engine profiles to compare how each would have performed - a genuinely
+new engine, not a UI over existing analytics.
+
+**Architecture decision, the one that mattered most**: `core/
+backtest_engine.py` reuses `core/risk_engine.py`'s PURE sizing/
+martingale/vault functions (`_base_amount`, `_apply_martingale`)
+directly rather than re-implementing the same math a second time. Two
+of `risk_engine.py`'s vault functions were extracted from inline logic
+into new pure functions (`milestone_vault_skim`,
+`every_winning_session_vault_skim`) specifically so the backtest engine
+could call the exact same vault math live AXIM uses - refactored with
+`tests/test_risk_engine.py`'s full 20-test suite passing unchanged
+before and after, confirming zero behavior drift. A backtest whose
+sizing silently diverged from what AXIM actually does live would be
+worse than useless.
+
+- **Historical signal database**: reused the existing `signals` table
+  (already records every signal, executed or not, with result/payout/
+  timestamps) rather than duplicating it. Added `imported_signals` for
+  CSV/manually-entered history, normalized to the same shape via
+  `database.get_historical_signal_pool()`.
+- **Import**: CSV (case-insensitive column matching with common
+  aliases - symbol/pair/asset all resolve, etc.) and manual single-
+  signal entry, both real and tested. Excel (.xlsx) and live Telegram-
+  channel-history scraping are explicitly deferred - genuinely separate
+  pieces of work (a binary format parser; a Telethon `iter_messages`
+  integration), not half-built. Export a CSV from Excel as a workaround
+  today.
+- **Result matching**: real recorded results (live `signals.result`) or
+  manually-graded imported signals. Broker/candle-data integration for
+  auto-grading ungraded signals is deferred, not fabricated.
+- **Strategy comparison**: any real `risk_profiles` row (the 27
+  templates or user-created ones) can be selected - no separate
+  strategy catalog invented.
+- **Session simulation**: signals grouped into sessions by calendar day
+  (or "entire range as one session"), applying the SAME stop-condition
+  semantics as `core/session_manager.check_session_limits`
+  (profit_target/loss_limit/max_trades). Trading balance carries
+  forward realistically across sessions for every sizing mode -
+  documented in `core/backtest_engine.py`'s module docstring as
+  intentionally MORE realistic than live AXIM today, since live risk
+  profiles have a static `bankroll` field with no automatic balance
+  tracking yet (a known, pre-existing gap, not something this feature
+  papers over).
+- **Martingale/Compounding/Vault simulation**: martingale steps
+  unconditionally on loss (mirroring `database.advance_martingale_step`'s
+  real semantics exactly, uncapped on the counter, clamped only on the
+  computed size); vault skims (milestone-based and every-winning-
+  session) call the shared pure functions; vaulted funds are excluded
+  from the next session's trading-balance sizing base.
+- **Output metrics**: final bankroll, ROI, win/loss rate, max drawdown
+  (real peak-to-trough over the chronological equity curve, not an
+  approximation), best/worst day, longest win/loss streaks, max
+  martingale step used, sessions completed/stopped-by-target/stopped-
+  by-loss-limit, avg/largest trade size, total protected profit
+  (vaulted). `risk_score` (Low/Medium/High) and `best_for_label` are
+  explicit, documented heuristics (see `_risk_score`/`_best_for_label`
+  docstrings) - not a scientific classification, and labeled as
+  heuristics in the UI's "Best for" line.
+- **Ranking**: rank_overall (a documented 40% ROI + 40% inverse-
+  drawdown + 20% win-rate composite), rank_safest, rank_highest_growth,
+  rank_lowest_drawdown, rank_risk_adjusted - computed once per run
+  across all compared strategies.
+- **Charts**: equity curve (multi-line, hand-rolled SVG, no charting
+  library dependency) shipped. Daily P/L, drawdown, strategy-comparison
+  bar, vault-growth, and martingale-exposure charts are NOT built this
+  pass - deferred, the underlying data (sessions/trades) already
+  supports adding them without a schema change.
+- **UI**: `web/strategy_lab.html`, new "Strategy Lab" nav item. Three
+  tabs - Run Backtest (config + comparison cards + equity curve +
+  session table), Historical Signals (import/manage/grade), Past Runs.
+  Required risk disclaimer banner ("Past results do not guarantee
+  future results...") shown on every visit, not dismissible-and-
+  forgotten.
+- **API**: `api/backtest_routes.py` - signal listing/import/grading,
+  run creation (simulation runs synchronously in-request - fine for
+  this feature's signal-pool sizes, a documented limit for very large
+  pools rather than a silent one), report retrieval, session/trade
+  drill-down, CSV/JSON export. PDF export deferred.
+- **Database**: `imported_signals`, `backtest_runs`,
+  `backtest_strategies` (freezes a JSON snapshot of the risk profile at
+  run time so a report stays reproducible even if the profile is later
+  edited or deleted), `backtest_sessions`, `backtest_trades`,
+  `backtest_metrics`.
+
+Tested: `tests/test_backtest_database.py` (12 tests - CRUD, historical
+pool normalization/filtering/sorting across live+imported sources,
+full run lifecycle, cascade delete) and `tests/test_backtest_engine.py`
+(35 tests - fixed/percent/dynamic sizing, session grouping and all
+three stop conditions, martingale stepping and reset-after-win, both
+vault trigger types and cross-session fund exclusion, bankroll carry-
+forward, CSV parsing incl. column aliases and per-line error reporting,
+metrics computation incl. drawdown/streaks, ranking incl. tie-handling,
+and - the most important category - **parity tests asserting the
+backtest engine's sizing output is byte-for-byte identical to
+`risk_engine.py`'s own live functions given the same inputs**). Live-
+verified end-to-end via Playwright against the real DB/API using a
+throwaway admin account created directly through the DB layer (no
+bootstrap available - a real owner account already exists in this
+installation and was never touched): added manual signals, imported a
+CSV, ran a 3-strategy backtest against real risk profiles, confirmed
+genuinely differentiated metrics per strategy (proving the simulation
+isn't just echoing static numbers), confirmed the equity curve SVG
+rendered 3 distinct series, confirmed session/trade drill-down and
+CSV/JSON export all returned real data, confirmed Past Runs reload
+worked. Found and fixed one real UI bug during that pass: the manual-
+signal-entry form didn't clear its result/payout fields after a
+successful add, so a stale payout value silently carried into the next
+signal entered.
+
 ## Known gaps / honest state as of Phase 1
 
 - **Single shared trading connection, not multi-tenant.** Every user

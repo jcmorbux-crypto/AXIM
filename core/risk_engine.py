@@ -161,6 +161,34 @@ def project_martingale_exposure(martingale, base_amount):
     return {"steps": steps, "total_exposure": round(sum(steps), 2)}
 
 
+def milestone_vault_skim(vault, realized_pnl, vaulted_amount):
+    """Pure: how much to skim to the vault right now for a
+    'milestone_based' trigger, given the session's current realized_pnl
+    and how much has already been vaulted this session. Returns 0 if no
+    new milestone has been crossed. Also used by core/backtest_engine.py
+    so simulated vault behavior matches live behavior exactly - not a
+    separately-maintained copy of this math."""
+    if not vault["enabled"] or vault["trigger_event"] != "milestone_based" or vault["milestone_amount"] <= 0:
+        return 0
+    skim_per_milestone = vault["milestone_amount"] * (vault["vault_percent"] / 100.0)
+    milestones_crossed = int(realized_pnl // vault["milestone_amount"])
+    # Every milestone-based skim adds exactly skim_per_milestone to
+    # vaulted_amount, so dividing back out tells us how many milestones
+    # have already been paid - no separate counter needed.
+    already_vaulted_milestones = int(vaulted_amount // skim_per_milestone) if skim_per_milestone > 0 else 0
+    if milestones_crossed > already_vaulted_milestones and milestones_crossed > 0:
+        return skim_per_milestone
+    return 0
+
+
+def every_winning_session_vault_skim(vault, realized_pnl):
+    """Pure: how much to skim to the vault when a session ends, for an
+    'every_winning_session' trigger. Returns 0 if not applicable."""
+    if vault["enabled"] and vault["trigger_event"] == "every_winning_session" and realized_pnl > 0:
+        return realized_pnl * (vault["vault_percent"] / 100.0)
+    return 0
+
+
 def on_trade_closed(session_id, won, profit_loss):
     """Advances/resets the Martingale step and skims the Profit Vault on
     a milestone trigger - called by core/session_manager.py's
@@ -181,18 +209,11 @@ def on_trade_closed(session_id, won, profit_loss):
             database.advance_martingale_step(session_id)
 
     vault = profile["profit_vault"]
-    if vault["enabled"] and vault["trigger_event"] == "milestone_based" and vault["milestone_amount"] > 0:
-        session = database.get_trading_session(session_id)  # refreshed realized_pnl
-        skim_per_milestone = vault["milestone_amount"] * (vault["vault_percent"] / 100.0)
-        milestones_crossed = int(session["realized_pnl"] // vault["milestone_amount"])
-        # Every milestone-based skim adds exactly skim_per_milestone to
-        # vaulted_amount, so dividing back out tells us how many
-        # milestones have already been paid - no separate counter needed.
-        already_vaulted_milestones = int(session["vaulted_amount"] // skim_per_milestone) if skim_per_milestone > 0 else 0
-        if milestones_crossed > already_vaulted_milestones and milestones_crossed > 0:
-            skim = vault["milestone_amount"] * (vault["vault_percent"] / 100.0)
-            database.add_to_vault(session_id, skim)
-            logger.info("risk_engine: vaulted $%.2f for session %s at milestone %d", skim, session_id, milestones_crossed)
+    session = database.get_trading_session(session_id)  # refreshed realized_pnl
+    skim = milestone_vault_skim(vault, session["realized_pnl"], session["vaulted_amount"])
+    if skim > 0:
+        database.add_to_vault(session_id, skim)
+        logger.info("risk_engine: vaulted $%.2f for session %s at a milestone", skim, session_id)
 
 
 def on_session_ended(session_id):
@@ -207,7 +228,7 @@ def on_session_ended(session_id):
     if profile is None:
         return
     vault = profile["profit_vault"]
-    if vault["enabled"] and vault["trigger_event"] == "every_winning_session" and session["realized_pnl"] > 0:
-        skim = session["realized_pnl"] * (vault["vault_percent"] / 100.0)
+    skim = every_winning_session_vault_skim(vault, session["realized_pnl"])
+    if skim > 0:
         database.add_to_vault(session_id, skim)
         logger.info("risk_engine: vaulted $%.2f for session %s at session end", skim, session_id)

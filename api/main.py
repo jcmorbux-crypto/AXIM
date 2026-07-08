@@ -61,6 +61,7 @@ import trades as trades_module
 import backups as backups_module
 import rules as rules_module
 import billing_routes as billing_module
+import backtest_routes as backtest_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -104,6 +105,7 @@ app.include_router(trades_module.router)
 app.include_router(backups_module.router)
 app.include_router(rules_module.router)
 app.include_router(billing_module.router)
+app.include_router(backtest_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -237,6 +239,11 @@ def rules_page():
 @app.get("/billing")
 def billing_page():
     return _serve("billing.html")
+
+
+@app.get("/strategy-lab")
+def strategy_lab_page():
+    return _serve("strategy_lab.html")
 
 
 @app.get("/logs")

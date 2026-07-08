@@ -394,6 +394,147 @@ def initialize_database():
     );
     """)
 
+    # Backtest Engine / Strategy Lab (docs/AXIM_APP_PLAN.md) - lets a user
+    # replay historical signals through one or more Risk Engine profiles
+    # to compare how each would have performed, before risking real money.
+    # imported_signals holds signals that did NOT come through the live
+    # Telegram pipeline (CSV/manual entry) - normalized to the same shape
+    # as `signals` so core/backtest_engine.py can treat both pools
+    # uniformly. result/payout_percent are nullable: an imported signal
+    # with no graded result yet simply can't be used in a backtest until
+    # graded (see database.grade_imported_signal).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS imported_signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_label TEXT,
+        raw_message TEXT,
+        asset TEXT,
+        direction TEXT,
+        expiry TEXT,
+        received_at TEXT NOT NULL,
+        result TEXT,
+        payout_percent REAL,
+        profit_loss REAL,
+        notes TEXT,
+        import_batch TEXT,
+        created_at TEXT
+    );
+    """)
+
+    # One row per "Run Backtest" click. signal_pool_json captures the
+    # filter used (source: live/imported/both, channel filter, date
+    # range) so a completed run's report stays reproducible even if the
+    # underlying signal pool changes later.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS backtest_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        signal_pool_json TEXT NOT NULL,
+        starting_bankroll REAL NOT NULL,
+        default_payout_percent REAL DEFAULT 85,
+        session_window TEXT DEFAULT 'daily',
+        status TEXT DEFAULT 'pending',
+        error_message TEXT,
+        created_by TEXT,
+        created_at TEXT,
+        completed_at TEXT
+    );
+    """)
+
+    # One row per risk_profile being compared within a run.
+    # profile_snapshot_json freezes the profile+martingale+compounding+
+    # vault settings at run time - profiles are mutable and a backtest
+    # report must stay reproducible even if the user edits the profile
+    # (or deletes it) afterward.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS backtest_strategies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        backtest_run_id INTEGER NOT NULL,
+        risk_profile_id INTEGER,
+        label TEXT NOT NULL,
+        profile_snapshot_json TEXT NOT NULL,
+        created_at TEXT
+    );
+    """)
+
+    # One row per simulated session within one strategy's simulation -
+    # sessions are grouped from the signal pool per backtest_runs.
+    # session_window (default: one calendar day per session, mirroring
+    # how a real operator would run AXIM day to day).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS backtest_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        backtest_strategy_id INTEGER NOT NULL,
+        session_index INTEGER NOT NULL,
+        started_at TEXT,
+        ended_at TEXT,
+        status TEXT NOT NULL,
+        starting_balance REAL,
+        realized_pnl REAL DEFAULT 0,
+        trades_count INTEGER DEFAULT 0,
+        ending_martingale_step INTEGER DEFAULT 0,
+        ending_vaulted_amount REAL DEFAULT 0
+    );
+    """)
+
+    # One row per simulated trade. signal_source_type + signal_id point
+    # back at the real `signals` row or `imported_signals` row this trade
+    # was simulated from, so a trade log can always be traced to its
+    # source signal rather than being opaque numbers.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS backtest_trades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        backtest_session_id INTEGER NOT NULL,
+        signal_source_type TEXT NOT NULL,
+        signal_id INTEGER,
+        sequence_in_session INTEGER NOT NULL,
+        asset TEXT,
+        direction TEXT,
+        occurred_at TEXT,
+        trade_amount REAL NOT NULL,
+        martingale_step INTEGER DEFAULT 0,
+        result TEXT NOT NULL,
+        profit_loss REAL NOT NULL,
+        running_balance REAL NOT NULL
+    );
+    """)
+
+    # One row per strategy per run - the aggregated comparison-card
+    # numbers. A 1:1 relationship with backtest_strategies, kept as its
+    # own table (rather than extra columns on backtest_strategies) so the
+    # "what happened" (strategies/sessions/trades) and "what it means"
+    # (metrics) halves of a report stay clearly separated.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS backtest_metrics (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        backtest_strategy_id INTEGER NOT NULL UNIQUE,
+        final_bankroll REAL,
+        total_profit_loss REAL,
+        roi_percent REAL,
+        win_rate REAL,
+        loss_rate REAL,
+        max_drawdown_percent REAL,
+        best_day_pnl REAL,
+        worst_day_pnl REAL,
+        longest_win_streak INTEGER,
+        longest_loss_streak INTEGER,
+        max_martingale_step_used INTEGER,
+        sessions_completed INTEGER,
+        sessions_stopped_by_target INTEGER,
+        sessions_stopped_by_loss_limit INTEGER,
+        avg_trade_size REAL,
+        largest_trade_size REAL,
+        total_protected_profit REAL,
+        risk_score TEXT,
+        best_for_label TEXT,
+        rank_overall INTEGER,
+        rank_safest INTEGER,
+        rank_highest_growth INTEGER,
+        rank_lowest_drawdown INTEGER,
+        rank_risk_adjusted INTEGER
+    );
+    """)
+
     # Auth/access-control layer (docs/AXIM_APP_PLAN.md) - who may log into
     # the control UI at all, separate from the single shared Telegram/
     # Pocket Option trading connection every user currently sees. role is
@@ -2074,6 +2215,383 @@ def list_admin_actions(limit=200):
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------
+# Backtest Engine / Strategy Lab (docs/AXIM_APP_PLAN.md) -
+# core/backtest_engine.py owns the actual simulation math; this is the
+# CRUD + row-shaping layer, matching every other feature table in this
+# module.
+# ---------------------------------------------------------------------
+
+@timed("database")
+def create_imported_signal(source_label, asset, direction, expiry, received_at, raw_message=None,
+                            result=None, payout_percent=None, profit_loss=None, notes=None, import_batch=None):
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute("""
+        INSERT INTO imported_signals (
+            source_label, raw_message, asset, direction, expiry, received_at,
+            result, payout_percent, profit_loss, notes, import_batch, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (source_label, raw_message, asset, direction, expiry, received_at,
+          result, payout_percent, profit_loss, notes, import_batch, now))
+    conn.commit()
+    signal_id = cursor.lastrowid
+    conn.close()
+    return signal_id
+
+
+@timed("database")
+def list_imported_signals(import_batch=None, graded_only=False, limit=500):
+    conn = get_connection()
+    query = "SELECT * FROM imported_signals"
+    conditions = []
+    params = []
+    if import_batch is not None:
+        conditions.append("import_batch = ?")
+        params.append(import_batch)
+    if graded_only:
+        conditions.append("result IS NOT NULL")
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY received_at ASC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def grade_imported_signal(signal_id, result, payout_percent=None, profit_loss=None):
+    if result not in ("win", "loss", "draw"):
+        raise ValueError(f"invalid result: {result!r}")
+    conn = get_connection()
+    conn.execute(
+        "UPDATE imported_signals SET result = ?, payout_percent = ?, profit_loss = ? WHERE id = ?",
+        (result, payout_percent, profit_loss, signal_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def delete_imported_signal(signal_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM imported_signals WHERE id = ?", (signal_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_historical_signal_sources():
+    """Distinct channel/source labels actually present across both real
+    (`signals`) and imported (`imported_signals`) history - powers the
+    Strategy Lab's source filter dropdown without hardcoding a list."""
+    conn = get_connection()
+    live = [r["channel"] for r in conn.execute(
+        "SELECT DISTINCT channel FROM signals WHERE channel IS NOT NULL AND result IN ('win','loss','draw')"
+    ).fetchall()]
+    imported = [r["source_label"] for r in conn.execute(
+        "SELECT DISTINCT source_label FROM imported_signals WHERE source_label IS NOT NULL AND result IS NOT NULL"
+    ).fetchall()]
+    conn.close()
+    return sorted(set(live) | set(imported))
+
+
+@timed("database")
+def get_historical_signal_pool(source, channel_filter=None, date_from=None, date_to=None):
+    """Normalizes real `signals` rows and `imported_signals` rows into one
+    common shape for core/backtest_engine.py: {source_type, signal_id,
+    channel, asset, direction, expiry, timestamp, result, payout_percent,
+    profit_loss, trade_amount}. source is "live", "imported", or "both".
+    Only rows with a known win/loss/draw result are returned - an
+    ungraded/unresolved signal can't be simulated."""
+    pool = []
+    conn = get_connection()
+
+    if source in ("live", "both"):
+        query = "SELECT * FROM signals WHERE result IN ('win', 'loss', 'draw')"
+        params = []
+        if date_from:
+            query += " AND received_at >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND received_at <= ?"
+            params.append(date_to)
+        if channel_filter:
+            placeholders = ", ".join("?" for _ in channel_filter)
+            query += f" AND channel IN ({placeholders})"
+            params.extend(channel_filter)
+        query += " ORDER BY received_at ASC"
+        for row in conn.execute(query, params).fetchall():
+            r = dict(row)
+            payout_percent = (r["payout"] if r["payout"] is not None else
+                               (round((r["profit_loss"] / r["trade_amount"]) * 100, 2)
+                                if r["result"] == "win" and r["trade_amount"] else None))
+            pool.append({
+                "source_type": "live", "signal_id": r["id"], "channel": r["channel"],
+                "asset": r["asset"], "direction": r["direction"], "expiry": r["timeframe"],
+                "timestamp": r["received_at"], "result": r["result"],
+                "payout_percent": payout_percent, "profit_loss": r["profit_loss"],
+                "trade_amount": r["trade_amount"],
+            })
+
+    if source in ("imported", "both"):
+        query = "SELECT * FROM imported_signals WHERE result IN ('win', 'loss', 'draw')"
+        params = []
+        if date_from:
+            query += " AND received_at >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND received_at <= ?"
+            params.append(date_to)
+        if channel_filter:
+            placeholders = ", ".join("?" for _ in channel_filter)
+            query += f" AND source_label IN ({placeholders})"
+            params.extend(channel_filter)
+        query += " ORDER BY received_at ASC"
+        for row in conn.execute(query, params).fetchall():
+            r = dict(row)
+            pool.append({
+                "source_type": "imported", "signal_id": r["id"], "channel": r["source_label"],
+                "asset": r["asset"], "direction": r["direction"], "expiry": r["expiry"],
+                "timestamp": r["received_at"], "result": r["result"],
+                "payout_percent": r["payout_percent"], "profit_loss": r["profit_loss"],
+                "trade_amount": None,
+            })
+
+    conn.close()
+    pool.sort(key=lambda s: s["timestamp"])
+    return pool
+
+
+@timed("database")
+def create_backtest_run(name, signal_pool, starting_bankroll, default_payout_percent=85,
+                         session_window="daily", created_by=None):
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute("""
+        INSERT INTO backtest_runs (
+            name, signal_pool_json, starting_bankroll, default_payout_percent,
+            session_window, status, created_by, created_at
+        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+    """, (name, json.dumps(signal_pool), starting_bankroll, default_payout_percent,
+          session_window, created_by, now))
+    conn.commit()
+    run_id = cursor.lastrowid
+    conn.close()
+    return run_id
+
+
+def _backtest_run_row_to_dict(row):
+    d = dict(row)
+    d["signal_pool"] = json.loads(d["signal_pool_json"]) if d["signal_pool_json"] else {}
+    return d
+
+
+@timed("database")
+def get_backtest_run(run_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM backtest_runs WHERE id = ?", (run_id,)).fetchone()
+    conn.close()
+    return _backtest_run_row_to_dict(row) if row else None
+
+
+@timed("database")
+def list_backtest_runs(limit=50):
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [_backtest_run_row_to_dict(r) for r in rows]
+
+
+@timed("database")
+def update_backtest_run_status(run_id, status, error_message=None):
+    if status not in ("pending", "running", "completed", "failed"):
+        raise ValueError(f"invalid backtest run status: {status!r}")
+    conn = get_connection()
+    completed_at = datetime.now().isoformat() if status in ("completed", "failed") else None
+    conn.execute(
+        "UPDATE backtest_runs SET status = ?, error_message = ?, completed_at = COALESCE(?, completed_at) WHERE id = ?",
+        (status, error_message, completed_at, run_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def create_backtest_strategy(backtest_run_id, risk_profile_id, label, profile_snapshot):
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute("""
+        INSERT INTO backtest_strategies (backtest_run_id, risk_profile_id, label, profile_snapshot_json, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (backtest_run_id, risk_profile_id, label, json.dumps(profile_snapshot), now))
+    conn.commit()
+    strategy_id = cursor.lastrowid
+    conn.close()
+    return strategy_id
+
+
+def _backtest_strategy_row_to_dict(row):
+    d = dict(row)
+    d["profile_snapshot"] = json.loads(d["profile_snapshot_json"]) if d["profile_snapshot_json"] else {}
+    return d
+
+
+@timed("database")
+def list_backtest_strategies(backtest_run_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM backtest_strategies WHERE backtest_run_id = ? ORDER BY id ASC", (backtest_run_id,)
+    ).fetchall()
+    conn.close()
+    return [_backtest_strategy_row_to_dict(r) for r in rows]
+
+
+@timed("database")
+def get_backtest_strategy(strategy_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM backtest_strategies WHERE id = ?", (strategy_id,)).fetchone()
+    conn.close()
+    return _backtest_strategy_row_to_dict(row) if row else None
+
+
+@timed("database")
+def create_backtest_session(backtest_strategy_id, session_index, started_at, status,
+                             starting_balance, realized_pnl=0, trades_count=0,
+                             ending_martingale_step=0, ending_vaulted_amount=0, ended_at=None):
+    conn = get_connection()
+    cursor = conn.execute("""
+        INSERT INTO backtest_sessions (
+            backtest_strategy_id, session_index, started_at, ended_at, status,
+            starting_balance, realized_pnl, trades_count, ending_martingale_step, ending_vaulted_amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (backtest_strategy_id, session_index, started_at, ended_at, status,
+          starting_balance, realized_pnl, trades_count, ending_martingale_step, ending_vaulted_amount))
+    conn.commit()
+    session_id = cursor.lastrowid
+    conn.close()
+    return session_id
+
+
+@timed("database")
+def list_backtest_sessions(backtest_strategy_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM backtest_sessions WHERE backtest_strategy_id = ? ORDER BY session_index ASC",
+        (backtest_strategy_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def create_backtest_trade(backtest_session_id, signal_source_type, signal_id, sequence_in_session,
+                           asset, direction, occurred_at, trade_amount, martingale_step, result,
+                           profit_loss, running_balance):
+    conn = get_connection()
+    cursor = conn.execute("""
+        INSERT INTO backtest_trades (
+            backtest_session_id, signal_source_type, signal_id, sequence_in_session,
+            asset, direction, occurred_at, trade_amount, martingale_step, result,
+            profit_loss, running_balance
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (backtest_session_id, signal_source_type, signal_id, sequence_in_session,
+          asset, direction, occurred_at, trade_amount, martingale_step, result,
+          profit_loss, running_balance))
+    conn.commit()
+    trade_id = cursor.lastrowid
+    conn.close()
+    return trade_id
+
+
+@timed("database")
+def list_backtest_trades(backtest_session_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM backtest_trades WHERE backtest_session_id = ? ORDER BY sequence_in_session ASC",
+        (backtest_session_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def list_backtest_trades_for_strategy(backtest_strategy_id):
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT bt.* FROM backtest_trades bt
+        JOIN backtest_sessions bs ON bt.backtest_session_id = bs.id
+        WHERE bs.backtest_strategy_id = ?
+        ORDER BY bt.occurred_at ASC, bt.id ASC
+    """, (backtest_strategy_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def save_backtest_metrics(backtest_strategy_id, metrics):
+    conn = get_connection()
+    columns = list(metrics.keys())
+    placeholders = ", ".join("?" for _ in columns)
+    values = [metrics[c] for c in columns]
+    conn.execute(f"""
+        INSERT INTO backtest_metrics (backtest_strategy_id, {', '.join(columns)})
+        VALUES (?, {placeholders})
+        ON CONFLICT(backtest_strategy_id) DO UPDATE SET
+        {', '.join(f'{c} = excluded.{c}' for c in columns)}
+    """, [backtest_strategy_id] + values)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_backtest_metrics(backtest_strategy_id):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM backtest_metrics WHERE backtest_strategy_id = ?", (backtest_strategy_id,)
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def get_backtest_report(run_id):
+    """One call that assembles everything a report/comparison view needs:
+    the run, every strategy in it, and each strategy's metrics - the
+    session/trade-level detail is deliberately NOT inlined here (fetched
+    separately, on demand, via list_backtest_sessions/list_backtest_trades)
+    since a report with many strategies x many sessions x many trades
+    would otherwise be a very large single payload."""
+    run = get_backtest_run(run_id)
+    if run is None:
+        return None
+    strategies = list_backtest_strategies(run_id)
+    for s in strategies:
+        s["metrics"] = get_backtest_metrics(s["id"])
+    return {"run": run, "strategies": strategies}
+
+
+@timed("database")
+def delete_backtest_run(run_id):
+    conn = get_connection()
+    strategy_ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM backtest_strategies WHERE backtest_run_id = ?", (run_id,)
+    ).fetchall()]
+    for strategy_id in strategy_ids:
+        session_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM backtest_sessions WHERE backtest_strategy_id = ?", (strategy_id,)
+        ).fetchall()]
+        for session_id in session_ids:
+            conn.execute("DELETE FROM backtest_trades WHERE backtest_session_id = ?", (session_id,))
+        conn.execute("DELETE FROM backtest_sessions WHERE backtest_strategy_id = ?", (strategy_id,))
+        conn.execute("DELETE FROM backtest_metrics WHERE backtest_strategy_id = ?", (strategy_id,))
+    conn.execute("DELETE FROM backtest_strategies WHERE backtest_run_id = ?", (run_id,))
+    conn.execute("DELETE FROM backtest_runs WHERE id = ?", (run_id,))
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":
