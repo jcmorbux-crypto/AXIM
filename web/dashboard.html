@@ -11,6 +11,12 @@
   .activity-row .what { font-weight: 600; font-size: 13.5px; }
   .activity-row .when { color: var(--text-faint); font-size: 12px; margin-top: 2px; }
   .risk-line { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 550; }
+  .checklist-item { display: flex; align-items: center; gap: 10px; padding: 7px 0; font-size: 13.5px; }
+  .checklist-item .check { width: 18px; height: 18px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+  .checklist-item .check.done { background: var(--green-soft); color: var(--green); }
+  .checklist-item .check.pending { background: var(--surface); color: var(--text-faint); border: 1px solid var(--border); }
+  .checklist-item.done .label { color: var(--text-faint); text-decoration: line-through; }
+  .checklist-item a { color: var(--blue); text-decoration: none; font-size: 12px; margin-left: auto; }
 </style>
 </head>
 <body>
@@ -21,7 +27,7 @@
 
     <div class="page-header">
       <div>
-        <h1>Mission Control</h1>
+        <h1>Mission Control <a href="/guide#sec-mission-control" class="help-link" title="Help: Mission Control">?</a></h1>
         <div class="subtitle">Your trading operation, at a glance.</div>
       </div>
       <div class="row">
@@ -32,6 +38,14 @@
         <button class="subtle" onclick="callControl('/api/control/pause')">Pause</button>
         <button class="danger" onclick="confirmEmergencyStop()">Emergency Stop</button>
       </div>
+    </div>
+
+    <div class="card solid" id="onboarding-checklist" style="display:none; margin-bottom:24px;">
+      <div class="row" style="justify-content:space-between; align-items:center; margin-bottom:2px;">
+        <h3 style="margin:0;">Setup Checklist</h3>
+        <span class="muted" id="onboarding-progress-text" style="font-size:12px;"></span>
+      </div>
+      <div id="onboarding-items"></div>
     </div>
 
     <div class="status-line">
@@ -111,6 +125,41 @@ function timeAgo(iso) {
   const hours = Math.round(mins / 60);
   if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
   return new Date(iso).toLocaleDateString();
+}
+
+async function loadOnboardingChecklist() {
+  const card = document.getElementById("onboarding-checklist");
+  try {
+    const [status, po, channels, riskProfiles, sessionHistory] = await Promise.all([
+      fetchJSON("/api/status"),
+      fetchJSON("/api/pocket-option/status"),
+      fetchJSON("/api/channels"),
+      fetchJSON("/api/risk-profiles?include_templates=false"),
+      fetchJSON("/api/sessions?limit=50"),
+    ]);
+    const telegramOk = status.process.running && !po.heartbeat_stale;
+    const items = [
+      { label: "Owner account created", done: true, href: null },
+      { label: "Telegram connected", done: telegramOk, href: "/telegram" },
+      { label: "Pocket Option connected", done: po.process_running && !po.heartbeat_stale, href: "/broker" },
+      { label: "Fund created", done: allFunds.length > 0, href: "/funds" },
+      { label: "Signal source selected", done: channels.some(c => c.enabled), href: "/telegram" },
+      { label: "Money management profile selected", done: riskProfiles.length > 0, href: "/risk" },
+      { label: "Demo session completed", done: sessionHistory.some(s => s.trades_count > 0 || (s.status || "").startsWith("stopped")), href: "/sessions" },
+    ];
+    const doneCount = items.filter(i => i.done).length;
+    document.getElementById("onboarding-progress-text").textContent = `${doneCount} of ${items.length} complete`;
+    document.getElementById("onboarding-items").innerHTML = items.map(i => `
+      <div class="checklist-item ${i.done ? "done" : ""}">
+        <span class="check ${i.done ? "done" : "pending"}">${i.done ? "✓" : ""}</span>
+        <span class="label">${escapeHtml(i.label)}</span>
+        ${!i.done && i.href ? `<a href="${i.href}">Go &rarr;</a>` : ""}
+      </div>
+    `).join("");
+    card.style.display = doneCount < items.length ? "block" : "none";
+  } catch (e) {
+    card.style.display = "none";
+  }
 }
 
 async function loadFundSelector() {
@@ -334,6 +383,7 @@ function confirmEmergencyStop() {
   currentUser = await AximShell.init({ active: "dashboard" });
   if (!currentUser) return;
   await loadFundSelector();
+  loadOnboardingChecklist();
   refreshAll();
   setInterval(refreshAll, 5000);
 })();

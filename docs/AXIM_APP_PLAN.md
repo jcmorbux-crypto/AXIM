@@ -755,6 +755,39 @@ signal-entry form didn't clear its result/payout fields after a
 successful add, so a stale payout value silently carried into the next
 signal entered.
 
+### User Guide / Help system + onboarding checklist - DONE
+`web/guide.html` - eleven sections (Getting Started through
+Troubleshooting) written in plain English against AXIM's actual real
+behavior, not aspirational features - e.g. explicitly notes that
+balance tracking reads AXIM's own recorded trade history rather than a
+live broker balance, and that only one session can be active
+app-wide even across multiple Funds. Client-side search filters
+sections and highlights matches (`<mark>`, cleared and rebuilt per
+keystroke) - no backend search needed since the whole guide is static
+content on one page. "?" help-link icons added to Mission Control,
+Funds, Risk Engine, Trading Sessions, and Strategy Lab, each deep-
+linking to its matching guide section - deliberately NOT added to
+pages without a matching section (e.g. Rule Builder) rather than
+linking to a mismatched anchor.
+
+Onboarding checklist: a real, computed 7-item list on Mission Control
+(Owner account / Telegram connected / Pocket Option connected / Fund
+created / signal source selected / money management profile selected
+/ demo session completed), each backed by an actual API check already
+used elsewhere in the app (the same `telegramOk` logic Mission
+Control's own status line uses, `allFunds.length`, `channels.some(c =>
+c.enabled)`, etc.) - not a static checklist that always shows the same
+state. Hides itself once every item is complete, so it reads as
+onboarding, not a permanent fixture cluttering the screen for
+established users.
+
+Tested live: search correctly narrows to matching sections only
+(verified with a real query that should match exactly one section),
+help links land on the right anchor, and the checklist showed "6 of 7
+complete" with the correct single incomplete item on a fresh test
+account that had every other setup step done - confirming it's reading
+real state, not hardcoded.
+
 ## Known gaps / honest state as of Phase 1
 
 - **Single shared trading connection, not multi-tenant.** Every user

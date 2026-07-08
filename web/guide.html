@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Help / Guide - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .guide-layout { display: flex; gap: 24px; align-items: flex-start; }
+  .guide-toc { flex: 0 0 240px; position: sticky; top: 20px; }
+  .guide-toc a { display: block; padding: 7px 10px; border-radius: var(--radius-sm); color: var(--text-dim); text-decoration: none; font-size: 13px; font-weight: 500; }
+  .guide-toc a:hover { background: var(--surface); color: var(--text); }
+  .guide-toc a.active { background: var(--blue-soft); color: var(--blue); }
+  .guide-content { flex: 1; min-width: 0; }
+  .guide-section { margin-bottom: 36px; scroll-margin-top: 20px; }
+  .guide-section h2 { font-size: 19px; margin: 0 0 4px 0; }
+  .guide-section .section-kicker { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--blue); font-weight: 650; margin-bottom: 4px; }
+  .guide-section h3 { font-size: 14.5px; margin: 20px 0 8px 0; }
+  .guide-section p, .guide-section li { font-size: 13.5px; line-height: 1.65; color: var(--text); }
+  .guide-section ul, .guide-section ol { padding-left: 20px; margin: 8px 0; }
+  .guide-highlight { display: none; background: #fff3b0; }
+  mark.guide-highlight { display: inline; }
+  #guide-search-empty { display: none; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Help &amp; Guide</h1>
+        <div class="subtitle">Plain-English answers for operating AXIM - no developer jargon.</div>
+      </div>
+    </div>
+
+    <div class="field" style="max-width:420px; margin-bottom:24px;">
+      <input type="text" id="guide-search" placeholder="Search the guide... (e.g. 'martingale', 'demo test', 'connect telegram')" oninput="onSearch()">
+    </div>
+    <div id="guide-search-empty" class="empty" style="margin-bottom:20px;">No matches. Try a different word.</div>
+
+    <div class="guide-layout">
+      <nav class="guide-toc" id="guide-toc"></nav>
+      <div class="guide-content" id="guide-content">
+
+        <div class="guide-section" id="sec-getting-started">
+          <div class="section-kicker">A</div>
+          <h2>Getting Started</h2>
+          <p>AXIM watches Telegram channels for trading signals, sizes each trade using rules you control, and places trades on Pocket Option automatically. Nothing trades until you tell it to.</p>
+
+          <h3>First launch</h3>
+          <ol>
+            <li>Create the Owner account - the first account on a fresh install becomes the Owner automatically, with full access.</li>
+            <li>Follow the Setup Wizard (linked from Settings &gt; General any time you want to re-run it). It walks you through everything below in order.</li>
+            <li>Connect Telegram - links AXIM to the Telegram account that will receive signals.</li>
+            <li>Connect Pocket Option - starts AXIM's background service, which opens a browser session to Pocket Option.</li>
+            <li>Create a Fund - a Fund is a bankroll (see Section C). Everything you do lives inside one.</li>
+            <li>Create or choose a money management profile - how much AXIM risks per trade (see Section F).</li>
+            <li>Select Signal Sources - which Telegram channels AXIM should actually act on.</li>
+            <li>Start a Demo session and watch a real trade go through the whole pipeline, risk-free.</li>
+          </ol>
+        </div>
+
+        <div class="guide-section" id="sec-mission-control">
+          <div class="section-kicker">B</div>
+          <h2>Mission Control</h2>
+          <p>Your home screen. One status line tells you if AXIM is healthy; everything else follows from there.</p>
+          <h3>What each card means</h3>
+          <ul>
+            <li><strong>Status line</strong> (top) - "Running normally" means AXIM is connected to both Telegram and Pocket Option and watching your selected sources. "Reconnecting" usually clears itself within a minute. "Not running" means the background service is stopped.</li>
+            <li><strong>Fund selector</strong> (top right) - switch between "All Funds (combined)" and any single Fund to see that portfolio's own numbers instead of the global total.</li>
+            <li><strong>Today's Performance</strong> - the day's realized profit/loss, win rate, and trade count (or a Fund's lifetime numbers, if one is selected).</li>
+            <li><strong>Risk</strong> - a one-line read of whether you're within your limits, with the actual numbers available on click.</li>
+            <li><strong>Recent Activity</strong> - your latest signals and their outcomes.</li>
+            <li><strong>System diagnostics</strong> (bottom, collapsed) - technical detail (process status, connection health) for troubleshooting. You don't need to look at this in normal use.</li>
+          </ul>
+          <h3>Starting, pausing, and stopping</h3>
+          <p><strong>Start Session</strong> takes you to Trading Sessions to configure and launch a session. <strong>Pause</strong> keeps AXIM connected but stops it acting on new signals - use this if you want to step away briefly without fully stopping.</p>
+          <h3>What Emergency Stop does</h3>
+          <p>Emergency Stop immediately halts every signal from being requested or executed, across your whole account, and ends the active session. It is deliberately available to every logged-in user, not just Owners/Admins - if something looks wrong, anyone should be able to hit the brakes. Clear it from the same button once you're ready to resume.</p>
+        </div>
+
+        <div class="guide-section" id="sec-funds">
+          <div class="section-kicker">C</div>
+          <h2>Funds</h2>
+          <p>A Fund is a separate bankroll with its own balance, sources, strategy, and history - AXIM doesn't assume you only ever run one pool of money. Use separate Funds for a Demo bankroll vs. a Live one, or to keep an aggressive strategy's results apart from a conservative one.</p>
+          <h3>Trading Balance vs. Protected Balance</h3>
+          <p><strong>Trading Balance</strong> is the money actually available for AXIM to size new trades against. <strong>Protected Balance</strong> (shown in gold) is money the Profit Vault has skimmed off and set aside - it no longer affects position sizing, on purpose, so a good run doesn't put your whole balance back at risk. <strong>Total Account Value</strong> is simply the two added together - vaulting moves money into a safer bucket, it never destroys it.</p>
+          <h3>Creating a Fund</h3>
+          <p>Go to Funds &gt; New Fund, give it a name and a starting balance. From the Fund's detail view you can then assign Signal Sources (which Telegram channels feed it) and a default money management profile (used automatically when you start a session under this Fund, unless you override it).</p>
+          <h3>Using multiple Funds</h3>
+          <p>Every Trading Session must belong to a Fund. Mission Control's Fund selector lets you view any Fund's own performance at any time. Note: AXIM currently runs one active session at a time across the whole app (see Section E) - so while you can organize unlimited Funds, only one can be actively trading at once today.</p>
+        </div>
+
+        <div class="guide-section" id="sec-signal-sources">
+          <div class="section-kicker">D</div>
+          <h2>Signal Sources</h2>
+          <p>Signal Sources are the Telegram channels, groups, or bots AXIM listens to.</p>
+          <h3>Finding and adding channels</h3>
+          <p>On the Signal Sources page, sync your Telegram dialogs, then enable the ones you want AXIM to act on. Only enabled channels are ever traded from.</p>
+          <h3>Passive vs. bot-command channels</h3>
+          <p><strong>Passive</strong> channels post signals directly as messages - AXIM parses every message and trades on anything it recognizes. <strong>Bot-command</strong> channels require AXIM to send a trigger command first and wait for a reply before parsing a signal, matching how some signal bots work.</p>
+          <h3>Testing parsing</h3>
+          <p>Signal Inspector shows the raw messages a channel has sent and how AXIM parsed each one (or why it didn't) - use it to confirm a new source's message format is actually recognized before trusting it with real money.</p>
+        </div>
+
+        <div class="guide-section" id="sec-trading-sessions">
+          <div class="section-kicker">E</div>
+          <h2>Trading Sessions</h2>
+          <p>A session is a bounded period of trading - it always has a Fund, at least one signal source, and (optionally) a profit target, loss limit, or max trade count that will automatically stop it.</p>
+          <h3>How profit targets and loss limits work</h3>
+          <p>Both are measured against the session's own realized profit/loss, checked after every closed trade. The moment either threshold is crossed, the session stops itself - no manual intervention needed. A limit of 0 means "no limit."</p>
+          <h3>Why AXIM stops when it does</h3>
+          <p>Every session ends for exactly one of these reasons, always visible in its history: the profit target was reached, the loss limit was breached, the max trade count was reached, you stopped it manually, or an Emergency Stop was triggered.</p>
+          <p class="muted">Known limitation: only one session can be active across your whole AXIM installation at a time, even if you have multiple Funds - see Section C.</p>
+        </div>
+
+        <div class="guide-section" id="sec-risk-engine">
+          <div class="section-kicker">F</div>
+          <h2>Risk Engine (Capital Manager)</h2>
+          <p>Controls exactly how much money AXIM risks on each trade. This is the single most important setting in AXIM - review it carefully before running anything on a Live account.</p>
+          <h3>Sizing modes</h3>
+          <ul>
+            <li><strong>Fixed amount</strong> - the same dollar amount every trade.</li>
+            <li><strong>Percent of bankroll</strong> - a percentage of a configured bankroll figure.</li>
+            <li><strong>Martingale</strong> - increases the stake after a loss (by a multiplier or a custom ladder you define), aiming to recover a losing streak on the next win. Capped by a maximum number of steps and a maximum total exposure, so it can't run away unbounded.</li>
+            <li><strong>Compounding</strong> - increases (or decreases) your risk percentage as profit accumulates within a session, following steps you define.</li>
+            <li><strong>Profit Vault</strong> - automatically skims a percentage of profit into the Protected Balance, either every winning session or every time you cross a dollar milestone.</li>
+          </ul>
+          <h3>Strategy templates</h3>
+          <p>27 starter profiles are built in (Capital Shield, Momentum Rider, Recovery Guard, and more) - each a genuinely different combination of the settings above. Duplicate one to start customizing; templates themselves are read-only.</p>
+        </div>
+
+        <div class="guide-section" id="sec-strategy-lab">
+          <div class="section-kicker">G</div>
+          <h2>Strategy Lab</h2>
+          <p>Lets you replay historical signals through one or more Risk Engine profiles to see how each would have performed, before risking real money.</p>
+          <h3>Running a backtest</h3>
+          <p>Import historical signals (CSV, or use ones AXIM already recorded live), pick a starting bankroll and date range, choose the strategies to compare, and run. AXIM simulates day-by-day (or one continuous) sessions using the exact same sizing math the live Risk Engine uses - not a simplified approximation.</p>
+          <h3>Comparing strategies</h3>
+          <p>Each strategy gets a comparison card (final bankroll, ROI, max drawdown, win rate, a Low/Medium/High risk score) plus an equity curve chart so you can see the shape of each strategy's results, not just the final number.</p>
+          <p class="muted"><strong>Past results do not guarantee future results.</strong> A backtest is a simulation based on the signals and assumptions you provide - it cannot predict what a signal source will do next.</p>
+        </div>
+
+        <div class="guide-section" id="sec-trading-desk">
+          <div class="section-kicker">H</div>
+          <h2>Trade Center (Trading Desk)</h2>
+          <p>Every trade AXIM has placed, with its full detail: the original signal, how it was parsed, the sizing decision AXIM made, execution timeline, and the result.</p>
+          <h3>Trade statuses</h3>
+          <p>A trade moves through preparation, placement, and settlement - the status column shows exactly where it is. Closed trades show Win, Loss, or Draw with the real profit/loss amount.</p>
+          <h3>Screenshots and results</h3>
+          <p>AXIM captures a screenshot at key points during execution (when available) so you can visually confirm what happened on Pocket Option's side, not just trust a database row.</p>
+        </div>
+
+        <div class="guide-section" id="sec-connections">
+          <div class="section-kicker">I</div>
+          <h2>Connections (Telegram &amp; Pocket Option)</h2>
+          <h3>Telegram status</h3>
+          <p>Shown on Mission Control's status line. If it says "Reconnecting," AXIM is re-establishing its connection automatically - this is normal and usually resolves within a minute.</p>
+          <h3>Pocket Option status</h3>
+          <p>Visible on the Broker page: Connected, Reconnecting, or Not Connected, plus your current account mode (Demo or Live).</p>
+          <h3>Reconnecting</h3>
+          <p>If a connection seems stuck, use the Reconnect button on the Broker page - it restarts AXIM's background service cleanly. Clear Session (also on Broker) deletes your saved Pocket Option login if you need to log in fresh; it's a more drastic step and asks for confirmation.</p>
+        </div>
+
+        <div class="guide-section" id="sec-safety">
+          <div class="section-kicker">J</div>
+          <h2>Safety</h2>
+          <h3>Demo vs. Live</h3>
+          <p>Your account mode is set outside the app (in configuration) and shown everywhere as a badge - blue for Demo, red for Live. AXIM will not let a session claim to be Live while actually connected to Demo, or vice versa.</p>
+          <h3>Risk confirmation</h3>
+          <p>Starting a session on a Live account requires you to type a confirmation phrase - a deliberate extra step so real-money trading is never started by accident.</p>
+          <h3>Emergency Stop</h3>
+          <p>See Section B - available to any logged-in user, halts everything immediately.</p>
+          <h3>Loss limits</h3>
+          <p>Set at the session level (Section E) and, going forward, at the Fund level (Section C) - both are real, enforced stop conditions, not just a display number.</p>
+          <h3>Backtesting disclaimer</h3>
+          <p>Repeated deliberately: past results do not guarantee future results. See Section G.</p>
+        </div>
+
+        <div class="guide-section" id="sec-troubleshooting">
+          <div class="section-kicker">K</div>
+          <h2>Troubleshooting</h2>
+          <h3>Telegram not connected</h3>
+          <p>Check Signal Sources for a connection error. Most often this means your Telegram session needs to be re-authenticated - follow the prompts there.</p>
+          <h3>Pocket Option not healthy</h3>
+          <p>Check the Broker page. Try Reconnect first. If that doesn't help, check System Diagnostics on Mission Control (collapsed section) for the underlying process status.</p>
+          <h3>No signals appearing</h3>
+          <p>Confirm the channel is enabled on Signal Sources, and that it's actually posting messages - Signal Inspector shows the raw message feed even for channels that aren't currently enabled.</p>
+          <h3>Signal not parsed</h3>
+          <p>Open the message in Signal Inspector - it shows exactly why a message wasn't recognized as a tradeable signal. Some channels need a custom parsing rule (also configurable from Signal Sources) if their message format is unusual.</p>
+          <h3>Trade not executing</h3>
+          <p>Check Trade Center for the trade's status and any recorded error. Common causes: the session's loss limit or max trades was already reached, the signal's payout was below your configured minimum, or Pocket Option's connection was unhealthy at that moment.</p>
+          <h3>Balance not updating</h3>
+          <p>AXIM does not yet read a live balance directly from Pocket Option - Fund and session balances are computed from AXIM's own recorded trade history, not a live account balance poll. This is a known, current limitation, not a bug.</p>
+        </div>
+
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+function buildToc() {
+  const sections = document.querySelectorAll(".guide-section");
+  const toc = document.getElementById("guide-toc");
+  toc.innerHTML = Array.from(sections).map(s => {
+    const title = s.querySelector("h2").textContent;
+    return `<a href="#${s.id}" data-target="${s.id}">${escapeHtml(title)}</a>`;
+  }).join("");
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+
+function onSearch() {
+  const query = document.getElementById("guide-search").value.trim().toLowerCase();
+  const sections = document.querySelectorAll(".guide-section");
+  clearHighlights();
+  if (!query) {
+    sections.forEach(s => s.style.display = "block");
+    document.getElementById("guide-search-empty").style.display = "none";
+    return;
+  }
+  let anyVisible = false;
+  sections.forEach(s => {
+    const matches = s.textContent.toLowerCase().includes(query);
+    s.style.display = matches ? "block" : "none";
+    if (matches) { anyVisible = true; highlightMatches(s, query); }
+  });
+  document.getElementById("guide-search-empty").style.display = anyVisible ? "none" : "block";
+}
+
+function clearHighlights() {
+  document.querySelectorAll("mark.guide-highlight").forEach(m => {
+    const parent = m.parentNode;
+    parent.replaceChild(document.createTextNode(m.textContent), m);
+    parent.normalize();
+  });
+}
+
+function highlightMatches(section, query) {
+  const walker = document.createTreeWalker(section, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node.textContent.toLowerCase().includes(query)) nodes.push(node);
+  }
+  nodes.forEach(textNode => {
+    const idx = textNode.textContent.toLowerCase().indexOf(query);
+    if (idx === -1) return;
+    const before = textNode.textContent.slice(0, idx);
+    const match = textNode.textContent.slice(idx, idx + query.length);
+    const after = textNode.textContent.slice(idx + query.length);
+    const mark = document.createElement("mark");
+    mark.className = "guide-highlight";
+    mark.textContent = match;
+    const frag = document.createDocumentFragment();
+    frag.appendChild(document.createTextNode(before));
+    frag.appendChild(mark);
+    frag.appendChild(document.createTextNode(after));
+    textNode.parentNode.replaceChild(frag, textNode);
+  });
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "guide" });
+  if (!user) return;
+  buildToc();
+
+  const hash = window.location.hash.slice(1);
+  if (hash) {
+    const target = document.getElementById(hash);
+    if (target) target.scrollIntoView();
+  }
+})();
+</script>
+</body>
+</html>
