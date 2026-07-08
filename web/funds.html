@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Funds - AXIM</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .fund-list-item { display: flex; flex-direction: column; gap: 4px; padding: 12px; border-radius: var(--radius-sm); cursor: pointer; margin-bottom: 4px; }
+  .fund-list-item:hover { background: var(--surface); }
+  .fund-list-item.active { background: var(--blue-soft); }
+  .fund-list-item .fund-name { font-weight: 600; font-size: 13.5px; }
+  .fund-list-item .fund-value { font-size: 12.5px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .source-checklist { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; }
+  .source-checklist label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+  .source-checklist input { width: auto; }
+  .balance-trio { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }
+  .balance-trio .box { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; }
+  .balance-trio .box .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); font-weight: 650; margin-bottom: 4px; }
+  .balance-trio .box .value { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .balance-trio .box.vault { background: var(--yellow-soft); border-color: #f5e0a8; }
+  .balance-trio .box.vault .value { color: var(--yellow); }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Funds</h1>
+        <div class="subtitle">Manage multiple portfolios - each with its own balance, sources, strategy, and history.</div>
+      </div>
+      <button class="primary" onclick="openCreateModal()">New Fund</button>
+    </div>
+
+    <div class="grid" style="grid-template-columns: 280px 1fr;">
+      <div class="card solid">
+        <h3>All Funds</h3>
+        <div id="funds-list" class="muted">Loading...</div>
+      </div>
+
+      <div class="card solid" id="detail-panel" style="display:none;">
+        <div class="row" style="justify-content:space-between; margin-bottom:14px;">
+          <h3 id="detail-title" style="margin:0;">Fund</h3>
+          <div class="row">
+            <span class="badge" id="detail-status-badge">-</span>
+            <button class="subtle" onclick="duplicateCurrentFund()">Duplicate</button>
+            <button class="subtle" onclick="toggleArchive()" id="archive-btn">Archive</button>
+          </div>
+        </div>
+
+        <div class="balance-trio">
+          <div class="box"><div class="label">Trading Balance</div><div class="value" id="d-trading-balance">-</div></div>
+          <div class="box vault"><div class="label">Protected / Vault</div><div class="value" id="d-protected-balance">-</div></div>
+          <div class="box"><div class="label">Total Account Value</div><div class="value" id="d-total-value">-</div></div>
+        </div>
+
+        <div class="row" style="margin-bottom:18px;">
+          <div class="card" style="flex:1;">
+            <h3>Performance</h3>
+            <div class="stat-row"><span class="stat-label">Trades closed</span><span class="stat-value" id="d-trades">-</span></div>
+            <div class="stat-row"><span class="stat-label">Win rate</span><span class="stat-value" id="d-winrate">-</span></div>
+            <div class="stat-row"><span class="stat-label">Total P/L</span><span class="stat-value" id="d-pl">-</span></div>
+          </div>
+        </div>
+
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Fund Settings</div>
+        <div class="row">
+          <div class="field" style="flex:2;"><label>Name</label><input type="text" id="f-name"></div>
+          <div class="field" style="flex:1;"><label>Starting balance ($)</label><input type="number" id="f-starting-balance" step="0.01"></div>
+        </div>
+        <div class="field"><label>Broker / account label</label><input type="text" id="f-broker-label" placeholder="e.g. Pocket Option Demo"></div>
+        <div class="row">
+          <div class="field" style="flex:1;"><label>Default money management profile</label><select id="f-risk-profile"><option value="">None</option></select></div>
+          <div class="field" style="flex:1;"><label>Default session template</label><select id="f-session-profile"><option value="">None</option></select></div>
+        </div>
+        <div class="row">
+          <div class="field" style="flex:1;"><label>Profit target ($, 0=off)</label><input type="number" id="f-profit-target" step="0.01"></div>
+          <div class="field" style="flex:1;"><label>Loss limit ($, 0=off)</label><input type="number" id="f-loss-limit" step="0.01"></div>
+          <div class="field" style="flex:1;"><label>Max trades (0=off)</label><input type="number" id="f-max-trades"></div>
+        </div>
+        <button class="primary" onclick="saveFund()">Save Settings</button>
+        <span id="save-status" class="muted"></span>
+
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:18px 0 8px 0;">Signal Sources</div>
+        <div class="source-checklist" id="source-checklist"></div>
+
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:18px 0 8px 0;">Recent Sessions</div>
+        <table>
+          <thead><tr><th>Name</th><th>Status</th><th>P/L</th><th>Started</th></tr></thead>
+          <tbody id="sessions-body"><tr><td colspan="4" class="empty">No sessions yet.</td></tr></tbody>
+        </table>
+
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:18px 0 8px 0;">Recent Backtests</div>
+        <table>
+          <thead><tr><th>Name</th><th>Status</th><th>Created</th></tr></thead>
+          <tbody id="backtests-body"><tr><td colspan="3" class="empty">No backtests yet.</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="modal-backdrop" id="create-modal">
+  <div class="modal">
+    <h2 style="margin-top:0;">New Fund</h2>
+    <div class="field"><label>Name</label><input type="text" id="c-name" placeholder="e.g. Aggressive Growth Fund"></div>
+    <div class="field"><label>Starting balance ($)</label><input type="number" id="c-starting-balance" value="1000" step="0.01"></div>
+    <div class="row" style="justify-content:flex-end;">
+      <button class="subtle" onclick="closeModal('create-modal')">Cancel</button>
+      <button class="primary" onclick="createFund()">Create Fund</button>
+    </div>
+    <span id="create-status" class="muted"></span>
+  </div>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let allFunds = [];
+let allChannels = [];
+let allRiskProfiles = [];
+let allSessionProfiles = [];
+let currentFundId = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function fmtMoney(n) { if (n === null || n === undefined) return "-"; return `$${Number(n).toFixed(2)}`; }
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
+
+async function refreshAll() {
+  const [funds, channels, riskProfiles, sessionProfiles] = await Promise.all([
+    fetchJSON("/api/funds"),
+    fetchJSON("/api/channels"),
+    fetchJSON("/api/risk-profiles"),
+    fetchJSON("/api/sessions/profiles").catch(() => []),
+  ]);
+  allFunds = funds;
+  allChannels = channels;
+  allRiskProfiles = riskProfiles;
+  allSessionProfiles = sessionProfiles;
+  renderFundsList();
+}
+
+function renderFundsList() {
+  const list = document.getElementById("funds-list");
+  if (!allFunds.length) { list.innerHTML = '<div class="empty">No funds yet - create one to get started.</div>'; return; }
+  list.innerHTML = allFunds.map(f => `
+    <div class="fund-list-item ${f.id === currentFundId ? "active" : ""}" onclick="selectFund(${f.id})">
+      <div class="fund-name">${escapeHtml(f.name)} ${f.status !== "active" ? `<span class="badge off">${f.status}</span>` : ""}</div>
+      <div class="fund-value">${fmtMoney(f.balances.total_account_value)}</div>
+    </div>
+  `).join("");
+}
+
+async function selectFund(fundId) {
+  currentFundId = fundId;
+  renderFundsList();
+  const report = await fetchJSON(`/api/funds/${fundId}`);
+  renderDetail(report);
+}
+
+function renderDetail(report) {
+  const fund = report.fund;
+  document.getElementById("detail-panel").style.display = "block";
+  document.getElementById("detail-title").textContent = fund.name;
+  const statusBadge = document.getElementById("detail-status-badge");
+  statusBadge.textContent = fund.status;
+  statusBadge.className = "badge " + (fund.status === "active" ? "on" : (fund.status === "paused" ? "warn" : "off"));
+  document.getElementById("archive-btn").textContent = fund.status === "archived" ? "Reactivate" : "Archive";
+
+  document.getElementById("d-trading-balance").textContent = fmtMoney(report.balances.trading_balance);
+  document.getElementById("d-protected-balance").textContent = fmtMoney(report.balances.protected_balance);
+  document.getElementById("d-total-value").textContent = fmtMoney(report.balances.total_account_value);
+
+  document.getElementById("d-trades").textContent = report.performance.total_closed;
+  document.getElementById("d-winrate").textContent = report.performance.win_rate !== null ? (report.performance.win_rate * 100).toFixed(1) + "%" : "-";
+  const plEl = document.getElementById("d-pl");
+  plEl.textContent = fmtMoney(report.performance.profit_loss);
+  plEl.className = "stat-value " + (report.performance.profit_loss > 0 ? "pos" : (report.performance.profit_loss < 0 ? "neg" : "neutral"));
+
+  document.getElementById("f-name").value = fund.name;
+  document.getElementById("f-starting-balance").value = fund.starting_balance;
+  document.getElementById("f-broker-label").value = fund.assigned_broker_label || "";
+  document.getElementById("f-profit-target").value = fund.profit_target;
+  document.getElementById("f-loss-limit").value = fund.loss_limit;
+  document.getElementById("f-max-trades").value = fund.max_trades;
+
+  const riskSelect = document.getElementById("f-risk-profile");
+  riskSelect.innerHTML = '<option value="">None</option>' + allRiskProfiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  riskSelect.value = fund.default_risk_profile_id || "";
+
+  const sessionSelect = document.getElementById("f-session-profile");
+  sessionSelect.innerHTML = '<option value="">None</option>' + allSessionProfiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+  sessionSelect.value = fund.default_session_profile_id || "";
+
+  document.getElementById("source-checklist").innerHTML = allChannels.map(c => `
+    <label><input type="checkbox" value="${c.id}" ${report.sources.includes(c.id) ? "checked" : ""} onchange="toggleSource(${c.id}, this.checked)"> ${escapeHtml(c.title || c.username)}</label>
+  `).join("") || '<div class="empty">No signal sources configured yet.</div>';
+
+  document.getElementById("sessions-body").innerHTML = report.recent_sessions.length
+    ? report.recent_sessions.map(s => `
+        <tr><td>${escapeHtml(s.name || "-")}</td><td><span class="badge off">${s.status}</span></td>
+        <td class="${s.realized_pnl >= 0 ? "pos" : "neg"}">${fmtMoney(s.realized_pnl)}</td>
+        <td class="muted">${(s.started_at || "").replace("T", " ").slice(0, 16)}</td></tr>
+      `).join("")
+    : '<tr><td colspan="4" class="empty">No sessions yet.</td></tr>';
+
+  document.getElementById("backtests-body").innerHTML = report.recent_backtests.length
+    ? report.recent_backtests.map(b => `
+        <tr><td>${escapeHtml(b.name)}</td><td><span class="badge off">${b.status}</span></td>
+        <td class="muted">${(b.created_at || "").replace("T", " ").slice(0, 16)}</td></tr>
+      `).join("")
+    : '<tr><td colspan="3" class="empty">No backtests yet.</td></tr>';
+}
+
+async function saveFund() {
+  const statusEl = document.getElementById("save-status");
+  const body = {
+    name: document.getElementById("f-name").value.trim(),
+    starting_balance: parseFloat(document.getElementById("f-starting-balance").value) || 0,
+    assigned_broker_label: document.getElementById("f-broker-label").value || null,
+    default_risk_profile_id: document.getElementById("f-risk-profile").value ? parseInt(document.getElementById("f-risk-profile").value, 10) : null,
+    default_session_profile_id: document.getElementById("f-session-profile").value ? parseInt(document.getElementById("f-session-profile").value, 10) : null,
+    profit_target: parseFloat(document.getElementById("f-profit-target").value) || 0,
+    loss_limit: parseFloat(document.getElementById("f-loss-limit").value) || 0,
+    max_trades: parseInt(document.getElementById("f-max-trades").value, 10) || 0,
+  };
+  try {
+    await fetchJSON(`/api/funds/${currentFundId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    statusEl.textContent = "Saved.";
+    await refreshAll();
+    await selectFund(currentFundId);
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+async function toggleSource(channelId, enabled) {
+  if (enabled) {
+    await fetchJSON(`/api/funds/${currentFundId}/sources`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channel_id: channelId }),
+    });
+  } else {
+    await fetchJSON(`/api/funds/${currentFundId}/sources/${channelId}`, { method: "DELETE" });
+  }
+}
+
+async function toggleArchive() {
+  const fund = allFunds.find(f => f.id === currentFundId);
+  const newStatus = fund.status === "archived" ? "active" : "archived";
+  await fetchJSON(`/api/funds/${currentFundId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: newStatus }),
+  });
+  await refreshAll();
+  await selectFund(currentFundId);
+}
+
+async function duplicateCurrentFund() {
+  const newName = prompt("Name for the duplicated fund:");
+  if (!newName) return;
+  const result = await fetchJSON(`/api/funds/${currentFundId}/duplicate`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: newName }),
+  });
+  await refreshAll();
+  await selectFund(result.fund.id);
+}
+
+function openCreateModal() {
+  document.getElementById("c-name").value = "";
+  document.getElementById("c-starting-balance").value = "1000";
+  document.getElementById("create-status").textContent = "";
+  openModal("create-modal");
+}
+
+async function createFund() {
+  const statusEl = document.getElementById("create-status");
+  const name = document.getElementById("c-name").value.trim();
+  if (!name) { statusEl.textContent = "Name is required."; return; }
+  try {
+    const report = await fetchJSON("/api/funds", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, starting_balance: parseFloat(document.getElementById("c-starting-balance").value) || 0 }),
+    });
+    closeModal("create-modal");
+    await refreshAll();
+    await selectFund(report.fund.id);
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "funds" });
+  if (!user) return;
+  await refreshAll();
+  if (allFunds.length) await selectFund(allFunds[0].id);
+})();
+</script>
+</body>
+</html>

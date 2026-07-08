@@ -1,0 +1,134 @@
+"""Funds / Portfolios API (docs/AXIM_APP_PLAN.md) - HTTP surface over
+core/database.py's funds/fund_sources CRUD and core/fund_manager.py's
+balance/performance aggregation.
+"""
+import sys
+from pathlib import Path
+
+API_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = API_DIR.parent
+CORE_DIR = PROJECT_ROOT / "core"
+sys.path.insert(0, str(CORE_DIR))
+
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+import database
+import fund_manager
+from auth_routes import get_current_user, require_admin
+
+router = APIRouter(prefix="/api/funds", tags=["funds"])
+
+
+class FundCreate(BaseModel):
+    name: str
+    starting_balance: float = 0
+    assigned_broker_label: Optional[str] = None
+    default_risk_profile_id: Optional[int] = None
+    default_session_profile_id: Optional[int] = None
+    profit_target: float = 0
+    loss_limit: float = 0
+    max_trades: int = 0
+    status: str = "active"
+
+
+class FundUpdate(BaseModel):
+    name: Optional[str] = None
+    starting_balance: Optional[float] = None
+    assigned_broker_label: Optional[str] = None
+    default_risk_profile_id: Optional[int] = None
+    default_session_profile_id: Optional[int] = None
+    profit_target: Optional[float] = None
+    loss_limit: Optional[float] = None
+    max_trades: Optional[int] = None
+    status: Optional[str] = None
+
+
+class DuplicateFundRequest(BaseModel):
+    new_name: str
+
+
+class AddSourceRequest(BaseModel):
+    channel_id: int
+
+
+def _get_or_404(fund_id):
+    fund = database.get_fund(fund_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="fund not found")
+    return fund
+
+
+@router.get("")
+def list_funds(status: Optional[str] = None, user=Depends(get_current_user)):
+    return fund_manager.list_funds_with_balances(status=status)
+
+
+@router.post("")
+def create_fund(body: FundCreate, user=Depends(require_admin)):
+    try:
+        fund_id = database.create_fund(body.name, starting_balance=body.starting_balance,
+                                        **body.model_dump(exclude={"name", "starting_balance"}))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return fund_manager.get_fund_report(fund_id)
+
+
+@router.get("/{fund_id}")
+def get_fund(fund_id: int, user=Depends(get_current_user)):
+    report = fund_manager.get_fund_report(fund_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="fund not found")
+    return report
+
+
+@router.patch("/{fund_id}")
+def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
+    _get_or_404(fund_id)
+    try:
+        database.update_fund(fund_id, **body.model_dump(exclude_unset=True))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return fund_manager.get_fund_report(fund_id)
+
+
+@router.post("/{fund_id}/archive")
+def archive_fund(fund_id: int, user=Depends(require_admin)):
+    _get_or_404(fund_id)
+    database.update_fund(fund_id, status="archived")
+    return fund_manager.get_fund_report(fund_id)
+
+
+@router.post("/{fund_id}/duplicate")
+def duplicate_fund(fund_id: int, body: DuplicateFundRequest, user=Depends(require_admin)):
+    _get_or_404(fund_id)
+    new_id = database.duplicate_fund(fund_id, body.new_name)
+    return fund_manager.get_fund_report(new_id)
+
+
+@router.post("/{fund_id}/sources")
+def add_source(fund_id: int, body: AddSourceRequest, user=Depends(require_admin)):
+    _get_or_404(fund_id)
+    database.add_fund_source(fund_id, body.channel_id)
+    return {"sources": database.list_fund_source_channel_ids(fund_id)}
+
+
+@router.delete("/{fund_id}/sources/{channel_id}")
+def remove_source(fund_id: int, channel_id: int, user=Depends(require_admin)):
+    _get_or_404(fund_id)
+    database.remove_fund_source(fund_id, channel_id)
+    return {"sources": database.list_fund_source_channel_ids(fund_id)}
+
+
+@router.get("/{fund_id}/sessions")
+def get_fund_sessions(fund_id: int, user=Depends(get_current_user)):
+    _get_or_404(fund_id)
+    return database.list_fund_sessions(fund_id)
+
+
+@router.get("/{fund_id}/backtests")
+def get_fund_backtests(fund_id: int, user=Depends(get_current_user)):
+    _get_or_404(fund_id)
+    return database.list_fund_backtest_runs(fund_id)

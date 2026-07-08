@@ -155,7 +155,8 @@ async function renderStep() {
   else if (currentStep === 5) {
     content.innerHTML = `
       <h2>Create your first Trading Session</h2>
-      <div class="wizard-subtitle">Sessions are how AXIM trades - bounded by a profit target, loss limit, or trade count, not "running forever."</div>
+      <div class="wizard-subtitle">Sessions are how AXIM trades - bounded by a profit target, loss limit, or trade count, not "running forever." Every session belongs to a Fund, so your results stay organized as you add more portfolios later.</div>
+      <div class="field"><label>Fund name</label><input type="text" id="w-fund-name" value="My First Fund"></div>
       <div class="field"><label>Session name</label><input type="text" id="w-session-name" placeholder="My First Session"></div>
       <div class="row">
         <div class="field"><label>Profit target ($)</label><input type="number" id="w-profit-target" value="0"></div>
@@ -269,7 +270,12 @@ async function goNext() {
       wizardState.channelIds = checked;
     } else if (currentStep === 5) {
       const name = document.getElementById("w-session-name").value;
+      const fundName = document.getElementById("w-fund-name").value || "My First Fund";
       if (name && wizardState.channelIds.length) {
+        const fund = await fetchJSON("/api/funds", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: fundName, starting_balance: 0 }),
+        });
         await fetchJSON("/api/sessions/start", {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -278,6 +284,7 @@ async function goNext() {
             loss_limit: parseFloat(document.getElementById("w-loss-limit").value) || 0,
             max_trades: parseInt(document.getElementById("w-max-trades").value, 10) || 0,
             risk_profile_id: wizardState.riskProfileId,
+            fund_id: fund.fund.id,
           }),
         });
       }

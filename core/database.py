@@ -38,6 +38,7 @@ _NEW_SESSION_COLUMNS = {
     "risk_profile_id": "INTEGER",
     "current_martingale_step": "INTEGER DEFAULT 0",
     "vaulted_amount": "REAL DEFAULT 0",
+    "fund_id": "INTEGER",
 }
 
 # Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - links a user to a
@@ -202,6 +203,56 @@ def initialize_database():
         max_trades INTEGER DEFAULT 0,
         require_confirmation INTEGER DEFAULT 0,
         created_at TEXT
+    );
+    """)
+
+    # Funds / Portfolios (docs/AXIM_APP_PLAN.md) - AXIM does not assume a
+    # single bankroll. A fund is an organizing/attribution layer: trading
+    # sessions, trades (via their session), and backtest runs each belong
+    # to at most one fund (a plain fund_id FK added to trading_sessions/
+    # backtest_runs below, NOT separate fund_sessions/fund_trades/
+    # fund_backtests join tables - a session/trade/backtest run can only
+    # ever belong to one fund, so a direct FK is the correct normalized
+    # design and avoids a duplicate-data-sync problem a join table would
+    # create for no benefit). current/trading/protected balance are
+    # deliberately NOT stored columns here - core/fund_manager.py computes
+    # them from the fund's real sessions (starting_balance + cumulative
+    # realized_pnl - cumulative vaulted_amount), the same
+    # compute-don't-cache approach core/backtest_engine.py already uses,
+    # so a fund's balance can never drift out of sync with its actual
+    # trade history.
+    #
+    # assigned_broker_label is a free-text description, NOT a real
+    # separate broker connection - AXIM has exactly one shared Telegram/
+    # Pocket Option connection today (see "Known gaps"), so multiple
+    # funds sharing that one real connection is the honest current
+    # architecture; this field just labels which account a fund
+    # conceptually represents.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS funds (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        starting_balance REAL DEFAULT 0,
+        assigned_broker_label TEXT,
+        default_risk_profile_id INTEGER,
+        default_session_profile_id INTEGER,
+        profit_target REAL DEFAULT 0,
+        loss_limit REAL DEFAULT 0,
+        max_trades INTEGER DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT,
+        updated_at TEXT,
+        archived_at TEXT
+    );
+    """)
+
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS fund_sources (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fund_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        created_at TEXT,
+        UNIQUE(fund_id, channel_id)
     );
     """)
 
@@ -437,9 +488,13 @@ def initialize_database():
         error_message TEXT,
         created_by TEXT,
         created_at TEXT,
-        completed_at TEXT
+        completed_at TEXT,
+        fund_id INTEGER
     );
     """)
+    backtest_run_columns = {row["name"] for row in conn.execute("PRAGMA table_info(backtest_runs)")}
+    if "fund_id" not in backtest_run_columns:
+        conn.execute("ALTER TABLE backtest_runs ADD COLUMN fund_id INTEGER")
 
     # One row per risk_profile being compared within a run.
     # profile_snapshot_json freezes the profile+martingale+compounding+
@@ -1252,6 +1307,144 @@ def get_decrypted_telegram_credentials():
 
 
 # ---------------------------------------------------------------------
+# Funds / Portfolios (docs/AXIM_APP_PLAN.md) - core/fund_manager.py owns
+# balance/performance aggregation; this is CRUD + row-shaping only,
+# matching every other feature table in this module.
+# ---------------------------------------------------------------------
+
+_FUND_FIELDS = {
+    "name", "starting_balance", "assigned_broker_label", "default_risk_profile_id",
+    "default_session_profile_id", "profit_target", "loss_limit", "max_trades", "status",
+}
+_VALID_FUND_STATUSES = {"active", "paused", "archived"}
+
+
+@timed("database")
+def create_fund(name, starting_balance=0, **fields):
+    for key in fields:
+        if key not in _FUND_FIELDS:
+            raise ValueError(f"Unknown fund field: {key!r}")
+    status = fields.pop("status", "active")
+    if status not in _VALID_FUND_STATUSES:
+        raise ValueError(f"invalid fund status: {status!r}")
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    columns = ["name", "starting_balance", "status", "created_at", "updated_at"] + list(fields.keys())
+    placeholders = ", ".join("?" for _ in columns)
+    values = [name, starting_balance, status, now, now] + list(fields.values())
+    cursor = conn.execute(f"INSERT INTO funds ({', '.join(columns)}) VALUES ({placeholders})", values)
+    fund_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return fund_id
+
+
+@timed("database")
+def get_fund(fund_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM funds WHERE id = ?", (fund_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def list_funds(status=None):
+    conn = get_connection()
+    if status:
+        rows = conn.execute("SELECT * FROM funds WHERE status = ? ORDER BY name", (status,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM funds ORDER BY status, name").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def update_fund(fund_id, **fields):
+    for key in fields:
+        if key not in _FUND_FIELDS:
+            raise ValueError(f"Unknown fund field: {key!r}")
+    if "status" in fields and fields["status"] not in _VALID_FUND_STATUSES:
+        raise ValueError(f"invalid fund status: {fields['status']!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields] + ["updated_at = ?"]
+    params = list(fields.values()) + [datetime.now().isoformat()]
+    if fields.get("status") == "archived":
+        set_clauses.append("archived_at = ?")
+        params.append(datetime.now().isoformat())
+    params.append(fund_id)
+    conn = get_connection()
+    conn.execute(f"UPDATE funds SET {', '.join(set_clauses)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def duplicate_fund(fund_id, new_name):
+    source = get_fund(fund_id)
+    if source is None:
+        raise ValueError(f"no fund with id {fund_id}")
+    new_id = create_fund(
+        new_name, starting_balance=source["starting_balance"],
+        assigned_broker_label=source["assigned_broker_label"],
+        default_risk_profile_id=source["default_risk_profile_id"],
+        default_session_profile_id=source["default_session_profile_id"],
+        profit_target=source["profit_target"], loss_limit=source["loss_limit"],
+        max_trades=source["max_trades"],
+    )
+    for channel_id in list_fund_source_channel_ids(fund_id):
+        add_fund_source(new_id, channel_id)
+    return new_id
+
+
+@timed("database")
+def add_fund_source(fund_id, channel_id):
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR IGNORE INTO fund_sources (fund_id, channel_id, created_at) VALUES (?, ?, ?)",
+        (fund_id, channel_id, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def remove_fund_source(fund_id, channel_id):
+    conn = get_connection()
+    conn.execute("DELETE FROM fund_sources WHERE fund_id = ? AND channel_id = ?", (fund_id, channel_id))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_fund_source_channel_ids(fund_id):
+    conn = get_connection()
+    rows = conn.execute("SELECT channel_id FROM fund_sources WHERE fund_id = ?", (fund_id,)).fetchall()
+    conn.close()
+    return [r["channel_id"] for r in rows]
+
+
+@timed("database")
+def list_fund_sessions(fund_id, limit=50):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM trading_sessions WHERE fund_id = ? ORDER BY id DESC LIMIT ?", (fund_id, limit)
+    ).fetchall()
+    conn.close()
+    return [_session_row_to_dict(r) for r in rows]
+
+
+@timed("database")
+def list_fund_backtest_runs(fund_id, limit=50):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM backtest_runs WHERE fund_id = ? ORDER BY id DESC LIMIT ?", (fund_id, limit)
+    ).fetchall()
+    conn.close()
+    return [_backtest_run_row_to_dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------
 # Trading Sessions (docs/AXIM_SESSION_ARCHITECTURE.md) - api/sessions.py,
 # core/session_manager.py, core/telegram_listener.py
 # ---------------------------------------------------------------------
@@ -1301,13 +1494,20 @@ def get_active_trading_session():
 
 @timed("database")
 def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss_limit=0, max_trades=0,
-                           require_confirmation=False, profile_id=None, risk_profile_id=None):
+                           require_confirmation=False, profile_id=None, risk_profile_id=None, fund_id=None):
     """Raises ValueError if a session is already active - only one active
     session at a time (single shared trading connection, see
-    docs/AXIM_APP_PLAN.md's "known gaps"). profile_id is the Phase 3
-    session_profiles start-config template; risk_profile_id is the Risk
-    Engine sizing/martingale/compounding/vault profile - two independent,
-    optional attachments, not the same concept."""
+    docs/AXIM_APP_PLAN.md's "known gaps" - this means funds cannot yet
+    run truly concurrent sessions either, a documented follow-up, not
+    hidden). profile_id is the Phase 3 session_profiles start-config
+    template; risk_profile_id is the Risk Engine sizing/martingale/
+    compounding/vault profile; fund_id is the Fund this session's P&L
+    should be attributed to - three independent, optional attachments,
+    not the same concept. fund_id defaults to None (not required at the
+    database layer) so every existing test/call site keeps working
+    unchanged - "a session must have a fund" is a UI/API-layer rule
+    (api/sessions.py), the same soft-enforcement pattern this codebase
+    already uses for other evolving requirements."""
     if get_active_trading_session() is not None:
         raise ValueError("a session is already active - stop it before starting another")
     if not channel_ids:
@@ -1318,11 +1518,11 @@ def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss
         INSERT INTO trading_sessions (
             profile_id, name, channel_ids_json, account_mode, profit_target, loss_limit,
             max_trades, require_confirmation, status, trades_count, realized_pnl, started_at,
-            risk_profile_id
+            risk_profile_id, fund_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?)
     """, (profile_id, name, json.dumps(channel_ids), account_mode, profit_target, loss_limit,
-          max_trades, 1 if require_confirmation else 0, now, risk_profile_id))
+          max_trades, 1 if require_confirmation else 0, now, risk_profile_id, fund_id))
     conn.commit()
     session_id = cursor.lastrowid
     conn.close()

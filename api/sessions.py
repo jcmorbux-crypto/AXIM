@@ -45,6 +45,7 @@ class SessionStart(BaseModel):
     require_confirmation: bool = False
     profile_id: Optional[int] = None
     risk_profile_id: Optional[int] = None
+    fund_id: int
 
 
 class AttachRiskProfile(BaseModel):
@@ -115,15 +116,27 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
     reflects the real, currently-connected ACCOUNT (config/settings.py),
     same deliberate choice as GET /api/pocket-option/status: a session
     can't claim to be running LIVE while the actual browser is connected
-    to DEMO, or vice versa."""
+    to DEMO, or vice versa.
+
+    fund_id is required - every session must be attributed to a Fund
+    (docs/AXIM_APP_PLAN.md) so P&L/vault history stays organized per
+    portfolio rather than one undifferentiated pile. If the caller
+    doesn't explicitly pick a risk profile, the fund's own
+    default_risk_profile_id is used - the fund's "assigned money
+    management profile" setting actually does something, not just a
+    label."""
     if not body.channel_ids:
         raise HTTPException(status_code=400, detail="a session must include at least one channel")
+    fund = database.get_fund(body.fund_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="fund not found")
+    risk_profile_id = body.risk_profile_id if body.risk_profile_id is not None else fund["default_risk_profile_id"]
     try:
         session_id = database.start_trading_session(
             name=body.name, channel_ids=body.channel_ids, account_mode=ACCOUNT,
             profit_target=body.profit_target, loss_limit=body.loss_limit, max_trades=body.max_trades,
             require_confirmation=body.require_confirmation, profile_id=body.profile_id,
-            risk_profile_id=body.risk_profile_id,
+            risk_profile_id=risk_profile_id, fund_id=body.fund_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))

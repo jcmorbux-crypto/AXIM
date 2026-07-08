@@ -25,6 +25,9 @@
         <div class="subtitle">Your trading operation, at a glance.</div>
       </div>
       <div class="row">
+        <select id="fund-selector" onchange="onFundChange()" style="width:220px;">
+          <option value="">All Funds (combined)</option>
+        </select>
         <button class="primary" onclick="window.location.href='/sessions'">Start Session</button>
         <button class="subtle" onclick="callControl('/api/control/pause')">Pause</button>
         <button class="danger" onclick="confirmEmergencyStop()">Emergency Stop</button>
@@ -40,13 +43,13 @@
     </div>
 
     <div class="hero-panel">
-      <div class="hero-label">Today's Performance</div>
+      <div class="hero-label" id="hero-label-text">Today's Performance</div>
       <div class="hero-value" id="daily-pl">-</div>
       <div class="hero-caption" id="daily-pl-caption">&nbsp;</div>
       <div class="hero-subrow">
         <div class="stat"><span class="label">Win rate</span><span class="value" id="win-rate">-</span></div>
         <div class="stat"><span class="label">Trades today</span><span class="value" id="trades-today">-</span></div>
-        <div class="stat"><span class="label">Active session P/L</span><span class="value" id="session-pl">-</span></div>
+        <div class="stat"><span class="label" id="session-pl-label">Active session P/L</span><span class="value" id="session-pl">-</span></div>
       </div>
     </div>
 
@@ -78,6 +81,8 @@
 <script src="/web/shell.js"></script>
 <script>
 let currentUser = null;
+let allFunds = [];
+let selectedFundId = "";
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, { credentials: "same-origin", ...opts });
@@ -108,8 +113,119 @@ function timeAgo(iso) {
   return new Date(iso).toLocaleDateString();
 }
 
+async function loadFundSelector() {
+  allFunds = await fetchJSON("/api/funds?status=active");
+  const selector = document.getElementById("fund-selector");
+  const previous = selector.value;
+  selector.innerHTML = '<option value="">All Funds (combined)</option>' +
+    allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("");
+  selector.value = previous;
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+
+function onFundChange() {
+  selectedFundId = document.getElementById("fund-selector").value;
+  refreshAll();
+}
+
 async function refreshAll() {
   try {
+    if (selectedFundId) {
+      await refreshForFund(selectedFundId);
+    } else {
+      await refreshGlobal();
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function refreshForFund(fundId) {
+  const [status, po, report, channels] = await Promise.all([
+    fetchJSON("/api/status"),
+    fetchJSON("/api/pocket-option/status"),
+    fetchJSON(`/api/funds/${fundId}`),
+    fetchJSON("/api/channels"),
+  ]);
+  renderStatusLine(status, po, channels);
+
+  const perf = report.performance;
+  const dailyPlEl = document.getElementById("daily-pl");
+  document.getElementById("hero-label-text").textContent = `${report.fund.name} - Lifetime Performance`;
+  dailyPlEl.textContent = fmtMoney(perf.profit_loss);
+  dailyPlEl.className = "hero-value " + plClass(perf.profit_loss);
+  document.getElementById("daily-pl-caption").textContent =
+    perf.total_closed > 0 ? `${perf.wins} win${perf.wins === 1 ? "" : "s"}, ${perf.losses} loss${perf.losses === 1 ? "" : "es"} all-time` : "No trades closed yet.";
+  document.getElementById("win-rate").textContent = perf.win_rate !== null ? (perf.win_rate * 100).toFixed(1) + "%" : "-";
+  document.getElementById("trades-today").textContent = perf.total_closed;
+  document.getElementById("session-pl-label").textContent = "Trading balance";
+  const sessionPlEl = document.getElementById("session-pl");
+  sessionPlEl.textContent = fmtMoney(report.balances.trading_balance);
+  sessionPlEl.className = "value " + plClass(report.balances.trading_balance - report.fund.starting_balance);
+
+  const riskLine = document.getElementById("risk-line");
+  riskLine.innerHTML = '<span class="dot on"></span> Protected balance: ' + fmtMoney(report.balances.protected_balance);
+  document.getElementById("risk-details").innerHTML = `
+    <div>Total account value: ${fmtMoney(report.balances.total_account_value)}</div>
+    <div>Starting balance: ${fmtMoney(report.fund.starting_balance)}</div>
+    <div>Profit target: ${report.fund.profit_target > 0 ? fmtMoney(report.fund.profit_target) : "not set"}</div>
+    <div>Loss limit: ${report.fund.loss_limit > 0 ? fmtMoney(report.fund.loss_limit) : "not set"}</div>
+  `;
+  document.getElementById("risk-diagnostics").style.display = "block";
+
+  document.getElementById("activity-source").textContent = `Fund: ${report.fund.name} - ${report.sources.length} source(s) assigned`;
+  const activityList = document.getElementById("activity-list");
+  activityList.innerHTML = report.recent_sessions.length
+    ? report.recent_sessions.slice(0, 5).map(s => `
+        <div class="activity-row">
+          <div><div class="what">${escapeHtml(s.name || "Session")}</div><div class="when">${(s.started_at || "").replace("T", " ").slice(0, 16)}</div></div>
+          <div class="${s.realized_pnl >= 0 ? "pos" : "neg"}" style="font-weight:600; font-size:13.5px;">${fmtMoney(s.realized_pnl)}</div>
+        </div>
+      `).join("")
+    : '<div class="empty">No sessions yet for this fund.</div>';
+
+  document.getElementById("system-diagnostics-body").innerHTML = `
+    <div>Account mode: ${po.account_mode} (set via .env, not switchable in-app yet)</div>
+    <div>Listener process: ${status.process.running ? `running (pid ${status.process.pids.join(", ")})` : "not running"}</div>
+    <div>Balance tracking: computed from this fund's recorded sessions, not a live broker balance read</div>
+  `;
+}
+
+function renderStatusLine(status, po, channels) {
+  const dot = document.getElementById("status-dot");
+  const headline = document.getElementById("status-headline");
+  const detail = document.getElementById("status-detail");
+  const banner = document.getElementById("emergency-banner");
+  const telegramOk = status.process.running && !po.heartbeat_stale;
+  const enabledChannels = channels.filter(c => c.enabled);
+
+  if (status.control.emergency_stop) {
+    dot.className = "dot danger"; headline.textContent = "Emergency stop active";
+    detail.textContent = "No trades will be placed until you clear the emergency stop.";
+    banner.style.display = "block";
+  } else if (status.control.paused) {
+    dot.className = "dot warn"; headline.textContent = "Paused";
+    detail.textContent = "AXIM is connected but not acting on new signals right now.";
+    banner.style.display = "none";
+  } else if (!status.process.running) {
+    dot.className = "dot off"; headline.textContent = "Not running";
+    detail.textContent = "Start the AXIM service to begin monitoring your signal sources.";
+    banner.style.display = "none";
+  } else if (!telegramOk || po.heartbeat_stale) {
+    dot.className = "dot warn"; headline.textContent = "Reconnecting";
+    detail.textContent = "AXIM is running but re-establishing its connection - this usually resolves itself within a minute.";
+    banner.style.display = "none";
+  } else {
+    dot.className = "dot on"; headline.textContent = "Running normally";
+    detail.textContent = `Connected and watching ${enabledChannels.length} signal source${enabledChannels.length === 1 ? "" : "s"}.`;
+    banner.style.display = "none";
+  }
+  if (status.control.test_mode) {
+    detail.textContent += " Test mode is on - trades stop just short of execution.";
+  }
+}
+
+async function refreshGlobal() {
     const [status, po, dash, channels, settings, activeSession] = await Promise.all([
       fetchJSON("/api/status"),
       fetchJSON("/api/pocket-option/status"),
@@ -118,39 +234,10 @@ async function refreshAll() {
       fetchJSON("/api/settings"),
       fetchJSON("/api/sessions/active"),
     ]);
+    document.getElementById("hero-label-text").textContent = "Today's Performance";
+    document.getElementById("session-pl-label").textContent = "Active session P/L";
 
-    // ---- Status line: ONE plain-language read of system health ----
-    const dot = document.getElementById("status-dot");
-    const headline = document.getElementById("status-headline");
-    const detail = document.getElementById("status-detail");
-    const banner = document.getElementById("emergency-banner");
-    const telegramOk = status.process.running && !po.heartbeat_stale;
-    const enabledChannels = channels.filter(c => c.enabled);
-
-    if (status.control.emergency_stop) {
-      dot.className = "dot danger"; headline.textContent = "Emergency stop active";
-      detail.textContent = "No trades will be placed until you clear the emergency stop.";
-      banner.style.display = "block";
-    } else if (status.control.paused) {
-      dot.className = "dot warn"; headline.textContent = "Paused";
-      detail.textContent = "AXIM is connected but not acting on new signals right now.";
-      banner.style.display = "none";
-    } else if (!status.process.running) {
-      dot.className = "dot off"; headline.textContent = "Not running";
-      detail.textContent = "Start the AXIM service to begin monitoring your signal sources.";
-      banner.style.display = "none";
-    } else if (!telegramOk || po.heartbeat_stale) {
-      dot.className = "dot warn"; headline.textContent = "Reconnecting";
-      detail.textContent = "AXIM is running but re-establishing its connection - this usually resolves itself within a minute.";
-      banner.style.display = "none";
-    } else {
-      dot.className = "dot on"; headline.textContent = "Running normally";
-      detail.textContent = `Connected and watching ${enabledChannels.length} signal source${enabledChannels.length === 1 ? "" : "s"}.`;
-      banner.style.display = "none";
-    }
-    if (status.control.test_mode) {
-      detail.textContent += " Test mode is on - trades stop just short of execution.";
-    }
+    renderStatusLine(status, po, channels);
 
     // ---- Hero: Today's Performance ----
     const daily = dash.statistics.daily;
@@ -190,6 +277,7 @@ async function refreshAll() {
     riskDiagnostics.style.display = "block";
 
     // ---- Recent activity ----
+    const enabledChannels = channels.filter(c => c.enabled);
     document.getElementById("activity-source").textContent = enabledChannels.length
       ? `Watching: ${enabledChannels.map(c => c.title || c.username).join(", ")}`
       : "No signal sources selected yet.";
@@ -223,9 +311,6 @@ async function refreshAll() {
       <div>Pocket Option: ${po.process_running ? (po.heartbeat_stale ? "connected, heartbeat stale" : "connected") : "not running"}${po.process_running && po.heartbeat ? ` - ${po.heartbeat.worker_count} worker(s), generation ${po.heartbeat.generation}` : ""}</div>
       <div>Balance tracking: not implemented yet (no live broker balance read)</div>
     `;
-  } catch (e) {
-    console.error(e);
-  }
 }
 
 async function callControl(path) {
@@ -246,6 +331,7 @@ function confirmEmergencyStop() {
 (async () => {
   currentUser = await AximShell.init({ active: "dashboard" });
   if (!currentUser) return;
+  await loadFundSelector();
   refreshAll();
   setInterval(refreshAll, 5000);
 })();

@@ -38,6 +38,11 @@
     <div class="grid">
       <div class="card full-width" style="grid-column: span 2;">
         <h3>Start New Session</h3>
+        <div class="field"><label>Fund (required - <a href="/funds" style="color:var(--blue);">manage funds</a>)</label>
+          <select id="new-fund" onchange="onFundSelectChange()">
+            <option value="">Select a fund...</option>
+          </select>
+        </div>
         <div class="field"><label>Session name</label><input type="text" id="new-session-name" placeholder="e.g. Morning Go+ Session"></div>
 
         <div class="field"><label>Signal channels (select at least one)</label>
@@ -137,6 +142,27 @@ async function loadRiskProfiles() {
     profiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)} (${p.sizing_mode})</option>`).join("");
 }
 
+let allFunds = [];
+
+async function loadFunds() {
+  allFunds = await fetchJSON("/api/funds?status=active");
+  const select = document.getElementById("new-fund");
+  select.innerHTML = '<option value="">Select a fund...</option>' +
+    allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("") +
+    (allFunds.length ? "" : "");
+  if (!allFunds.length) {
+    select.innerHTML += '<option value="" disabled>No funds yet - create one on the Funds page</option>';
+  }
+}
+
+function onFundSelectChange() {
+  const fundId = document.getElementById("new-fund").value;
+  const fund = allFunds.find(f => f.id === parseInt(fundId, 10));
+  if (fund && fund.default_risk_profile_id) {
+    document.getElementById("new-risk-profile").value = fund.default_risk_profile_id;
+  }
+}
+
 async function loadAccountMode() {
   try {
     const po = await fetchJSON("/api/pocket-option/status");
@@ -152,6 +178,7 @@ function selectedChannelIds() {
 
 function currentFormValues() {
   const riskProfileValue = document.getElementById("new-risk-profile").value;
+  const fundValue = document.getElementById("new-fund").value;
   return {
     name: document.getElementById("new-session-name").value || null,
     channel_ids: selectedChannelIds(),
@@ -160,12 +187,14 @@ function currentFormValues() {
     max_trades: parseInt(document.getElementById("new-max-trades").value, 10) || 0,
     require_confirmation: document.getElementById("new-require-confirmation").checked,
     risk_profile_id: riskProfileValue ? parseInt(riskProfileValue, 10) : null,
+    fund_id: fundValue ? parseInt(fundValue, 10) : null,
   };
 }
 
 async function confirmStartSession() {
   const statusEl = document.getElementById("start-session-status");
   const body = currentFormValues();
+  if (!body.fund_id) { statusEl.textContent = "Select a Fund before starting a session."; return; }
   if (!body.channel_ids.length) { statusEl.textContent = "Select at least one channel."; return; }
 
   let accountMode = "unknown";
@@ -371,6 +400,7 @@ async function saveCurrentAsProfile() {
   if (!user) return;
   await loadChannelPicker();
   await loadRiskProfiles();
+  await loadFunds();
   loadAccountMode();
   refreshProcessStatus();
   refreshActiveSession();

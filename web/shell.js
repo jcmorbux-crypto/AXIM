@@ -16,10 +16,13 @@ const AximShell = (() => {
     settings: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="2.3"/><path d="M8 2v1.6M8 12.4V14M14 8h-1.6M3.6 8H2M12.1 3.9l-1.1 1.1M5 10l-1.1 1.1M12.1 12.1L11 11M5 6L3.9 3.9"/></svg>',
     rules: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="3" cy="4" r="1.8"/><path d="M4.8 4h3.7c1 0 1.5.5 1.5 1.5v2M8 4l2 2-2 2"/><path d="M4.8 12h6.7"/><circle cx="3" cy="12" r="1.8"/></svg>',
     lab: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.2 1.8h3.6M6.8 1.8v3.8L3.4 12c-.5.9.2 2 1.2 2h7.9c1 0 1.7-1.1 1.2-2L10.3 5.6V1.8"/><path d="M5.4 9.5h5.2"/></svg>',
+    funds: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="4" width="13" height="9.5" rx="1.6"/><path d="M1.5 6.8h13"/><circle cx="11.3" cy="10.2" r="1.3" fill="currentColor" stroke="none"/></svg>',
+    guide: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.3"/><path d="M6.1 6.2c.2-1 1-1.6 1.9-1.6 1 0 1.9.6 1.9 1.7 0 1.4-1.9 1.3-1.9 3"/><circle cx="8" cy="11.2" r="0.15" fill="currentColor" stroke="currentColor" stroke-width="0.9"/></svg>',
   };
 
   const NAV_ITEMS = [
     { key: "dashboard", label: "Mission Control", href: "/dashboard", icon: ICONS.dashboard },
+    { key: "funds", label: "Funds", href: "/funds", icon: ICONS.funds },
     { key: "sessions", label: "Trading Sessions", href: "/sessions", icon: ICONS.sessions },
     { key: "telegram", label: "Signal Sources", href: "/telegram", icon: ICONS.telegram },
     { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
@@ -32,6 +35,7 @@ const AximShell = (() => {
     { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
     { key: "logs", label: "Logs", href: "/logs", icon: ICONS.logs, adminOnly: true },
     { key: "settings", label: "Settings", href: "/settings", icon: ICONS.settings },
+    { key: "guide", label: "Help / Guide", href: "/guide", icon: ICONS.guide },
   ];
 
   async function fetchJSON(url, opts) {
