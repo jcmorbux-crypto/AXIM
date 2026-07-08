@@ -394,6 +394,16 @@ td.title-cell { white-space: normal; max-width: 320px; }
   padding: 24px; width: 420px; max-width: 92vw;
 }
 
+/* Live-mode trade confirmation - injected globally by web/shell.js so it
+   can interrupt any page, not just Mission Control/Sessions. Deliberately
+   louder than every other modal in the app - it's gating a real trade
+   with real money behind it. */
+#axim-confirm-modal { z-index: 300; }
+#axim-confirm-modal .modal { border: 2px solid var(--red); }
+.confirm-countdown-track { height: 6px; border-radius: 999px; background: var(--border); overflow: hidden; margin: 14px 0 8px 0; }
+.confirm-countdown-fill { height: 100%; background: var(--red); transition: width 1s linear; }
+.confirm-trade-headline { font-size: 20px; font-weight: 700; margin: 4px 0 14px 0; }
+
 @media (max-width: 900px) {
   .sidebar { display: none; }
   .main { margin-left: 0; padding: 20px; }

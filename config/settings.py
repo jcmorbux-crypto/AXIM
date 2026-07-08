@@ -55,6 +55,11 @@ DUPLICATE_SIGNAL_WINDOW_SECONDS = int(os.getenv("DUPLICATE_SIGNAL_WINDOW_SECONDS
 # file defaulting to a real, active, adjustable threshold rather than
 # "off" - fail-closed by default, like the rest of this codebase.
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", 100))
+# How long a Live-mode trade with require_confirmation waits for an
+# operator's Confirm/Reject before failing closed (rejecting the trade)
+# - see core/session_manager.wait_for_trade_confirmation. Kept short
+# relative to a typical binary-options expiry window on purpose.
+TRADE_CONFIRMATION_TIMEOUT_SECONDS = int(os.getenv("TRADE_CONFIRMATION_TIMEOUT_SECONDS", 45))
 
 # Concurrency (demo-only multi-worker execution)
 MAX_CONCURRENT_WORKERS = int(os.getenv("MAX_CONCURRENT_WORKERS", 2))

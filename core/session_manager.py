@@ -9,15 +9,20 @@ P&L the instant a trade's outcome is known - see register() and
 _on_trade_closed below. This is the ONLY hook into the outcome-tracking
 path; execution/pocket_executor.py itself is never touched.
 """
+import asyncio
 import sys
+import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+CORE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(CORE_DIR))
+sys.path.insert(0, str(CORE_DIR.parent / "config"))
 
 import database
 import risk_engine
 import rule_engine
 from logger import get_logger
+from settings import TRADE_CONFIRMATION_TIMEOUT_SECONDS
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -26,6 +31,18 @@ class SessionLimitReached(Exception):
     """Same (rule, reason) shape as risk_manager.RiskViolation so
     trade_coordinator.py's existing _reject() helper can handle either
     without a separate code path."""
+
+    def __init__(self, rule, reason):
+        self.rule = rule
+        self.reason = reason
+        super().__init__(f"{rule}: {reason}")
+
+
+class TradeNotConfirmed(Exception):
+    """Same (rule, reason) shape as SessionLimitReached/RiskViolation -
+    raised by wait_for_trade_confirmation below on an explicit reject or
+    a confirmation timeout, so trade_coordinator.py's existing _reject()
+    helper handles this exactly like every other pre-execution gate."""
 
     def __init__(self, rule, reason):
         self.rule = rule
@@ -89,6 +106,50 @@ def check_session_limits(session_id):
 def record_trade_started(session_id):
     if session_id is not None:
         database.record_session_trade(session_id)
+
+
+async def wait_for_trade_confirmation(trade_id, session_id, asset, direction, expiry, amount):
+    """Gate for a session's require_confirmation setting - a no-op unless
+    the session BOTH has it enabled AND is actually in LIVE mode (the
+    checkbox is explicitly labeled "in Live mode" - a Demo session with
+    it checked never gates, matching the UI's own copy). Writes a
+    pending_trade_confirmations row and polls for an operator's
+    Confirm/Reject from any page (web/shell.js) up to
+    TRADE_CONFIRMATION_TIMEOUT_SECONDS.
+
+    Fails closed: an explicit reject OR silence until the timeout both
+    raise TradeNotConfirmed - there is no path where an un-answered
+    Live-mode trade proceeds anyway."""
+    if session_id is None:
+        return
+    session = database.get_trading_session(session_id)
+    if session is None or not session["require_confirmation"] or session["account_mode"] != "LIVE":
+        return
+
+    database.create_pending_trade_confirmation(trade_id, session_id, asset, direction, expiry, amount)
+    logger.info("session_manager: trade_id=%s awaiting Live-mode confirmation (timeout=%ss)",
+                trade_id, TRADE_CONFIRMATION_TIMEOUT_SECONDS)
+
+    deadline = time.monotonic() + TRADE_CONFIRMATION_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        row = database.get_pending_trade_confirmation(trade_id)
+        if row is None:
+            # Should not happen - the row we just created is gone. Fail
+            # closed rather than guess what happened.
+            raise TradeNotConfirmed("trade_not_confirmed", "confirmation record disappeared")
+        if row["status"] == "confirmed":
+            logger.info("session_manager: trade_id=%s confirmed by %s", trade_id, row["decided_by"])
+            return
+        if row["status"] == "rejected":
+            reason = f"rejected by {row['decided_by']}" if row["decided_by"] else "rejected"
+            raise TradeNotConfirmed("trade_not_confirmed", reason)
+        await asyncio.sleep(0.5)
+
+    database.expire_trade_confirmation(trade_id)
+    raise TradeNotConfirmed(
+        "trade_not_confirmed",
+        f"no confirmation within {TRADE_CONFIRMATION_TIMEOUT_SECONDS}s - trade rejected",
+    )
 
 
 async def _on_trade_closed(payload):

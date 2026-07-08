@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 import database
 import session_manager
-from settings import ACCOUNT
+from settings import ACCOUNT, TRADE_CONFIRMATION_TIMEOUT_SECONDS
 from auth_routes import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -100,6 +100,49 @@ def active_session(user=Depends(get_current_user)):
 @router.get("")
 def list_sessions(limit: int = 50, user=Depends(get_current_user)):
     return [_with_progress(s) for s in database.list_trading_sessions(limit)]
+
+
+# ---------------------------------------------------------------------
+# Live-mode trade confirmation gate (docs/AXIM_APP_PLAN.md) - registered
+# BEFORE the /{session_id} catch-all below on purpose: FastAPI/Starlette
+# matches routes in registration order, so "/pending-confirmations"
+# would otherwise be swallowed by /{session_id} (which then 422s trying
+# to parse "pending-confirmations" as an int) - a real bug caught during
+# live verification, not a hypothetical one. The listener process
+# (core/session_manager.wait_for_trade_confirmation) blocks and polls
+# core/database.py's pending_trade_confirmations table; this is just the
+# HTTP surface a browser polls/writes to. Deliberately available to ANY
+# logged-in user, same safety exception as Emergency Stop below -
+# whoever is watching when a Live trade needs a decision should be able
+# to make it, not just an Owner/Admin.
+# ---------------------------------------------------------------------
+
+@router.get("/pending-confirmations")
+def list_pending_confirmations(user=Depends(get_current_user)):
+    """timeout_seconds is included on every row (rather than the client
+    hardcoding it) so the countdown shown in the UI can never drift from
+    the actual TRADE_CONFIRMATION_TIMEOUT_SECONDS the listener process is
+    really enforcing, even if that's been customized via .env."""
+    rows = database.list_pending_trade_confirmations()
+    for row in rows:
+        row["timeout_seconds"] = TRADE_CONFIRMATION_TIMEOUT_SECONDS
+    return rows
+
+
+@router.post("/pending-confirmations/{trade_id}/confirm")
+def confirm_trade(trade_id: int, user=Depends(get_current_user)):
+    updated = database.decide_trade_confirmation(trade_id, "confirmed", decided_by=user["email"])
+    if not updated:
+        raise HTTPException(status_code=409, detail="already decided or no longer pending")
+    return database.get_pending_trade_confirmation(trade_id)
+
+
+@router.post("/pending-confirmations/{trade_id}/reject")
+def reject_trade(trade_id: int, user=Depends(get_current_user)):
+    updated = database.decide_trade_confirmation(trade_id, "rejected", decided_by=user["email"])
+    if not updated:
+        raise HTTPException(status_code=409, detail="already decided or no longer pending")
+    return database.get_pending_trade_confirmation(trade_id)
 
 
 @router.get("/{session_id}")

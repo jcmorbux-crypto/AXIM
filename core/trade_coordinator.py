@@ -182,6 +182,22 @@ class TradeCoordinator:
                     timeline.persist(database)
                     return {"status": "test_mode", "trade_id": trade_id}
 
+                # Stage: Live-mode confirmation gate - a no-op unless this
+                # session has require_confirmation set AND is actually in
+                # LIVE mode (see session_manager.wait_for_trade_confirmation's
+                # docstring). Blocks here, before the trade counts toward
+                # max_trades or touches the worker pool, so an unconfirmed
+                # trade leaves no trace beyond the rejected signal record.
+                stage_t0 = time.monotonic()
+                try:
+                    await session_manager.wait_for_trade_confirmation(
+                        trade_id, session_id, asset, direction, expiry, amount,
+                    )
+                except session_manager.TradeNotConfirmed as violation:
+                    timeline.persist(database)
+                    return self._reject(trade_id, violation, time.monotonic() - stage_t0)
+                self._log_stage(trade_id, "trade_confirmation", "passed", time.monotonic() - stage_t0)
+
                 # Counts toward the session's max_trades the instant we
                 # commit to real execution - not on every signal received,
                 # and not gated behind the outcome (a trade that errors out

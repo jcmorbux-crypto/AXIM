@@ -14,6 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "execution"))
 import database
 import risk_manager
 import asset_cache
+import session_manager
 import trade_coordinator
 import pocket_executor
 from trade_coordinator import TradeCoordinator
@@ -232,6 +233,102 @@ class TradeCoordinatorTests(unittest.TestCase):
         # page (see pocket_executor.track_outcome).
         call_args = mock_prepare_trade.call_args
         self.assertIn("fake-warmup", call_args.args)
+
+
+class TradeConfirmationGateIntegrationTests(unittest.TestCase):
+    """Confirms the gate is actually wired into the real pipeline, not
+    just unit-tested in isolation - see tests/test_session_manager.py's
+    TradeConfirmationGateTests for the gate's own logic."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+        self._original_preview_only = trade_coordinator.PREVIEW_ONLY
+        self._original_auto_execute = trade_coordinator.AUTO_EXECUTE
+        self._original_timeout = session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        database.set_control_state(test_mode=False)
+
+        self._original_cache = asset_cache._cache
+        asset_cache._cache = {}
+        self._original_max_trade_amount = risk_manager.MAX_TRADE_AMOUNT
+        risk_manager.MAX_TRADE_AMOUNT = 50
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+        trade_coordinator.PREVIEW_ONLY = self._original_preview_only
+        trade_coordinator.AUTO_EXECUTE = self._original_auto_execute
+        session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = self._original_timeout
+        asset_cache._cache = self._original_cache
+        risk_manager.MAX_TRADE_AMOUNT = self._original_max_trade_amount
+
+    def _signal(self):
+        return {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+
+    def test_live_confirmation_required_blocks_then_proceeds_once_confirmed(self):
+        session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = 5
+        session_id = database.start_trading_session("Test", [1], "LIVE", require_confirmation=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        pocket_executor.prepare_trade = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
+
+        async def _confirm_soon():
+            # Poll briefly for the pending row to appear, then confirm it -
+            # avoids a fixed sleep racing against the coordinator's own setup.
+            for _ in range(20):
+                pending = database.list_pending_trade_confirmations()
+                if pending:
+                    database.decide_trade_confirmation(pending[0]["trade_id"], "confirmed", decided_by="tester@axim.local")
+                    return
+                await asyncio.sleep(0.05)
+            self.fail("no pending confirmation appeared")
+
+        async def _scenario():
+            return await asyncio.gather(
+                coordinator.handle_signal(self._signal(), session_id=session_id),
+                _confirm_soon(),
+            )
+
+        try:
+            result, _ = _run(_scenario())
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+
+        self.assertEqual(result["status"], "clicked")
+
+    def test_live_confirmation_timeout_rejects_before_worker_pool(self):
+        session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = 0.3  # never answered
+        session_id = database.start_trading_session("Test", [1], "LIVE", require_confirmation=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+        result = _run(coordinator.handle_signal(self._signal(), session_id=session_id))
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["rule"], "trade_not_confirmed")
+        self.assertEqual(pool.released, [])  # never reached the worker pool
+        # rejected before the trade counted toward the session at all
+        self.assertEqual(database.get_trading_session(session_id)["trades_count"], 0)
+
+    def test_demo_session_confirmation_required_does_not_block(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", require_confirmation=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        pocket_executor.prepare_trade = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
+        try:
+            result = _run(coordinator.handle_signal(self._signal(), session_id=session_id))
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+
+        self.assertEqual(result["status"], "clicked")
+        self.assertEqual(database.list_pending_trade_confirmations(), [])
 
 
 if __name__ == "__main__":

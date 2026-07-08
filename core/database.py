@@ -420,6 +420,30 @@ def initialize_database():
     """)
     conn.execute("INSERT OR IGNORE INTO pending_test_trade (id, status) VALUES (1, 'none')")
 
+    # Live-mode trade confirmation gate (docs/AXIM_APP_PLAN.md) - when a
+    # session has require_confirmation set AND its account_mode is LIVE,
+    # core/trade_coordinator.py writes a row here and BLOCKS (polling,
+    # never a direct call into the UI) until an operator confirms/rejects
+    # from any page (see web/shell.js) or the request times out. Not a
+    # singleton like pending_test_trade - the worker pool can process
+    # more than one signal at once, so more than one confirmation can be
+    # in flight at a time.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS pending_trade_confirmations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        trade_id INTEGER NOT NULL UNIQUE,
+        session_id INTEGER,
+        asset TEXT,
+        direction TEXT,
+        expiry TEXT,
+        amount REAL,
+        status TEXT NOT NULL DEFAULT 'pending',
+        requested_at TEXT,
+        decided_at TEXT,
+        decided_by TEXT
+    );
+    """)
+
     # Rule Builder (docs/AXIM_APP_PLAN.md) - visual IF/THEN automation.
     # Every condition evaluator is a pure function returning (bool, ...)
     # and every action executor calls an existing real mutation function
@@ -2068,6 +2092,78 @@ def fail_test_trade(error_message):
     conn.execute(
         "UPDATE pending_test_trade SET status = 'error', result_json = ?, completed_at = ? WHERE id = 1",
         (json.dumps({"error": error_message}), datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------
+# Live-mode trade confirmation gate (docs/AXIM_APP_PLAN.md) -
+# core/session_manager.py owns the actual wait/timeout logic; this is
+# just the CRUD + row shaping layer.
+# ---------------------------------------------------------------------
+
+@timed("database")
+def create_pending_trade_confirmation(trade_id, session_id, asset, direction, expiry, amount):
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    conn.execute("""
+        INSERT INTO pending_trade_confirmations (
+            trade_id, session_id, asset, direction, expiry, amount, status, requested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+    """, (trade_id, session_id, asset, direction, expiry, amount, now))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_pending_trade_confirmation(trade_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM pending_trade_confirmations WHERE trade_id = ?", (trade_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def list_pending_trade_confirmations():
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM pending_trade_confirmations WHERE status = 'pending' ORDER BY requested_at ASC"
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def decide_trade_confirmation(trade_id, decision, decided_by=None):
+    """decision is 'confirmed' or 'rejected'. Only updates a row that is
+    still 'pending' (WHERE-guarded) - a late double-click or a decision
+    arriving after the coordinator already timed it out must not
+    silently overwrite the real outcome. Returns True if this call is
+    the one that actually recorded the decision."""
+    if decision not in ("confirmed", "rejected"):
+        raise ValueError(f"invalid decision: {decision!r}")
+    conn = get_connection()
+    cursor = conn.execute(
+        "UPDATE pending_trade_confirmations SET status = ?, decided_at = ?, decided_by = ? "
+        "WHERE trade_id = ? AND status = 'pending'",
+        (decision, datetime.now().isoformat(), decided_by, trade_id),
+    )
+    conn.commit()
+    updated = cursor.rowcount > 0
+    conn.close()
+    return updated
+
+
+@timed("database")
+def expire_trade_confirmation(trade_id):
+    """Called by the coordinator itself when its wait times out - fails
+    closed. WHERE-guarded the same way, so a decision that arrives in
+    the same instant the timeout fires doesn't get clobbered."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE pending_trade_confirmations SET status = 'expired', decided_at = ? WHERE trade_id = ? AND status = 'pending'",
+        (datetime.now().isoformat(), trade_id),
     )
     conn.commit()
     conn.close()

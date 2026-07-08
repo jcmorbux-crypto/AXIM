@@ -87,6 +87,122 @@ const AximShell = (() => {
 
   let developerMode = false;
 
+  // ---- Live-mode trade confirmation gate (docs/AXIM_APP_PLAN.md) -----
+  // Polls core/database.py's pending_trade_confirmations table (via
+  // api/sessions.py) from EVERY page, since an operator could be
+  // anywhere in the app when a Live trade needs a decision. The actual
+  // wait/timeout/fail-closed logic lives entirely server-side in
+  // core/session_manager.wait_for_trade_confirmation - this is purely
+  // the display + Confirm/Reject actions.
+  let currentConfirmation = null;
+  let confirmCountdownTimer = null;
+  let confirmPollInFlight = false;
+
+  function injectConfirmModal() {
+    if (document.getElementById("axim-confirm-modal")) return;
+    const modal = document.createElement("div");
+    modal.className = "modal-backdrop";
+    modal.id = "axim-confirm-modal";
+    modal.innerHTML = `
+      <div class="modal" style="width:440px;">
+        <div class="banner danger" style="margin-bottom:14px;">LIVE TRADE - CONFIRMATION REQUIRED</div>
+        <div class="confirm-trade-headline" id="axim-confirm-headline">-</div>
+        <div class="stat-row"><span class="stat-label">Expiry</span><span class="stat-value" id="axim-confirm-expiry">-</span></div>
+        <div class="stat-row"><span class="stat-label">Amount</span><span class="stat-value" id="axim-confirm-amount">-</span></div>
+        <div class="confirm-countdown-track"><div class="confirm-countdown-fill" id="axim-confirm-fill" style="width:100%;"></div></div>
+        <div class="muted" id="axim-confirm-countdown-text" style="margin-bottom:14px;">&nbsp;</div>
+        <div class="row">
+          <button class="danger" style="flex:1;" onclick="AximShell._rejectPendingTrade()">Reject</button>
+          <button class="primary" style="flex:1;" onclick="AximShell._confirmPendingTrade()">Confirm Trade</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  }
+
+  function renderConfirmModal(row) {
+    document.getElementById("axim-confirm-headline").textContent = `${row.asset || "-"} ${row.direction || ""}`;
+    document.getElementById("axim-confirm-expiry").textContent = row.expiry || "-";
+    document.getElementById("axim-confirm-amount").textContent = row.amount != null ? `$${Number(row.amount).toFixed(2)}` : "-";
+    document.getElementById("axim-confirm-modal").style.display = "flex";
+    updateConfirmCountdown();
+  }
+
+  function updateConfirmCountdown() {
+    if (!currentConfirmation) return;
+    const requestedAt = new Date(currentConfirmation.requested_at).getTime();
+    const timeoutMs = (currentConfirmation.timeout_seconds || 45) * 1000;
+    const elapsed = Date.now() - requestedAt;
+    const remaining = Math.max(0, Math.ceil((timeoutMs - elapsed) / 1000));
+    const pct = Math.max(0, Math.min(100, ((timeoutMs - elapsed) / timeoutMs) * 100));
+    const fill = document.getElementById("axim-confirm-fill");
+    const text = document.getElementById("axim-confirm-countdown-text");
+    if (fill) fill.style.width = pct + "%";
+    if (text) text.textContent = remaining > 0
+      ? `Expires in ${remaining}s - if no one responds, this trade is automatically rejected.`
+      : "Expiring now...";
+  }
+
+  function closeConfirmModal() {
+    const modal = document.getElementById("axim-confirm-modal");
+    if (modal) modal.style.display = "none";
+    currentConfirmation = null;
+  }
+
+  async function _confirmPendingTrade() {
+    if (!currentConfirmation) return;
+    try {
+      await fetchJSON(`/api/sessions/pending-confirmations/${currentConfirmation.trade_id}/confirm`, { method: "POST" });
+    } catch (e) {}
+    closeConfirmModal();
+    pollPendingConfirmations();
+  }
+
+  async function _rejectPendingTrade() {
+    if (!currentConfirmation) return;
+    try {
+      await fetchJSON(`/api/sessions/pending-confirmations/${currentConfirmation.trade_id}/reject`, { method: "POST" });
+    } catch (e) {}
+    closeConfirmModal();
+    pollPendingConfirmations();
+  }
+
+  async function pollPendingConfirmations() {
+    // Guard against overlap between the 2s setInterval tick and the
+    // manual poll fired right after a Confirm/Reject click: without
+    // this, two in-flight fetches can resolve out of order and the
+    // later-arriving (but earlier-sent, now-stale) response overwrites
+    // currentConfirmation with an already-decided trade - the next
+    // click then silently 409s against the wrong trade_id while the
+    // real pending one lingers and reappears. Found via live testing,
+    // not hypothetical.
+    if (confirmPollInFlight) return;
+    confirmPollInFlight = true;
+    try {
+      const rows = await fetchJSON("/api/sessions/pending-confirmations");
+      if (rows.length) {
+        // Oldest first (API already sorts this way) - show one at a
+        // time; resolving it reveals the next on the following poll.
+        currentConfirmation = rows[0];
+        renderConfirmModal(currentConfirmation);
+      } else if (currentConfirmation) {
+        closeConfirmModal();
+      }
+    } catch (e) {
+      // Not logged in yet, or a transient network hiccup - never let a
+      // failed poll throw an unhandled rejection into the page.
+    } finally {
+      confirmPollInFlight = false;
+    }
+  }
+
+  function startConfirmationPolling() {
+    injectConfirmModal();
+    pollPendingConfirmations();
+    setInterval(pollPendingConfirmations, 2000);
+    confirmCountdownTimer = setInterval(updateConfirmCountdown, 1000);
+  }
+
   async function init(opts) {
     let user;
     try {
@@ -107,6 +223,7 @@ const AximShell = (() => {
     sidebar.id = "sidebar";
     shellRoot.insertBefore(sidebar, shellRoot.firstChild);
     renderSidebar(sidebar, user, opts.active);
+    startConfirmationPolling();
     return user;
   }
 
@@ -118,5 +235,5 @@ const AximShell = (() => {
   // Settings > Developer.
   function isDeveloperMode() { return developerMode; }
 
-  return { init, logout, fetchJSON, isDeveloperMode };
+  return { init, logout, fetchJSON, isDeveloperMode, _confirmPendingTrade, _rejectPendingTrade };
 })();

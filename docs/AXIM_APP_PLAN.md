@@ -197,11 +197,21 @@ a `bot_command` channel can be added to a session's channel list today,
 but nothing yet actually sends the trigger command - such a channel
 simply behaves like a passive one until that workflow is built.
 
-**Also not done:** per-trade "require confirmation before execution" in
-Live mode is stored on the session (`require_confirmation`) but not
-enforced - the execution engine doesn't pause for a blocking UI
-confirmation mid-signal, which would be a real architecture addition
-(and its own live-risk conversation) rather than a small feature.
+**Now done (previously deferred):** per-trade "require confirmation
+before execution" in Live mode. When a session has `require_confirmation`
+set and is running in LIVE mode, `trade_coordinator.handle_signal` calls
+`session_manager.wait_for_trade_confirmation` before the trade counts
+toward `max_trades` or touches the worker pool. That writes a row to
+`pending_trade_confirmations` and blocks (polling, non-busy-wait) for up
+to `TRADE_CONFIRMATION_TIMEOUT_SECONDS` (default 45s, `config/settings.py`)
+for an operator decision. Any logged-in user (same exception as Emergency
+Stop) can Confirm or Reject from a global modal shown on every page
+(`web/shell.js`, polling `GET /api/sessions/pending-confirmations`); an
+explicit reject OR a timeout both raise `TradeNotConfirmed`, which is
+rejected exactly like a `RiskViolation` - fail-closed, no path lets an
+unanswered Live trade proceed. Unit/integration coverage in
+`tests/test_session_manager.py::TradeConfirmationGateTests` and
+`tests/test_trade_coordinator.py::TradeConfirmationGateIntegrationTests`.
 Martingale step tracking per session is Phase 4 (Money Management
 Center), not this one.
 

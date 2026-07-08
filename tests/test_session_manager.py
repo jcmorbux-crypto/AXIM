@@ -101,5 +101,103 @@ class SessionManagerTests(unittest.TestCase):
         self.assertEqual(database.get_trading_session(session_id)["realized_pnl"], 0)
 
 
+class TradeConfirmationGateTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self._original_timeout = session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+        session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = self._original_timeout
+
+    def _make_signal_trade_id(self, session_id):
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+        return database.record_signal_received(signal, session_id=session_id)
+
+    def test_noop_when_session_id_none(self):
+        _run(session_manager.wait_for_trade_confirmation(1, None, "EUR/USD", "BUY", "1 Minute", 10))
+        self.assertEqual(database.list_pending_trade_confirmations(), [])
+
+    def test_noop_when_require_confirmation_false(self):
+        session_id = database.start_trading_session("Test", [1], "LIVE", require_confirmation=False)
+        trade_id = self._make_signal_trade_id(session_id)
+        _run(session_manager.wait_for_trade_confirmation(trade_id, session_id, "EUR/USD", "BUY", "1 Minute", 10))
+        self.assertEqual(database.list_pending_trade_confirmations(), [])
+
+    def test_noop_when_demo_mode_even_if_required(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", require_confirmation=True)
+        trade_id = self._make_signal_trade_id(session_id)
+        _run(session_manager.wait_for_trade_confirmation(trade_id, session_id, "EUR/USD", "BUY", "1 Minute", 10))
+        self.assertEqual(database.list_pending_trade_confirmations(), [])
+
+    def test_noop_when_session_missing(self):
+        _run(session_manager.wait_for_trade_confirmation(1, 999999, "EUR/USD", "BUY", "1 Minute", 10))
+        self.assertEqual(database.list_pending_trade_confirmations(), [])
+
+    def test_gates_and_creates_pending_row_when_live_and_required(self):
+        session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = 5
+
+        async def _confirm_after_delay(trade_id):
+            await asyncio.sleep(0.1)
+            confirmed = database.decide_trade_confirmation(trade_id, "confirmed", decided_by="tester@axim.local")
+            self.assertTrue(confirmed)
+
+        async def _scenario():
+            session_id = database.start_trading_session("Test", [1], "LIVE", require_confirmation=True)
+            trade_id = self._make_signal_trade_id(session_id)
+            await asyncio.gather(
+                session_manager.wait_for_trade_confirmation(trade_id, session_id, "EUR/USD", "BUY", "1 Minute", 10),
+                _confirm_after_delay(trade_id),
+            )
+            return trade_id
+
+        trade_id = _run(_scenario())
+        row = database.get_pending_trade_confirmation(trade_id)
+        self.assertEqual(row["status"], "confirmed")
+        self.assertEqual(row["decided_by"], "tester@axim.local")
+
+    def test_raises_on_explicit_reject(self):
+        session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = 5
+
+        async def _reject_after_delay(trade_id):
+            await asyncio.sleep(0.1)
+            database.decide_trade_confirmation(trade_id, "rejected", decided_by="tester@axim.local")
+
+        async def _scenario():
+            session_id = database.start_trading_session("Test", [1], "LIVE", require_confirmation=True)
+            trade_id = self._make_signal_trade_id(session_id)
+            await asyncio.gather(
+                session_manager.wait_for_trade_confirmation(trade_id, session_id, "EUR/USD", "BUY", "1 Minute", 10),
+                _reject_after_delay(trade_id),
+            )
+
+        with self.assertRaises(session_manager.TradeNotConfirmed) as ctx:
+            _run(_scenario())
+        self.assertEqual(ctx.exception.rule, "trade_not_confirmed")
+        self.assertIn("tester@axim.local", ctx.exception.reason)
+
+    def test_fails_closed_on_timeout(self):
+        session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = 0.3  # never answered
+        trade_ids = []
+
+        async def _scenario():
+            session_id = database.start_trading_session("Test", [1], "LIVE", require_confirmation=True)
+            trade_id = self._make_signal_trade_id(session_id)
+            trade_ids.append(trade_id)
+            await session_manager.wait_for_trade_confirmation(trade_id, session_id, "EUR/USD", "BUY", "1 Minute", 10)
+
+        with self.assertRaises(session_manager.TradeNotConfirmed) as ctx:
+            _run(_scenario())
+        self.assertEqual(ctx.exception.rule, "trade_not_confirmed")
+        self.assertIn("no confirmation within", ctx.exception.reason)
+        row = database.get_pending_trade_confirmation(trade_ids[0])
+        self.assertEqual(row["status"], "expired")
+        self.assertEqual(database.list_pending_trade_confirmations(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
