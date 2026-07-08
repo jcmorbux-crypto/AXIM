@@ -536,7 +536,7 @@ re-added, since its origin (an earlier manual run, or an earlier part
 of this same session) isn't known and reboot-triggered auto-start of a
 live-capable trading bot isn't something to restore without being asked.
 
-#### Desktop packaging (Tauri) - in progress
+#### Desktop packaging (Tauri) - DONE (installer builds, not distributed/signed)
 Installed the Rust toolchain (rustup) and Visual Studio Build Tools'
 C++ workload (neither present in this environment beforehand) and
 scaffolded `axim-desktop/` - a thin Tauri window around the existing
@@ -545,17 +545,35 @@ spawns both via the same `venv\Scripts\python.exe` commands used
 manually, polls the API port until it actually accepts connections
 before loading the window - a fixed sleep proved unreliable under
 load and was replaced - and kills both processes on window close).
+
 `npm run tauri dev` verified live: real window, real AXIM login page,
 both backend processes spawned and confirmed via `netstat`/process
 list, screenshotted via `PrintWindow` (GDI `CopyFromScreen` can't
 capture WebView2's hardware-accelerated surface - a capture-tooling
-gotcha, not an app bug). Window-close process cleanup partially
-verified (child processes confirmed killed) but the main window
-process itself lingering briefly after close is still open - not yet
-run through `tauri build` for a real installer. Known limitation:
-this is not a self-contained installer - it requires the AXIM project
-checkout and its venv already set up on the target machine (resolved
-via `AXIM_PROJECT_ROOT` env var, falling back to a hardcoded dev path).
+gotcha, not an app bug). Window-close process cleanup verified: child
+processes (uvicorn + listener) are confirmed killed via `on_window_event`
+- the file-watcher-triggered rebuild/relaunch during dev iteration was
+itself an incidental live test of this path and it worked. The Tauri
+window process itself was observed lingering briefly after a
+`WM_CLOSE` before fully exiting in one manual test; not chased further
+since the behavior that actually matters (no orphaned Python processes
+after close) was confirmed correct.
+
+`npm run tauri build` succeeded - produced both installer formats:
+- `axim-desktop/src-tauri/target/release/bundle/msi/AXIM_0.1.0_x64_en-US.msi` (2.9 MB)
+- `axim-desktop/src-tauri/target/release/bundle/nsis/AXIM_0.1.0_x64-setup.exe` (1.9 MB)
+
+Neither installer has been run/installed - that's a real system-level
+install action left for deliberate, explicit action rather than
+something to trigger silently. Both are small because this is
+deliberately NOT a self-contained installer: it requires the AXIM
+project checkout and its venv already set up on the target machine
+(resolved via `AXIM_PROJECT_ROOT` env var, falling back to a hardcoded
+dev path) - installing Python + all of AXIM's dependencies as part of
+the Tauri bundle itself (e.g. via a portable Python distribution) is
+real, separate future work, not attempted here. The installer is also
+unsigned - Windows SmartScreen will warn on first run; code signing
+needs a real certificate, out of scope without one.
 
 ### Design pass - calmer, hierarchy-driven UI
 Reworked the visual system and Mission Control (the primary screen)
