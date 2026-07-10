@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Notifications - AXIM TradeStation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Notifications</h1>
+        <div class="subtitle">Everything Automation Studio's "notify Owner" rules and other in-app alerts have sent you.</div>
+      </div>
+      <div class="row">
+        <label class="row" style="gap:6px; font-size:12.5px;">
+          <input type="checkbox" id="unread-only-toggle" onchange="refreshAll()"> Unread only
+        </label>
+        <button class="subtle" onclick="markAllRead()">Mark all read</button>
+        <button onclick="refreshAll()">Refresh</button>
+      </div>
+    </div>
+
+    <div class="card solid full-width">
+      <div id="notif-list"><div class="empty">Loading...</div></div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function fmtTime(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString();
+}
+
+async function refreshAll() {
+  const unreadOnly = document.getElementById("unread-only-toggle").checked;
+  const container = document.getElementById("notif-list");
+  try {
+    const rows = await fetchJSON(`/api/notifications?limit=200&unread_only=${unreadOnly}`);
+    if (!rows.length) {
+      container.innerHTML = `<div class="empty">${unreadOnly ? "No unread notifications." : "No notifications yet."}</div>`;
+      return;
+    }
+    container.innerHTML = `<table>
+      <thead><tr><th style="width:90px;"></th><th>Message</th><th style="width:120px;">Source</th><th style="width:180px;">Time</th></tr></thead>
+      <tbody>
+        ${rows.map(n => `
+          <tr class="${n.read_at ? "" : "unread-row"}">
+            <td>${n.read_at
+              ? '<span class="badge off">Read</span>'
+              : `<button class="subtle" style="font-size:11px; padding:3px 8px;" onclick="markRead(${n.id})">Mark read</button>`}</td>
+            <td>${escapeHtml(n.message || "")}</td>
+            <td class="muted">${escapeHtml(n.source || "-")}</td>
+            <td class="muted">${fmtTime(n.created_at)}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>`;
+  } catch (e) {
+    container.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function markRead(id) {
+  try { await fetchJSON(`/api/notifications/${id}/read`, { method: "POST" }); } catch (e) {}
+  await refreshAll();
+}
+
+async function markAllRead() {
+  try { await fetchJSON("/api/notifications/read-all", { method: "POST" }); } catch (e) {}
+  await refreshAll();
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "notifications" });
+  if (!user) return;
+  await refreshAll();
+  AximShell.subscribeEvents({
+    "notification.created": { onEvent: refreshAll, onResync: refreshAll },
+  });
+})();
+</script>
+</body>
+</html>

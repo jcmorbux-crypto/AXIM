@@ -311,6 +311,11 @@ def guide_page():
     return _serve("guide.html")
 
 
+@app.get("/notifications")
+def notifications_page():
+    return _serve("notifications.html")
+
+
 @app.get("/logs")
 def logs_page():
     return _serve("logs.html")

@@ -420,3 +420,36 @@ unaffected: `test_funds*.py`, `test_broker_account_manager.py`,
 `test_event_stream_routes.py`, `test_rule_engine.py`,
 `test_session_manager.py`, `test_auth_routes.py` - 199 tests, all
 passing.
+
+## Notification Center added (done)
+The capability audit above also found "Notifications" (one of the 14
+required Remote Client areas) had zero dedicated page - only the global
+bell dropdown in `web/shell.js`, which already had the best SSE coverage
+of any area but no history view, no filtering, and a hardcoded 50-row
+cap with no way to page past it. Also found and closed a second, real
+gap while investigating "Signal Sources": it turned out `WATCH_CHANNELS`
+(.env) is only ever a legacy fallback - `core/telegram_listener.py`'s
+`channel_allowed()` already checks the live, UI-editable `ui_channels`
+DB table first (`database.get_enabled_channels()`, managed from
+`telegram.html`) - so, unlike the earlier read of it, there was no
+missing control surface there after all.
+
+Added `web/notifications.html` (new sidebar item, `/notifications`,
+served via `api/main.py`): the full notification history for the
+logged-in user, an "unread only" filter, per-row and mark-all-read
+actions, live-updated via the existing `notification.created` SSE event
+(no new event type needed - the backend already emitted it, just
+nothing rendered a full-page view of it). `GET /api/notifications` grew
+an actual `limit` query param (capped at 500, was silently fixed at 50)
+so the new page can show real history instead of being capped at what
+the bell dropdown needs. Cross-linked from `web/settings.html`'s
+"Notifications" tab, which is about a genuinely different, not-yet-built
+concept (outbound email/push/webhook sending) - added a pointer so the
+two aren't confused for the same feature.
+
+Verified against a real (temporary) SQLite DB, not mocks: created
+notifications for two different users, confirmed `GET /api/notifications`
+only ever returns the requesting user's own rows, confirmed `unread_only`
+filtering and both per-notification and mark-all read paths transition
+the right rows and nothing else. Full regression suite re-run clean
+after this change: 503 passed, 1 skipped, 0 failed.

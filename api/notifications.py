@@ -20,8 +20,11 @@ router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 
 @router.get("")
-def list_notifications(unread_only: bool = False, user=Depends(get_current_user)):
-    return database.list_notifications(user["id"], unread_only=unread_only)
+def list_notifications(unread_only: bool = False, limit: int = 50, user=Depends(get_current_user)):
+    # Capped well above the nav bell's default (50) so web/notifications.html's
+    # full history view can show real history without unbounded queries.
+    limit = max(1, min(limit, 500))
+    return database.list_notifications(user["id"], unread_only=unread_only, limit=limit)
 
 
 @router.get("/unread-count")

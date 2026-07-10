@@ -18,6 +18,7 @@ const AximShell = (() => {
     lab: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6.2 1.8h3.6M6.8 1.8v3.8L3.4 12c-.5.9.2 2 1.2 2h7.9c1 0 1.7-1.1 1.2-2L10.3 5.6V1.8"/><path d="M5.4 9.5h5.2"/></svg>',
     funds: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="4" width="13" height="9.5" rx="1.6"/><path d="M1.5 6.8h13"/><circle cx="11.3" cy="10.2" r="1.3" fill="currentColor" stroke="none"/></svg>',
     guide: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.3"/><path d="M6.1 6.2c.2-1 1-1.6 1.9-1.6 1 0 1.9.6 1.9 1.7 0 1.4-1.9 1.3-1.9 3"/><circle cx="8" cy="11.2" r="0.15" fill="currentColor" stroke="currentColor" stroke-width="0.9"/></svg>',
+    notifications: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6.5a4 4 0 0 1 8 0c0 3.5 1.2 4.5 1.2 4.5H2.8S4 10 4 6.5Z"/><path d="M6.3 13a1.8 1.8 0 0 0 3.4 0"/></svg>',
   };
 
   const NAV_ITEMS = [
@@ -31,6 +32,7 @@ const AximShell = (() => {
     { key: "lab", label: "Strategy Lab", href: "/strategy-lab", icon: ICONS.lab },
     { key: "trades", label: "Trade Center", href: "/trades", icon: ICONS.trades },
     { key: "stats", label: "Performance", href: "/performance", icon: ICONS.stats },
+    { key: "notifications", label: "Notifications", href: "/notifications", icon: ICONS.notifications },
     { key: "pocketoption", label: "Broker", href: "/broker", icon: ICONS.pocketoption },
     { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
     { key: "logs", label: "Logs", href: "/logs", icon: ICONS.logs, adminOnly: true },
@@ -78,6 +80,7 @@ const AximShell = (() => {
               <button class="subtle" onclick="AximShell._markAllNotifsRead()">Mark all read</button>
             </div>
             <div id="axim-notif-list"><div class="notif-empty">Loading...</div></div>
+            <div class="notif-dropdown-footer"><a href="/notifications">View all notifications</a></div>
           </div>
         </div>
         <div class="user-chip">
