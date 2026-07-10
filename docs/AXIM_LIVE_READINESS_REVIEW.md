@@ -1,5 +1,38 @@
 # AXIM Live-Mode Readiness Review
 
+> **Status update - read this before the rest of the document.** This review
+> predates `docs/AXIM_PRODUCTION_READINESS_REPORT.md` and several sessions of
+> work since. Of the numbered "Critical gaps" below, three are now resolved -
+> verified, not assumed:
+> - **#1 ("Zero real signal-source trades, ever")** is resolved: AXIM was
+>   later run against the real production signal source (`Go+ | Trading Bot`)
+>   with `ARMED=true`, real trades placed with real wins and losses (see
+>   `docs/AXIM_ROADMAP.md`'s "Version 1 production hardening" section).
+> - **#2 (no `MAX_DAILY_LOSS`/drawdown circuit breaker)** is resolved:
+>   `core/risk_manager.py`'s `check_max_daily_loss()` exists, is wired into
+>   `trade_coordinator.py`'s risk-check sequence, and has dedicated
+>   regression tests.
+> - **#3 (`MODE=DEMO` dead/misleading config)** is resolved: removed.
+> - **#5 (no supervisor above the Python process)** is resolved and, as of
+>   this same pass, had a real gap closed: both the listener and the API
+>   process now run under Windows Scheduled Tasks wrapped in a supervisor
+>   script that correctly restarts on a forced termination (Task Scheduler's
+>   own `RestartOnFailure` doesn't reliably catch that case - see the
+>   roadmap).
+>
+> **#4, #6, and #7 were NOT specifically re-verified while writing this
+> banner** - don't assume they're resolved just because the others are.
+> #6 in particular (no automated regression suite for `pocket_dom.py`'s
+> actual DOM selector/interaction functions specifically, as opposed to the
+> worker-pool orchestration around them) still looks accurate: `tests/
+> test_browser_worker_pool.py` and `tests/test_browser_warmup.py` exist, but
+> no `test_pocket_dom.py` does. Treat this whole document as a dated
+> historical record and check `docs/AXIM_ROADMAP.md` /
+> `docs/AXIM_RELEASE_CHECKLIST.md` for current state before relying on any
+> specific claim below, including the "Bottom line up front" immediately
+> below this banner (which restates #1 and is the most acutely stale
+> sentence in the document).
+
 **Purpose:** an honest assessment of what would need to be true before `ARMED`
 is ever considered for anything beyond deliberate, watched demo validation -
 not a recommendation to enable it. Every finding below is grounded in what

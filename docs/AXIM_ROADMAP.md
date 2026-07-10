@@ -1547,3 +1547,26 @@ report's measurements and findings remain valid as a dated historical
 record of the 2026-07-05 stress test) correcting the two stale claims
 and pointing to `docs/AXIM_ROADMAP.md`/`docs/AXIM_RELEASE_CHECKLIST.md`
 as the current, actively-maintained sources of truth.
+
+## docs/AXIM_LIVE_READINESS_REVIEW.md had the same stale-guidance problem, predating the report above (fixed)
+
+Checked further back, since the readiness report above itself referenced
+findings from an even earlier review. `AXIM_LIVE_READINESS_REVIEW.md`'s
+own "Bottom line up front" states plainly: "no real signal from the
+trusted source has ever been processed" - its single most load-bearing
+claim, and the one its whole "not ready" verdict rests on. That's
+resolved (the same `Go+ | Trading Bot` production run already confirmed
+above). Three of its seven numbered "Critical gaps" are also resolved
+(#2 drawdown breaker, #3 dead `MODE` config, #5 process supervision -
+all independently re-verified, not assumed from the other doc's banner).
+
+Added a similar status banner, but deliberately narrower than the other
+one: explicitly did NOT claim items #4, #6, #7 were resolved without
+checking, and #6 specifically (no automated regression suite for
+`pocket_dom.py`'s actual DOM selector functions) was checked and still
+looks accurate - `tests/test_browser_worker_pool.py`/`test_browser_
+warmup.py` exist (testing the orchestration around DOM interaction) but
+no `test_pocket_dom.py` exists (testing the DOM interaction itself).
+Overclaiming "everything's fine now" would have been its own new stale-
+documentation problem, the same class of issue this fix and the one
+before it exist to close.
