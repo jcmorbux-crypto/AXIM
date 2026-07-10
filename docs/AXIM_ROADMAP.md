@@ -1358,3 +1358,45 @@ attach/detach and `api/admin.py`'s `disable_user`/`revoke_session` for
 the same pattern - neither qualified (single-connection sequential
 writes with no Python-level check-then-branch, and/or admin-gated
 idempotent mutations), so no further changes there.
+
+## Double-clicking "Connect" on a broker account could spawn two login processes (fixed)
+
+A third audit into fresh territory (Signal Sources/channel management,
+broker-account connect/disconnect, trial expiration, signal recording)
+found `api/broker_accounts_routes.py`'s `POST /{account_id}/connect`:
+read `connection_status != "connecting"` (a SELECT), then - in a
+separate, later DB connection - spawned `scripts/connect_broker_account.py`
+via `subprocess.Popen` and only afterward wrote `connection_status =
+"connecting"`. Two near-simultaneous `/connect` calls for the same
+account (a double-click on "Connect," or a frontend retry after a slow
+response - ordinary operator UI use, not an attack) could both pass the
+check and both spawn a login process against the *same* Chrome profile
+directory (`scripts/connect_broker_account.py`'s `user_data_dir`) at
+once - Playwright/Chrome profile locking doesn't handle two processes
+sharing one profile gracefully, and both processes would independently
+write back `connection_status` later, so the final state ends up being
+whichever finished last, not necessarily reality.
+
+Fixed the same way as the other five: `database.
+claim_broker_account_connecting(account_id)` makes the claim itself a
+single atomic conditional `UPDATE ... WHERE connection_status !=
+'connecting'`, returning whether this call won and may spawn the
+subprocess - replacing the separate read-then-Popen-then-write sequence.
+Added `tests/test_broker_account_connect_race.py` (4 tests, including a
+10-thread concurrency proof: exactly 1 claim succeeds, 9 fail cleanly,
+final state is "connecting" not something inconsistent).
+
+The same audit's second, lower-severity finding (a broker account could
+theoretically be archived while still assigned to a fund, if two admins
+race an assign and an archive within milliseconds) was left as-is:
+`fund_manager.can_trade` gates on `connection_status`, not `status`, so
+this can't itself enable an unintended live trade, and the scenario
+requires two admins deliberately acting in opposite directions on the
+same account at the same instant - a real but low-value edge case
+relative to the fix above, not pursued given diminishing returns. Also
+cleared by this audit: `assign_broker_account_to_fund` (its demote-then-
+insert runs on one un-committed connection, so SQLite's own writer lock
+already serializes it - not a real race), `telegram_channels.
+upsert_channel` (a real atomic `INSERT ... ON CONFLICT DO UPDATE`), and
+`check_and_expire_trial` (check-then-act in shape, but the act is
+idempotent with no side-channel, so a double-fire is harmless).

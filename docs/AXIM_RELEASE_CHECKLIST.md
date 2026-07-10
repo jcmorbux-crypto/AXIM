@@ -219,6 +219,16 @@ flags that it's still needed.
       `UPDATE ... WHERE last_condition_state = 0`; the identical race now
       fires exactly once. 1 new regression test added; the existing
       sequential edge-trigger test still passes unchanged
+- [x] **Broker-account double-connect race fixed**: `POST
+      /{account_id}/connect` checked `connection_status` and only later
+      spawned the login subprocess and wrote the new status, as separate
+      steps - a double-click on "Connect" (ordinary operator use, not an
+      attack) could spawn two login processes against the same Chrome
+      profile directory at once. Fixed with an atomic conditional claim
+      (`database.claim_broker_account_connecting`,
+      `UPDATE ... WHERE connection_status != 'connecting'`) replacing
+      the separate check-then-spawn-then-write sequence. 4 new
+      regression tests added, including a 10-thread concurrency proof
 
 ## Known, accepted limitations at this release
 

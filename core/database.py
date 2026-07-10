@@ -1844,6 +1844,33 @@ def update_broker_account(account_id, **fields):
 
 
 @timed("database")
+def claim_broker_account_connecting(account_id):
+    """Atomically claims the right to start a connection attempt for this
+    account - the actual enforcement point for "only one connect attempt
+    at a time," not api/broker_accounts_routes.py's preceding read-then-
+    branch (a separate SELECT, an entirely different DB connection, with
+    nothing tying it to the subprocess.Popen()+UPDATE that used to follow
+    it). Two near-simultaneous POST /connect calls for the same account
+    (a double-click on "Connect," or a frontend retry after a slow
+    response - ordinary operator UI use, not an attack) could both read
+    connection_status != "connecting" and both spawn
+    scripts/connect_broker_account.py against the same Chrome profile
+    directory, which Playwright/Chrome profile locking doesn't handle
+    gracefully. This single conditional UPDATE only succeeds for the
+    first caller; returns whether THIS call won and may spawn the
+    connect subprocess."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "UPDATE broker_accounts SET connection_status = 'connecting', updated_at = ? "
+        "WHERE id = ? AND connection_status != 'connecting'",
+        (datetime.now().isoformat(), account_id),
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+@timed("database")
 def assign_broker_account_to_fund(fund_id, broker_account_id, is_primary=True):
     """Attaches a broker account to a fund. Only one broker account may be
     primary per fund today (a fund "distributing trades across multiple
