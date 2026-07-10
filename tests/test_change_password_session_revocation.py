@@ -92,5 +92,59 @@ class ChangePasswordRouteRevocationTests(unittest.TestCase):
         self.assertIsNotNone(database.get_session_user(self.current_token))
 
 
+class ChangePasswordLockoutTests(unittest.TestCase):
+    """api/auth_routes.py's change_password() previously never called
+    record_failed_login on a wrong current-password guess, unlike
+    login() - meaning a hijacked/stolen session (which is all this
+    endpoint requires, not the password itself) could brute-force the
+    real account password with unlimited attempts, completely bypassing
+    the lockout that exists specifically to prevent that on /login."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.user_id = database.create_user("victim@axim.local", "CorrectPass123!", role="user",
+                                             access_state="active")
+        self.current_token = database.create_session(self.user_id, client_name="This browser")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def _change_password(self, current_password, new_password="NewPass456!"):
+        body = auth_routes.ChangePasswordRequest(current_password=current_password, new_password=new_password)
+        user = database.get_session_user(self.current_token)
+        return auth_routes.change_password(body, user=user, authorization=None, axim_session=self.current_token)
+
+    def test_wrong_current_password_counts_toward_lockout(self):
+        from fastapi import HTTPException
+        for _ in range(database.MAX_FAILED_LOGIN_ATTEMPTS - 1):
+            with self.assertRaises(HTTPException):
+                self._change_password("wrong")
+        self.assertIsNone(database.is_account_locked("victim@axim.local"))
+        with self.assertRaises(HTTPException):
+            self._change_password("wrong")
+        self.assertIsNotNone(database.is_account_locked("victim@axim.local"))
+
+    def test_locked_account_rejects_even_the_correct_password(self):
+        from fastapi import HTTPException
+        for _ in range(database.MAX_FAILED_LOGIN_ATTEMPTS):
+            with self.assertRaises(HTTPException):
+                self._change_password("wrong")
+        with self.assertRaises(HTTPException) as ctx:
+            self._change_password("CorrectPass123!")
+        self.assertEqual(ctx.exception.status_code, 429)
+
+    def test_successful_change_clears_the_lockout_counter(self):
+        for _ in range(database.MAX_FAILED_LOGIN_ATTEMPTS - 1):
+            with self.assertRaises(Exception):
+                self._change_password("wrong")
+        self._change_password("CorrectPass123!")
+        row = database.get_user_by_id(self.user_id)
+        self.assertEqual(row["failed_login_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

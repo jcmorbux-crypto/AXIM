@@ -13,6 +13,7 @@ identically; the header is checked first, cookie is the fallback, so an
 unrelated/expired cookie never shadows a valid token.
 """
 import sys
+import threading
 from pathlib import Path
 
 API_DIR = Path(__file__).resolve().parent
@@ -43,6 +44,16 @@ _VALID_CLIENT_TYPES = {"web", "desktop", "mobile", "tablet", "api"}
 _BLOCKED_ACCESS_STATES = {"disabled", "suspended", "expired"}
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# bootstrap_owner()'s count_users()==0 check and the create_user() that
+# follows it are two separate DB connections/transactions, not one
+# atomic operation - two concurrent first-run requests (e.g. two devices
+# on the Tailscale network racing to set up AXIM at the same moment)
+# could both pass the check before either inserts, minting two owners
+# instead of one. AXIM's API always runs as a single uvicorn process (no
+# --workers), so a plain in-process lock around the check-then-create
+# sequence closes this completely.
+_bootstrap_lock = threading.Lock()
 
 
 def _request_is_https(request: Request) -> bool:
@@ -152,20 +163,20 @@ def bootstrap_owner(body: BootstrapOwnerRequest, response: Response, request: Re
     mint a second owner later. This is the ONE place a real account gets
     created without an existing Owner/Admin approving it - by definition,
     since no admin exists yet."""
-    if database.count_users() > 0:
-        raise HTTPException(status_code=409, detail="an account already exists - use /login")
     if not body.email.strip() or "@" not in body.email:
         raise HTTPException(status_code=400, detail="a valid email is required")
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="password must be at least 8 characters")
-
     if body.client_type not in _VALID_CLIENT_TYPES:
         raise HTTPException(status_code=400, detail=f"invalid client_type: {body.client_type!r}")
 
-    user_id = database.create_user(
-        body.email, body.password,
-        role="owner", access_tier="owner", access_state="active",
-    )
+    with _bootstrap_lock:
+        if database.count_users() > 0:
+            raise HTTPException(status_code=409, detail="an account already exists - use /login")
+        user_id = database.create_user(
+            body.email, body.password,
+            role="owner", access_tier="owner", access_state="active",
+        )
     database.update_user(user_id, live_trading_allowed=True)
     database.record_login(user_id)
     raw_token = database.create_session(user_id, expires_hours=REMEMBER_ME_HOURS,
@@ -246,8 +257,22 @@ def change_password(body: ChangePasswordRequest, user=Depends(get_current_user),
     must not survive its own account's password change. Scoped to the
     session actively making the change (revoke_other_sessions) rather
     than revoke_all_sessions, so the user isn't logged out of the device
-    they're using right now."""
+    they're using right now.
+
+    Same brute-force lockout as login() - this endpoint checks a password
+    too, and only requires an already-valid session to reach, not the
+    password itself. Without this, a hijacked/stolen session (or a device
+    left logged in) could brute-force the real account password with
+    unlimited attempts, completely bypassing the lockout that exists
+    specifically to prevent that on /login."""
+    locked_until = database.is_account_locked(user["email"])
+    if locked_until:
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many failed attempts - locked until {locked_until}",
+        )
     if database.verify_user_credentials(user["email"], body.current_password) is None:
+        database.record_failed_login(user["email"])
         raise HTTPException(status_code=401, detail="current password is incorrect")
     if len(body.new_password) < 8:
         raise HTTPException(status_code=400, detail="new password must be at least 8 characters")

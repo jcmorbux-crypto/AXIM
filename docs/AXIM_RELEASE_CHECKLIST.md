@@ -156,6 +156,24 @@ flags that it's still needed.
       session stayed valid). `api/auth_routes.py`'s `change_password` had
       zero test coverage before this; now has 4 dedicated regression
       tests
+- [x] **Brute-force bypass on change-password fixed**: found while
+      reviewing the fix above - `change_password`'s own "current
+      password" check never called `record_failed_login`, unlike
+      `login()`. A hijacked/stolen session (all this endpoint requires,
+      not the password itself) could brute-force the real account
+      password with unlimited attempts. Fixed by mirroring `login()`'s
+      exact lockout check/record pattern; verified live (6 wrong
+      attempts against a real server: 5x 401, 6th 429 with a lockout
+      timestamp). 3 more regression tests added (7 total on this route)
+- [x] **Owner-creation race condition fixed**: `bootstrap_owner()`'s
+      "no owner yet" check and the account creation that followed it
+      were non-atomic - proved this was a real, not theoretical, bug by
+      racing 10 concurrent requests against the unlocked code and getting
+      **10 owners created at once** on the first try. Fixed with an
+      in-process lock (confirmed the API always runs as a single uvicorn
+      process, so this is a complete fix); re-ran the same 10-way race
+      with the fix and got exactly 1 owner, 9 clean 409 rejections. 2 new
+      regression tests added
 
 ## Known, accepted limitations at this release
 

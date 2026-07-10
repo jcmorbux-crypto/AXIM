@@ -1156,3 +1156,62 @@ never touches another user's sessions; the route revokes the other
 session but keeps the active one; a wrong current-password attempt
 revokes nothing). Full regression suite re-run clean (536 passed, 1
 skipped, 14 subtests passed) after this change.
+
+## change_password's own brute-force lockout was missing (fixed)
+
+Immediately after fixing the session-revocation gap above, re-read
+`change_password` next to `login()` and noticed a second, related gap:
+`login()` explicitly calls `database.record_failed_login(email)` on a
+wrong password and checks `is_account_locked` up front (the brute-force
+lockout added earlier this session); `change_password`'s own password
+check - `database.verify_user_credentials(...)` on the "current
+password" field - did neither. Since this endpoint only requires an
+already-valid session (not the password itself) to reach, a
+hijacked/stolen session or a device left logged in could brute-force the
+real account password with completely unlimited attempts, bypassing the
+lockout mechanism that exists specifically to prevent exactly that.
+
+Fixed by mirroring login()'s exact pattern: check `is_account_locked`
+first (429 if locked), call `record_failed_login` on a wrong current-
+password guess. (`set_user_password` already clears the lockout counter
+on success, so no separate `reset_failed_login` call was needed there.)
+
+Verified live: 6 requests to `/api/auth/change-password` with a wrong
+`current_password` against a real running server - the first 5 each
+returned 401, the 6th returned 429 with a `locked until` timestamp,
+exactly matching `/login`'s own lockout behavior. Added 3 more tests to
+`tests/test_change_password_session_revocation.py` (wrong attempts count
+toward lockout; a locked account rejects even the correct password; a
+successful change clears the counter) - 7 tests total in that file now.
+Full regression suite re-run clean (539 passed, 1 skipped, 14 subtests
+passed) after this change.
+
+## bootstrap_owner() had a real, easily-reproducible owner-creation race (fixed)
+
+Kept auditing every `verify_user_credentials` call site (confirmed there
+are only two - `login()` and `change_password()`, both now correctly
+lockout-protected) and every other auth-adjacent endpoint for the same
+"looks-safe-until-you-check-the-transaction-boundary" pattern that
+produced the two fixes above. `bootstrap_owner()`'s
+`count_users() > 0` guard and the `create_user()` call that follows it
+were two separate, non-atomic database connections, not one operation -
+two concurrent first-run requests (e.g. two devices on the Tailscale
+network both reaching AXIM for the first time at the same moment) could
+each pass the "no owner yet" check before either had inserted.
+
+Proved this wasn't theoretical before treating it as a bug: 10 threads
+racing `bootstrap_owner()` against a fresh in-memory-equivalent test
+database, with the guard temporarily reduced to its pre-fix (unlocked)
+form, produced **10 successful owner creations out of 10** on the very
+first trial - not an occasional double, a complete failure of the
+"exactly one owner" invariant under real concurrency.
+
+Fixed with a plain `threading.Lock()` (`api/auth_routes.py`'s
+`_bootstrap_lock`) around the check-then-create sequence - AXIM's API
+always runs as a single uvicorn process (confirmed: no `--workers` flag
+anywhere in `scripts/install_api_scheduled_task.ps1` or the deployment
+docs), so an in-process lock is a complete fix, not a partial mitigation.
+Re-ran the exact same 10-thread race with the lock restored: exactly 1
+`ok`, 9 `409 an account already exists`, `count_users() == 1`. Added
+`tests/test_bootstrap_owner_race.py` (2 tests: the race itself, and that
+a normal single bootstrap still works unchanged).
