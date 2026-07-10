@@ -177,7 +177,17 @@ async def _event_generator(request, resume_from_id, user_id, raw_token):
             if now - last_session_check >= SESSION_RECHECK_SECONDS:
                 last_session_check = now
                 current_user = database.get_session_user(raw_token)
-                if current_user is None or current_user["access_state"] in _BLOCKED_ACCESS_STATES:
+                if current_user is None:
+                    break
+                # Same lazy trial-expiration check get_current_user runs
+                # on every normal request (core/database.py's own
+                # docstring: "called on every login and every
+                # authenticated request") - a trial user whose only
+                # activity is this one open stream would otherwise never
+                # trigger it, since nothing else flips access_state to
+                # 'expired' on its own.
+                current_user = database.check_and_expire_trial(current_user)
+                if current_user["access_state"] in _BLOCKED_ACCESS_STATES:
                     break
             try:
                 row = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)

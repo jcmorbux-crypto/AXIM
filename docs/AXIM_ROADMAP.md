@@ -666,3 +666,27 @@ confirmed all three endpoints return `404` with no env var set (today's
 new default), then confirmed setting `ENABLE_API_DOCS=true` correctly
 restores all three to `200` - the opt-in path genuinely works, not just
 the default. Full regression suite re-run clean after this change.
+
+## SSE session recheck also catches trial expiration, not just explicit disable/revoke (done)
+A follow-up gap in the SSE-revocation fix just above, found by comparing
+it against `get_current_user`'s own docstring more carefully:
+`database.check_and_expire_trial` - the *lazy* trial-expiration check
+("called on every login and every authenticated request") - is only
+ever triggered by an actual request calling it. The SSE stream's own
+periodic recheck called `get_session_user` directly, skipping it - so a
+trial user whose trial expired while their only remaining activity was
+one open SSE connection would never have their `access_state` flipped
+to `expired` at all, and the stream (correctly, given the never-updated
+state) would keep running indefinitely, unlike every other endpoint.
+
+Fixed by calling `database.check_and_expire_trial` on the rechecked user
+too, same as `get_current_user` does - one extra call, same
+`SESSION_RECHECK_SECONDS` cadence already in place.
+
+Verified directly against the real `_event_generator`: created a trial
+user with `trial_expires_at` set a day in the past (simulating a trial
+that lapsed with no other request ever touching this account), opened a
+real stream, and confirmed it terminated on its very first recheck *and*
+that the user's `access_state` in the database was actually flipped to
+`'expired'` as a side effect - not just that the stream happened to stop.
+Full regression suite re-run clean after this change.
