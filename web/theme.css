@@ -176,6 +176,13 @@ a { color: inherit; }
 .user-chip .email { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-chip .role { color: var(--text-faint); font-size: 11px; }
 
+.conn-status {
+  align-items: center; gap: 8px; padding: 7px 10px; margin-bottom: 6px;
+  border-radius: var(--radius-sm); background: var(--yellow-soft); color: var(--yellow);
+  font-size: 11.5px; font-weight: 550;
+}
+.conn-status .dot { animation: axim-pulse 1.4s ease-in-out infinite; }
+
 .notif-bell-wrap { position: relative; }
 .notif-bell {
   display: flex; align-items: center; gap: 8px; width: 100%;

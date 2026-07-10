@@ -530,3 +530,30 @@ state to sync now does, with polling kept everywhere as the fallback
 floor (Settings/Help Center have no live state to sync; User Management
 remains deliberately poll-only, per the reasoning recorded earlier in
 this document).
+
+## Connection-loss indicator added (done)
+Everything above assumes the SSE stream is healthy - but nothing told
+the operator when it wasn't. `web/shell.js`'s `eventSource.onerror` was
+a literal no-op ("let the browser's built-in auto-reconnect handle it"),
+so a Remote Client whose Tailscale link actually dropped, or whose
+laptop slept, or whose AXIM Server restarted, had no way to tell its
+"live" view had gone stale - every page would just quietly stop
+updating with no visible signal, directly undermining the whole point
+of building real-time sync in the first place.
+
+Added a small indicator in the sidebar footer (`#axim-conn-status`,
+reuses the existing `.dot`/pulse styling from Mission Control's status
+line), hidden by default and wired to the EventSource's real `onopen`/
+`onerror` events - not a synthetic health check. Debounced 4s before
+showing "Reconnecting to AXIM Server..." so normal, brief reconnects
+(which happen routinely and resolve on their own) don't flicker a false
+alarm; clears instantly on a real `onopen`. No new backend event needed -
+this reacts to the existing connection's own native lifecycle.
+
+Verified with a real Playwright browser against a real running server,
+not a mock: confirmed the indicator is hidden while genuinely connected,
+force-killed the actual server process mid-session, confirmed it stays
+hidden through the 4s debounce window (no flicker), then confirmed it
+switches to visible with the correct text once the drop has actually
+persisted past that window. Full regression suite re-run clean after
+this change (no backend changes in this one - frontend-only).

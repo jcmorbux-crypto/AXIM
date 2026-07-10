@@ -68,6 +68,9 @@ const AximShell = (() => {
       </div>
       <div class="nav-spacer"></div>
       <div class="sidebar-footer">
+        <div class="conn-status" id="axim-conn-status" style="display:none;">
+          <span class="dot warn"></span> Reconnecting to AXIM Server...
+        </div>
         <div class="notif-bell-wrap">
           <button class="notif-bell" id="axim-notif-bell" onclick="AximShell._toggleNotifDropdown()">
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6.5a4 4 0 0 1 8 0c0 3.5 1.2 4.5 1.2 4.5H2.8S4 10 4 6.5Z"/><path d="M6.3 13a1.8 1.8 0 0 0 3.4 0"/></svg>
@@ -345,10 +348,27 @@ const AximShell = (() => {
       }
     });
     Object.keys(eventHandlers).forEach(_bindEventType);
-    // onerror fires on every disconnect, including normal ones the
-    // browser's built-in auto-reconnect (with Last-Event-ID) already
-    // handles - nothing to do here but let it retry.
-    eventSource.onerror = () => {};
+    // onerror fires on every disconnect, including brief, normal ones
+    // the browser's built-in auto-reconnect (with Last-Event-ID) already
+    // handles on its own - so this doesn't show "Reconnecting" for those,
+    // only once the connection has actually been down for a few seconds
+    // (a real Tailscale drop, sleeping laptop, server restart), so a
+    // Remote Client watching from another device can tell its view has
+    // gone stale instead of quietly assuming it's still live.
+    eventSource.onopen = () => {
+      if (connLostTimer) { clearTimeout(connLostTimer); connLostTimer = null; }
+      _setConnStatus(true);
+    };
+    eventSource.onerror = () => {
+      if (connLostTimer) return;
+      connLostTimer = setTimeout(() => { connLostTimer = null; _setConnStatus(false); }, 4000);
+    };
+  }
+
+  let connLostTimer = null;
+  function _setConnStatus(connected) {
+    const el = document.getElementById("axim-conn-status");
+    if (el) el.style.display = connected ? "none" : "flex";
   }
 
   async function init(opts) {
