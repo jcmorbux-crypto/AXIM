@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AXIM TradeStation",
-  "version": "0.1.0",
+  "version": "0.9.0-dev",
   "identifier": "com.axim.desktop",
   "build": {
     "frontendDist": "../src"
@@ -25,6 +25,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "AXIM TradeStation",
+    "copyright": "Copyright (c) AXIM TradeStation",
+    "shortDescription": "Remote Client for AXIM TradeStation",
+    "longDescription": "Monitor and control your AXIM TradeStation server - Mission Control, Funds, Trading Sessions, Strategy Lab, Automation Studio, and more - from this desktop app, whether AXIM runs on this machine or remotely over Tailscale.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

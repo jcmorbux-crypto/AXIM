@@ -863,3 +863,28 @@ already documented above, not by a permanent test - a real, intentional
 gap, not an oversight.
 
 Full regression suite re-run clean after this change.
+
+## Desktop client shipped with unedited Tauri scaffold metadata (fixed)
+`axim-desktop/package.json`, `src-tauri/Cargo.toml`, and `src-tauri/
+tauri.conf.json` all still had their original `create-tauri-app`
+scaffold defaults: `version: "0.1.0"` in all three (while the API itself
+reports `0.9.0-dev` via `/api/version`, shown in `web/login.html`'s
+footer - a real, visible mismatch between the desktop shell and the app
+it launches), plus `Cargo.toml`'s `description = "A Tauri App"` and
+`authors = ["you"]` - literal, unedited placeholder text that would ship
+into the installer's package metadata as-is.
+
+Synced all three version strings to `0.9.0-dev`, replaced the
+placeholder description/authors with real ones, and added `publisher`/
+`copyright`/`shortDescription`/`longDescription` to `tauri.conf.json`'s
+bundle config - previously entirely absent, meaning Windows' "Add/Remove
+Programs" would have shown a blank or generic entry for the installed
+app instead of identifying it as AXIM TradeStation.
+
+No Rust toolchain available in this environment to run a full `cargo
+build`/`tauri build`, so verified what could be: `tauri.conf.json`/
+`package.json` parse as valid JSON, `Cargo.toml` parses as valid TOML
+(via Python's `tomllib`) with the expected fields present. All three
+changes are pure string/metadata edits - no code, no dependency, no
+build-config-affecting field touched - so this is a low-risk change even
+without a full build to confirm it.
