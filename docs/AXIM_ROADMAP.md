@@ -821,3 +821,45 @@ actually changes to `rejected`) - the accessibility pass added real
 keyboard/screen-reader support everywhere else without weakening this
 one deliberately-not-dismissible dialog. Full regression suite re-run
 clean after this change.
+
+## Permanent regression tests added for this session's security fixes (done)
+Everything security-related earlier in this document was verified live
+against a real running server - genuinely stronger evidence than a unit
+test at the time, but every one of those verification scripts was
+deleted afterward (`$CLAUDE_JOB_DIR/tmp`), leaving nothing in the
+permanent suite to catch a future regression. Closed that gap for the
+two pieces that could be tested safely:
+- `tests/test_login_lockout.py` (new): the full lockout lifecycle
+  directly against `core/database.py` (not-yet-locked, locked-at-
+  threshold, correct password still rejected while locked, unlocks
+  after the window elapses, `reset_failed_login`/`set_user_password`
+  both clear it, a nonexistent email never locks), plus
+  `api/auth_routes.py`'s actual `login()` route function called
+  directly - confirms the 401-vs-429 status codes and that a correct
+  password before the threshold succeeds and resets the counter. 10
+  tests.
+- `tests/test_event_stream_routes.py` (extended): 3 new tests directly
+  against the real `_event_generator` (not a reimplementation) - a
+  still-valid session keeps streaming, `database.delete_session()` (the
+  same call Connected Devices' Revoke button makes) terminates the
+  generator on its next iteration, and an already-expired trial both
+  terminates the stream and flips `access_state` to `expired` in the
+  database as a real side effect.
+
+Deliberately did NOT add a test importing `api/main.py` directly for the
+`control.updated`/`channels.updated` event wiring (pause/resume/
+emergency-stop/etc.) - no other test file in this codebase imports
+`main.py`, because it calls `database.initialize_database()` at module
+level, and Python's import caching means the *first* test file to
+trigger that import (order not guaranteed across test files) would run
+it against whatever `database.DB_FILE` happened to be at that moment -
+risking a real touch of the actual `data/axim.db` during test
+collection if that happens before any test's `setUp()` reassigns it.
+`api/auth_routes.py` and `api/event_stream_routes.py` don't have this
+problem (confirmed - neither calls `initialize_database()` at import
+time), which is why those two were safe to test this way and `main.py`
+wasn't. That wiring remains covered by the live HTTP verification
+already documented above, not by a permanent test - a real, intentional
+gap, not an oversight.
+
+Full regression suite re-run clean after this change.
