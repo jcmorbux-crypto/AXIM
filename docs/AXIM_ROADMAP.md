@@ -600,3 +600,40 @@ password POSTs to `/api/auth/login` against a real bootstrapped owner
 account, then confirmed the 6th attempt with the *correct* password
 still got a 429 with the lockout message. Full regression suite re-run
 clean after this change.
+
+## Revoked device sessions can no longer keep an open SSE stream alive (done)
+`docs/AXIM_REMOTE_ACCESS.md` documents "Revoking a device immediately
+signs it out on its next request" - true for every regular endpoint
+(each one calls `get_current_user`/`_resolve_stream_user` fresh, per
+request), but not for `GET /api/events/stream`: that connection was
+authenticated once, at connect time, then held open for as long as the
+browser's `EventSource` stayed connected - which, given SSE's whole
+purpose is staying open, could be hours. A revoked device (Settings >
+Connected Devices) or a since-disabled/suspended account kept receiving
+every live broadcast event (`trade.*`, `control.updated`,
+`channels.updated`, its own `notification.created`, everything else
+this session has added) until the stream happened to drop for some
+unrelated reason - a real gap between documented and actual behavior on
+a system that controls live trading.
+
+Fixed by periodically re-validating the session inside
+`_event_generator`'s own loop (`SESSION_RECHECK_SECONDS = 30`) - the
+same `database.get_session_user()` check every normal request already
+gets, just done on a timer instead of per-request since there's no
+per-request boundary on an open stream. Rechecked via a cheap
+`time.monotonic()` comparison each loop iteration, with the actual DB
+read only happening once per 30s regardless of how many events flow
+through in between - deliberately not tied to event volume, since real
+trading activity can produce far more than one event per 30s.
+`_resolve_stream_user` now returns `(user, raw_token)` instead of just
+`user` so the generator has the token to recheck with.
+
+Verified directly against the real `_event_generator` function (not a
+reimplementation) with a real temporary SQLite DB: created a user and a
+real session token, ran the actual generator with the recheck interval
+sped up for the test only (same code path, not a mock), drained several
+real keepalive ticks proving the stream stays alive while the session is
+valid, then called the exact same `database.delete_session()` the
+Connected Devices "Revoke" button calls and confirmed the generator's
+`while True` loop broke on its very next iteration
+(`StopAsyncIteration`), instead of continuing indefinitely.

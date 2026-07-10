@@ -13,6 +13,7 @@ staying constant.
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 API_DIR = Path(__file__).resolve().parent
@@ -39,7 +40,11 @@ def _resolve_stream_user(request, authorization, axim_session, token_query_param
     one endpoint specifically. Every other route stays header/cookie-only
     (a query-param token is a weaker transport - it can end up in server
     access logs - so it's deliberately not offered anywhere a client
-    could just use fetch() and set a header instead)."""
+    could just use fetch() and set a header instead).
+
+    Returns (user, raw_token) - the raw token is also needed by
+    _event_generator to periodically re-validate the session for as long
+    as the connection stays open (see that function's own docstring)."""
     raw_token = _extract_bearer_token(authorization) or axim_session or token_query_param
     if not raw_token:
         raise HTTPException(status_code=401, detail="not authenticated")
@@ -49,7 +54,7 @@ def _resolve_stream_user(request, authorization, axim_session, token_query_param
     user = database.check_and_expire_trial(user)
     if user["access_state"] in _BLOCKED_ACCESS_STATES:
         raise HTTPException(status_code=403, detail=f"account is {user['access_state']}")
-    return user
+    return user, raw_token
 
 POLL_INTERVAL_SECONDS = 0.4
 KEEPALIVE_SECONDS = 15
@@ -114,11 +119,27 @@ def _visible_to(user_id, event_type, payload):
     return True
 
 
-async def _event_generator(request, resume_from_id, user_id):
+SESSION_RECHECK_SECONDS = 30
+
+
+async def _event_generator(request, resume_from_id, user_id, raw_token):
+    """The connection is authenticated once, here, at connect time - but
+    an SSE stream can stay open for hours. Without a periodic recheck, a
+    revoked device (Settings > Connected Devices) or a disabled/suspended
+    account keeps receiving every broadcast event for as long as its
+    already-open connection happens to survive, contradicting
+    docs/AXIM_REMOTE_ACCESS.md's documented "revoking a device
+    immediately signs it out on its next request" - a long-lived stream
+    was never re-checked as "a request" the way every other endpoint is
+    on every call. Rechecked at most once per SESSION_RECHECK_SECONDS
+    (a cheap datetime comparison every loop iteration; the actual DB read
+    only that often), not on every single event, since events can arrive
+    far more often than that under real trading load."""
     queue = asyncio.Queue()
     _ensure_poller_started()
     _subscribers.add(queue)
     last_yielded_id = None
+    last_session_check = time.monotonic()
     try:
         if resume_from_id is not None and resume_from_id > 0:
             # A gap exists when the id right after what the client last
@@ -152,6 +173,12 @@ async def _event_generator(request, resume_from_id, user_id):
         while True:
             if await request.is_disconnected():
                 break
+            now = time.monotonic()
+            if now - last_session_check >= SESSION_RECHECK_SECONDS:
+                last_session_check = now
+                current_user = database.get_session_user(raw_token)
+                if current_user is None or current_user["access_state"] in _BLOCKED_ACCESS_STATES:
+                    break
             try:
                 row = await asyncio.wait_for(queue.get(), timeout=KEEPALIVE_SECONDS)
             except asyncio.TimeoutError:
@@ -184,7 +211,7 @@ async def stream_events(request: Request, last_event_id: Optional[int] = None, t
     restoring its last-known id) or the standard Last-Event-ID header
     (which a browser's native EventSource sends automatically on its own
     auto-reconnect)."""
-    user = _resolve_stream_user(request, authorization, axim_session, token)
+    user, raw_token = _resolve_stream_user(request, authorization, axim_session, token)
 
     resume_from = last_event_id
     if resume_from is None and last_event_id_header is not None:
@@ -193,7 +220,7 @@ async def stream_events(request: Request, last_event_id: Optional[int] = None, t
         except ValueError:
             resume_from = None
     return StreamingResponse(
-        _event_generator(request, resume_from, user["id"]),
+        _event_generator(request, resume_from, user["id"], raw_token),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
