@@ -1440,3 +1440,35 @@ connection_status = 'connecting'`), returning whether the write
 happened. The script now logs and discards its result instead of
 overwriting when it didn't. 4 new tests added to
 `tests/test_broker_account_connect_race.py`.
+
+## soak_snapshot.py silently stopped detecting errors after log rotation (fixed)
+
+Checked for the same "fire-and-forget subprocess, no cancellation path"
+pattern that produced the fix above elsewhere in the codebase - found
+`api/broker_accounts_routes.py`'s connect flow was the only
+`subprocess.Popen` call in the entire API, and the only other standalone
+script in `scripts/` (besides the now-fixed connect script) is
+`soak_snapshot.py` - the tool used for the one still-open item on this
+roadmap (a genuine multi-hour soak test). Read it end to end since it's
+directly relevant to that outstanding work, and found a real bug in its
+own error-tracking logic: `count_new_error_lines()` compares the current
+`logs/axim.log` line count against `last_count` (saved from the
+previous run) to find newly-appended lines - but `core/logger.py` rotates
+`axim.log` via `RotatingFileHandler` once it hits `MAX_BYTES`, exactly
+the kind of event a real multi-hour run will hit. After a rotation, the
+fresh `axim.log` is far shorter than `last_count`, so
+`lines[last_count:]` silently returns `[]` on every subsequent run -
+reporting `new_error_lines=0` forever afterward even while real errors
+are happening, defeating the entire purpose of the script during the one
+scenario (a long soak test) it exists to catch.
+
+Proved it directly: wrote 5000 lines, ran the script to establish
+`last_count=5000`, then replaced the log with a short 2-line file
+(simulating rotation) containing one real `ERROR` line - the old code
+reported 0 new errors instead of 1.
+
+Fixed by treating `last_count` exceeding the current line count as "the
+file was rotated," not "there are no new lines" - resets to 0 so every
+currently-present line counts as new. Added
+`tests/test_soak_snapshot.py` (4 tests, including the exact rotation
+scenario above) - zero test coverage existed on this script before this.

@@ -91,10 +91,23 @@ def get_db_stats():
 
 
 def count_new_error_lines():
+    """core/logger.py rotates axim.log via RotatingFileHandler once it
+    hits MAX_BYTES - exactly the kind of event a multi-hour soak test
+    will genuinely run into. When that happens, the fresh axim.log is
+    far shorter than last_count (the line count from before rotation),
+    so lines[last_count:] silently returns [] every run afterward -
+    reporting new_error_lines=0 (and re-saving that same too-high
+    last_count) even while real errors are happening, defeating the
+    exact thing this script exists to catch. Treat last_count exceeding
+    the current line count as "the file was rotated/truncated", not
+    "there are no new lines" - every currently-present line is new
+    relative to whatever came before the rotation."""
     if not AXIM_LOG.exists():
         return 0
     lines = AXIM_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
     last_count = int(STATE_FILE.read_text()) if STATE_FILE.exists() else 0
+    if last_count > len(lines):
+        last_count = 0
     new_lines = lines[last_count:]
     new_errors = sum(1 for l in new_lines if " ERROR " in l or " CRITICAL " in l)
     STATE_FILE.write_text(str(len(lines)))

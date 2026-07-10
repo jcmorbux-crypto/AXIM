@@ -249,6 +249,17 @@ flags that it's still needed.
       mode stack-trace leakage, and the SSE resync/gap-recovery signal
       end-to-end (every subscribing page implements `onResync`) - all
       confirmed clean, no changes needed
+- [x] **Soak-test error tracking fixed**: `scripts/soak_snapshot.py`'s
+      `count_new_error_lines()` silently reported zero new errors,
+      forever, after `axim.log` rotates (`core/logger.py`'s
+      `RotatingFileHandler`) - exactly the kind of event a real
+      multi-hour soak test run will hit, defeating the tool's entire
+      purpose during the one scenario it exists for. Proved it directly:
+      simulated a rotation with a real `ERROR` line present immediately
+      after - old code reported 0. Fixed by treating a `last_count`
+      larger than the current line count as "rotated," not "no new
+      lines." 4 new regression tests added - zero test coverage existed
+      on this script before this
 
 ## Known, accepted limitations at this release
 
