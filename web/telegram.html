@@ -434,6 +434,9 @@ async function openMessages(id, title) {
   refreshConnectionStatus();
   refreshChannels();
   setInterval(refreshConnectionStatus, 15000);
+  AximShell.subscribeEvents({
+    "channels.updated": { onEvent: refreshChannels, onResync: refreshChannels },
+  });
 })();
 </script>
 </body>

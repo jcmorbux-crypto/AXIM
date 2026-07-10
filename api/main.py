@@ -336,6 +336,19 @@ def list_channels(user=Depends(get_current_user)):
     return database.list_channels()
 
 
+def _emit_channels_updated():
+    """web/telegram.html (Signal Sources) loaded its channel list once
+    and never refreshed it - a channel enabled/disabled or synced from
+    one Remote Client stayed invisible to any other connected client
+    until a manual reload. Same direct-write pattern as every other
+    _emit_*_updated helper: this route runs inside the API process, so
+    it can write the server_events outbox directly."""
+    try:
+        database.record_server_event("channels.updated", {})
+    except Exception:
+        pass
+
+
 @app.post("/api/channels/sync")
 async def sync_channels(user=Depends(require_admin)):
     """Triggers a real Telethon dialog fetch via the dedicated UI session
@@ -348,12 +361,14 @@ async def sync_channels(user=Depends(require_admin)):
     except Exception as e:
         logger.error("api: channel sync failed: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
+    _emit_channels_updated()
     return {"synced": count}
 
 
 @app.patch("/api/channels/{channel_id}")
 def set_channel_enabled(channel_id: int, body: ChannelToggle, user=Depends(require_admin)):
     database.set_channel_enabled(channel_id, body.enabled)
+    _emit_channels_updated()
     return {"id": channel_id, "enabled": body.enabled}
 
 
@@ -372,6 +387,7 @@ def set_channel_config(channel_id: int, body: ChannelConfigUpdate, user=Depends(
         database.set_channel_config(channel_id, **updates)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _emit_channels_updated()
     return _get_channel_or_404(channel_id)
 
 

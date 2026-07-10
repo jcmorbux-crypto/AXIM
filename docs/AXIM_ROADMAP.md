@@ -502,3 +502,31 @@ confirmed `trade.confirmation_requested` fired, then confirmed it
 through the real `POST .../confirm` endpoint and confirmed
 `trade.confirmation_decided` fired. Full regression suite re-run clean
 after this change.
+
+## Signal Sources live sync closed (done)
+Last remaining live-sync gap of the original 14-area audit: `web/
+telegram.html`'s channel list (enable/disable, Telethon dialog sync,
+per-channel config) loaded once and never refreshed - a channel toggled
+from one Remote Client stayed invisible on another connected client
+until a manual reload, unlike everything else closed out above. Added
+`channels.updated`, emitted from `api/main.py`'s three channel mutation
+routes (`POST /api/channels/sync`, `PATCH /api/channels/{id}`, `PATCH
+/api/channels/{id}/config`), and wired `web/telegram.html` to it.
+Also wired `web/dashboard.html` (Mission Control's "watching N signal
+sources" status line already reads the channel list on its 5s poll -
+this makes it instant too, for consistency with `control.updated`
+added just above it).
+
+Verified live against a real running server: created a channel directly
+via `database.upsert_channel` (mirroring what a real Telethon sync
+would insert), toggled it enabled through the real `PATCH
+/api/channels/{id}` endpoint over HTTP, and confirmed `channels.updated`
+fired on the real SSE stream. Full regression suite re-run clean after
+this change.
+
+This closes the real-time-sync half of the original capability audit:
+every one of the 14 required Remote Client areas that has live server
+state to sync now does, with polling kept everywhere as the fallback
+floor (Settings/Help Center have no live state to sync; User Management
+remains deliberately poll-only, per the reasoning recorded earlier in
+this document).

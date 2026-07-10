@@ -523,6 +523,7 @@ function confirmEmergencyStop() {
   AximShell.subscribeEvents({
     "trade.closed": { onEvent: refreshAll, onResync: refreshAll },
     "control.updated": { onEvent: refreshAll, onResync: refreshAll },
+    "channels.updated": { onEvent: refreshAll, onResync: refreshAll },
   });
 })();
 </script>
