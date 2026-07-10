@@ -130,6 +130,13 @@ flags that it's still needed.
       (description, authors) replaced with real values
 - [x] Root `README.md` (was completely empty) and a missing favicon (there
       was none at all) both added
+- [x] Final full-page visual QA pass: all 17 authenticated `web/` pages
+      (Mission Control, Funds, Trading Sessions, Signal Sources, Signal
+      Inspector, Risk Engine, Automation Studio, Strategy Lab, Trade
+      Center, Performance, Notifications, Broker, Users, Logs, Settings,
+      Plan & Billing, the onboarding wizard) screenshotted live via
+      Playwright against a freshly bootstrapped server and reviewed
+      individually - zero console errors, zero rendering/UX defects found
 
 ## Known, accepted limitations at this release
 
