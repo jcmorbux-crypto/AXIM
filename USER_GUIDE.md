@@ -13,7 +13,31 @@ Telegram message → parse_signal() → risk_manager checks → pocket_executor
    trades list once the trade's expiry has passed) → recorded in data/axim.db
 ```
 
-## Starting AXIM
+## The web UI is how you'll actually use AXIM day to day
+
+Everything below this point documents the underlying engine/CLI layer -
+genuinely accurate and still how AXIM works under the hood, but **not**
+how most setup and daily operation happens anymore. That's the full web
+app (`api/main.py` + `web/*.html`), reachable at your configured
+`API_BIND_HOST:API_BIND_PORT` (`127.0.0.1:8090` by default) either
+directly in a browser or through the AXIM desktop app
+(`axim-desktop/`) - Mission Control, Funds, Trading Sessions, Trade
+Center, Strategy Lab (AI-assisted backtesting), Automation Studio
+(visual IF/THEN rules), Signal Sources, Broker Accounts, Performance,
+Notifications, User Management, and Settings, all kept in sync in real
+time across every connected device (`docs/AXIM_REMOTE_ACCESS.md`).
+
+First run walks you through an 8-step Setup Wizard (`/wizard`) - Owner
+account, connect Telegram, connect Pocket Option, pick a Risk Profile,
+select signal channels, start a first Trading Session, run a demo
+trade. Once you're in, the running app's own **Help & Guide** page
+(searchable, plain-language, no developer jargon) is the actively-
+maintained reference for every screen - prefer it over this file for
+anything web-UI-related. `WATCH_CHANNELS`/`.env` editing (described
+below) still works, but the Signal Sources page's channel manager is
+the live, no-restart-needed way to do the same thing today.
+
+## Starting AXIM (engine/CLI layer)
 
 ```powershell
 python core/telegram_listener.py
@@ -45,11 +69,10 @@ set `TELEGRAM_DEBUG_LOG=true` (see "Debug logging" below) - it logs every
 incoming message's routing decision from every chat your account can see,
 before any filtering.
 
-## Control UI (channel manager, start/stop/pause)
+## The API process (what actually serves the web UI)
 
-A local web UI is available instead of editing `.env`/restarting for
-channel changes. It's a separate process from the listener - start it
-alongside:
+The full web app described above - not just channel management - is
+served by this process, separate from the listener. Start it alongside:
 
 ```powershell
 python -m uvicorn api.main:app --host 127.0.0.1 --port 8090
@@ -140,9 +163,12 @@ latency statistics:
 python core/timeline_report.py --limit 100
 ```
 
-## The dashboard
+## The standalone stdlib dashboard (secondary - not Mission Control)
 
-A read-only, local web view over the same database:
+Not to be confused with Mission Control (the web UI's real, primary
+dashboard at `/dashboard`, described above) - this is a separate,
+deliberately minimal, dependency-free read-only web view over the same
+database, useful mainly for a quick check without the full app running:
 
 ```powershell
 python core/dashboard_server.py
