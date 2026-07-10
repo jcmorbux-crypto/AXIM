@@ -137,6 +137,13 @@ flags that it's still needed.
       Plan & Billing, the onboarding wizard) screenshotted live via
       Playwright against a freshly bootstrapped server and reviewed
       individually - zero console errors, zero rendering/UX defects found
+- [x] Mobile re-verification at 375px extended to the pages added this
+      release (Notifications, Broker, Plan & Billing, the onboarding
+      wizard) - zero page-level overflow on any of 18 pages checked, and
+      confirmed live that wide tables (e.g. Users) scroll horizontally
+      within their own card as designed rather than being clipped -
+      `table.scrollWidth (806px) > table.clientWidth (289px)` with
+      `overflow-x: auto`, not a page-level overflow bug
 
 ## Known, accepted limitations at this release
 
