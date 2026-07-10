@@ -335,4 +335,91 @@ def export_run(run_id: int, format: str = "json", user=Depends(get_current_user)
         return Response(content=buffer.getvalue(), media_type="text/csv",
                          headers={"Content-Disposition": f"attachment; filename=backtest_{run_id}.csv"})
 
-    raise HTTPException(status_code=400, detail="format must be json or csv")
+    if format == "pdf":
+        pdf_bytes = _build_backtest_pdf(report)
+        return Response(content=pdf_bytes, media_type="application/pdf",
+                         headers={"Content-Disposition": f"attachment; filename=backtest_{run_id}.pdf"})
+
+    raise HTTPException(status_code=400, detail="format must be json, csv, or pdf")
+
+
+def _build_backtest_pdf(report):
+    """Renders the same data the UI's comparison cards / AI narrative
+    already show, as a shareable PDF - required risk disclaimer
+    included on every export, matching the same banner Strategy Lab's
+    own UI shows on every visit (docs/AXIM_APP_PLAN.md). Built with
+    reportlab's platypus flowables (SimpleDocTemplate + Table/Paragraph)
+    - pure Python, no system-level PDF toolchain (wkhtmltopdf, Cairo)
+    needed, consistent with this project's dependency-light philosophy
+    for a still-local, single-operator tool."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=letter, topMargin=0.6 * inch, bottomMargin=0.6 * inch)
+    styles = getSampleStyleSheet()
+    disclaimer_style = ParagraphStyle(
+        "Disclaimer", parent=styles["Normal"], fontSize=8, textColor=colors.HexColor("#6b7078"),
+    )
+
+    story = [
+        Paragraph(f"AXIM Strategy Lab - {report['run']['name']}", styles["Title"]),
+        Paragraph(
+            f"Created {report['run'].get('created_at', '')} by {report['run'].get('created_by', 'unknown')} "
+            f"&middot; Starting bankroll ${report['run'].get('starting_bankroll', 0):,.2f} "
+            f"&middot; Session window: {report['run'].get('session_window', '')}",
+            styles["Normal"],
+        ),
+        Spacer(1, 0.15 * inch),
+        Paragraph(
+            "Past results do not guarantee future results. This report simulates how each strategy "
+            "would have performed against historical signals - it is not a prediction of future "
+            "performance and does not account for every real-world execution factor.",
+            disclaimer_style,
+        ),
+        Spacer(1, 0.25 * inch),
+    ]
+
+    headers = ["Strategy", "Final Bankroll", "ROI %", "Win Rate", "Max DD %", "Risk", "Rank"]
+    rows = [headers]
+    for s in report["strategies"]:
+        m = s.get("metrics") or {}
+        rows.append([
+            s["label"],
+            f"${m.get('final_bankroll', 0):,.2f}" if m.get("final_bankroll") is not None else "-",
+            f"{m.get('roi_percent', 0):+.1f}%" if m.get("roi_percent") is not None else "-",
+            f"{m['win_rate'] * 100:.1f}%" if m.get("win_rate") is not None else "-",
+            f"-{m.get('max_drawdown_percent', 0):.1f}%" if m.get("max_drawdown_percent") is not None else "-",
+            m.get("risk_score") or "-",
+            f"#{m['rank_overall']}" if m.get("rank_overall") is not None else "-",
+        ])
+    table = Table(rows, repeatRows=1, hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2452eb")),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e3e6ea")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafbfc")]),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 0.3 * inch))
+
+    story.append(Paragraph("AI Analysis", styles["Heading2"]))
+    story.append(Paragraph(ai_analysis.generate_run_narrative(report), styles["Normal"]))
+    for s in report["strategies"]:
+        story.append(Spacer(1, 0.12 * inch))
+        story.append(Paragraph(s["label"], styles["Heading3"]))
+        story.append(Paragraph(
+            ai_analysis.generate_strategy_narrative(s["label"], s.get("metrics") or {}),
+            styles["Normal"],
+        ))
+
+    doc.build(story)
+    return buffer.getvalue()

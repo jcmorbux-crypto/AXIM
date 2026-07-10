@@ -746,7 +746,12 @@ worse than useless.
   run creation (simulation runs synchronously in-request - fine for
   this feature's signal-pool sizes, a documented limit for very large
   pools rather than a silent one), report retrieval, session/trade
-  drill-down, CSV/JSON export. PDF export deferred.
+  drill-down, CSV/JSON/PDF export. PDF built with `reportlab` (pure
+  Python, no system-level PDF toolchain needed) - a strategy-comparison
+  table plus the same AI run/strategy narratives the UI shows, with the
+  same required risk disclaimer every Strategy Lab visit carries.
+  Live-verified against a real backtest run through the real API (a
+  genuine 1-page PDF, not just a code read).
 - **Database**: `imported_signals`, `backtest_runs`,
   `backtest_strategies` (freezes a JSON snapshot of the risk profile at
   run time so a report stays reproducible even if the profile is later

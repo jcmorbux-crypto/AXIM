@@ -1,0 +1,82 @@
+import sys
+import unittest
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+API_DIR = PROJECT_ROOT / "api"
+CORE_DIR = PROJECT_ROOT / "core"
+CONFIG_DIR = PROJECT_ROOT / "config"
+sys.path.insert(0, str(API_DIR))
+sys.path.insert(0, str(CORE_DIR))
+sys.path.insert(0, str(CONFIG_DIR))
+
+import backtest_routes
+
+
+def _sample_metrics(**overrides):
+    """A complete, realistic metrics dict matching
+    core/backtest_engine.py's _compute_metrics() return shape exactly -
+    ai_analysis.generate_strategy_narrative reads several fields beyond
+    the handful the PDF table itself displays, so a partial dict (like
+    an early draft of this test used) fails in a way that has nothing
+    to do with PDF generation itself."""
+    base = {
+        "final_bankroll": 1150.5, "total_profit_loss": 150.5, "roi_percent": 15.05,
+        "win_rate": 0.62, "loss_rate": 0.38, "max_drawdown_percent": 8.2, "max_drawdown_amount": 90.0,
+        "best_day_pnl": 40.0, "worst_day_pnl": -25.0, "longest_win_streak": 5, "longest_loss_streak": 2,
+        "max_martingale_step_used": 1, "sessions_completed": 10, "sessions_stopped_by_target": 2,
+        "sessions_stopped_by_loss_limit": 0, "avg_trade_size": 12.5, "largest_trade_size": 25.0,
+        "total_protected_profit": 0.0, "risk_score": "Low", "best_for_label": "Steady growth",
+        "sharpe_like_score": 1.2, "profit_factor": 1.8, "consistency_percent": 70.0,
+        "recovery_factor": 1.6, "volatility": 5.0, "rank_overall": 1,
+    }
+    base.update(overrides)
+    return base
+
+
+def _sample_report():
+    return {
+        "run": {
+            "name": "Test Run", "created_at": "2026-01-01T10:00:00", "created_by": "owner@axim.local",
+            "starting_bankroll": 1000, "session_window": "daily",
+        },
+        "strategies": [
+            {"id": 1, "label": "AutoPilot Conservative", "metrics": _sample_metrics()},
+            {
+                "id": 2, "label": "AutoPilot Growth",
+                "metrics": _sample_metrics(
+                    final_bankroll=890.0, total_profit_loss=-110.0, roi_percent=-10.99, win_rate=0.48,
+                    loss_rate=0.52, max_drawdown_percent=34.6, risk_score="High",
+                    best_for_label="Aggressive upside", rank_overall=2,
+                ),
+            },
+        ],
+    }
+
+
+class BuildBacktestPdfTests(unittest.TestCase):
+    """_build_backtest_pdf() - a pure function (report dict in, PDF bytes
+    out, no DB/HTTP), tested directly here the same way
+    test_auth_routes.py/test_event_stream_routes.py test other pure
+    helpers inside api/*.py files."""
+
+    def test_produces_a_real_pdf(self):
+        pdf_bytes = backtest_routes._build_backtest_pdf(_sample_report())
+        self.assertTrue(pdf_bytes.startswith(b"%PDF-"))
+        self.assertGreater(len(pdf_bytes), 1000)  # a trivially-empty PDF would be a red flag
+
+    def test_handles_a_strategy_with_no_metrics_yet(self):
+        report = _sample_report()
+        report["strategies"].append({"id": 3, "label": "No Metrics Yet", "metrics": None})
+        pdf_bytes = backtest_routes._build_backtest_pdf(report)
+        self.assertTrue(pdf_bytes.startswith(b"%PDF-"))
+
+    def test_handles_zero_strategies(self):
+        report = _sample_report()
+        report["strategies"] = []
+        pdf_bytes = backtest_routes._build_backtest_pdf(report)
+        self.assertTrue(pdf_bytes.startswith(b"%PDF-"))
+
+
+if __name__ == "__main__":
+    unittest.main()
