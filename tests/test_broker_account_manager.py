@@ -12,7 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "execution"))
 
 import database
 import broker_account_manager
-from broker_account_manager import AccountUnavailable
+from broker_account_manager import AccountUnavailable, account_effective_cabinet_mode
 
 
 def _run(coro):
@@ -171,6 +171,118 @@ class BrokerAccountManagerTests(unittest.TestCase):
 
         self.assertEqual(len(build_calls), 1)  # built exactly once, not twice
         self.assertIs(entry_a, entry_b)
+
+
+class AccountEffectiveCabinetModeTests(unittest.TestCase):
+    """account_effective_cabinet_mode() - see core/database.py's
+    broker_accounts.mode docstring: 'a both account can still be
+    demo-only in practice until [live_enabled] is flipped'."""
+
+    def _account(self, mode, live_enabled):
+        return {"mode": mode, "live_enabled": live_enabled}
+
+    def test_demo_mode_is_always_demo_regardless_of_live_enabled(self):
+        self.assertEqual(account_effective_cabinet_mode(self._account("demo", False)), "demo")
+        self.assertEqual(account_effective_cabinet_mode(self._account("demo", True)), "demo")
+
+    def test_both_mode_is_demo_until_live_enabled_flipped(self):
+        self.assertEqual(account_effective_cabinet_mode(self._account("both", False)), "demo")
+        self.assertEqual(account_effective_cabinet_mode(self._account("both", True)), "live")
+
+    def test_live_mode_is_demo_until_live_enabled_flipped(self):
+        self.assertEqual(account_effective_cabinet_mode(self._account("live", False)), "demo")
+        self.assertEqual(account_effective_cabinet_mode(self._account("live", True)), "live")
+
+
+class LiveAuthorizationGateTests(unittest.TestCase):
+    """resolve_coordinator_for_session's new gate: an account whose own
+    session would be pointed at the live cabinet requires THIS Fund to
+    be independently live_enabled too - can_go_live was previously
+    computed and discarded here, making the Fund/Account "Live" UI
+    toggles decorative. See the AXIM_APP_PLAN.md correction this
+    accompanies."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+
+    def _live_capable_account_and_fund(self, fund_live_enabled, account_live_enabled):
+        fund_id = database.create_fund("F1", starting_balance=100)
+        database.update_fund(fund_id, live_enabled=int(fund_live_enabled))
+        account_id = database.create_broker_account("Acc1", mode="both")
+        database.update_broker_account(
+            account_id, connection_status="connected", live_enabled=int(account_live_enabled),
+        )
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+        fake_coordinator = FakeCoordinator()
+        broker_account_manager._registry[account_id] = {
+            "warmup": None, "pool": None, "coordinator": fake_coordinator,
+        }
+        return session_id, fund_id, account_id, fake_coordinator
+
+    def test_live_capable_account_rejects_fund_not_authorized_for_live(self):
+        session_id, _, _, _ = self._live_capable_account_and_fund(
+            fund_live_enabled=False, account_live_enabled=True,
+        )
+        with self.assertRaises(AccountUnavailable) as ctx:
+            _run(broker_account_manager.resolve_coordinator_for_session(session_id))
+        self.assertIn("not authorized for Live", str(ctx.exception))
+
+    def test_account_not_authorized_for_live_stays_demo_and_still_resolves(self):
+        """The account itself hasn't flipped its own live_enabled switch,
+        so account_effective_cabinet_mode is 'demo' regardless of the
+        Fund's setting - the session should resolve normally (safely, in
+        demo), not be rejected. Only a Fund trying to use an account
+        whose session IS pointed at live gets rejected for being
+        unauthorized (see test_live_capable_account_rejects_fund_not_authorized_for_live)."""
+        session_id, fund_id, account_id, fake_coordinator = self._live_capable_account_and_fund(
+            fund_live_enabled=True, account_live_enabled=False,
+        )
+        coordinator, resolved_fund_id, resolved_account_id = _run(
+            broker_account_manager.resolve_coordinator_for_session(session_id)
+        )
+        self.assertIs(coordinator, fake_coordinator)
+        self.assertEqual(resolved_fund_id, fund_id)
+        self.assertEqual(resolved_account_id, account_id)
+
+    def test_live_capable_account_resolves_when_both_authorized(self):
+        session_id, fund_id, account_id, fake_coordinator = self._live_capable_account_and_fund(
+            fund_live_enabled=True, account_live_enabled=True,
+        )
+        coordinator, resolved_fund_id, resolved_account_id = _run(
+            broker_account_manager.resolve_coordinator_for_session(session_id)
+        )
+        self.assertIs(coordinator, fake_coordinator)
+        self.assertEqual(resolved_fund_id, fund_id)
+        self.assertEqual(resolved_account_id, account_id)
+
+    def test_demo_only_account_resolves_regardless_of_fund_live_enabled(self):
+        """A plain demo-mode account was never live-capable in the first
+        place - the new gate must not start rejecting existing, ordinary
+        demo Funds that never touched the Live toggles at all."""
+        fund_id = database.create_fund("F1", starting_balance=100)
+        account_id = database.create_broker_account("Acc1", mode="demo")
+        database.update_broker_account(account_id, connection_status="connected")
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+        fake_coordinator = FakeCoordinator()
+        broker_account_manager._registry[account_id] = {
+            "warmup": None, "pool": None, "coordinator": fake_coordinator,
+        }
+
+        coordinator, _, _ = _run(broker_account_manager.resolve_coordinator_for_session(session_id))
+        self.assertIs(coordinator, fake_coordinator)
 
 
 if __name__ == "__main__":

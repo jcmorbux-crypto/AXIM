@@ -59,6 +59,20 @@ def _lock_for(broker_account_id):
     return lock
 
 
+def account_effective_cabinet_mode(account):
+    """Which cabinet this account's persistent browser session should
+    actually load: 'live' only if the account is BOTH configured for
+    live capability (mode 'live' or 'both') AND has its own live_enabled
+    safety switch on - matches core/database.py's broker_accounts.mode
+    docstring exactly ("a 'both' account can still be demo-only in
+    practice until this is flipped"). Anything else (mode='demo', or
+    live capability present but not yet flipped on) is 'demo' - there is
+    no unsafe middle state here, only demo-or-live."""
+    if account["mode"] in ("live", "both") and account["live_enabled"]:
+        return "live"
+    return "demo"
+
+
 class AccountUnavailable(Exception):
     """Raised (and always caught by route_signal, never left to crash the
     listener) when a session's fund has no usable broker account right
@@ -77,9 +91,10 @@ async def _build_account_context(broker_account_id):
     if account is None:
         raise AccountUnavailable(f"broker account {broker_account_id} not found")
 
-    logger.info("broker_account_manager: building context for account_id=%s (%s)",
-                broker_account_id, account["name"])
-    warmup = BrowserWarmupService(user_data_dir=PROJECT_ROOT / account["user_data_dir"])
+    cabinet_mode = account_effective_cabinet_mode(account)
+    logger.info("broker_account_manager: building context for account_id=%s (%s), cabinet_mode=%s",
+                broker_account_id, account["name"], cabinet_mode)
+    warmup = BrowserWarmupService(user_data_dir=PROJECT_ROOT / account["user_data_dir"], mode=cabinet_mode)
     try:
         await warmup.start()
     except Exception as e:
@@ -147,11 +162,24 @@ async def resolve_coordinator_for_session(session_id):
     if fund_id is None:
         raise AccountUnavailable("session has no fund attached")
 
-    can_trade, reason, _ = fund_manager.can_trade(fund_id)
+    can_trade, reason, can_go_live = fund_manager.can_trade(fund_id)
     if not can_trade:
         raise AccountUnavailable(reason)
 
     account = database.get_fund_primary_broker_account(fund_id)
+    # can_go_live was previously computed and then discarded here -
+    # meaning the Fund/Account "Live" toggles in the UI didn't actually
+    # gate anything. If this account's own session is going to be
+    # pointed at the live cabinet (account_effective_cabinet_mode), this
+    # specific Fund must be independently authorized for it too - a
+    # Fund with live_enabled off must not be able to route real-money
+    # trades through an account another, authorized Fund shares it with.
+    if account_effective_cabinet_mode(account) == "live" and not can_go_live:
+        raise AccountUnavailable(
+            f"broker account {account['name']!r} is configured for Live trading, but this Fund "
+            f"is not authorized for Live - enable 'Allow this Fund to trade Live' on the Fund first"
+        )
+
     entry = await get_or_build_account_context(account["id"])
     return entry["coordinator"], fund_id, account["id"]
 

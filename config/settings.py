@@ -21,6 +21,22 @@ POCKET_URL = os.getenv("POCKET_URL", "https://pocketoption.com")
 PO_EMAIL = os.getenv("PO_EMAIL")
 PO_PASSWORD = os.getenv("PO_PASSWORD")
 
+# Live-cabinet URL + its own DOM verification signal (the live-mode
+# equivalent of DEMO_URL/"is-chart-demo" in execution/browser_warmup.py).
+# Deliberately unset by default and NEVER guessed at - unlike DEMO_URL,
+# which was found and verified against the real site early in this
+# project, nobody has inspected a real live Pocket Option cabinet page
+# in this codebase's history. A broker account configured mode="live"/
+# "both" with live_enabled=true will refuse to start
+# (LiveModeNotConfiguredError) until both of these are set to values an
+# operator has personally verified against their own live account - see
+# docs/AXIM_APP_PLAN.md's live-trading section for exactly what to look
+# for (the same technique DEMO_URL's is-chart-demo check used: open
+# devtools, find a CSS class on <body> or similar that's present on the
+# live cabinet and absent elsewhere).
+LIVE_URL = os.getenv("LIVE_URL")
+LIVE_MODE_VERIFICATION_CLASS = os.getenv("LIVE_MODE_VERIFICATION_CLASS")
+
 # Trading
 ACCOUNT = os.getenv("ACCOUNT", "DEMO")
 AUTO_EXECUTE = os.getenv("AUTO_EXECUTE", "false").lower() == "true"

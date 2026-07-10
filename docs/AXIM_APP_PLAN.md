@@ -824,43 +824,55 @@ concurrent trading sessions, Fund-owned Rule Builder - see
   Signal Sources, Risk Engine, Rule Builder, Strategy Lab, Trade Center,
   Broker, Settings all consistent).
 
-**Still genuinely open - CORRECTED (previous text here overclaimed
-enforcement; verified against the actual execution-path code, not
-assumed):**
-- **Live trading is architecturally impossible today, full stop** - not
-  just gated off, but structurally absent. `execution/browser_warmup.py`
-  always navigates to a hardcoded `DEMO_URL`
-  (`execution/browser_session.py`) and hard-fails startup unless the
-  loaded page shows `is-chart-demo` - there is no live cabinet URL
-  anywhere in the codebase to send it to, regardless of any setting.
-- **`funds.live_enabled` / `broker_accounts.live_enabled` are decorative,
-  not enforced.** `fund_manager.can_trade()` computes a correct
-  `can_go_live` boolean from both flags, but that value is discarded at
-  both of its real call sites (`api/sessions.py`'s session-start,
-  `core/broker_account_manager.py`'s coordinator resolution) and is
-  otherwise only ever *displayed* on the read-only
-  `GET /pre-start-summary/{fund_id}` endpoint. Nothing in
-  `core/trade_coordinator.py`, `execution/pocket_executor.py`, or
-  `execution/browser_warmup.py` reads either flag. Toggling "Live" on in
-  `web/funds.html`/`web/broker.html` today changes a DB column and
-  nothing else - this previously read "is real and enforced," which was
-  incorrect; corrected here after a direct code trace (not from memory
-  or assumption).
-- The only things that currently gate real execution at all are two
-  **global, per-process** `.env` values, neither of which is Fund- or
-  account-aware: `ACCOUNT` (checked three independent times -
-  `risk_manager.check_demo_only()`, `api/main.py`'s test-trade route,
-  `telegram_listener.py`'s test-trade poll loop) and `ARMED`
-  (`execution/pocket_executor.py`, gates the actual click). Both would
-  need to become per-Fund/per-broker-account concepts - not just
-  differently-named global flags - for the existing "Live" toggles to
-  mean anything real.
-- Building actual live-trading capability (a real cabinet URL, wiring
-  `can_go_live` into the real gate, making `ACCOUNT`/`ARMED` per-Fund)
-  is a deliberate, separate, explicitly-scoped future decision - not
-  something to build incidentally while closing out this gap in the
-  docs. See the conversation this correction came from for the full
-  trace.
+**Live-trading gating - UPDATED (was previously overclaimed as "real and
+enforced" when it was actually decorative; traced against the real
+execution-path code, then genuinely wired):**
+- **`funds.live_enabled` / `broker_accounts.live_enabled` are now
+  actually enforced**, not just computed and displayed.
+  `core/broker_account_manager.py`'s `account_effective_cabinet_mode()`
+  decides which cabinet a broker account's persistent browser session
+  loads (`'live'` only if `mode` is `'live'`/`'both'` **and** the
+  account's own `live_enabled` is on - matches the `broker_accounts.mode`
+  column's own docstring: "a 'both' account can still be demo-only in
+  practice until [live_enabled] is flipped"). `resolve_coordinator_for_
+  session()` additionally requires the SPECIFIC Fund routing through that
+  account to be independently `live_enabled` too, via `fund_manager.
+  can_trade()`'s `can_go_live` - previously computed and silently
+  discarded here, now a real `AccountUnavailable` rejection if a
+  not-yet-authorized Fund tries to use a live-configured account. Covered
+  by `tests/test_broker_account_manager.py`'s `AccountEffectiveCabinetModeTests`
+  / `LiveAuthorizationGateTests`.
+- **Live trading is still not fully available on any account**, by
+  design, not by oversight: `execution/browser_warmup.py` now selects
+  between `DEMO_URL` (proven, verified against the real site early in
+  this project) and `LIVE_URL`/`LIVE_MODE_VERIFICATION_CLASS` (new
+  `config/settings.py` values, unset by default) - but nobody has
+  inspected a real live Pocket Option cabinet page in this codebase's
+  history, so those two values were deliberately left unset rather than
+  guessed. An account that becomes live-authorized (per the gate above)
+  raises `LiveModeNotConfiguredError` and refuses to start - loudly and
+  safely - until an operator with real live-account access sets both in
+  `.env`, using the same technique `DEMO_URL`'s `is-chart-demo` check
+  originally used (open devtools on the real live cabinet, find a CSS
+  class present there and absent elsewhere). Covered by
+  `tests/test_browser_warmup.py`.
+- The two remaining **global, per-process** `.env` gates - `ACCOUNT`
+  (checked three independent times: `risk_manager.check_demo_only()`,
+  `api/main.py`'s test-trade route, `telegram_listener.py`'s test-trade
+  poll loop) and `ARMED` (`execution/pocket_executor.py`, gates the
+  actual click) - were deliberately left as-is, global and Fund-unaware,
+  as an additional, independent safety layer on top of the new per-Fund/
+  per-account gating: even a fully live-authorized Fund+account still
+  cannot execute anything until a human separately sets `.env
+  ACCOUNT=LIVE`, matching this project's consistent "multiple
+  independent layers, all must agree" safety pattern rather than
+  collapsing everything into one switch.
+- Net effect: the "Live" toggles in `web/funds.html`/`web/broker.html`
+  are genuinely load-bearing again, but flipping them cannot cause any
+  real trade today - `LIVE_URL`/`LIVE_MODE_VERIFICATION_CLASS` being
+  unset (requiring real live-account access nobody working on this
+  codebase has had) and the global `ACCOUNT`/`ARMED` gates both still
+  block it.
 - **Password reset ("forgot password")** is a placeholder link in
   `web/login.html` - real self-service reset (email-based) isn't built;
   today an Owner/Admin resets a user's password from Users / Access.

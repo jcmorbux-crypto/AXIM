@@ -79,7 +79,7 @@
             Allow this Fund to trade Live (also requires the broker account's own Live switch)
           </label>
           <div class="stat-caption" style="margin-top:6px; color:var(--text-faint);">
-            This switch is not yet connected to trade execution - AXIM only ever trades on the Demo account today, regardless of this setting. It's here for future live-trading activation, not a functioning control yet.
+            This Fund is genuinely required to be enabled here (and on the broker account) before it can route any signal through a Live-mode account - a signal from a not-yet-authorized Fund is rejected, never silently executed. That said, Live trading is not fully available yet on any account: it also requires a verified live cabinet URL to be configured server-side, which no account has today - see docs/AXIM_APP_PLAN.md.
           </div>
           <div style="margin-top:10px;"><a href="/broker" style="font-size:12px; color:var(--blue); text-decoration:none;">Manage broker accounts &rarr;</a></div>
         </div>

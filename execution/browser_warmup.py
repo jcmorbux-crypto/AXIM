@@ -14,11 +14,22 @@ import pocket_dom
 from asset_cache import AssetCache
 from logger import get_logger
 import database
+from settings import LIVE_URL, LIVE_MODE_VERIFICATION_CLASS
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 
 class DemoModeVerificationError(Exception):
+    pass
+
+
+class LiveModeNotConfiguredError(Exception):
+    """Raised instead of ever guessing a live cabinet URL/verification
+    signal - see config/settings.py's LIVE_URL/LIVE_MODE_VERIFICATION_CLASS
+    docstring. A broker account configured for live capability
+    (mode='live'/'both' + live_enabled=true) hits this until an operator
+    has personally verified and set both values against a real live
+    Pocket Option account."""
     pass
 
 
@@ -44,7 +55,7 @@ class BrowserWarmupService:
     longer exists) and knows to rebuild itself, via ensure_alive().
     """
 
-    def __init__(self, user_data_dir=None):
+    def __init__(self, user_data_dir=None, mode="demo"):
         # user_data_dir=None keeps the original single-shared-profile
         # behavior (PocketBrowserSession's own default) for any caller
         # that doesn't care - core/broker_account_manager.py is what
@@ -53,6 +64,12 @@ class BrowserWarmupService:
         # architecture), so different accounts' browser contexts and
         # login sessions can never bleed into each other.
         self._user_data_dir = user_data_dir
+        # "demo" (default) or "live" - which cabinet URL this account's
+        # persistent session loads and verifies against. Callers pass
+        # the account's own effective mode (see
+        # core/broker_account_manager.py's account_effective_cabinet_mode)
+        # rather than this service deciding on its own.
+        self._mode = mode
         self._session = None
         self._context = None
         self._page = None
@@ -70,28 +87,59 @@ class BrowserWarmupService:
         self.asset_cache = AssetCache()
 
     async def start(self):
+        if self._mode == "live":
+            if not LIVE_URL or not LIVE_MODE_VERIFICATION_CLASS:
+                logger.error(
+                    "browser_warmup: mode=live requested but LIVE_URL/LIVE_MODE_VERIFICATION_CLASS "
+                    "are not configured in .env - refusing to start rather than guess"
+                )
+                raise LiveModeNotConfiguredError(
+                    "Live mode was requested for this account, but LIVE_URL and/or "
+                    "LIVE_MODE_VERIFICATION_CLASS are not set in .env. These must be set to "
+                    "values verified against a real live Pocket Option account before live "
+                    "trading can start - see docs/AXIM_APP_PLAN.md."
+                )
+            target_url = LIVE_URL
+        else:
+            target_url = DEMO_URL
+
         self._session = (
             PocketBrowserSession(user_data_dir=self._user_data_dir)
             if self._user_data_dir is not None
             else PocketBrowserSession()
         )
         self._context = await self._session.__aenter__()
-        self._page = await get_trading_page(self._context, DEMO_URL)
+        self._page = await get_trading_page(self._context, target_url)
         await pocket_dom.dismiss_blocking_modals(self._page)
-        await self._verify_demo_mode()
+        await self._verify_account_mode()
         self.generation += 1
-        logger.info("browser_warmup: session started and verified (demo mode), generation=%s", self.generation)
+        logger.info("browser_warmup: session started and verified (mode=%s), generation=%s", self._mode, self.generation)
 
         await self.asset_cache.build_cache(self._page)
 
-    async def _verify_demo_mode(self):
-        is_demo = await self._page.evaluate("() => document.body.classList.contains('is-chart-demo')")
-        if not is_demo:
-            logger.error("browser_warmup: page is NOT showing demo mode - refusing to proceed")
+    async def _verify_account_mode(self):
+        """Demo verification (is-chart-demo) is proven against the real
+        site. Live verification uses whatever class an operator has
+        personally confirmed on a real live cabinet page
+        (LIVE_MODE_VERIFICATION_CLASS) - this service never assumes what
+        that class is."""
+        if self._mode == "live":
+            verification_class = LIVE_MODE_VERIFICATION_CLASS
+            mode_label = "live"
+        else:
+            verification_class = "is-chart-demo"
+            mode_label = "demo"
+
+        matches = await self._page.evaluate(
+            "(cls) => document.body.classList.contains(cls)", verification_class
+        )
+        if not matches:
+            logger.error("browser_warmup: page is NOT showing %s mode - refusing to proceed", mode_label)
             raise DemoModeVerificationError(
-                "Pocket Option page is not showing demo mode (is-chart-demo class missing on <body>)"
+                f"Pocket Option page is not showing {mode_label} mode "
+                f"({verification_class!r} class missing on <body>)"
             )
-        logger.info("browser_warmup: demo mode verified (is-chart-demo present)")
+        logger.info("browser_warmup: %s mode verified (%r present)", mode_label, verification_class)
 
     async def health_check(self):
         try:
