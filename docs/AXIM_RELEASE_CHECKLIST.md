@@ -29,11 +29,12 @@ flags that it's still needed.
 
 ## Functional
 
-- [x] Full automated regression suite passes (`python -m unittest discover
-      -s tests -p "test_*.py"` - 420 tests as of this release, up from 53 at
-      initial release; covers the multi-fund/multi-broker-account
+- [x] Full automated regression suite passes (`python -m pytest tests/` -
+      526 tests as of this release, up from 420 at the prior release and 53
+      at initial release; covers the multi-fund/multi-broker-account
       architecture, concurrent trading sessions, Fund-owned Rule Builder,
-      and AI Strategy Lab added since)
+      AI Strategy Lab, the client/server real-time sync layer, and the
+      admin-privilege-escalation regression tests added this release)
 - [x] Parser validated against every asset category (forex, crypto,
       commodity, stock, index) and against real messages from the actual
       production signal source
@@ -63,6 +64,72 @@ flags that it's still needed.
       keeps the most recent 14 by default; verified live against real
       state (gracefully skips locked Chrome files while AXIM is running
       rather than aborting)
+
+## Client/Server & Remote Access (added this release - see docs/AXIM_ROADMAP.md for full detail on each)
+
+- [x] All 14 Remote Client capability areas (Mission Control, Funds,
+      Trading Sessions, Trade Center, Strategy Lab, Automation Studio,
+      Signal Sources, Broker Accounts, Performance, Notifications, User
+      Management, Settings, Help Center) sync in real time via SSE where
+      they have live server state to sync - audited and closed the gap
+      (was 5/14) live against a real running server, not by reading the
+      code
+- [x] Emergency Stop and Live-mode trade confirmations push instantly to
+      every connected client (previously 2-5s polling) - the two most
+      safety/time-critical pieces of live state in the app
+- [x] A Remote Client shows a connection-loss indicator when its own SSE
+      stream actually drops (debounced 4s to avoid false alarms on normal
+      reconnects)
+- [x] Login brute-force lockout (5 attempts -> 15min lock), verified live
+      against a real running server
+- [x] Connected Devices' "Revoke" (and an expired trial) actually
+      terminates an already-open SSE stream within 30s, not just new
+      requests - closed a real, documented gap between behavior and what
+      `docs/AXIM_REMOTE_ACCESS.md` claimed
+- [x] `/docs`, `/redoc`, `/openapi.json` disabled by default
+      (`ENABLE_API_DOCS`) - was exposing the full 159-endpoint schema,
+      admin routes included, to anyone who could merely reach the API
+- [x] Standard HTTP security headers added (`X-Frame-Options`,
+      `X-Content-Type-Options`, `Referrer-Policy`, conditional HSTS) -
+      none existed before; verified live including on the SSE stream
+      specifically (the case most likely to break under global response
+      middleware)
+- [x] Two stored-XSS classes found and fixed (unescaped signal data on
+      Mission Control; an attribute-context escape bypass affecting 3
+      pages) - fixed at the root (removed the injection point) rather than
+      patching the escaping function, and re-swept the whole `web/`
+      directory afterward for the same anti-pattern
+- [x] **Privilege escalation fixed**: a plain "admin" account could
+      previously grant itself (or anyone) the "owner" role, or demote an
+      existing owner, through the ordinary user-management endpoints -
+      verified live and exploitable before the fix, confirmed blocked
+      (both directions) after it, with the legitimate owner-to-owner
+      transfer path still working. `api/admin.py` had zero test coverage
+      before this release; now has 10 dedicated regression tests
+- [x] Audit logging added for financial/risk-critical actions (fund
+      create, either half of the Live-trading double-switch, session
+      starts, strategy deploys, rule changes) that previously left zero
+      trace of who did what - verified live against the real Logs page
+      endpoint
+- [x] Full accessibility pass: modals (keyboard/focus/`role`/Escape, with
+      the Live-trade confirmation modal deliberately excluded from
+      Escape-dismissibility - verified it still can't be dismissed that
+      way), 111 form labels linked to their inputs, 7 keyboard-unreachable
+      clickable elements fixed, notification bell ARIA state, screenshot
+      alt text, a real (visually-hidden) `<h1>` on Mission Control
+- [x] Mobile responsiveness re-verified live at 375px width across all 16
+      authenticated pages - zero horizontal overflow, off-canvas nav
+      drawer confirmed working
+- [x] CSRF exposure checked (SameSite=Lax cookies + confirmed no
+      state-mutating GET endpoints exist) - already solid, no fix needed
+- [x] File-upload endpoints (CSV/Excel signal import) checked - entirely
+      in-memory, no filesystem writes, no user-controlled filenames, no
+      path-traversal surface
+- [x] Desktop client (`axim-desktop`) version strings synced to the API's
+      own version, and unedited Tauri scaffold placeholder metadata
+      (description, authors) replaced with real values
+- [x] Root `README.md` (was completely empty) and a missing favicon (there
+      was none at all) both added
 
 ## Known, accepted limitations at this release
 
