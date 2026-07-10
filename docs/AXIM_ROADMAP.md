@@ -1602,3 +1602,80 @@ actual DOM-interaction functions, which stays accepted/open per the
 banner above - live-fire testing plus operator discipline, not an
 automated regression net) - it closes the *fixable* part of it without
 overclaiming the unfixable-without-a-browser part is now covered too.
+
+## AXIM Core directive: audit + two safety-critical Emergency Stop / Live-mode gaps closed
+
+Received a major new directive restructuring the project into two
+coordinated products sharing one backend: AXIM Core (a private,
+immediate-live-use build, now the urgent priority) and AXIM
+TradeStation (the commercial build, continuing in parallel). Dispatched
+three parallel audits covering the full AXIM Core requirements list
+(auth/Telegram/parser/broker; Funds/Sessions/Money-Management;
+Mission-Control/Trade-Center/Logs/Remote/Safety) against the current
+codebase. Full findings recorded in this session's work; two were
+safety-critical and fixed immediately:
+
+**1. Mission Control's Emergency Stop button didn't actually stop
+sessions.** Two Emergency Stop entry points existed:
+`POST /api/sessions/{id}/emergency-stop` (session-scoped, already
+correctly ended every active session) and `POST
+/api/control/emergency-stop` (global) - but `web/dashboard.html`'s
+Emergency Stop button, the one Mission Control's own spec requires and
+the most prominent "stop everything now" control in the app, called the
+global route, which only flipped `ui_control_state` flags and never
+ended any session. An emergency-stopped Fund's session stayed `status =
+"active"` in the DB indefinitely. Fixed by adding
+`session_manager.end_all_active_sessions()` (a shared helper) and
+calling it from both routes, so either Emergency Stop entry point now
+produces the identical, correct end state.
+
+**2. A signal already inside the trade pipeline could still execute
+after Emergency Stop was pressed.** `core/telegram_listener.py`
+correctly checks `emergency_stop` before ever calling
+`trade_coordinator.handle_signal()` for a brand-new incoming message -
+but nothing re-checked it once a signal was already inside the
+pipeline, and none of the existing `risk_manager` checks look at
+control state at all (confirmed by grep). A signal that entered before
+the stop, especially one sitting in a `require_confirmation` session's
+human-approval queue (which can wait a real amount of time), would
+sail through every other check and reach real execution. Fixed with
+`risk_manager.check_not_stopped()`, called first in the preflight
+sequence (before any other check) AND re-checked immediately after the
+confirmation-wait gate - the pipeline's only genuinely long, unbounded
+wait. Proved the confirmation-wait race specifically: a test that
+presses Emergency Stop the instant a pending confirmation appears, then
+confirms it anyway, now correctly gets rejected with
+`rule="emergency_stop"` and never reaches the worker pool.
+
+**3. The Live-mode confirmation was a bare browser `confirm()`/`prompt()`
+missing required disclosures.** The spec requires showing Fund, Pocket
+Option account, balance, trade size, loss limit, and max Martingale
+exposure before Live mode, with explicit confirmation - the existing
+flow showed channel count/profit-target/loss-limit/max-trades and a
+"type START LIVE" `prompt()`, missing account/balance/trade-size/
+Martingale-exposure entirely. Replaced with a proper modal
+(`web/sessions.html`) reusing already-built backend data
+(`GET /api/sessions/pre-start-summary/{fund_id}` for
+fund/account/balance, `GET /api/risk-profiles/{id}` +
+`GET /api/risk-profiles/{id}/projected-exposure` for trade size and
+the real Martingale ladder total) - no new backend endpoints needed,
+all the data already existed. Kept the "type START LIVE" explicit-
+confirmation requirement, moved into the modal instead of a bare
+`prompt()`. DEMO-mode session starts are unchanged (the spec is
+specifically about Live mode).
+
+Verified live end-to-end via Playwright against a real bootstrapped
+Fund/broker-account/Martingale-enabled risk profile: modal correctly
+showed Fund name, account name+connection status, $1000.00 balance,
+"$25.00 (fixed)" trade size, "$100" loss limit, and "$175.00" max
+Martingale exposure (fixed $25 × 3 steps × 2.0x multiplier = 25+50+100 =
+175, confirmed the real ladder math, not a placeholder); submitting
+with an empty/wrong confirmation phrase correctly blocked with a visible
+error and did not start the session; typing "START LIVE" correctly
+started a real `active`/`LIVE`-mode session in the DB.
+
+9 new regression tests added (`test_risk_manager.py`'s
+`check_not_stopped`, `test_session_manager.py`'s
+`end_all_active_sessions`, `test_trade_coordinator.py`'s emergency-stop-
+before-worker-pool and mid-confirmation-wait-race cases). Full suite
+re-run clean.

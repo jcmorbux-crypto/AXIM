@@ -146,6 +146,26 @@ class SessionManagerTests(unittest.TestCase):
         self.assertIsNone(database.get_rule(rule_id))
         self.assertIsNotNone(database.get_rule(fund_wide_rule_id))
 
+    def test_end_all_active_sessions_stops_every_fund_not_just_one(self):
+        """Emergency Stop must mark EVERY currently active session
+        stopped, not just one Fund's - api/main.py's global
+        POST /api/control/emergency-stop (the route Mission Control's
+        button actually calls) used to only flip control-state flags,
+        leaving every active session stuck showing "active" in the DB."""
+        account_a = database.create_broker_account("Acct A")
+        account_b = database.create_broker_account("Acct B")
+        session_a = database.start_trading_session("A", [1], "DEMO", broker_account_id=account_a)
+        session_b = database.start_trading_session("B", [2], "DEMO", broker_account_id=account_b)
+
+        session_manager.end_all_active_sessions("stopped_emergency", "test")
+
+        self.assertEqual(database.get_trading_session(session_a)["status"], "stopped_emergency")
+        self.assertEqual(database.get_trading_session(session_b)["status"], "stopped_emergency")
+        self.assertEqual(len(database.list_active_trading_sessions()), 0)
+
+    def test_end_all_active_sessions_noop_when_none_active(self):
+        session_manager.end_all_active_sessions("stopped_emergency", "test")  # must not raise
+
     def test_record_trade_started_noop_when_session_id_none(self):
         session_manager.record_trade_started(None)  # must not raise
 

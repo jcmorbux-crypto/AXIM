@@ -104,6 +104,7 @@ class TradeCoordinator:
         # Stage: Risk Manager
         stage_t0 = time.monotonic()
         try:
+            risk_manager.check_not_stopped()
             risk_manager.check_demo_only()
             risk_manager.check_max_trade_amount(amount)
             risk_manager.check_max_trades_per_hour()
@@ -247,6 +248,20 @@ class TradeCoordinator:
                     await asyncio.to_thread(timeline.persist, database)
                     return await asyncio.to_thread(self._reject, trade_id, violation, time.monotonic() - stage_t0)
                 self._log_stage(trade_id, "trade_confirmation", "passed", time.monotonic() - stage_t0)
+
+                # Re-check emergency_stop/paused here, not just once at the
+                # top of the pipeline - wait_for_trade_confirmation just blocked
+                # on a real human for up to TRADE_CONFIRMATION_TIMEOUT_SECONDS,
+                # long enough for an operator to hit Emergency Stop mid-wait.
+                # Without this, a trade approved before the stop (or still
+                # sitting in confirmation when it was pressed) would proceed
+                # to real execution anyway.
+                stage_t0 = time.monotonic()
+                try:
+                    await asyncio.to_thread(risk_manager.check_not_stopped)
+                except risk_manager.RiskViolation as violation:
+                    await asyncio.to_thread(timeline.persist, database)
+                    return await asyncio.to_thread(self._reject, trade_id, violation, time.monotonic() - stage_t0)
 
                 # Counts toward the session's max_trades the instant we
                 # commit to real execution - not on every signal received,

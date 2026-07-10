@@ -324,7 +324,8 @@ def emergency_stop_session(session_id: int, user=Depends(get_current_user)):
         database.record_server_event("control.updated", database.get_control_state())
     except Exception:
         pass
-    for active in database.list_active_trading_sessions():
-        session_manager.end_session(active["id"], "stopped_emergency", f"emergency stop by {user['email']}")
-        _emit_session_updated(active["id"])
+    stopped_ids = [s["id"] for s in database.list_active_trading_sessions()]
+    session_manager.end_all_active_sessions("stopped_emergency", f"emergency stop by {user['email']}")
+    for active_id in stopped_ids:
+        _emit_session_updated(active_id)
     return _with_progress(database.get_trading_session(session_id))

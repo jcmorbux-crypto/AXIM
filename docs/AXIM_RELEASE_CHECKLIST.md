@@ -297,6 +297,50 @@ flags that it's still needed.
       (22 tests), including a day-boundary-wraparound case for the
       closed-item matcher
 
+## AXIM Core directive (private live-trading build - see docs/AXIM_ROADMAP.md for full detail)
+
+- [x] Full requirements audit completed (3 parallel agents covering auth/
+      Telegram/parser/broker; Funds/Sessions/Money-Management; Mission
+      Control/Trade Center/Logs/Remote/Safety) - concrete gap list
+      produced, ranked by real-world blocker severity
+- [x] **Emergency Stop safety gap fixed**: Mission Control's Emergency
+      Stop button called a route that never actually ended active
+      sessions (a session-scoped route existed and worked correctly, but
+      the global route the dashboard actually uses did not) - fixed with
+      a shared `end_all_active_sessions()` helper used by both routes
+- [x] **Queued-signal-survives-emergency-stop gap fixed**: nothing in
+      `trade_coordinator.py`'s pipeline re-checked `emergency_stop`/
+      `paused` once a signal was already past Telegram ingestion -
+      confirmed via grep that no risk check looked at control state at
+      all. Fixed with `risk_manager.check_not_stopped()`, checked first
+      in the preflight AND re-checked after the confirmation-wait gate
+      (the pipeline's only long, unbounded wait). Live-proved the
+      confirmation-wait race specifically
+- [x] **Live-mode confirmation upgraded**: replaced a bare browser
+      `confirm()`/`prompt()` (missing account/balance/trade-size/
+      Martingale-exposure disclosure) with a proper modal showing all of
+      it, reusing already-built backend endpoints (no new API surface
+      needed). Verified live end-to-end including the real Martingale
+      ladder math ($25 fixed × 3 steps × 2.0x = $175, not a placeholder)
+      and that an empty/wrong confirmation phrase correctly blocks
+      submission
+- [ ] Interactive Telegram bot trigger-command workflow (send `/signal`-
+      style command, await reply, parse, execute, request next, stop at
+      limits) - DB schema and UI exist, zero runtime code exists. The
+      single biggest true gap versus the AXIM Core requirements; not yet
+      built
+- [ ] Money-management fidelity gaps: Compounding "modes" run identical
+      generic logic regardless of selection (daily doesn't reset daily,
+      every-win isn't win-triggered); Profit Vault's `daily_target`/
+      `weekly_target` triggers are selectable in the UI but never fire;
+      several `risk_profiles`-level columns (`max_trades`,
+      `profit_target`, `max_daily_loss`, `max_session_loss`) are stored
+      and API-editable but never enforced - not yet addressed
+- [ ] Mission Control/Trade Center/Logs completeness gaps (per-Fund
+      dashboard view missing several required live-monitoring fields,
+      Trade Center missing Fund/broker-account columns, parser has no
+      dedicated logger) - not yet addressed
+
 ## Known, accepted limitations at this release
 
 (Detail in `docs/AXIM_PRODUCTION_READINESS_REPORT.md` §4 - listed here so

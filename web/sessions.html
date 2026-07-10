@@ -100,6 +100,32 @@
   </main>
 </div>
 
+<div class="modal-backdrop" id="live-confirm-modal" style="display:none;" role="alertdialog" aria-modal="true" aria-label="Live session confirmation required">
+  <!-- Deliberately not wired into AximShell's shared openModal/closeModal -
+       no Escape-to-close, no click-outside-to-close, same safety reasoning
+       as shell.js's per-trade "axim-confirm-modal": this is the one gate
+       between the operator and a real-money session actually starting, so
+       a silent dismiss path would undo the whole point of it. -->
+  <div class="modal" style="width:480px;" tabindex="-1">
+    <div class="banner danger" style="margin-bottom:14px;">THIS IS A LIVE (REAL MONEY) ACCOUNT</div>
+    <div class="stat-row"><span class="stat-label">Fund</span><span class="stat-value" id="lc-fund">-</span></div>
+    <div class="stat-row"><span class="stat-label">Pocket Option account</span><span class="stat-value" id="lc-account">-</span></div>
+    <div class="stat-row"><span class="stat-label">Trading balance</span><span class="stat-value" id="lc-balance">-</span></div>
+    <div class="stat-row"><span class="stat-label">Trade size</span><span class="stat-value" id="lc-trade-size">-</span></div>
+    <div class="stat-row"><span class="stat-label">Loss limit</span><span class="stat-value" id="lc-loss-limit">-</span></div>
+    <div class="stat-row"><span class="stat-label">Max Martingale exposure</span><span class="stat-value" id="lc-martingale">-</span></div>
+    <div style="margin:16px 0 8px;">
+      <label for="lc-type-confirm">Type <strong>START LIVE</strong> to confirm</label>
+      <input type="text" id="lc-type-confirm" autocomplete="off" style="width:100%;">
+    </div>
+    <div id="lc-error" class="muted" style="color:var(--red);display:none;margin-bottom:8px;"></div>
+    <div class="row">
+      <button class="subtle" style="flex:1;" onclick="closeLiveConfirmModal()">Cancel</button>
+      <button class="danger" style="flex:1;" onclick="submitLiveConfirmModal()">Start LIVE Session</button>
+    </div>
+  </div>
+</div>
+
 <script src="/web/shell.js"></script>
 <script>
 let allChannels = [];
@@ -252,20 +278,25 @@ async function confirmStartSession() {
     accountMode = po.account_mode;
   } catch (e) {}
 
-  const summary =
-    `Channels: ${body.channel_ids.length}\n` +
-    `Profit target: ${body.profit_target > 0 ? "$" + body.profit_target : "disabled"}\n` +
-    `Loss limit: ${body.loss_limit > 0 ? "$" + body.loss_limit : "disabled"}\n` +
-    `Max trades: ${body.max_trades > 0 ? body.max_trades : "unlimited"}\n` +
-    `Account mode: ${accountMode}`;
-  const liveWarning = accountMode === "LIVE" ? "\n\n*** THIS IS A LIVE (REAL MONEY) ACCOUNT ***\n" : "\n";
-  if (!confirm(`Start this session?${liveWarning}\n${summary}\n\nContinue?`)) return;
-
-  if (accountMode === "LIVE") {
-    const typed = prompt('This is a LIVE account. Type "START LIVE" to confirm:');
-    if (typed !== "START LIVE") { statusEl.textContent = "Cancelled."; return; }
+  if (accountMode !== "LIVE") {
+    const summary =
+      `Channels: ${body.channel_ids.length}\n` +
+      `Profit target: ${body.profit_target > 0 ? "$" + body.profit_target : "disabled"}\n` +
+      `Loss limit: ${body.loss_limit > 0 ? "$" + body.loss_limit : "disabled"}\n` +
+      `Max trades: ${body.max_trades > 0 ? body.max_trades : "unlimited"}\n` +
+      `Account mode: ${accountMode}`;
+    if (!confirm(`Start this session?\n\n${summary}\n\nContinue?`)) return;
+    return startSessionNow(body, statusEl);
   }
 
+  // LIVE mode: a bare confirm()/prompt() doesn't disclose enough to meet
+  // "before Live mode, show Fund/account/balance/trade size/loss limit/
+  // max Martingale exposure, require explicit confirmation" - fetch what's
+  // needed and show the real modal instead.
+  await openLiveConfirmModal(body, statusEl);
+}
+
+async function startSessionNow(body, statusEl) {
   statusEl.textContent = "starting...";
   try {
     await fetchJSON("/api/sessions/start", {
@@ -277,6 +308,75 @@ async function confirmStartSession() {
   } catch (e) {
     statusEl.textContent = "failed: " + e.message;
   }
+}
+
+let pendingLiveStart = null;
+
+async function openLiveConfirmModal(body, statusEl) {
+  const fund = currentPreStartSummary ? currentPreStartSummary.fund : null;
+  const account = currentPreStartSummary ? currentPreStartSummary.broker_account : null;
+  const balances = currentPreStartSummary ? currentPreStartSummary.balances : null;
+
+  let riskProfile = null;
+  const riskProfileId = body.risk_profile_id || (fund && fund.default_risk_profile_id);
+  if (riskProfileId) {
+    try { riskProfile = await fetchJSON(`/api/risk-profiles/${riskProfileId}`); } catch (e) {}
+  }
+
+  let tradeSize = "-";
+  let maxMartingaleExposure = "-";
+  if (riskProfile) {
+    let baseAmount = null;
+    if (riskProfile.sizing_mode === "fixed") {
+      baseAmount = riskProfile.fixed_amount;
+      tradeSize = `$${Number(baseAmount).toFixed(2)} (fixed)`;
+    } else if (riskProfile.sizing_mode === "percent") {
+      baseAmount = (riskProfile.bankroll || 0) * (riskProfile.percent_of_bankroll || 0) / 100;
+      tradeSize = `${riskProfile.percent_of_bankroll}% of bankroll (≈$${Number(baseAmount).toFixed(2)})`;
+    } else {
+      tradeSize = "Kelly-based, dynamic per trade";
+    }
+    if (baseAmount != null) {
+      try {
+        const exposure = await fetchJSON(`/api/risk-profiles/${riskProfileId}/projected-exposure?base_amount=${baseAmount}`);
+        maxMartingaleExposure = exposure.total_exposure > 0 ? `$${Number(exposure.total_exposure).toFixed(2)}` : "no Martingale steps configured";
+      } catch (e) {}
+    }
+  }
+
+  document.getElementById("lc-fund").textContent = fund ? fund.name : `Fund #${body.fund_id}`;
+  document.getElementById("lc-account").textContent = account ? `${account.name} (${account.connection_status})` : "not attached";
+  document.getElementById("lc-balance").textContent = balances ? `$${Number(balances.trading_balance).toFixed(2)}` : "-";
+  document.getElementById("lc-trade-size").textContent = tradeSize;
+  document.getElementById("lc-loss-limit").textContent = body.loss_limit > 0 ? `$${body.loss_limit}` : "disabled";
+  document.getElementById("lc-martingale").textContent = maxMartingaleExposure;
+  document.getElementById("lc-type-confirm").value = "";
+  document.getElementById("lc-error").style.display = "none";
+
+  pendingLiveStart = { body, statusEl };
+  const modal = document.getElementById("live-confirm-modal");
+  modal.style.display = "flex";
+  const dialog = modal.querySelector(".modal");
+  if (dialog) dialog.focus();
+}
+
+function closeLiveConfirmModal() {
+  document.getElementById("live-confirm-modal").style.display = "none";
+  pendingLiveStart = null;
+}
+
+function submitLiveConfirmModal() {
+  if (!pendingLiveStart) return;
+  const typed = document.getElementById("lc-type-confirm").value;
+  if (typed !== "START LIVE") {
+    const err = document.getElementById("lc-error");
+    err.textContent = 'Type exactly "START LIVE" (case-sensitive) to confirm.';
+    err.style.display = "block";
+    return;
+  }
+  const { body, statusEl } = pendingLiveStart;
+  closeLiveConfirmModal();
+  startSessionNow(body, statusEl);
 }
 
 async function refreshProcessStatus() {

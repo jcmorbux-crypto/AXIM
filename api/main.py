@@ -46,6 +46,7 @@ import database
 import telegram_channels
 import process_control
 import risk_manager
+import session_manager
 import trade_statistics
 import timeline_report
 import log_reader
@@ -514,6 +515,21 @@ def emergency_stop(user=Depends(get_current_user)):
     database.set_control_state(paused=True, emergency_stop=True)
     logger.warning("api: EMERGENCY STOP triggered via UI by %s", user["email"])
     _emit_control_updated()
+    # Mission Control's Emergency Stop button hits this route (not the
+    # session-scoped one) - it used to only flip control-state flags,
+    # leaving every active session's DB row stuck showing "active" and,
+    # worse, doing nothing to actually close out that session's state
+    # (Profit Vault triggers, session-scoped rule cleanup). Ending every
+    # active session here matches what
+    # POST /api/sessions/{id}/emergency-stop already did, so either
+    # Emergency Stop entry point produces the identical end state.
+    stopped_ids = [s["id"] for s in database.list_active_trading_sessions()]
+    session_manager.end_all_active_sessions("stopped_emergency", f"emergency stop by {user['email']}")
+    for session_id in stopped_ids:
+        try:
+            database.record_server_event("session.updated", {"session_id": session_id})
+        except Exception:
+            pass
     return database.get_control_state()
 
 

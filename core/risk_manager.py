@@ -45,6 +45,26 @@ def check_demo_only():
         raise RiskViolation("demo_only", f"ACCOUNT is {ACCOUNT!r}, not DEMO - refusing to execute")
 
 
+def check_not_stopped():
+    """core/telegram_listener.py's handler already checks emergency_stop
+    before EVER calling trade_coordinator.handle_signal() for a brand-new
+    incoming message - but nothing re-checked it once a signal was
+    already inside the pipeline. A signal that entered before Emergency
+    Stop was pressed could sit for a real amount of time (waiting on a
+    require_confirmation session's human approval, or a busy worker pool)
+    and, without this check, would sail through every other risk check
+    (none of which look at control state) and reach real execution after
+    the operator had already hit Stop. Called first in trade_coordinator's
+    preflight (before any other check) AND re-checked immediately before
+    worker-pool acquisition, the two points separated by the pipeline's
+    only genuinely long, unbounded waits."""
+    state = database.get_control_state()
+    if state.get("emergency_stop"):
+        raise RiskViolation("emergency_stop", "emergency stop is active - refusing to execute")
+    if state.get("paused"):
+        raise RiskViolation("paused", "trading is paused - refusing to execute")
+
+
 def check_max_trade_amount(amount):
     limit = _setting("max_trade_amount", MAX_TRADE_AMOUNT)
     if amount > limit:

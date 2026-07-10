@@ -114,6 +114,30 @@ class TradeCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["rule"], "max_trade_amount")
         self.assertEqual(pool.released, [])
 
+    def test_emergency_stop_rejects_before_worker_pool(self):
+        """A signal that's already inside handle_signal() when Emergency
+        Stop is pressed must not reach execution - core/risk_manager.py's
+        check_not_stopped() is the first check in the preflight sequence,
+        specifically so this can't slip through the other checks (none of
+        which look at control state)."""
+        trade_coordinator.PREVIEW_ONLY = True
+        database.set_control_state(emergency_stop=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal()))
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["rule"], "emergency_stop")
+        self.assertEqual(pool.released, [])
+
+    def test_paused_rejects_before_worker_pool(self):
+        trade_coordinator.PREVIEW_ONLY = True
+        database.set_control_state(paused=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal()))
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["rule"], "paused")
+
     def test_duplicate_signal_rejected(self):
         trade_coordinator.PREVIEW_ONLY = True
         coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
@@ -295,6 +319,47 @@ class TradeConfirmationGateIntegrationTests(unittest.TestCase):
             pocket_executor.prepare_trade = original_prepare_trade
 
         self.assertEqual(result["status"], "clicked")
+
+    def test_emergency_stop_pressed_during_confirmation_wait_still_blocks_execution(self):
+        """wait_for_trade_confirmation can block on a real human for a
+        while - long enough for an operator to hit Emergency Stop mid-
+        wait. A trade confirmed AFTER that (the human hadn't seen the
+        stop yet, or confirmed a moment too late) must still not reach
+        execution - the re-check right after the confirmation gate
+        (core/trade_coordinator.py) exists specifically for this window."""
+        session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = 5
+        session_id = database.start_trading_session("Test", [1], "LIVE", require_confirmation=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        pocket_executor.prepare_trade = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
+
+        async def _emergency_stop_then_confirm():
+            for _ in range(20):
+                pending = database.list_pending_trade_confirmations()
+                if pending:
+                    database.set_control_state(emergency_stop=True)
+                    database.decide_trade_confirmation(pending[0]["trade_id"], "confirmed", decided_by="tester@axim.local")
+                    return
+                await asyncio.sleep(0.05)
+            self.fail("no pending confirmation appeared")
+
+        async def _scenario():
+            return await asyncio.gather(
+                coordinator.handle_signal(self._signal(), session_id=session_id),
+                _emergency_stop_then_confirm(),
+            )
+
+        try:
+            result, _ = _run(_scenario())
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+            database.set_control_state(emergency_stop=False)
+
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["rule"], "emergency_stop")
+        self.assertEqual(pool.released, [])  # never reached the worker pool
 
     def test_live_confirmation_timeout_rejects_before_worker_pool(self):
         session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = 0.3  # never answered

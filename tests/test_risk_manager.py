@@ -97,6 +97,26 @@ class RiskManagerTests(unittest.TestCase):
     def test_demo_only_passes_when_demo(self):
         risk_manager.check_demo_only()
 
+    def test_not_stopped_passes_by_default(self):
+        risk_manager.check_not_stopped()
+
+    def test_not_stopped_raises_on_emergency_stop(self):
+        database.set_control_state(emergency_stop=True)
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_not_stopped()
+        self.assertEqual(ctx.exception.rule, "emergency_stop")
+
+    def test_not_stopped_raises_on_paused(self):
+        database.set_control_state(paused=True)
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_not_stopped()
+        self.assertEqual(ctx.exception.rule, "paused")
+
+    def test_not_stopped_passes_again_after_clearing(self):
+        database.set_control_state(emergency_stop=True)
+        database.set_control_state(emergency_stop=False)
+        risk_manager.check_not_stopped()
+
     def test_minimum_payout_below_threshold(self):
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_minimum_payout(risk_manager.MINIMUM_PAYOUT - 1)
