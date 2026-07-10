@@ -93,14 +93,11 @@ flagged with how confident the finding is.
    directly from `database.py`/`risk_manager.py`; impact estimate is
    structural, not yet measured in isolation).*
 
-2. **Screenshot capture sits on the critical path.** `pocket_executor.
-   prepare_trade` calls `await _take_screenshot(...)` (a full `page.
-   screenshot()` IPC round trip + PNG encode) twice per trade - once at
-   "prepared", once at "clicked" - both awaited in-line before the function
-   can proceed. `SAVE_SCREENSHOTS` exists in `config/settings.py` but is a
-   hardcoded `True` (not read from `.env` despite `os.getenv` being used for
-   every neighboring setting) and is never actually checked before this call
-   - the setting is currently decorative. *Confidence: high.*
+2. **RESOLVED** (see `docs/AXIM_ROADMAP.md`'s P0 latency sprint entry) -
+   screenshot capture moved off the trade critical path and now genuinely
+   respects `SAVE_SCREENSHOTS` (`config/settings.py:53` reads it via
+   `os.getenv` like every neighboring setting; `execution/pocket_executor.py`
+   checks it before capturing). This finding predated that fix.
 
 3. **`select_expiry` makes 3 sequential Playwright round trips** (hours/
    minutes/seconds inputs, each `fill()` + `expect().to_have_value()`) where
@@ -129,13 +126,13 @@ flagged with how confident the finding is.
    capture is taken, since Pocket Option's specific message format is
    unknown.*
 
-5. **Worker health-check overhead on every acquire.** `acquire_worker()`
-   calls `_ensure_pool_healthy()` -> `warmup_service.ensure_alive()` ->
-   a live `page.evaluate("() => 1")` round trip, every single trade, even on
-   the fully-healthy path. Previously measured (Phase 5 roadmap) at 0-31ms -
-   small, but non-zero and avoidable most of the time with a short TTL cache
-   ("healthy as of N ms ago, skip re-check"). *Confidence: high (previously
-   measured), impact: low but non-zero.*
+5. **RESOLVED** - `execution/browser_worker_pool.py` now has exactly the TTL
+   cache this item recommended: `HEALTH_CHECK_TTL_SECONDS` (default 2s,
+   `.env`-overridable) skips the redundant `ensure_alive()`/`page.evaluate`
+   round trip on `acquire_worker()` if the pool/worker was already confirmed
+   healthy within that window - a genuinely stale page is still always
+   caught, just not re-verified on every single call. This finding predated
+   that fix.
 
 None of the above required touching Pocket Option's private code or backend -
 they're all read from AXIM's own source or are standard Playwright/CDP
