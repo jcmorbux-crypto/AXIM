@@ -214,6 +214,38 @@
           <p>AXIM does not yet read a live balance directly from Pocket Option - Fund and session balances are computed from AXIM's own recorded trade history, not a live account balance poll. This is a known, current limitation, not a bug.</p>
         </div>
 
+        <div class="guide-section" id="sec-automation-studio">
+          <div class="section-kicker">L</div>
+          <h2>Automation Studio</h2>
+          <p>IF/THEN rules that watch a Fund's real-time state and react automatically - so you don't have to be staring at Mission Control the moment something changes.</p>
+          <h3>Building a rule</h3>
+          <p>Every rule belongs to one Fund (or, for a narrower rule, one specific session within that Fund) and pairs exactly one condition with exactly one action. Conditions cover things like a Fund's daily profit or loss reaching a threshold, consecutive wins or losses hitting a count, Martingale reaching a step, a Pocket Option account disconnecting, or a signal source's win rate dropping below a threshold. Actions include stopping today's session, triggering a full Emergency Stop, resizing or switching the active session's risk profile, disabling Martingale for the rest of the session, moving a session's profit to the Vault, pausing or resuming the Fund, notifying the Owner, or disabling a signal source outright.</p>
+          <h3>Testing a rule</h3>
+          <p>Every rule has a <strong>Test now</strong> action that evaluates it immediately against the Fund's real, current state - not a simulation - so you can confirm a rule actually fires the way you expect before trusting it to run unattended. Every firing (real or test) is logged and viewable from the rule's own detail view.</p>
+          <h3>Enabling and disabling</h3>
+          <p>A rule only evaluates while enabled. Rules are evaluated automatically whenever the condition it depends on could plausibly have changed (e.g. every trade close) - there's no separate "run rules" step to remember.</p>
+        </div>
+
+        <div class="guide-section" id="sec-performance">
+          <div class="section-kicker">M</div>
+          <h2>Performance</h2>
+          <p>Win rate, ROI, drawdown, and where your edge (or lack of one) is actually coming from - broken down by time period, signal source, asset, and time of day, not just one overall number.</p>
+          <h3>Reading the breakdowns</h3>
+          <p>Best/Worst Source and Best/Worst Asset show which signal sources and assets are actually carrying your results - a source with a high win rate but tiny sample size is flagged differently than one with a large, reliable track record. Best/Worst Time of Day looks for patterns in when signals tend to perform better or worse.</p>
+          <h3>Risk Engine activity</h3>
+          <p>A dedicated section lists every session currently running with Martingale or Compounding enabled, with each one's real-time exposure - so you can see at a glance which sessions are running with elevated risk sizing, not just that the feature exists somewhere.</p>
+        </div>
+
+        <div class="guide-section" id="sec-notifications">
+          <div class="section-kicker">N</div>
+          <h2>Notifications</h2>
+          <p>In-app alerts - most often an Automation Studio rule's "Notify the Owner" action firing - collected in one place instead of only ever appearing as a passing toast.</p>
+          <h3>The bell vs. the full page</h3>
+          <p>The bell icon (bottom of the sidebar, every page) shows your unread count and a short recent list for a quick glance. The full Notifications page adds real history beyond that short list, an unread-only filter, and mark-read controls per notification or all at once. Both update live the instant a new notification arrives, without needing to refresh.</p>
+          <h3>What sends a notification today</h3>
+          <p>In-app only, for now - Automation Studio rules and a small number of built-in system events. Email, push, and webhook delivery aren't built yet (see Settings' Notifications tab), so nothing here is ever missed silently for lack of a channel - if it happened, it's in this list.</p>
+        </div>
+
       </div>
     </div>
   </main>
