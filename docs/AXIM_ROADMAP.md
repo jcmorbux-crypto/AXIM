@@ -916,3 +916,33 @@ body through the existing `/web` static mount (no new route needed).
 Confirmed all 20 pages picked up the `<link rel="icon">` (grepped for
 files missing it - zero). Full regression suite re-run clean after this
 change (no backend logic touched - static asset + two doc files).
+
+## Standard HTTP security headers added (done)
+No security-headers middleware existed anywhere in `api/main.py` -
+confirmed by grep, only the CORS middleware was present. The one that
+matters most: no `X-Frame-Options`, meaning nothing prevented AXIM's
+login page (or any page) from being loaded inside an `<iframe>` on an
+attacker-controlled page and clickjacked - tricking an already-logged-in
+user into clicking what looks like the attacker's own UI but is
+actually a real AXIM action underneath. Tailscale-only network reach
+doesn't prevent this on its own: the attacking page just needs to be
+open in the same browser as an authenticated AXIM session, not on the
+Tailscale network itself.
+
+Added a single `@app.middleware("http")` applied to every response:
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+`Referrer-Policy: same-origin`, and `Strict-Transport-Security` -
+conditionally, only when the request actually arrived over HTTPS (same
+`X-Forwarded-Proto`-aware check `_request_is_https()` elsewhere already
+uses), since asserting HSTS unconditionally on a plain-HTTP local/
+Tailscale deployment would be actively wrong, not just unnecessary.
+
+Verified live against a real running server, including the one case
+most likely to break under a global response middleware - the SSE
+stream (`GET /api/events/stream`, a long-lived `StreamingResponse`):
+confirmed the new security headers appear correctly alongside the
+stream's own existing headers (`cache-control: no-cache`,
+`x-accel-buffering: no`, `content-type: text/event-stream`) without
+disrupting the stream itself (status 200, connection stayed open,
+`Transfer-Encoding: chunked` intact). Also confirmed on a plain JSON
+endpoint. Full regression suite re-run clean after this change.

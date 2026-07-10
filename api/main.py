@@ -143,6 +143,31 @@ if _cors_origins:
         allow_headers=["*"],
     )
 
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Standard defense-in-depth headers on every response - none of
+    this was set anywhere before. X-Frame-Options is the one that
+    matters most here: AXIM's login page controls access to a real,
+    money-moving account, and without it a malicious page could frame
+    AXIM invisibly and trick a logged-in user into clicking what looks
+    like that page's own UI but is actually a real AXIM action
+    (clickjacking) - Tailscale-only network reach doesn't prevent this,
+    since the attacking page just needs to be loaded in the same
+    browser as an authenticated AXIM session, not on the same network.
+    HSTS is only added when the request actually arrived over HTTPS -
+    same reasoning as _request_is_https() elsewhere: asserting it
+    unconditionally over a plain-HTTP local/Tailscale deployment would
+    be actively wrong, not just unnecessary."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "same-origin"
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
 app.include_router(auth_module.router)
 app.include_router(admin_module.router)
 app.include_router(telegram_admin_module.router)
