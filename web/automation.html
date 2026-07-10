@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Automation Studio - AXIM TradeStation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .rule-row-wrap { margin-bottom: 10px; }
+  .rule-row {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+  .rule-row .rule-main { flex: 1; min-width: 0; }
+  .rule-row .rule-name { font-weight: 650; font-size: 14px; margin-bottom: 3px; }
+  .rule-row .rule-logic { font-size: 12.5px; color: var(--text-dim); }
+  .rule-row .rule-logic b { color: var(--text); font-weight: 600; }
+  .rule-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .rule-meta { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; }
+  .rule-history {
+    border: 1px solid var(--border); border-top: none; border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+    padding: 4px 16px; background: var(--surface);
+  }
+  .rule-history-item {
+    display: flex; justify-content: space-between; gap: 14px; padding: 8px 0;
+    border-bottom: 1px solid var(--border); font-size: 12.5px;
+  }
+  .rule-history-item:last-child { border-bottom: none; }
+  .if-then-editor { display: flex; flex-direction: column; gap: 14px; }
+  .if-then-block { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; }
+  .if-then-block .kw { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--blue); font-weight: 700; margin-bottom: 8px; }
+  .param-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+  .param-row .field { flex: 1; min-width: 140px; }
+  #empty-state { text-align: center; padding: 40px 20px; color: var(--text-dim); }
+  .template-card {
+    border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px;
+    margin-bottom: 8px; cursor: pointer;
+    transition: border-color 0.15s var(--ease), transform 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  }
+  .template-card:hover { border-color: var(--blue); transform: translateY(-2px); box-shadow: var(--shadow); }
+  .template-card .template-name { font-weight: 650; font-size: 13.5px; margin-bottom: 2px; }
+  .template-card .template-desc { font-size: 12px; color: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Automation Studio</h1>
+        <div class="subtitle">Visual IF/THEN automation, attached to a Fund - no code, just dropdowns.</div>
+      </div>
+      <div class="row">
+        <button class="subtle" onclick="openTemplates()" id="templates-btn" disabled>Use a Template</button>
+        <button class="primary" onclick="openEditor(null)" id="new-rule-btn" disabled>New Automation</button>
+      </div>
+    </div>
+
+    <div class="field" style="max-width:340px; margin-bottom:18px;">
+      <label>Fund</label>
+      <select id="fund-filter" onchange="onFundFilterChange()">
+        <option value="">Select a fund...</option>
+      </select>
+    </div>
+
+    <div class="card solid" id="rules-card" style="display:none;">
+      <div id="rules-list" class="muted">Loading...</div>
+      <div id="empty-state" style="display:none;">
+        No automations yet for this Fund. Automations watch every closed trade and can stop a session, resize risk, switch profiles, pause the Fund, or disable a signal source automatically.
+        <div style="margin-top:14px;"><button onclick="openTemplates()">Start from a Template</button></div>
+      </div>
+    </div>
+    <div class="empty" id="no-fund-state">Select a Fund above to see and manage its automations.</div>
+  </main>
+</div>
+
+<div class="modal-backdrop" id="editor-backdrop">
+  <div class="modal" style="width:560px;">
+    <h2 style="margin-top:0;" id="editor-title">New Automation</h2>
+    <div class="field"><label>Name</label><input type="text" id="r-name" placeholder="e.g. Stop at daily target"></div>
+    <div class="field">
+      <label>Scope</label>
+      <select id="r-scope" onchange="onScopeChange()">
+        <option value="fund">This Fund - applies to every session it runs</option>
+        <option value="session">This session only - a temporary override, deleted when the session ends</option>
+      </select>
+    </div>
+    <div class="field" id="r-session-field" style="display:none;">
+      <label>Session</label>
+      <select id="r-session-id"></select>
+      <div class="muted" style="font-size:11.5px;">Only this Fund's currently active session can be targeted.</div>
+    </div>
+
+    <div class="if-then-editor">
+      <div class="if-then-block">
+        <div class="kw">If</div>
+        <select id="r-condition-type" onchange="renderConditionParams()"></select>
+        <div class="param-row" id="condition-params"></div>
+      </div>
+      <div class="if-then-block">
+        <div class="kw">Then</div>
+        <select id="r-action-type" onchange="renderActionParams()"></select>
+        <div class="param-row" id="action-params"></div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:14px; align-items:center; justify-content:space-between;">
+      <label style="display:flex; align-items:center; gap:8px;">
+        <input type="checkbox" id="r-enabled" style="width:auto;" checked> Enabled
+      </label>
+      <span id="editor-error" class="muted" style="color:var(--red);"></span>
+    </div>
+
+    <div class="row" style="justify-content:flex-end; margin-top:16px;">
+      <button class="subtle" id="delete-rule-btn" onclick="deleteCurrentRule()" style="display:none;">Delete</button>
+      <button class="subtle" onclick="closeEditor()">Cancel</button>
+      <button class="primary" onclick="saveRule()">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="templates-backdrop">
+  <div class="modal" style="width:520px;">
+    <h2 style="margin-top:0;">Start from a Template</h2>
+    <div class="muted" style="font-size:12.5px; margin-bottom:14px;">Pick a common automation, then adjust the numbers before saving.</div>
+    <div id="templates-list"></div>
+    <div class="row" style="justify-content:flex-end; margin-top:16px;">
+      <button class="subtle" onclick="closeModal('templates-backdrop')">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let catalog = { conditions: {}, actions: {} };
+let allRules = [];
+let allChannels = [];
+let allRiskProfiles = [];
+let allFunds = [];
+let currentRuleId = null;
+let currentFundId = null;
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
+
+async function loadFundFilter() {
+  allFunds = await fetchJSON("/api/funds");
+  const select = document.getElementById("fund-filter");
+  select.innerHTML = '<option value="">Select a fund...</option>' +
+    allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("");
+  const preselect = new URLSearchParams(window.location.search).get("fund");
+  if (preselect && allFunds.some(f => f.id === parseInt(preselect, 10))) {
+    select.value = preselect;
+    currentFundId = parseInt(preselect, 10);
+  }
+}
+
+async function onFundFilterChange() {
+  const value = document.getElementById("fund-filter").value;
+  currentFundId = value ? parseInt(value, 10) : null;
+  document.getElementById("new-rule-btn").disabled = !currentFundId;
+  document.getElementById("templates-btn").disabled = !currentFundId;
+  document.getElementById("rules-card").style.display = currentFundId ? "block" : "none";
+  document.getElementById("no-fund-state").style.display = currentFundId ? "none" : "block";
+  if (currentFundId) await refreshAll();
+}
+
+async function refreshAll() {
+  [catalog, allRules, allChannels, allRiskProfiles] = await Promise.all([
+    fetchJSON("/api/rules/catalog"),
+    fetchJSON(`/api/rules?fund_id=${currentFundId}`),
+    fetchJSON("/api/channels"),
+    fetchJSON("/api/risk-profiles"),
+  ]);
+  renderRulesList();
+}
+
+function describeParams(type, catalogEntry, params) {
+  const parts = Object.keys(catalogEntry.params).map(key => {
+    const kind = catalogEntry.params[key];
+    let val = params[key];
+    if (kind === "channel") {
+      const c = allChannels.find(c => c.id === val);
+      val = c ? c.title : "(none)";
+    } else if (kind === "risk_profile") {
+      const p = allRiskProfiles.find(p => p.id === val);
+      val = p ? p.name : "(none)";
+    } else if (kind === "percent") {
+      val = `${val}%`;
+    }
+    return `<b>${escapeHtml(String(val))}</b>`;
+  });
+  return parts.join(", ");
+}
+
+function renderRulesList() {
+  const container = document.getElementById("rules-list");
+  const empty = document.getElementById("empty-state");
+  if (allRules.length === 0) {
+    container.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+  container.innerHTML = allRules.map(r => {
+    const cond = catalog.conditions[r.condition_type];
+    const act = catalog.actions[r.action_type];
+    const condLabel = cond ? cond.label : r.condition_type;
+    const actLabel = act ? act.label : r.action_type;
+    const condDesc = cond ? describeParams(r.condition_type, cond, r.condition_params) : "";
+    const actDesc = act ? describeParams(r.action_type, act, r.action_params) : "";
+    const lastFired = r.last_triggered_at ? new Date(r.last_triggered_at).toLocaleString() : "never";
+    return `
+      <div class="rule-row-wrap">
+        <div class="rule-row">
+          <label class="toggle"><input type="checkbox" ${r.enabled ? "checked" : ""} onchange="toggleRule(${r.id}, this.checked)"><span class="slider"></span></label>
+          <div class="rule-main">
+            <div class="rule-name">${escapeHtml(r.name)} <span class="badge ${r.scope === "session" ? "warn" : "off"}" style="font-size:10px;">${r.scope === "session" ? "this session only" : "fund-wide"}</span></div>
+            <div class="rule-logic">If <b>${escapeHtml(condLabel)}</b> ${condDesc} &rarr; ${escapeHtml(actLabel)} ${actDesc}</div>
+            <div class="rule-meta">Fired ${r.trigger_count} time${r.trigger_count === 1 ? "" : "s"} &middot; last: ${lastFired}</div>
+          </div>
+          <div class="rule-actions">
+            <span class="badge ${r.enabled ? "on" : "off"}">${r.enabled ? "Active" : "Paused"}</span>
+            <button class="subtle" onclick="toggleHistory(${r.id})" ${r.trigger_count === 0 ? "disabled" : ""}>History</button>
+            <button class="subtle" onclick="openEditor(${r.id})">Edit</button>
+          </div>
+        </div>
+        <div class="rule-history" id="history-${r.id}" style="display:none;"></div>
+      </div>
+    `;
+  }).join("");
+}
+
+async function toggleHistory(ruleId) {
+  const el = document.getElementById(`history-${ruleId}`);
+  if (!el) return;
+  const opening = el.style.display === "none";
+  if (!opening) { el.style.display = "none"; return; }
+  el.style.display = "block";
+  el.innerHTML = '<div class="muted" style="padding:10px 0;">Loading...</div>';
+  try {
+    const firings = await fetchJSON(`/api/rules/${ruleId}/firings`);
+    el.innerHTML = firings.length
+      ? firings.map(f => `
+          <div class="rule-history-item">
+            <span class="muted">${new Date(f.fired_at).toLocaleString()}</span>
+            <span>${escapeHtml(f.outcome_message || "-")}</span>
+          </div>
+        `).join("")
+      : '<div class="muted" style="padding:10px 0;">No firing history yet.</div>';
+  } catch (e) {
+    el.innerHTML = `<div class="muted">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function paramInputHtml(prefix, key, kind) {
+  const id = `${prefix}-${key}`;
+  if (kind === "channel") {
+    const opts = allChannels.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join("");
+    return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><select id="${id}"><option value="">Select a source</option>${opts}</select></div>`;
+  }
+  if (kind === "risk_profile") {
+    const opts = allRiskProfiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
+    return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><select id="${id}"><option value="">Select a profile</option>${opts}</select></div>`;
+  }
+  if (kind === "text") {
+    return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><input type="text" id="${id}"></div>`;
+  }
+  return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><input type="number" id="${id}" step="any"></div>`;
+}
+
+function renderConditionParams(existingParams) {
+  const type = document.getElementById("r-condition-type").value;
+  const entry = catalog.conditions[type];
+  const container = document.getElementById("condition-params");
+  if (!entry) { container.innerHTML = ""; return; }
+  container.innerHTML = Object.keys(entry.params).map(key => paramInputHtml("cp", key, entry.params[key])).join("");
+  if (existingParams) {
+    Object.keys(entry.params).forEach(key => {
+      const el = document.getElementById(`cp-${key}`);
+      if (el && existingParams[key] !== undefined && existingParams[key] !== null) el.value = existingParams[key];
+    });
+  }
+}
+
+function renderActionParams(existingParams) {
+  const type = document.getElementById("r-action-type").value;
+  const entry = catalog.actions[type];
+  const container = document.getElementById("action-params");
+  if (!entry) { container.innerHTML = ""; return; }
+  container.innerHTML = Object.keys(entry.params).map(key => paramInputHtml("ap", key, entry.params[key])).join("");
+  if (existingParams) {
+    Object.keys(entry.params).forEach(key => {
+      const el = document.getElementById(`ap-${key}`);
+      if (el && existingParams[key] !== undefined && existingParams[key] !== null) el.value = existingParams[key];
+    });
+  }
+}
+
+function collectParams(prefix, entry) {
+  const params = {};
+  Object.keys(entry.params).forEach(key => {
+    const el = document.getElementById(`${prefix}-${key}`);
+    if (!el || el.value === "") return;
+    const kind = entry.params[key];
+    if (kind === "channel" || kind === "risk_profile") params[key] = parseInt(el.value, 10);
+    else if (kind === "text") params[key] = el.value;
+    else params[key] = parseFloat(el.value);
+  });
+  return params;
+}
+
+async function onScopeChange() {
+  const scope = document.getElementById("r-scope").value;
+  const field = document.getElementById("r-session-field");
+  field.style.display = scope === "session" ? "block" : "none";
+  if (scope !== "session") return;
+  const select = document.getElementById("r-session-id");
+  select.innerHTML = '<option value="">Loading...</option>';
+  try {
+    const session = await fetchJSON(`/api/sessions/active-for-fund/${currentFundId}`);
+    select.innerHTML = session
+      ? `<option value="${session.id}">${escapeHtml(session.name || "(unnamed session)")} - active now</option>`
+      : '<option value="">No active session for this Fund right now</option>';
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load</option>';
+  }
+}
+
+function openEditor(ruleId, preset) {
+  currentRuleId = ruleId;
+  document.getElementById("editor-error").textContent = "";
+  const condSelect = document.getElementById("r-condition-type");
+  const actSelect = document.getElementById("r-action-type");
+  condSelect.innerHTML = Object.keys(catalog.conditions).map(k => `<option value="${k}">${escapeHtml(catalog.conditions[k].label)}</option>`).join("");
+  actSelect.innerHTML = Object.keys(catalog.actions).map(k => `<option value="${k}">${escapeHtml(catalog.actions[k].label)}</option>`).join("");
+
+  if (ruleId) {
+    const rule = allRules.find(r => r.id === ruleId);
+    document.getElementById("editor-title").textContent = "Edit Automation";
+    document.getElementById("delete-rule-btn").style.display = "inline-block";
+    document.getElementById("r-name").value = rule.name;
+    document.getElementById("r-enabled").checked = rule.enabled;
+    document.getElementById("r-scope").value = rule.scope;
+    condSelect.value = rule.condition_type;
+    actSelect.value = rule.action_type;
+    renderConditionParams(rule.condition_params);
+    renderActionParams(rule.action_params);
+    onScopeChange().then(() => {
+      if (rule.scope === "session" && rule.session_id) {
+        document.getElementById("r-session-id").value = rule.session_id;
+      }
+    });
+  } else {
+    document.getElementById("editor-title").textContent = preset ? `New Automation - ${preset.name}` : "New Automation";
+    document.getElementById("delete-rule-btn").style.display = "none";
+    document.getElementById("r-name").value = preset ? preset.name : "";
+    document.getElementById("r-enabled").checked = true;
+    document.getElementById("r-scope").value = "fund";
+    document.getElementById("r-session-field").style.display = "none";
+    if (preset) {
+      condSelect.value = preset.condition_type;
+      actSelect.value = preset.action_type;
+      renderConditionParams(preset.condition_params);
+      renderActionParams(preset.action_params);
+    } else {
+      renderConditionParams();
+      renderActionParams();
+    }
+  }
+  openModal("editor-backdrop");
+}
+
+function closeEditor() {
+  closeModal("editor-backdrop");
+  currentRuleId = null;
+}
+
+// Curated starting points, not a separate stored concept - "template"
+// here just means "pre-filled New Automation form." No new API surface;
+// picking one calls the exact same openEditor()/saveRule() path a
+// from-scratch automation would, so a template can never drift from
+// what's actually creatable by hand.
+const TEMPLATES = [
+  {
+    name: "Stop at daily loss limit",
+    desc: "Stop today's session once this Fund's daily loss reaches a threshold.",
+    condition_type: "daily_loss_gte", condition_params: { threshold: 100 },
+    action_type: "stop_active_session", action_params: {},
+  },
+  {
+    name: "Stop at daily profit target",
+    desc: "Stop today's session once this Fund's daily profit reaches a target.",
+    condition_type: "daily_profit_gte", condition_params: { threshold: 100 },
+    action_type: "stop_active_session", action_params: {},
+  },
+  {
+    name: "Vault profits at a target",
+    desc: "Move this session's profit into the Vault once a daily profit target is hit.",
+    condition_type: "daily_profit_gte", condition_params: { threshold: 100 },
+    action_type: "move_profit_to_vault", action_params: {},
+  },
+  {
+    name: "Pause Fund if broker disconnects",
+    desc: "Stop trading this Fund automatically if its Pocket Option account drops connection.",
+    condition_type: "broker_disconnected", condition_params: {},
+    action_type: "pause_fund", action_params: {},
+  },
+  {
+    name: "Disable Martingale after 3 steps",
+    desc: "Stop increasing stake size for the rest of the session once Martingale reaches step 3.",
+    condition_type: "martingale_step_gte", condition_params: { step: 3 },
+    action_type: "disable_martingale_for_session", action_params: {},
+  },
+  {
+    name: "Notify me after 3 losses in a row",
+    desc: "Send an in-app notification to the Owner after 3 consecutive losses.",
+    condition_type: "consecutive_losses_eq", condition_params: { count: 3 },
+    action_type: "notify_owner", action_params: { message: "3 consecutive losses" },
+  },
+];
+
+function openTemplates() {
+  document.getElementById("templates-list").innerHTML = TEMPLATES.map((t, i) => `
+    <div class="template-card" onclick="useTemplate(${i})">
+      <div class="template-name">${escapeHtml(t.name)}</div>
+      <div class="template-desc">${escapeHtml(t.desc)}</div>
+    </div>
+  `).join("");
+  openModal("templates-backdrop");
+}
+
+function useTemplate(index) {
+  closeModal("templates-backdrop");
+  openEditor(null, TEMPLATES[index]);
+}
+
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
+
+async function saveRule() {
+  const name = document.getElementById("r-name").value.trim();
+  const conditionType = document.getElementById("r-condition-type").value;
+  const actionType = document.getElementById("r-action-type").value;
+  const enabled = document.getElementById("r-enabled").checked;
+  const scope = document.getElementById("r-scope").value;
+  const sessionIdValue = document.getElementById("r-session-id").value;
+  const errorEl = document.getElementById("editor-error");
+
+  if (!name) { errorEl.textContent = "Name is required."; return; }
+  if (scope === "session" && !sessionIdValue) {
+    errorEl.textContent = "This Fund has no active session to attach a session-only rule to.";
+    return;
+  }
+
+  const body = {
+    name,
+    condition_type: conditionType,
+    condition_params: collectParams("cp", catalog.conditions[conditionType]),
+    action_type: actionType,
+    action_params: collectParams("ap", catalog.actions[actionType]),
+    enabled,
+    fund_id: currentFundId,
+    scope,
+    session_id: scope === "session" ? parseInt(sessionIdValue, 10) : null,
+  };
+
+  try {
+    if (currentRuleId) {
+      await fetchJSON(`/api/rules/${currentRuleId}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+    } else {
+      await fetchJSON("/api/rules", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      });
+    }
+    closeEditor();
+    await refreshAll();
+  } catch (e) {
+    errorEl.textContent = e.message;
+  }
+}
+
+async function deleteCurrentRule() {
+  if (!currentRuleId) return;
+  if (!confirm("Delete this automation? This cannot be undone.")) return;
+  await fetchJSON(`/api/rules/${currentRuleId}`, { method: "DELETE" });
+  closeEditor();
+  await refreshAll();
+}
+
+async function toggleRule(ruleId, enabled) {
+  await fetchJSON(`/api/rules/${ruleId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+  });
+  await refreshAll();
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "automation" });
+  if (!user) return;
+  await loadFundFilter();
+  if (currentFundId) {
+    document.getElementById("new-rule-btn").disabled = false;
+    document.getElementById("templates-btn").disabled = false;
+    document.getElementById("rules-card").style.display = "block";
+    document.getElementById("no-fund-state").style.display = "none";
+    await refreshAll();
+  }
+})();
+</script>
+</body>
+</html>

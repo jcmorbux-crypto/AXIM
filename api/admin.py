@@ -224,6 +224,28 @@ def revoke_access(user_id: int, admin_user=Depends(require_admin)):
     return {"status": "all sessions revoked"}
 
 
+@router.get("/users/{user_id}/sessions")
+def list_user_sessions(user_id: int, admin_user=Depends(require_admin)):
+    """'Connected Devices' for another user, seen by an Owner/Admin -
+    same data core/database.py's list_user_sessions already returns for
+    self-service, just not scoped to the caller's own account."""
+    if database.get_user_by_id(user_id) is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    return database.list_user_sessions(user_id)
+
+
+@router.delete("/users/{user_id}/sessions/{session_id}")
+def revoke_user_session(user_id: int, session_id: int, admin_user=Depends(require_admin)):
+    """Revoke ONE device for another user - the scalpel next to
+    revoke_access's sledgehammer (revoke_access above kills every
+    session; this kills one, e.g. a specific lost/stolen laptop)."""
+    if database.get_user_by_id(user_id) is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    database.revoke_session(session_id, user_id=user_id)
+    _log(admin_user, user_id, "revoke_session", detail=str(session_id))
+    return {"status": "revoked"}
+
+
 @router.get("/actions")
 def list_actions(limit: int = 200, admin_user=Depends(require_admin)):
     return database.list_admin_actions(limit)

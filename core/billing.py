@@ -64,7 +64,7 @@ PRICING_PLANS = [
     {
         "tier": "pro", "display_name": "Professional", "price_usd_monthly": 79,
         "stripe_price_id": settings.STRIPE_PRICE_PRO, "contact_only": False,
-        "features": ["Everything in Basic", "Rule Builder automation", "Priority support"],
+        "features": ["Everything in Basic", "Automation Studio", "Priority support"],
     },
     {
         "tier": "elite", "display_name": "Elite", "price_usd_monthly": 199,

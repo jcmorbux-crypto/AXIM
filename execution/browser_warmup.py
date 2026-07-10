@@ -11,7 +11,7 @@ sys.path.insert(0, str(CORE_DIR))
 
 from browser_session import PocketBrowserSession, get_trading_page, DEMO_URL
 import pocket_dom
-import asset_cache
+from asset_cache import AssetCache
 from logger import get_logger
 import database
 
@@ -44,7 +44,15 @@ class BrowserWarmupService:
     longer exists) and knows to rebuild itself, via ensure_alive().
     """
 
-    def __init__(self):
+    def __init__(self, user_data_dir=None):
+        # user_data_dir=None keeps the original single-shared-profile
+        # behavior (PocketBrowserSession's own default) for any caller
+        # that doesn't care - core/broker_account_manager.py is what
+        # actually passes each broker account's own distinct profile
+        # directory (docs/AXIM_APP_PLAN.md's multi-broker-account
+        # architecture), so different accounts' browser contexts and
+        # login sessions can never bleed into each other.
+        self._user_data_dir = user_data_dir
         self._session = None
         self._context = None
         self._page = None
@@ -57,9 +65,16 @@ class BrowserWarmupService:
         # using it means outcome reads never compete with trade placement
         # for a worker slot, at any concurrency level.
         self.outcome_lock = asyncio.Lock()
+        # One per account (see AssetCache's own docstring for why this
+        # can no longer be a shared module-level global).
+        self.asset_cache = AssetCache()
 
     async def start(self):
-        self._session = PocketBrowserSession()
+        self._session = (
+            PocketBrowserSession(user_data_dir=self._user_data_dir)
+            if self._user_data_dir is not None
+            else PocketBrowserSession()
+        )
         self._context = await self._session.__aenter__()
         self._page = await get_trading_page(self._context, DEMO_URL)
         await pocket_dom.dismiss_blocking_modals(self._page)
@@ -67,7 +82,7 @@ class BrowserWarmupService:
         self.generation += 1
         logger.info("browser_warmup: session started and verified (demo mode), generation=%s", self.generation)
 
-        await asset_cache.build_cache(self._page)
+        await self.asset_cache.build_cache(self._page)
 
     async def _verify_demo_mode(self):
         is_demo = await self._page.evaluate("() => document.body.classList.contains('is-chart-demo')")

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Strategy Lab - AXIM</title>
+<title>Strategy Lab - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -21,7 +21,7 @@
   .compare-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; background: var(--bg); box-shadow: var(--shadow-sm); position: relative; }
   .compare-card.rank-1 { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
   .compare-card .crown { position: absolute; top: 14px; right: 14px; font-size: 11px; font-weight: 700; color: var(--blue); }
-  .compare-card h4 { margin: 0 0 4px 0; font-size: 14.5px; }
+  .compare-card h4 { margin: 0 0 4px 0; font-size: 14.5px; font-weight: 600; }
   .compare-card .best-for { color: var(--text-dim); font-size: 12px; margin-bottom: 12px; }
   .compare-card .metric-row { display: flex; justify-content: space-between; font-size: 13px; padding: 5px 0; border-bottom: 1px solid var(--border); }
   .compare-card .metric-row:last-child { border-bottom: none; }
@@ -32,6 +32,28 @@
   #chart-container { width: 100%; overflow-x: auto; }
   #chart-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12.5px; }
   #chart-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+
+  /* ---- AI Analysis - the "portfolio analyst" voice gets its own
+     color (purple, per docs/AXIM_APP_PLAN.md's color system) so it
+     reads as a distinct perspective, not just another data card. ---- */
+  .ai-card {
+    background: var(--purple-soft); border: 1px solid var(--purple-border);
+    border-radius: var(--radius); padding: 20px 22px; margin: 20px 0;
+  }
+  .ai-card .ai-label { display: flex; align-items: center; gap: 7px; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--purple); font-weight: 700; margin-bottom: 10px; }
+  .ai-card .ai-narrative { font-size: 14.5px; line-height: 1.6; color: var(--text); }
+  .ai-questions { margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .ai-question { font-size: 13px; padding: 8px 0; border-top: 1px solid var(--purple-border); }
+  .ai-question .q { color: var(--text-dim); }
+  .ai-question .a { font-weight: 600; }
+  .strategy-narrative { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); display: none; }
+  .strategy-narrative.open { display: block; }
+  .toggle-narrative { font-size: 12px; color: var(--purple); cursor: pointer; background: none; border: none; padding: 0; font-weight: 600; }
+
+  .scorecard-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  .scorecard-hero { text-align: center; padding: 24px; }
+  .scorecard-hero .score { font-size: 48px; font-weight: 700; color: var(--purple); line-height: 1; }
+  .scorecard-hero .stars { font-size: 18px; color: var(--gold); margin-top: 6px; letter-spacing: 2px; }
 </style>
 </head>
 <body>
@@ -51,6 +73,7 @@
 
     <div class="tabs" id="tabs">
       <button class="tab-btn active" data-tab="run">Run Backtest</button>
+      <button class="tab-btn" data-tab="scorecard">Signal Scorecard</button>
       <button class="tab-btn" data-tab="signals">Historical Signals</button>
       <button class="tab-btn" data-tab="history">Past Runs</button>
     </div>
@@ -109,6 +132,12 @@
           </div>
         </div>
 
+        <div class="ai-card">
+          <div class="ai-label">&#10024; AI Analysis</div>
+          <div class="ai-narrative" id="ai-run-narrative">Analyzing...</div>
+          <div class="ai-questions" id="ai-questions"></div>
+        </div>
+
         <div class="compare-grid" id="compare-grid"></div>
 
         <div class="card solid" style="margin-bottom:20px;">
@@ -128,6 +157,21 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- ============ SIGNAL SCORECARD ============ -->
+    <div class="tab-panel" id="tab-scorecard">
+      <div class="card solid" style="margin-bottom:20px;">
+        <h3>Generate a Scorecard</h3>
+        <div class="row">
+          <div class="field" style="flex:1;"><label>Signal source</label>
+            <select id="sc-source"><option value="">Choose a source...</option></select>
+          </div>
+          <button class="primary" style="align-self:flex-end;" onclick="generateScorecard()">Generate</button>
+        </div>
+        <div id="scorecard-status" class="muted"></div>
+      </div>
+      <div id="scorecard-result" style="display:none;"></div>
     </div>
 
     <!-- ============ HISTORICAL SIGNALS ============ -->
@@ -190,6 +234,25 @@
   </main>
 </div>
 
+<div class="modal-backdrop" id="deploy-modal">
+  <div class="modal">
+    <h2 style="margin-top:0;">Deploy to Fund</h2>
+    <div class="muted" style="font-size:12.5px; margin-bottom:14px;" id="deploy-strategy-label"></div>
+    <div class="field"><label>Fund</label>
+      <select id="deploy-fund-select"></select>
+    </div>
+    <div class="field"><label>New profile name</label>
+      <input type="text" id="deploy-profile-name">
+    </div>
+    <div class="muted" style="font-size:11.5px; margin-bottom:14px;">This creates a fresh, independent Money Management profile from this strategy's results and sets it as the Fund's default - it won't affect any existing profile.</div>
+    <div class="row" style="justify-content:flex-end;">
+      <button class="subtle" onclick="closeModal('deploy-modal')">Cancel</button>
+      <button class="primary" onclick="confirmDeploy()">Deploy</button>
+    </div>
+    <span id="deploy-status" class="muted"></span>
+  </div>
+</div>
+
 <script src="/web/shell.js"></script>
 <script>
 let allProfiles = [];
@@ -208,6 +271,8 @@ async function fetchJSON(url, opts) {
 }
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function fmtMoney(n) { if (n === null || n === undefined) return "-"; const sign = n > 0 ? "+" : ""; return `${sign}$${Number(n).toFixed(2)}`; }
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
 
 document.getElementById("tabs").addEventListener("click", (e) => {
   if (!e.target.dataset.tab) return;
@@ -215,6 +280,7 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + e.target.dataset.tab));
   if (e.target.dataset.tab === "signals") loadImportedSignals();
   if (e.target.dataset.tab === "history") loadRunsHistory();
+  if (e.target.dataset.tab === "scorecard") loadScorecardSources();
 });
 
 // ---------- Setup ----------
@@ -288,15 +354,24 @@ async function renderResults(report) {
         <div class="metric-row"><span class="label">ROI</span><span class="value ${m.roi_percent >= 0 ? "pos" : "neg"}">${m.roi_percent >= 0 ? "+" : ""}${m.roi_percent}%</span></div>
         <div class="metric-row"><span class="label">Max Drawdown</span><span class="value neg">-${m.max_drawdown_percent}%</span></div>
         <div class="metric-row"><span class="label">Win Rate</span><span class="value">${m.win_rate !== null ? (m.win_rate * 100).toFixed(1) + "%" : "-"}</span></div>
+        <div class="metric-row"><span class="label">Profit Factor</span><span class="value">${m.profit_factor ?? "-"}</span></div>
+        <div class="metric-row"><span class="label">Consistency</span><span class="value">${m.consistency_percent !== null && m.consistency_percent !== undefined ? m.consistency_percent + "%" : "-"}</span></div>
         <div class="metric-row"><span class="label">Risk Score</span><span class="badge ${m.risk_score === "Low" ? "on" : (m.risk_score === "Medium" ? "warn" : "danger")}">${m.risk_score || "-"}</span></div>
         <div class="metric-row"><span class="label">Safest Rank</span><span class="value">#${m.rank_safest ?? "-"}</span></div>
         <div class="metric-row"><span class="label">Highest Growth Rank</span><span class="value">#${m.rank_highest_growth ?? "-"}</span></div>
+        <div class="strategy-narrative" id="narrative-${s.id}"></div>
+        <div class="row" style="margin-top:12px; justify-content:space-between;">
+          <button class="toggle-narrative" onclick="toggleNarrative(${s.id})" id="narrative-toggle-${s.id}">Read analysis &darr;</button>
+          <button class="subtle" onclick="openDeployModal(${s.id}, '${escapeHtml(s.label).replace(/'/g, "")}')">Deploy to Fund</button>
+        </div>
       </div>
     `;
   }).join("");
 
   const sessionSelect = document.getElementById("session-strategy-select");
   sessionSelect.innerHTML = strategies.map(s => `<option value="${s.id}">${escapeHtml(s.label)}</option>`).join("");
+
+  loadAiSummary();
 
   await renderEquityCurve(strategies);
   if (strategies.length) await loadSessions();
@@ -357,6 +432,138 @@ async function loadSessions() {
 async function exportRun(format) {
   if (!currentRunId) return;
   window.location.href = `/api/backtest/runs/${currentRunId}/export?format=${format}`;
+}
+
+// ---------- AI Analysis ----------
+
+const QUESTION_LABELS = {
+  which_made_the_most_money: "Made the most money",
+  which_had_lowest_drawdown: "Had the lowest drawdown",
+  which_recovered_best: "Recovered best from losses",
+  which_protected_capital_best: "Protected capital best",
+  which_survived_losing_streaks_best: "Survived losing streaks best",
+  which_has_the_best_risk_adjusted_return: "Best risk-adjusted return",
+  which_is_safest: "Safest overall",
+  which_is_most_aggressive: "Most aggressive",
+  which_is_most_consistent: "Most consistent",
+};
+
+async function loadAiSummary() {
+  if (!currentRunId) return;
+  const narrativeEl = document.getElementById("ai-run-narrative");
+  narrativeEl.textContent = "Analyzing...";
+  try {
+    const summary = await fetchJSON(`/api/backtest/runs/${currentRunId}/ai-summary`);
+    narrativeEl.textContent = summary.run_narrative;
+
+    document.getElementById("ai-questions").innerHTML = Object.entries(summary.questions).map(([key, val]) => `
+      <div class="ai-question">
+        <span class="q">${QUESTION_LABELS[key] || key}:</span>
+        <span class="a">${val.answer ? escapeHtml(val.answer) : "Not enough data"}</span>
+        ${val.answer ? `<span class="muted"> - ${escapeHtml(val.detail)}</span>` : ""}
+      </div>
+    `).join("");
+
+    for (const [strategyId, narrative] of Object.entries(summary.strategy_narratives)) {
+      const el = document.getElementById(`narrative-${strategyId}`);
+      if (el) el.textContent = narrative;
+    }
+  } catch (e) {
+    narrativeEl.textContent = "AI analysis unavailable: " + e.message;
+  }
+}
+
+function toggleNarrative(strategyId) {
+  const el = document.getElementById(`narrative-${strategyId}`);
+  const btn = document.getElementById(`narrative-toggle-${strategyId}`);
+  const open = el.classList.toggle("open");
+  btn.textContent = open ? "Hide analysis ↑" : "Read analysis ↓";
+}
+
+// ---------- Deploy to Fund ----------
+
+let deployStrategyId = null;
+
+async function openDeployModal(strategyId, label) {
+  deployStrategyId = strategyId;
+  document.getElementById("deploy-strategy-label").textContent = `Strategy: ${label}`;
+  document.getElementById("deploy-profile-name").value = "";
+  document.getElementById("deploy-status").textContent = "";
+  const funds = await fetchJSON("/api/funds?status=active");
+  const select = document.getElementById("deploy-fund-select");
+  select.innerHTML = funds.length
+    ? funds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("")
+    : '<option value="">No active funds - create one first</option>';
+  openModal("deploy-modal");
+}
+
+async function confirmDeploy() {
+  const statusEl = document.getElementById("deploy-status");
+  const fundId = document.getElementById("deploy-fund-select").value;
+  if (!fundId) { statusEl.textContent = "Select a fund."; return; }
+  const newName = document.getElementById("deploy-profile-name").value.trim() || null;
+  statusEl.textContent = "Deploying...";
+  try {
+    const result = await fetchJSON(`/api/backtest/runs/${currentRunId}/strategies/${deployStrategyId}/deploy`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fund_id: parseInt(fundId, 10), new_profile_name: newName }),
+    });
+    statusEl.textContent = `Deployed "${result.deployed_profile_name}" to ${result.fund.name}.`;
+    setTimeout(() => closeModal("deploy-modal"), 1500);
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+// ---------- Signal Provider Scorecard ----------
+
+async function loadScorecardSources() {
+  const select = document.getElementById("sc-source");
+  if (select.options.length > 1) return;  // already loaded
+  const sources = await fetchJSON("/api/backtest/sources");
+  select.innerHTML = '<option value="">Choose a source...</option>' +
+    sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+}
+
+async function generateScorecard() {
+  const source = document.getElementById("sc-source").value;
+  const statusEl = document.getElementById("scorecard-status");
+  const resultEl = document.getElementById("scorecard-result");
+  if (!source) { statusEl.textContent = "Choose a source first."; return; }
+  statusEl.textContent = "Running backtests across your strategies for this source...";
+  resultEl.style.display = "none";
+  try {
+    const card = await fetchJSON(`/api/backtest/scorecard/${encodeURIComponent(source)}`);
+    statusEl.textContent = "";
+    renderScorecard(card);
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+function renderScorecard(card) {
+  const stars = "★".repeat(Math.round(card.overall_score / 20)) + "☆".repeat(5 - Math.round(card.overall_score / 20));
+  const riskBadge = { Low: "on", Medium: "warn", High: "danger" }[card.risk_rating] || "off";
+  document.getElementById("scorecard-result").style.display = "block";
+  document.getElementById("scorecard-result").innerHTML = `
+    <div class="card solid scorecard-hero" style="margin-bottom:16px;">
+      <div class="muted" style="font-size:13px;">${escapeHtml(card.source_label)}</div>
+      <div class="score">${card.overall_score}</div>
+      <div class="stars">${stars}</div>
+      <div class="muted" style="font-size:12px; margin-top:6px;">Based on ${card.graded_signal_count} graded signal(s) - ${card.confidence_percent}% confidence</div>
+    </div>
+    <div class="scorecard-grid">
+      <div class="card"><h3>Historical Win Rate</h3><div class="stat-value-lg">${card.historical_win_rate !== null ? (card.historical_win_rate * 100).toFixed(1) + "%" : "-"}</div></div>
+      <div class="card"><h3>Consistency</h3><div class="stat-value-lg" style="text-transform:capitalize;">${card.consistency}</div></div>
+      <div class="card"><h3>Maximum Drawdown</h3><div class="stat-value-lg neg">${card.max_drawdown_percent}%</div></div>
+      <div class="card"><h3>Average Session Profit</h3><div class="stat-value-lg ${card.average_session_profit >= 0 ? "pos" : "neg"}">${fmtMoney(card.average_session_profit)}</div></div>
+      <div class="card"><h3>Average Losing Streak</h3><div class="stat-value-lg">${card.average_losing_streak}</div></div>
+      <div class="card"><h3>Risk Rating</h3><div class="stat-value-lg"><span class="badge ${riskBadge}">${card.risk_rating}</span></div></div>
+      <div class="card gold"><h3>Recommended Strategy</h3><div class="stat-value-lg">${escapeHtml(card.recommended_strategy)}</div></div>
+      <div class="card"><h3>Recommended Starting Bankroll</h3><div class="stat-value-lg">${fmtMoney(card.recommended_starting_bankroll)}</div></div>
+      <div class="card"><h3>Recommended Trade Size</h3><div class="stat-value-lg">${card.recommended_trade_size_percent !== null ? card.recommended_trade_size_percent + "%" : "-"}</div></div>
+    </div>
+  `;
 }
 
 // ---------- Historical signals ----------

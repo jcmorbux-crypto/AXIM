@@ -60,9 +60,61 @@ class TradingSessionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             database.start_trading_session("Second", [2], "DEMO")
 
+    def test_two_different_broker_accounts_can_each_run_a_concurrent_session(self):
+        account_a = database.create_broker_account("Acct A")
+        account_b = database.create_broker_account("Acct B")
+        session_a = database.start_trading_session("First", [1], "DEMO", broker_account_id=account_a)
+        session_b = database.start_trading_session("Second", [2], "DEMO", broker_account_id=account_b)
+        self.assertEqual(database.get_trading_session(session_a)["status"], "active")
+        self.assertEqual(database.get_trading_session(session_b)["status"], "active")
+        self.assertEqual(len(database.list_active_trading_sessions()), 2)
+
+    def test_cannot_start_second_session_on_the_same_broker_account(self):
+        account_id = database.create_broker_account("Acct A")
+        database.start_trading_session("First", [1], "DEMO", broker_account_id=account_id)
+        with self.assertRaises(ValueError):
+            database.start_trading_session("Second", [2], "DEMO", broker_account_id=account_id)
+
+    def test_get_active_trading_session_for_broker_account(self):
+        account_a = database.create_broker_account("Acct A")
+        account_b = database.create_broker_account("Acct B")
+        session_a = database.start_trading_session("First", [1], "DEMO", broker_account_id=account_a)
+        self.assertEqual(database.get_active_trading_session_for_broker_account(account_a)["id"], session_a)
+        self.assertIsNone(database.get_active_trading_session_for_broker_account(account_b))
+
+    def test_get_active_trading_session_for_fund(self):
+        fund_a = database.create_fund("Fund A")
+        fund_b = database.create_fund("Fund B")
+        session_a = database.start_trading_session("First", [1], "DEMO", fund_id=fund_a)
+        self.assertEqual(database.get_active_trading_session_for_fund(fund_a)["id"], session_a)
+        self.assertIsNone(database.get_active_trading_session_for_fund(fund_b))
+
+    def test_get_active_trading_session_for_channel(self):
+        account_a = database.create_broker_account("Acct A")
+        account_b = database.create_broker_account("Acct B")
+        session_a = database.start_trading_session("First", [1, 2], "DEMO", broker_account_id=account_a)
+        session_b = database.start_trading_session("Second", [3], "DEMO", broker_account_id=account_b)
+        self.assertEqual(database.get_active_trading_session_for_channel(1)["id"], session_a)
+        self.assertEqual(database.get_active_trading_session_for_channel(3)["id"], session_b)
+        self.assertIsNone(database.get_active_trading_session_for_channel(999))
+
     def test_start_session_requires_channels(self):
         with self.assertRaises(ValueError):
             database.start_trading_session("No channels", [], "DEMO")
+
+    def test_broker_account_id_round_trips(self):
+        fund_id = database.create_fund("F1")
+        account_id = database.create_broker_account("Acc1")
+        session_id = database.start_trading_session(
+            "Test", [1], "DEMO", fund_id=fund_id, broker_account_id=account_id,
+        )
+        session = database.get_trading_session(session_id)
+        self.assertEqual(session["fund_id"], fund_id)
+        self.assertEqual(session["broker_account_id"], account_id)
+
+    def test_broker_account_id_defaults_to_none(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO")
+        self.assertIsNone(database.get_trading_session(session_id)["broker_account_id"])
 
     def test_record_trade_increments_count(self):
         session_id = database.start_trading_session("Test", [1], "DEMO")
@@ -118,6 +170,14 @@ class TradingSessionTests(unittest.TestCase):
         signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
         trade_id = database.record_signal_received(signal)
         self.assertIsNone(database.get_signal_session_id(trade_id))
+
+    def test_martingale_disabled_defaults_false_and_can_be_set(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO")
+        self.assertFalse(database.get_trading_session(session_id)["martingale_disabled"])
+        database.set_session_martingale_disabled(session_id, True)
+        self.assertTrue(database.get_trading_session(session_id)["martingale_disabled"])
+        database.set_session_martingale_disabled(session_id, False)
+        self.assertFalse(database.get_trading_session(session_id)["martingale_disabled"])
 
 
 if __name__ == "__main__":

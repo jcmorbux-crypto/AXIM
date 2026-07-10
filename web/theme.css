@@ -21,9 +21,18 @@
   --green: #14804a;
   --green-soft: #eaf7f0;
   --red: #b3261e;
+  --red-hover: #8f1e18;
   --red-soft: #fbeeed;
   --yellow: #92610a;
   --yellow-soft: #fdf6e8;
+  /* Text-search highlight (web/guide.html's <mark>) - deliberately a
+     saturated "highlighter" yellow, distinct from --yellow-soft's pale
+     badge-background tint, since highlighted search matches need to
+     stay visually punchy against body text. */
+  --highlight: #fff3b0;
+  /* Full-screen dimming overlay behind modals/the mobile nav drawer -
+     one shared token instead of each use picking its own "black". */
+  --overlay: rgba(15, 23, 42, 0.4);
   /* Distinct from --yellow (warning) even though the hue family is
      related - gold is a deliberate, separate semantic: vault/protected
      balance and premium status, never a caution state. See .badge.gold
@@ -31,11 +40,24 @@
   --gold: #8a6a17;
   --gold-soft: #faf1d6;
   --gold-border: #eddfa8;
+  /* AI - Strategy Lab, recommendations, anything the AI is speaking.
+     Its own hue so it reads as a distinct "voice" in the product, never
+     confused with profit(green)/protected(gold)/trust(blue). */
+  --purple: #6d3fc4;
+  --purple-soft: #f3edfc;
+  --purple-border: #e2d3f7;
   --radius: 14px;
   --radius-sm: 9px;
+  --radius-lg: 20px;
   --shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.03);
   --shadow: 0 1px 2px rgba(20, 24, 31, 0.04), 0 8px 24px rgba(20, 24, 31, 0.05);
+  --shadow-lift: 0 4px 8px rgba(20, 24, 31, 0.05), 0 16px 40px rgba(20, 24, 31, 0.09);
   --sidebar-w: 256px;
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
 
 * { box-sizing: border-box; }
@@ -84,6 +106,25 @@ a { color: inherit; }
   border-radius: 8px;
   display: flex; align-items: center; justify-content: center;
   color: white; font-size: 13px; font-weight: 700;
+}
+
+.sidebar-logo .wordmark {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.sidebar-logo .wordmark-primary {
+  font-weight: 650;
+  font-size: 17px;
+}
+
+.sidebar-logo .wordmark-secondary {
+  font-weight: 500;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
 }
 
 .nav-group { display: flex; flex-direction: column; gap: 1px; }
@@ -135,6 +176,36 @@ a { color: inherit; }
 .user-chip .email { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-chip .role { color: var(--text-faint); font-size: 11px; }
 
+.notif-bell-wrap { position: relative; }
+.notif-bell {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border-radius: var(--radius-sm); border: none;
+  background: transparent; color: var(--text-dim); font-size: 12.5px; cursor: pointer;
+  text-align: left;
+}
+.notif-bell:hover { background: var(--surface); color: var(--text); }
+.notif-bell .notif-count {
+  margin-left: auto; background: var(--red); color: white; border-radius: 999px;
+  font-size: 10.5px; font-weight: 700; padding: 1px 6px; line-height: 1.5;
+}
+.notif-dropdown {
+  position: absolute; bottom: calc(100% + 6px); left: 0; width: 300px; max-height: 340px;
+  overflow-y: auto; background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lift, 0 8px 24px rgba(0,0,0,0.18)); z-index: 50; display: none;
+}
+.notif-dropdown.open { display: block; }
+.notif-dropdown-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12px; font-weight: 650;
+}
+.notif-dropdown-header button { font-size: 11px; padding: 3px 8px; }
+.notif-item { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.notif-item:last-child { border-bottom: none; }
+.notif-item.unread { background: var(--blue-soft); }
+.notif-item .notif-message { color: var(--text); }
+.notif-item .notif-time { color: var(--text-faint); font-size: 11px; margin-top: 2px; }
+.notif-empty { padding: 24px 12px; text-align: center; color: var(--text-dim); font-size: 12.5px; }
+
 .main {
   margin-left: var(--sidebar-w);
   flex: 1;
@@ -153,6 +224,12 @@ a { color: inherit; }
 
 .page-header h1 { font-size: 22px; margin: 0 0 4px 0; font-weight: 650; letter-spacing: -0.01em; }
 .page-header .subtitle { color: var(--text-dim); font-size: 13.5px; }
+
+/* ---- Greeting header: Mission Control's opening line ("Good evening,
+   Jay") - the warmest, least "software" moment on the page. Large but
+   not shouting; the fund name beneath it is the real headline. ---- */
+.greeting-eyebrow { font-size: 14px; color: var(--text-dim); font-weight: 550; margin-bottom: 2px; }
+.greeting-title { font-size: 26px; font-weight: 650; letter-spacing: -0.015em; margin: 0 0 20px 0; }
 .help-link {
   display: inline-flex; align-items: center; justify-content: center;
   width: 18px; height: 18px; border-radius: 50%; margin-left: 6px;
@@ -252,6 +329,25 @@ a { color: inherit; }
 .status-line .headline { font-weight: 600; font-size: 14.5px; }
 .status-line .detail { color: var(--text-dim); font-size: 13px; }
 
+/* ---- Advanced disclosure: progressive disclosure for genuine feature
+   depth (Martingale/Compounding/Vault/Kelly-style settings), distinct
+   from .diagnostics (which hides developer/operational trivia). This is
+   "more power available when you want it," not "technical exhaust" -
+   sized and colored to feel like a real, inviting section, not a
+   footnote. ---- */
+.advanced-toggle > summary {
+  cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px;
+  padding: 12px 0; font-size: 13.5px; font-weight: 600; color: var(--text);
+  border-top: 1px solid var(--border); margin-top: 8px;
+}
+.advanced-toggle > summary::-webkit-details-marker { display: none; }
+.advanced-toggle > summary:before {
+  content: "\25B8"; font-size: 11px; color: var(--text-dim); transition: transform 0.15s var(--ease);
+}
+.advanced-toggle[open] > summary:before { transform: rotate(90deg); }
+.advanced-toggle > summary .hint { color: var(--text-dim); font-weight: 500; font-size: 12.5px; }
+.advanced-toggle-body { padding-top: 6px; }
+
 .diagnostics { margin-top: 6px; }
 .diagnostics summary {
   cursor: pointer; color: var(--text-faint); font-size: 12px; font-weight: 550;
@@ -284,6 +380,17 @@ button, .btn {
 button:hover, .btn:hover { background: var(--surface); }
 button:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* Keyboard-focus ring, app-wide - text inputs already get one (below);
+   this closes the same gap for every other interactive element so
+   keyboard navigation has a consistent, visible focus indicator instead
+   of falling back to the browser default (or none at all) everywhere
+   that isn't a text field. :focus-visible (not :focus) so mouse clicks
+   don't show a ring, only keyboard/programmatic focus does. */
+button:focus-visible, .btn:focus-visible, a:focus-visible, .nav-item:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
 button.primary, .btn.primary {
   background: var(--blue); border-color: var(--blue); color: white;
 }
@@ -292,7 +399,7 @@ button.primary:hover, .btn.primary:hover { background: var(--blue-hover); border
 button.danger, .btn.danger {
   background: var(--red); border-color: var(--red); color: white;
 }
-button.danger:hover { background: #b91c1c; border-color: #b91c1c; }
+button.danger:hover, .btn.danger:hover { background: var(--red-hover); border-color: var(--red-hover); }
 
 button.subtle, .btn.subtle { border-color: transparent; background: transparent; color: var(--text-dim); }
 button.subtle:hover { background: var(--surface); color: var(--text); }
@@ -310,6 +417,30 @@ button.subtle:hover { background: var(--surface); color: var(--text); }
 .badge.danger { background: var(--red-soft); color: var(--red); }
 .badge.info { background: var(--blue-soft); color: var(--blue); }
 .badge.gold { background: var(--gold-soft); color: var(--gold); }
+.badge.ai { background: var(--purple-soft); color: var(--purple); }
+
+/* ---- Motion: subtle, never gimmicky - a card lifting slightly on
+   hover, a status dot breathing while something is genuinely live,
+   numbers transitioning smoothly when they change. Every transition
+   uses --ease and stays under ~200ms so it reads as responsiveness,
+   not decoration. ---- */
+
+.card-interactive {
+  transition: transform 0.16s var(--ease), box-shadow 0.16s var(--ease);
+  cursor: pointer;
+}
+.card-interactive:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+
+.dot.live { animation: axim-pulse 2.2s ease-in-out infinite; }
+@keyframes axim-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.count-up { transition: color 0.2s var(--ease); }
+
+.progress-ring-track { stroke: var(--border); fill: none; }
+.progress-ring-fill { stroke: var(--blue); fill: none; stroke-linecap: round; transition: stroke-dashoffset 0.6s var(--ease); }
 
 /* Reusable "protected/premium" stat treatment - vault balances,
    premium plan badges. Gold, never used for a warning or an error. */
@@ -350,6 +481,7 @@ th {
   border-bottom: 1px solid var(--border);
 }
 td { border-bottom: 1px solid var(--border); }
+tbody tr { transition: background 0.1s var(--ease); }
 tbody tr:hover { background: var(--surface); }
 td.title-cell { white-space: normal; max-width: 320px; }
 
@@ -386,7 +518,7 @@ td.title-cell { white-space: normal; max-width: 320px; }
 .banner.info { background: var(--blue-soft); border-color: #bfdbfe; color: var(--blue); }
 
 .modal-backdrop {
-  display: none; position: fixed; inset: 0; background: rgba(15,23,42,0.4);
+  display: none; position: fixed; inset: 0; background: var(--overlay);
   z-index: 100; align-items: center; justify-content: center;
 }
 .modal {
@@ -404,7 +536,72 @@ td.title-cell { white-space: normal; max-width: 320px; }
 .confirm-countdown-fill { height: 100%; background: var(--red); transition: width 1s linear; }
 .confirm-trade-headline { font-size: 20px; font-weight: 700; margin: 4px 0 14px 0; }
 
+/* Mobile nav (PDM-8) - below 900px the sidebar becomes a slide-in
+   drawer (off-canvas by default, toggled by .mobile-open) instead of
+   just vanishing with no replacement navigation. .mobile-nav-toggle and
+   .mobile-nav-backdrop are injected by shell.js's renderSidebar() -
+   both are display:none above this breakpoint so desktop is unaffected. */
+.mobile-nav-toggle { display: none; }
+.mobile-nav-backdrop { display: none; }
+
 @media (max-width: 900px) {
-  .sidebar { display: none; }
-  .main { margin-left: 0; padding: 20px; }
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    z-index: 210;
+    box-shadow: 2px 0 24px rgba(0,0,0,0.18);
+  }
+  .sidebar.mobile-open { transform: translateX(0); }
+  .main { margin-left: 0; padding: 20px; padding-top: 68px; max-width: 100%; }
+
+  /* Dense tabular pages (Trade Center, Users, Sessions, etc.) are kept
+     as real tables rather than reflowed card-per-row layouts - the
+     table itself scrolls horizontally within its own card instead of
+     blowing out the page width. display:block on <table> keeps the
+     internal thead/tbody/tr/td layout intact while making the table
+     element itself a scrollable container - a standard pattern, not a
+     layout hack. */
+  table { display: block; overflow-x: auto; max-width: 100%; }
+
+  /* Fixed-width side-by-side rows (filter bars, form field groups) are
+     the other recurring overflow source - let them wrap instead of
+     forcing their fixed pixel widths to stay on one line. */
+  .row { flex-wrap: wrap; }
+
+  /* Several pages override .grid's own responsive column template with
+     an inline fixed-width split (e.g. style="grid-template-columns:
+     280px 1fr") for a sidebar-detail layout - fine on desktop, but a
+     fixed 280px column alone exceeds a phone viewport. !important is
+     the only way to win against an inline style from a stylesheet, and
+     that's exactly what's needed here: stack to one column below the
+     breakpoint regardless of what each page's inline template says. */
+  .grid { grid-template-columns: 1fr !important; }
+
+  .mobile-nav-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 14px; left: 14px;
+    width: 40px; height: 40px;
+    border-radius: 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    z-index: 220;
+    cursor: pointer;
+    color: var(--text);
+  }
+  .mobile-nav-toggle:hover { background: var(--border); }
+
+  .mobile-nav-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: var(--overlay);
+    z-index: 205;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.22s ease;
+  }
+  .mobile-nav-backdrop.visible { opacity: 1; pointer-events: auto; }
 }

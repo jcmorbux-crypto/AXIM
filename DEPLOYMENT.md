@@ -1,4 +1,4 @@
-# AXIM Deployment Guide
+# AXIM TradeStation Deployment Guide
 
 This document covers running AXIM unattended / long-term, beyond the
 single-terminal usage covered in `USER_GUIDE.md`. Read
@@ -45,6 +45,19 @@ at the same `venv\Scripts\python.exe` + arguments the scripts above use.
 Whatever you use, make sure it sends a clean stop signal (equivalent to
 Ctrl+C) rather than force-killing, per the note in `USER_GUIDE.md` - this
 matters for avoiding orphaned Chrome tabs across restarts.
+
+## Remote access (Remote Client / Tailscale)
+
+By default the control API binds `127.0.0.1` only - nothing outside the
+Mini PC itself can reach it. Enabling a Remote Client (another PC/laptop
+running AXIM's desktop app in Remote mode) over a private Tailscale mesh
+VPN is fully opt-in and documented step by step, for a non-technical
+user, in `docs/AXIM_REMOTE_ACCESS.md`. In short: set `API_BIND_HOST` /
+`API_BIND_PORT` / `ALLOWED_ORIGINS` in `.env`, re-run
+`install_api_scheduled_task.ps1` so the Scheduled Task picks up the new
+bind address, then point the Remote Client at your Mini PC's Tailscale
+hostname. No public port, public IP, or domain is ever required or
+opened - trades always execute on the server, never the client.
 
 ## Persistent state that must survive restarts/redeploys
 

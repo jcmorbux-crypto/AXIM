@@ -1,18 +1,32 @@
 # AXIM Desktop
 
-A thin [Tauri](https://tauri.app) window around the existing AXIM
-FastAPI control UI + Telegram listener - **not** a standalone installer
-with a bundled Python runtime. On launch it spawns the same processes
-you'd otherwise start manually:
+A thin [Tauri](https://tauri.app) window that runs in one of two modes,
+chosen on first launch (see `docs/AXIM_REMOTE_ACCESS.md`):
 
-```
-venv\Scripts\python.exe -m uvicorn api.main:app --host 127.0.0.1 --port 8090
-venv\Scripts\python.exe core\telegram_listener.py
-```
+- **Local mode** (default) - runs this PC as the AXIM Server. On launch
+  it spawns the same processes you'd otherwise start manually:
 
-waits ~2 seconds for the API to bind, then opens a native window
-pointed at `http://127.0.0.1:8090`. Closing the window kills both
-processes - see `src-tauri/src/lib.rs`.
+  ```
+  venv\Scripts\python.exe -m uvicorn api.main:app --host <API_BIND_HOST> --port <API_BIND_PORT>
+  venv\Scripts\python.exe core\telegram_listener.py
+  ```
+
+  (host/port read from the project's `.env`, defaulting to
+  `127.0.0.1:8090` - same values `config/settings.py` uses), polls until
+  the API actually accepts connections, then opens a native window
+  pointed at it. Closing the window kills both processes - see
+  `src-tauri/src/lib.rs`. **Not** a standalone installer with a bundled
+  Python runtime - see "Known limitation" below.
+
+- **Remote mode** - points the window at a remote AXIM Server's address
+  (typically a Tailscale hostname) instead, and spawns nothing locally.
+  Use this to control an AXIM Server running on another machine (e.g.
+  your Mini PC) from this laptop/PC.
+
+The choice is persisted to a small `remote_client_config.json` under
+this app's OS-standard config directory. Restart the app to see the
+picker screen again with a "Change server settings" link during the
+brief auto-connect delay.
 
 ## Known limitation
 

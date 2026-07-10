@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Logs - AXIM</title>
+<title>Logs - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -10,8 +10,17 @@
   .log-row:hover { background: var(--surface); }
   .log-time { color: var(--text-faint); white-space: nowrap; flex-shrink: 0; width: 150px; }
   .log-module { color: var(--blue); white-space: nowrap; flex-shrink: 0; width: 140px; overflow: hidden; text-overflow: ellipsis; }
-  .log-message { white-space: pre-wrap; word-break: break-word; flex: 1; }
+  .log-message { white-space: pre-wrap; word-break: break-word; flex: 1; min-width: 0; }
   .log-level { flex-shrink: 0; width: 60px; }
+
+  @media (max-width: 900px) {
+    /* time+module+level alone exceed a phone viewport before the
+       message even gets a chance to render - wrap the row so the
+       message drops to its own full-width line instead of squeezing
+       into whatever pixels are left. */
+    .log-row { flex-wrap: wrap; }
+    .log-message { flex-basis: 100%; }
+  }
 </style>
 </head>
 <body>
@@ -114,6 +123,19 @@ async function refreshLogs() {
     return;
   }
   refreshLogs();
+  // "Live tail" here means auto-refresh on real activity rather than a
+  // byte-offset cursor into the log files themselves - core/log_reader.py
+  // already does a cheap bounded tail (last 2000 lines, files rotate at
+  // a fixed size) on every call, so re-running the existing query is not
+  // a new cost model, just removing the "you have to click Refresh"
+  // requirement. A real incremental cursor would only earn its
+  // complexity if this page's full-reparse cost ever actually became a
+  // problem, which it hasn't.
+  AximShell.subscribeEvents({
+    "trade.closed": { onEvent: refreshLogs },
+    "trade.error": { onEvent: refreshLogs },
+    "signal.ignored": { onEvent: refreshLogs },
+  });
 })();
 </script>
 </body>

@@ -1,4 +1,4 @@
-# AXIM Installation
+# AXIM TradeStation Installation
 
 ## Prerequisites
 

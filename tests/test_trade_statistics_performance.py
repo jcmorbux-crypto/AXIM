@@ -12,10 +12,10 @@ import trade_statistics
 
 
 def _make_closed_trade(asset="EUR/USD OTC", channel="TestChannel", result="win", profit_loss=0.9,
-                        trade_amount=1, payout=90, closed_at=None, session_id=None):
+                        trade_amount=1, payout=90, closed_at=None, session_id=None, fund_id=None):
     signal = {"asset": asset, "direction": "BUY", "expiry": "1 Minute", "raw_message": "test",
               "trade_amount": trade_amount}
-    trade_id = database.record_signal_received(signal, source=channel, session_id=session_id)
+    trade_id = database.record_signal_received(signal, source=channel, session_id=session_id, fund_id=fund_id)
     database.update_trade_status(
         trade_id, __import__("trade_lifecycle").TradeStatus.RESULT_WIN if result == "win"
         else __import__("trade_lifecycle").TradeStatus.RESULT_LOSS,
@@ -116,6 +116,50 @@ class PerformanceAnalyticsTests(unittest.TestCase):
         for key in ("daily", "weekly", "monthly", "yearly", "lifetime", "by_channel",
                     "by_asset", "best_time_of_day", "max_drawdown", "streaks", "sessions", "risk_engine"):
             self.assertIn(key, report)
+
+
+class FundScopedStatsTests(unittest.TestCase):
+    """daily_stats/consecutive_wins/consecutive_losses/lifetime_stats
+    all accept an optional fund_id - Rule Builder rules are Fund-owned
+    now, so a fund-scoped rule's "daily profit" must mean that fund's
+    daily profit, not the whole account's."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_daily_stats_scoped_to_fund(self):
+        fund_a = database.create_fund("A")
+        fund_b = database.create_fund("B")
+        _make_closed_trade(result="win", profit_loss=50, fund_id=fund_a)
+        _make_closed_trade(result="win", profit_loss=999, fund_id=fund_b)
+        self.assertEqual(trade_statistics.daily_stats(fund_id=fund_a)["profit_loss"], 50)
+        self.assertEqual(trade_statistics.daily_stats(fund_id=fund_b)["profit_loss"], 999)
+        self.assertEqual(trade_statistics.daily_stats()["profit_loss"], 1049)  # unscoped sees everything
+
+    def test_consecutive_wins_scoped_to_fund(self):
+        fund_a = database.create_fund("A")
+        fund_b = database.create_fund("B")
+        _make_closed_trade(result="loss", fund_id=fund_a)
+        _make_closed_trade(result="win", fund_id=fund_b)
+        _make_closed_trade(result="win", fund_id=fund_b)
+        self.assertEqual(trade_statistics.consecutive_wins(fund_id=fund_a), 0)
+        self.assertEqual(trade_statistics.consecutive_wins(fund_id=fund_b), 2)
+
+    def test_lifetime_stats_scoped_to_fund(self):
+        fund_a = database.create_fund("A")
+        fund_b = database.create_fund("B")
+        _make_closed_trade(result="win", profit_loss=10, fund_id=fund_a)
+        _make_closed_trade(result="win", profit_loss=20, fund_id=fund_a)
+        _make_closed_trade(result="win", profit_loss=5, fund_id=fund_b)
+        self.assertEqual(trade_statistics.lifetime_stats(fund_id=fund_a)["profit_loss"], 30)
+        self.assertEqual(trade_statistics.lifetime_stats(fund_id=fund_b)["profit_loss"], 5)
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Help / Guide - AXIM</title>
+<title>Help / Guide - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -18,9 +18,17 @@
   .guide-section h3 { font-size: 14.5px; margin: 20px 0 8px 0; }
   .guide-section p, .guide-section li { font-size: 13.5px; line-height: 1.65; color: var(--text); }
   .guide-section ul, .guide-section ol { padding-left: 20px; margin: 8px 0; }
-  .guide-highlight { display: none; background: #fff3b0; }
+  .guide-highlight { display: none; background: var(--highlight); }
   mark.guide-highlight { display: inline; }
   #guide-search-empty { display: none; }
+
+  @media (max-width: 900px) {
+    /* .guide-toc's fixed 240px width alone exceeds a phone viewport -
+       stack the table of contents above the article instead of forcing
+       it to sit side by side with the content column. */
+    .guide-layout { flex-direction: column; }
+    .guide-toc { flex-basis: auto; width: 100%; position: static; }
+  }
 </style>
 </head>
 <body>
@@ -83,13 +91,17 @@
         <div class="guide-section" id="sec-funds">
           <div class="section-kicker">C</div>
           <h2>Funds</h2>
-          <p>A Fund is a separate bankroll with its own balance, sources, strategy, and history - AXIM doesn't assume you only ever run one pool of money. Use separate Funds for a Demo bankroll vs. a Live one, or to keep an aggressive strategy's results apart from a conservative one.</p>
+          <p>A Fund is a separate bankroll with its own balance, its own Pocket Option account, sources, strategy, and history - AXIM doesn't assume you only ever run one pool of money on one account. Use separate Funds to keep a Demo bankroll apart from a Live one, run two different Pocket Option accounts side by side, or keep an aggressive strategy's results apart from a conservative one.</p>
           <h3>Trading Balance vs. Protected Balance</h3>
           <p><strong>Trading Balance</strong> is the money actually available for AXIM to size new trades against. <strong>Protected Balance</strong> (shown in gold) is money the Profit Vault has skimmed off and set aside - it no longer affects position sizing, on purpose, so a good run doesn't put your whole balance back at risk. <strong>Total Account Value</strong> is simply the two added together - vaulting moves money into a safer bucket, it never destroys it.</p>
           <h3>Creating a Fund</h3>
-          <p>Go to Funds &gt; New Fund, give it a name and a starting balance. From the Fund's detail view you can then assign Signal Sources (which Telegram channels feed it) and a default money management profile (used automatically when you start a session under this Fund, unless you override it).</p>
-          <h3>Using multiple Funds</h3>
-          <p>Every Trading Session must belong to a Fund. Mission Control's Fund selector lets you view any Fund's own performance at any time. Note: AXIM currently runs one active session at a time across the whole app (see Section E) - so while you can organize unlimited Funds, only one can be actively trading at once today.</p>
+          <p>Go to Funds &gt; New Fund, give it a name and a starting balance. From the Fund's detail view you can then attach a Pocket Option account (see "Connecting a broker account" below), assign Signal Sources (which Telegram channels feed it), and set a default money management profile (used automatically when you start a session under this Fund, unless you override it).</p>
+          <h3>Connecting a broker account</h3>
+          <p>Each Fund trades through one Pocket Option account, attached from the Fund's detail view: pick an account from the <strong>Broker Account</strong> dropdown and click Attach. If the account you want doesn't exist yet, add it first from the Broker page (see Section I) - a Fund can't start a session without an account attached.</p>
+          <h3>Running multiple Funds and accounts</h3>
+          <p>Every Trading Session belongs to exactly one Fund and trades through that Fund's attached broker account. Mission Control's Fund selector lets you view any Fund's own performance at any time. Different Funds can be attached to entirely different Pocket Option accounts - a Demo account for one, a Live account for another, or two separate Live accounts - and AXIM keeps their browser sessions, balances, and history fully isolated from each other. Different Funds can each run their own trading session <em>at the same time</em>, as long as they trade through different broker accounts - the same account can still only run one session at once.</p>
+          <h3>A Fund's lifetime limits</h3>
+          <p>A Fund's own Profit target/Loss limit/Max trades (in its Settings) are a permanent circuit breaker measured against that Fund's <strong>all-time</strong> realized P/L and trade count - not reset daily, and separate from any individual session's own limits. Breaching one pauses the Fund (visible as a "paused" badge) and stops its active session, and blocks new sessions from starting until you resume it from the Fund's detail view.</p>
         </div>
 
         <div class="guide-section" id="sec-signal-sources">
@@ -111,8 +123,8 @@
           <h3>How profit targets and loss limits work</h3>
           <p>Both are measured against the session's own realized profit/loss, checked after every closed trade. The moment either threshold is crossed, the session stops itself - no manual intervention needed. A limit of 0 means "no limit."</p>
           <h3>Why AXIM stops when it does</h3>
-          <p>Every session ends for exactly one of these reasons, always visible in its history: the profit target was reached, the loss limit was breached, the max trade count was reached, you stopped it manually, or an Emergency Stop was triggered.</p>
-          <p class="muted">Known limitation: only one session can be active across your whole AXIM installation at a time, even if you have multiple Funds - see Section C.</p>
+          <p>Every session ends for exactly one of these reasons, always visible in its history: the profit target was reached, the loss limit was breached, the max trade count was reached, its Fund's own lifetime limit was breached, you stopped it manually, or an Emergency Stop was triggered.</p>
+          <p class="muted">Different Funds can each have their own active session running at the same time, as long as they use different broker accounts - see Section C. The same broker account can still only run one session at once.</p>
         </div>
 
         <div class="guide-section" id="sec-risk-engine">
@@ -157,24 +169,30 @@
           <h2>Connections (Telegram &amp; Pocket Option)</h2>
           <h3>Telegram status</h3>
           <p>Shown on Mission Control's status line. If it says "Reconnecting," AXIM is re-establishing its connection automatically - this is normal and usually resolves within a minute.</p>
-          <h3>Pocket Option status</h3>
-          <p>Visible on the Broker page: Connected, Reconnecting, or Not Connected, plus your current account mode (Demo or Live).</p>
+          <h3>Pocket Option accounts</h3>
+          <p>The Broker page lists every Pocket Option account you've added, each with its own status (Connected, Reconnecting, or Not Connected) and mode badge (Demo, Live, or Both). You can add more than one - useful for running a Demo and a Live account side by side, or separating two Live accounts entirely.</p>
+          <h3>Adding a new account</h3>
+          <p>On the Broker page, click <strong>Add Pocket Option Account</strong>, give it a name, and choose its mode (Demo only, Live only, or Both). AXIM never asks for your Pocket Option password in its own forms - after the account is created, click <strong>Connect</strong> to open a real browser window and log in there directly, the same as you would on pocketoption.com.</p>
+          <h3>Attaching an account to a Fund</h3>
+          <p>A newly added account isn't used for anything until it's attached to a Fund - do that from the Fund's detail view (see Section C). One account can be attached to more than one Fund, but each Fund trades through a single primary account at a time.</p>
           <h3>Reconnecting</h3>
-          <p>If a connection seems stuck, use the Reconnect button on the Broker page - it restarts AXIM's background service cleanly. Clear Session (also on Broker) deletes your saved Pocket Option login if you need to log in fresh; it's a more drastic step and asks for confirmation.</p>
+          <p>If a connection seems stuck, use that account's Reconnect button on the Broker page - it restarts AXIM's background service cleanly for that account. Clear Session (also on Broker) deletes the saved Pocket Option login for that account if you need to log in fresh; it's a more drastic step and asks for confirmation.</p>
         </div>
 
         <div class="guide-section" id="sec-safety">
           <div class="section-kicker">J</div>
           <h2>Safety</h2>
           <h3>Demo vs. Live</h3>
-          <p>Your account mode is set outside the app (in configuration) and shown everywhere as a badge - blue for Demo, red for Live. AXIM will not let a session claim to be Live while actually connected to Demo, or vice versa.</p>
+          <p>Every Pocket Option account has its own mode badge - blue for Demo, red for Live (or a Both badge if it supports switching). Going Live requires two separate switches to agree: the broker account's own Live toggle, and the attached Fund's "Allow this Fund to trade Live" checkbox. If either one is off, that Fund cannot place Live trades, even if the other is on - a deliberate double-confirmation so Live trading is never a one-click accident.</p>
+          <h3>Avoiding the wrong account</h3>
+          <p>Because Funds can be attached to different Pocket Option accounts, always check which account a Fund is using before starting a session - the Fund's detail view and the session-start screen both show the attached account's name and mode. The Broker page also shows a red warning banner on any account currently connected in Live mode, and a live/demo mode badge next to every account in the list, so a Live account is never visually mistaken for a Demo one.</p>
           <h3>Risk confirmation</h3>
           <p>Starting a session on a Live account requires you to type a confirmation phrase - a deliberate extra step so real-money trading is never started by accident.</p>
           <p>Separately, a session's "Require confirmation before each trade in Live mode" checkbox (Section E) gates every individual trade, not just the session start: when on, AXIM pauses before placing each Live trade and shows a popup - visible from any page - with the signal's asset, direction, and amount, and Confirm/Reject buttons with a live countdown. If nobody responds within the timeout, the trade is automatically rejected - it never silently proceeds unanswered. This never applies to Demo trades.</p>
           <h3>Emergency Stop</h3>
           <p>See Section B - available to any logged-in user, halts everything immediately.</p>
           <h3>Loss limits</h3>
-          <p>Set at the session level (Section E) and, going forward, at the Fund level (Section C) - both are real, enforced stop conditions, not just a display number.</p>
+          <p>Set at two levels, both real and enforced, not just display numbers. A session's own profit target/loss limit/max trades (Section E) reset every time you start a new session. A Fund's profit target/loss limit/max trades (Section C) are a lifetime circuit breaker measured against that Fund's all-time realized P/L and trade count - breaching one pauses the Fund and stops its active session, blocking new ones until you resume it.</p>
           <h3>Backtesting disclaimer</h3>
           <p>Repeated deliberately: past results do not guarantee future results. See Section G.</p>
         </div>

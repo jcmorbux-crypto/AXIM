@@ -2,23 +2,24 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Risk Engine - AXIM</title>
+<title>Risk Engine - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
   .template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
   .template-card {
     background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
-    padding: 14px; cursor: pointer; transition: border-color 0.1s;
+    padding: 14px; cursor: pointer; transition: border-color 0.15s var(--ease), transform 0.15s var(--ease), box-shadow 0.15s var(--ease);
   }
-  .template-card:hover { border-color: var(--blue); }
-  .template-card h4 { margin: 0 0 6px 0; font-size: 13.5px; }
+  .template-card:hover { border-color: var(--blue); transform: translateY(-2px); box-shadow: var(--shadow); }
+  .template-card h4 { margin: 0 0 6px 0; font-size: 13.5px; font-weight: 600; }
   .template-card p { margin: 0; font-size: 12px; color: var(--text-dim); line-height: 1.4; }
   .profile-list-item {
     display: flex; justify-content: space-between; align-items: center;
     padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer;
+    transition: background 0.12s var(--ease), transform 0.12s var(--ease);
   }
-  .profile-list-item:hover { background: var(--surface); }
+  .profile-list-item:hover { background: var(--surface); transform: translateX(2px); }
   .profile-list-item.active { background: var(--blue-soft); }
   .sizing-field { display: none; }
   .sizing-field.visible { display: block; }
@@ -62,15 +63,12 @@
           </div>
         </div>
 
-        <div class="section-title">Basic Info</div>
         <div class="row">
           <div class="field" style="flex:2;"><label>Name</label><input type="text" id="p-name"></div>
           <div class="field" style="flex:1;"><label>Bankroll ($)</label><input type="number" id="p-bankroll" step="0.01"></div>
         </div>
-        <div class="field"><label>Description</label><input type="text" id="p-description"></div>
 
-        <div class="section-title">Position Sizing</div>
-        <div class="field"><label>Sizing mode</label>
+        <div class="field"><label>Trade sizing</label>
           <select id="p-sizing-mode" onchange="onSizingModeChange()">
             <option value="fixed">Fixed amount</option>
             <option value="percent">Percent of bankroll (static)</option>
@@ -88,81 +86,90 @@
           </div>
         </div>
 
-        <div class="section-title">Limits</div>
         <div class="row">
-          <div class="field"><label>Max trade ($, 0=off)</label><input type="number" id="p-max-trade" step="0.01"></div>
-          <div class="field"><label>Max daily loss ($, 0=off)</label><input type="number" id="p-max-daily-loss" step="0.01"></div>
-          <div class="field"><label>Max session loss ($, 0=off)</label><input type="number" id="p-max-session-loss" step="0.01"></div>
+          <div class="field"><label>Profit goal ($, 0=off)</label><input type="number" id="p-profit-target" step="0.01"></div>
+          <div class="field"><label>Loss limit ($, 0=off)</label><input type="number" id="p-max-session-loss" step="0.01"></div>
+          <div class="field"><label>Max per trade ($, 0=off)</label><input type="number" id="p-max-trade" step="0.01"></div>
         </div>
-        <div class="row">
-          <div class="field"><label>Profit target ($, 0=off)</label><input type="number" id="p-profit-target" step="0.01"></div>
-          <div class="field"><label>Max trades (0=off)</label><input type="number" id="p-max-trades"></div>
-          <div class="field"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="p-live-allowed" style="width:auto;"> Live trading allowed</label></div>
-        </div>
-        <button class="primary" onclick="saveBasic()">Save Basic Info</button>
+        <button class="primary" onclick="saveBasic()">Save</button>
         <span id="basic-save-status" class="muted"></span>
 
-        <div class="section-title">Martingale</div>
-        <div class="row"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="m-enabled" style="width:auto;"> Enabled</label></div>
-        <div class="row">
-          <div class="field"><label>Max steps</label><input type="number" id="m-max-steps"></div>
-          <div class="field"><label>Multiplier</label><input type="number" id="m-multiplier" step="0.1"></div>
-          <div class="field"><label>Max total exposure ($, 0=off)</label><input type="number" id="m-max-exposure" step="0.01"></div>
-        </div>
-        <div class="field"><label>Custom ladder (JSON array, optional - overrides multiplier)</label><input type="text" id="m-ladder" placeholder="[10, 22, 48, 105]"></div>
-        <div class="row">
-          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-reset-win" style="width:auto;"> Reset after win</label>
-          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-reset-session" style="width:auto;"> Reset after session</label>
-          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-same-asset" style="width:auto;"> Same asset only</label>
-          <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-same-source" style="width:auto;"> Same source only</label>
-        </div>
-        <div class="row">
-          <button class="primary" onclick="saveMartingale()">Save Martingale</button>
-          <button onclick="previewExposure()">Preview Projected Exposure</button>
-          <span id="martingale-save-status" class="muted"></span>
-        </div>
-        <div class="ladder-preview" id="exposure-preview"></div>
+        <details class="advanced-toggle">
+          <summary>Advanced <span class="hint">Martingale, Compounding, Vault, Kelly automation</span></summary>
+          <div class="advanced-toggle-body">
 
-        <div class="section-title">Compounding</div>
-        <div class="field"><label>Mode</label>
-          <select id="c-mode">
-            <option value="disabled">Disabled</option>
-            <option value="every_win">Every win</option>
-            <option value="daily">Daily</option>
-            <option value="weekly">Weekly</option>
-            <option value="target_based">Target-based</option>
-            <option value="milestone_based">Milestone-based</option>
-            <option value="smart">Smart</option>
-          </select>
-        </div>
-        <div class="row">
-          <div class="field"><label>Base risk (%)</label><input type="number" id="c-base-risk" step="0.01"></div>
-          <div class="field"><label>Max risk (%, 0=off)</label><input type="number" id="c-max-risk" step="0.01"></div>
-          <div class="field"><label>Min risk (%, 0=off)</label><input type="number" id="c-min-risk" step="0.01"></div>
-          <div class="field"><label>Drawdown reset (%, 0=off)</label><input type="number" id="c-drawdown-reset" step="0.01"></div>
-        </div>
-        <div class="field"><label>Profit-milestone steps (JSON array)</label>
-          <input type="text" id="c-steps" placeholder='[{"profit_threshold":50,"risk_percent":2.25},{"profit_threshold":100,"risk_percent":2.5}]'>
-        </div>
-        <button class="primary" onclick="saveCompounding()">Save Compounding</button>
-        <span id="compounding-save-status" class="muted"></span>
+            <div class="row">
+              <div class="field"><label>Max daily loss ($, 0=off)</label><input type="number" id="p-max-daily-loss" step="0.01"></div>
+              <div class="field"><label>Max trades (0=off)</label><input type="number" id="p-max-trades"></div>
+              <div class="field"><label style="display:flex; align-items:center; gap:8px; margin-top:22px;"><input type="checkbox" id="p-live-allowed" style="width:auto;"> Live trading allowed</label></div>
+            </div>
+            <div class="field"><label>Description</label><input type="text" id="p-description"></div>
+            <button class="subtle" onclick="saveBasic()">Save Additional Limits</button>
 
-        <div class="section-title">Profit Vault</div>
-        <div class="row"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="v-enabled" style="width:auto;"> Enabled</label></div>
-        <div class="row">
-          <div class="field"><label>Vault percent (%)</label><input type="number" id="v-percent" step="0.01"></div>
-          <div class="field"><label>Trigger</label>
-            <select id="v-trigger">
-              <option value="every_winning_session">Every winning session</option>
-              <option value="daily_target">Daily target reached</option>
-              <option value="weekly_target">Weekly target reached</option>
-              <option value="milestone_based">Bankroll milestone</option>
-            </select>
+            <div class="section-title">Martingale</div>
+            <div class="row"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="m-enabled" style="width:auto;"> Enabled</label></div>
+            <div class="row">
+              <div class="field"><label>Max steps</label><input type="number" id="m-max-steps"></div>
+              <div class="field"><label>Multiplier</label><input type="number" id="m-multiplier" step="0.1"></div>
+              <div class="field"><label>Max total exposure ($, 0=off)</label><input type="number" id="m-max-exposure" step="0.01"></div>
+            </div>
+            <div class="field"><label>Custom ladder (JSON array, optional - overrides multiplier)</label><input type="text" id="m-ladder" placeholder="[10, 22, 48, 105]"></div>
+            <div class="row">
+              <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-reset-win" style="width:auto;"> Reset after win</label>
+              <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-reset-session" style="width:auto;"> Reset after session</label>
+              <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-same-asset" style="width:auto;"> Same asset only</label>
+              <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-same-source" style="width:auto;"> Same source only</label>
+            </div>
+            <div class="row">
+              <button class="primary" onclick="saveMartingale()">Save Martingale</button>
+              <button onclick="previewExposure()">Preview Projected Exposure</button>
+              <span id="martingale-save-status" class="muted"></span>
+            </div>
+            <div class="ladder-preview" id="exposure-preview"></div>
+
+            <div class="section-title">Compounding</div>
+            <div class="field"><label>Mode</label>
+              <select id="c-mode">
+                <option value="disabled">Disabled</option>
+                <option value="every_win">Every win</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+                <option value="target_based">Target-based</option>
+                <option value="milestone_based">Milestone-based</option>
+                <option value="smart">Smart</option>
+              </select>
+            </div>
+            <div class="row">
+              <div class="field"><label>Base risk (%)</label><input type="number" id="c-base-risk" step="0.01"></div>
+              <div class="field"><label>Max risk (%, 0=off)</label><input type="number" id="c-max-risk" step="0.01"></div>
+              <div class="field"><label>Min risk (%, 0=off)</label><input type="number" id="c-min-risk" step="0.01"></div>
+              <div class="field"><label>Drawdown reset (%, 0=off)</label><input type="number" id="c-drawdown-reset" step="0.01"></div>
+            </div>
+            <div class="field"><label>Profit-milestone steps (JSON array)</label>
+              <input type="text" id="c-steps" placeholder='[{"profit_threshold":50,"risk_percent":2.25},{"profit_threshold":100,"risk_percent":2.5}]'>
+            </div>
+            <button class="primary" onclick="saveCompounding()">Save Compounding</button>
+            <span id="compounding-save-status" class="muted"></span>
+
+            <div class="section-title">Profit Vault</div>
+            <div class="row"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="v-enabled" style="width:auto;"> Enabled</label></div>
+            <div class="row">
+              <div class="field"><label>Vault percent (%)</label><input type="number" id="v-percent" step="0.01"></div>
+              <div class="field"><label>Trigger</label>
+                <select id="v-trigger">
+                  <option value="every_winning_session">Every winning session</option>
+                  <option value="daily_target">Daily target reached</option>
+                  <option value="weekly_target">Weekly target reached</option>
+                  <option value="milestone_based">Bankroll milestone</option>
+                </select>
+              </div>
+              <div class="field"><label>Milestone amount ($)</label><input type="number" id="v-milestone" step="0.01"></div>
+            </div>
+            <button class="primary" onclick="saveVault()">Save Profit Vault</button>
+            <span id="vault-save-status" class="muted"></span>
+
           </div>
-          <div class="field"><label>Milestone amount ($)</label><input type="number" id="v-milestone" step="0.01"></div>
-        </div>
-        <button class="primary" onclick="saveVault()">Save Profit Vault</button>
-        <span id="vault-save-status" class="muted"></span>
+        </details>
       </div>
 
       <div class="card solid" id="empty-state">

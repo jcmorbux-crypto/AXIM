@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AXIM</title>
+<title>AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -28,7 +28,9 @@
     display: flex; align-items: center; justify-content: center;
     color: white; font-weight: 700; font-size: 15px;
   }
-  .auth-logo .name { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  .auth-logo .wordmark { display: flex; flex-direction: column; line-height: 1.15; }
+  .auth-logo .wordmark-primary { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
+  .auth-logo .wordmark-secondary { font-weight: 500; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); }
   h1 { font-size: 18px; margin: 0 0 4px 0; font-weight: 650; }
   .auth-subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 22px; }
   .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); margin-bottom: 16px; }
@@ -42,7 +44,7 @@
 <body>
 
 <div class="auth-card">
-  <div class="auth-logo"><span class="mark">A</span><span class="name">AXIM</span></div>
+  <div class="auth-logo"><span class="mark">A</span><span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">TradeStation</span></span></div>
 
   <div id="bootstrap-view" style="display:none;">
     <h1>Create your Owner account</h1>
@@ -63,7 +65,7 @@
 
   <div id="login-view" style="display:none;">
     <h1>Sign in</h1>
-    <div class="auth-subtitle">Welcome back to AXIM.</div>
+    <div class="auth-subtitle">Welcome back to AXIM TradeStation.</div>
     <div id="login-error" class="banner danger" style="display:none;"></div>
     <form id="login-form">
       <div class="field">
@@ -80,7 +82,24 @@
       <button type="submit" class="primary" style="width:100%;">Sign In</button>
     </form>
     <div style="margin-top:12px; text-align:center;">
-      <a href="#" style="font-size:12.5px; color:var(--text-faint);" onclick="alert('Password reset isn\'t wired up yet - ask your Owner/Admin to reset it from Users / Access.'); return false;">Forgot password?</a>
+      <a href="#" id="forgot-password-link" style="font-size:12.5px; color:var(--text-faint);" onclick="showForgot(); return false;">Forgot password?</a>
+    </div>
+  </div>
+
+  <div id="forgot-view" style="display:none;">
+    <h1>Reset your password</h1>
+    <div class="auth-subtitle">Enter your email and we'll send you a reset link.</div>
+    <div id="forgot-error" class="banner danger" style="display:none;"></div>
+    <div id="forgot-success" class="banner" style="display:none; background:var(--green-soft); color:var(--green);"></div>
+    <form id="forgot-form">
+      <div class="field">
+        <label>Email</label>
+        <input type="email" id="forgot-email" required autocomplete="email">
+      </div>
+      <button type="submit" class="primary" style="width:100%;">Send Reset Link</button>
+    </form>
+    <div style="margin-top:12px; text-align:center;">
+      <a href="#" style="font-size:12.5px; color:var(--text-faint);" onclick="show('login-view'); return false;">Back to sign in</a>
     </div>
   </div>
 
@@ -92,7 +111,7 @@
   </div>
 
   <div class="auth-footer">
-    <span>AXIM <span id="version-tag">&nbsp;</span></span>
+    <span>AXIM TradeStation <span id="version-tag">&nbsp;</span></span>
     <span>Local build</span>
   </div>
 </div>
@@ -116,9 +135,17 @@ async function doLogout() {
 }
 
 function show(viewId) {
-  ["bootstrap-view", "login-view", "waiting-view"].forEach(id => {
+  ["bootstrap-view", "login-view", "forgot-view", "waiting-view"].forEach(id => {
     document.getElementById(id).style.display = id === viewId ? "block" : "none";
   });
+}
+
+function showForgot() {
+  document.getElementById("forgot-error").style.display = "none";
+  document.getElementById("forgot-success").style.display = "none";
+  document.getElementById("forgot-form").style.display = "block";
+  document.getElementById("forgot-email").value = "";
+  show("forgot-view");
 }
 
 async function boot() {
@@ -186,6 +213,27 @@ document.getElementById("login-form").addEventListener("submit", async (e) => {
   } catch (err) {
     banner.textContent = err.message;
     banner.style.display = "block";
+  }
+});
+
+document.getElementById("forgot-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const errorBanner = document.getElementById("forgot-error");
+  const successBanner = document.getElementById("forgot-success");
+  errorBanner.style.display = "none";
+  successBanner.style.display = "none";
+  try {
+    const result = await fetchJSON("/api/auth/forgot-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: document.getElementById("forgot-email").value }),
+    });
+    successBanner.textContent = result.message;
+    successBanner.style.display = "block";
+    document.getElementById("forgot-form").style.display = "none";
+  } catch (err) {
+    errorBanner.textContent = err.message;
+    errorBanner.style.display = "block";
   }
 });
 

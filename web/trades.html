@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Trade Center - AXIM</title>
+<title>Trade Center - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -110,6 +110,21 @@ function resultBadge(status) {
   return `<span class="badge info">${escapeHtml(status || "-")}</span>`;
 }
 
+// Raw result strings can be internal exception text (selector failures,
+// stack-trace-flavored messages) - never shown to a non-developer user,
+// same discipline as Broker page's test-trade JSON detail. Plain
+// win/loss/draw and a clean rejected:<reason> label are fine for
+// everyone; anything else collapses to a human phrase unless Developer
+// Mode is on.
+function humanizeResult(result) {
+  if (!result) return "-";
+  if (["win", "loss", "draw"].includes(result)) return result;
+  if (developerModeEnabled) return result;
+  if (result.startsWith("rejected:")) return "Rejected (" + result.slice(9).replace(/_/g, " ") + ")";
+  if (result.startsWith("error:")) return "Execution error";
+  return result;
+}
+
 async function refreshTrades() {
   const tbody = document.getElementById("trades-body");
   try {
@@ -127,7 +142,7 @@ async function refreshTrades() {
         <td>${t.trade_amount !== null && t.trade_amount !== undefined ? "$" + t.trade_amount : "-"}</td>
         <td>${escapeHtml(t.timeframe || "-")}</td>
         <td>${resultBadge(t.execution_status)}</td>
-        <td class="result-cell">${escapeHtml(t.result || "-")}</td>
+        <td class="result-cell">${escapeHtml(humanizeResult(t.result))}</td>
         <td class="${plClass(t.profit_loss)}">${t.profit_loss !== null ? fmtMoney(t.profit_loss) : "-"}</td>
         <td class="muted">${t.session_id ? "#" + t.session_id : "-"}</td>
       </tr>
@@ -183,9 +198,9 @@ async function openDetail(tradeId) {
       <div class="stat-row"><span class="stat-label">P/L</span><span class="stat-value ${plClass(t.profit_loss)}">${t.profit_loss !== null ? fmtMoney(t.profit_loss) : "-"}</span></div>
       <div class="stat-row"><span class="stat-label">Payout</span><span class="stat-value">${t.payout !== null && t.payout !== undefined ? t.payout + "%" : "-"}</span></div>
       <div class="stat-label" style="margin-top:8px; margin-bottom:4px;">Result detail</div>
-      ${resultIsLong
+      ${resultIsLong && developerModeEnabled
         ? `<pre class="result-detail">${escapeHtml(t.result)}</pre>`
-        : `<div class="stat-value">${escapeHtml(t.result || "-")}</div>`}
+        : `<div class="stat-value">${escapeHtml(humanizeResult(t.result))}</div>`}
     `;
 
     const shotsEl = document.getElementById("detail-screenshots");
@@ -217,6 +232,10 @@ function showScreenshot(url) {
   } catch (e) {}
   refreshTrades();
   setInterval(refreshTrades, 10000);
+  AximShell.subscribeEvents({
+    "trade.prepared": { onEvent: refreshTrades, onResync: refreshTrades },
+    "trade.closed": { onEvent: refreshTrades, onResync: refreshTrades },
+  });
 })();
 </script>
 </body>

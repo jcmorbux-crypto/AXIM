@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Setup - AXIM</title>
+<title>Setup - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -26,7 +26,7 @@
 <body>
 
 <div class="wizard-shell">
-  <div class="wizard-logo"><span class="mark">A</span><span class="name">AXIM Setup</span></div>
+  <div class="wizard-logo"><span class="mark">A</span><span class="name">AXIM TradeStation Setup</span></div>
   <div class="step-track" id="step-track"></div>
 
   <div class="wizard-card">
@@ -41,7 +41,7 @@
 <script>
 const STEP_NAMES = ["Owner Account", "Telegram", "Pocket Option", "Risk Profile", "Channels", "Session", "Demo Test", "Ready"];
 let currentStep = 0;
-let wizardState = { channelIds: [], riskProfileId: null };
+let wizardState = { channelIds: [], riskProfileId: null, brokerAccountId: null };
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, { credentials: "same-origin", ...opts });
@@ -60,6 +60,80 @@ function renderTrack() {
   document.getElementById("step-track").innerHTML = STEP_NAMES.map((_, i) =>
     `<div class="step-dot ${i < currentStep ? "done" : i === currentStep ? "current" : ""}"></div>`
   ).join("");
+}
+
+const CONNECTION_BADGE = { connected: "on", connecting: "warn", disconnected: "off", error: "danger" };
+
+async function renderBrokerAccountStep() {
+  const content = document.getElementById("step-content");
+  const accounts = await fetchJSON("/api/broker-accounts");
+  if (accounts.length && wizardState.brokerAccountId === null) {
+    // A fresh listener/telegram connect earlier in the wizard, or a
+    // second run, may already have an account - default to it rather
+    // than making the user re-pick one that's sitting right there.
+    wizardState.brokerAccountId = accounts[0].id;
+  }
+  content.innerHTML = `
+    <h2>Connect a Pocket Option account</h2>
+    <div class="wizard-subtitle">AXIM never asks for your Pocket Option password here - you log in through a real browser window that opens when you click Connect.</div>
+    ${accounts.length ? accounts.map(a => `
+      <div class="channel-item">
+        <input type="radio" name="w-broker-account" value="${a.id}" id="w-acct-${a.id}"
+          ${wizardState.brokerAccountId === a.id ? "checked" : ""} onchange="wizardState.brokerAccountId = ${a.id}" style="width:auto;">
+        <label for="w-acct-${a.id}" style="flex:1;">${escapeHtml(a.name)} <span class="badge off">${a.mode}</span></label>
+        <span class="badge ${CONNECTION_BADGE[a.connection_status] || "off"}">${a.connection_status}</span>
+        ${a.connection_status === "connected" ? "" : `<button class="subtle" onclick="connectWizardBrokerAccount(${a.id})" ${a.connection_status === "connecting" ? "disabled" : ""}>${a.connection_status === "connecting" ? "Connecting..." : "Connect"}</button>`}
+      </div>
+    `).join("") : '<div class="empty">No accounts yet - add one below.</div>'}
+    <div class="row" style="margin-top:14px; gap:8px;">
+      <input type="text" id="w-new-acct-name" placeholder="Account name, e.g. Pocket Option Demo" style="flex:2;">
+      <select id="w-new-acct-mode" style="flex:1;">
+        <option value="demo">Demo</option>
+        <option value="live">Live</option>
+        <option value="both">Both</option>
+      </select>
+      <button id="w-add-acct-btn" onclick="createWizardBrokerAccount()">Add</button>
+    </div>
+    <div id="w-broker-error" class="banner danger" style="display:none; margin-top:10px;"></div>
+    <div class="muted" style="margin-top:12px; font-size:12px;">You can skip this and connect an account later from the Broker page - but a Fund can't start a session without one attached.</div>
+  `;
+}
+
+async function createWizardBrokerAccount() {
+  const nameEl = document.getElementById("w-new-acct-name");
+  const errEl = document.getElementById("w-broker-error");
+  errEl.style.display = "none";
+  if (!nameEl.value.trim()) { errEl.textContent = "Enter a name for the account."; errEl.style.display = "block"; return; }
+  try {
+    const account = await fetchJSON("/api/broker-accounts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: nameEl.value.trim(), mode: document.getElementById("w-new-acct-mode").value }),
+    });
+    wizardState.brokerAccountId = account.id;
+    await renderBrokerAccountStep();
+  } catch (e) {
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  }
+}
+
+async function connectWizardBrokerAccount(id) {
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}/connect`, { method: "POST" });
+    await renderBrokerAccountStep();
+    let ticks = 0;
+    const poll = setInterval(async () => {
+      ticks += 1;
+      if (currentStep !== 2) { clearInterval(poll); return; }
+      await renderBrokerAccountStep();
+      const account = (await fetchJSON("/api/broker-accounts")).find(a => a.id === id);
+      if (!account || account.connection_status !== "connecting" || ticks > 60) clearInterval(poll);
+    }, 5000);
+  } catch (e) {
+    const errEl = document.getElementById("w-broker-error");
+    errEl.textContent = e.message;
+    errEl.style.display = "block";
+  }
 }
 
 async function renderStep() {
@@ -105,17 +179,7 @@ async function renderStep() {
   }
 
   else if (currentStep === 2) {
-    const status = await fetchJSON("/api/pocket-option/status");
-    const healthy = status.process_running && !status.heartbeat_stale;
-    content.innerHTML = `
-      <h2>Connect Pocket Option</h2>
-      <div class="wizard-subtitle">AXIM needs its trading engine running to place trades.</div>
-      <div class="banner ${healthy ? "info" : "warn"}">
-        ${healthy ? "Running and healthy." : status.process_running ? "Running, waiting for a healthy heartbeat..." : "Not running yet."}
-      </div>
-      <div class="stat-row"><span class="stat-label">Account mode</span><span class="stat-value">${status.account_mode}</span></div>
-      ${!status.process_running ? '<button onclick="startListener()">Start</button><span id="listener-status" class="muted"></span>' : ""}
-    `;
+    await renderBrokerAccountStep();
   }
 
   else if (currentStep === 3) {
@@ -164,6 +228,7 @@ async function renderStep() {
         <div class="field"><label>Max trades</label><input type="number" id="w-max-trades" value="0"></div>
       </div>
       <div class="muted" style="font-size:12px;">You can skip this and start a session later from Trading Sessions.</div>
+      <div id="w-error" class="banner danger" style="display:none; margin-top:10px;"></div>
     `;
   }
 
@@ -184,22 +249,13 @@ async function renderStep() {
 
   else if (currentStep === 7) {
     content.innerHTML = `
-      <h2>AXIM is ready</h2>
+      <h2>AXIM TradeStation is ready</h2>
       <div class="wizard-subtitle">Setup complete. Head to Mission Control to see everything live.</div>
+      ${wizardState.fundCreatedWithoutSession ? `
+        <div class="banner warn">"${escapeHtml(wizardState.fundCreatedWithoutSession)}" was created, but couldn't start a session yet - connect a Pocket Option account and attach it from the Funds page, then start a session from Trading Sessions.</div>
+      ` : ""}
     `;
     nextBtn.textContent = "Go to Mission Control";
-  }
-}
-
-async function startListener() {
-  const statusEl = document.getElementById("listener-status");
-  statusEl.textContent = "starting...";
-  try {
-    await fetchJSON("/api/process/start", { method: "POST" });
-    statusEl.textContent = "started - waiting for heartbeat...";
-    setTimeout(renderStep, 4000);
-  } catch (e) {
-    statusEl.textContent = "failed: " + e.message;
   }
 }
 
@@ -276,17 +332,33 @@ async function goNext() {
           method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: fundName, starting_balance: 0 }),
         });
-        await fetchJSON("/api/sessions/start", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name, channel_ids: wizardState.channelIds,
-            profit_target: parseFloat(document.getElementById("w-profit-target").value) || 0,
-            loss_limit: parseFloat(document.getElementById("w-loss-limit").value) || 0,
-            max_trades: parseInt(document.getElementById("w-max-trades").value, 10) || 0,
-            risk_profile_id: wizardState.riskProfileId,
-            fund_id: fund.fund.id,
-          }),
-        });
+        if (wizardState.brokerAccountId) {
+          await fetchJSON(`/api/funds/${fund.fund.id}/broker-account`, {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ broker_account_id: wizardState.brokerAccountId, is_primary: true }),
+          });
+        }
+        try {
+          await fetchJSON("/api/sessions/start", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name, channel_ids: wizardState.channelIds,
+              profit_target: parseFloat(document.getElementById("w-profit-target").value) || 0,
+              loss_limit: parseFloat(document.getElementById("w-loss-limit").value) || 0,
+              max_trades: parseInt(document.getElementById("w-max-trades").value, 10) || 0,
+              risk_profile_id: wizardState.riskProfileId,
+              fund_id: fund.fund.id,
+            }),
+          });
+        } catch (e) {
+          // No broker account attached/connected yet is expected and
+          // non-fatal here - the wizard explicitly says starting a
+          // session is optional ("you can skip this"). The Fund itself
+          // was created successfully; don't block finishing the wizard
+          // over a step the user already had the option to skip.
+          if (e.status !== 409) throw e;
+          wizardState.fundCreatedWithoutSession = fund.fund.name;
+        }
       }
     } else if (currentStep === 7) {
       window.location.href = "/dashboard";

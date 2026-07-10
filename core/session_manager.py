@@ -51,7 +51,21 @@ class TradeNotConfirmed(Exception):
 
 
 def get_active_session():
+    """Newest active session app-wide - kept for callers that genuinely
+    want the single-session fallback (e.g. a rule with no fund_id yet).
+    Signal routing should use get_active_session_for_channel instead,
+    since more than one session can be active at once."""
     return database.get_active_trading_session()
+
+
+def get_active_session_for_channel(channel_row):
+    """The active session (if any) that actually covers this channel -
+    the correct scoping now that different Funds can each have their own
+    concurrently active session. Different from get_active_session,
+    which would only ever see the most-recently-started one."""
+    if channel_row is None:
+        return None
+    return database.get_active_trading_session_for_channel(channel_row["id"])
 
 
 def channel_in_session(session, channel_row):
@@ -66,9 +80,12 @@ def end_session(session_id, status, reason=None):
     """The ONE path every session-ending call should go through (manual
     stop, emergency stop, and every check_session_limits breach below) -
     centralizes the Profit Vault's "every winning session" trigger here
-    rather than duplicating it at each call site."""
+    rather than duplicating it at each call site. Also clears out any
+    session-scoped rules (Rule Builder "this session only" overrides) -
+    they're temporary by design and must not outlive the session."""
     database.stop_trading_session(session_id, status, reason)
     risk_engine.on_session_ended(session_id)
+    database.delete_session_rules(session_id)
 
 
 def check_session_limits(session_id):
@@ -167,6 +184,15 @@ async def _on_trade_closed(payload):
         check_session_limits(session_id)
     except SessionLimitReached as e:
         logger.info("session_manager: trade_id=%s closed session %s: %s", trade_id, session_id, e.reason)
+
+    session = database.get_trading_session(session_id)
+    if session is not None and session["fund_id"] is not None:
+        import fund_manager
+        try:
+            fund_manager.check_fund_limits(session["fund_id"])
+        except fund_manager.FundLimitReached as e:
+            logger.info("session_manager: trade_id=%s closed fund %s: %s", trade_id, session["fund_id"], e.reason)
+
     rule_engine.evaluate_all()
 
 

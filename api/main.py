@@ -7,10 +7,15 @@ core/telegram_listener.py - controls it through shared DB state
 (ui_channels, ui_control_state) and the Windows Scheduled Task, never by
 importing/running the trading engine in this process.
 
-Binds to 127.0.0.1 only - local, single-operator tool, same posture as
-the existing core/dashboard_server.py.
+Binds to 127.0.0.1 only by default - local, single-operator tool, same
+posture as the existing core/dashboard_server.py. Remote access (a
+Remote Client over Tailscale) is opt-in via config/settings.py's
+API_BIND_HOST/API_BIND_PORT/ALLOWED_ORIGINS - see
+docs/AXIM_REMOTE_ACCESS.md. Nothing here is ever exposed to the public
+internet as a default.
 
-Run: python -m uvicorn api.main:app --host 127.0.0.1 --port 8090
+Run: python -m uvicorn api.main:app --host $env:API_BIND_HOST --port $env:API_BIND_PORT
+(scripts/install_api_scheduled_task.ps1 reads the same settings)
 """
 import json
 import re
@@ -31,8 +36,9 @@ sys.path.insert(0, str(PARSERS_DIR))
 
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -48,7 +54,7 @@ from settings import (
     WATCH_CHANNELS, ACCOUNT, MAX_TRADE_AMOUNT, MAX_TRADES_PER_HOUR,
     MAX_CONSECUTIVE_LOSSES, COOLDOWN_AFTER_LOSS_SECONDS,
     DUPLICATE_SIGNAL_WINDOW_SECONDS, MINIMUM_PAYOUT, MAX_DAILY_LOSS,
-    TRADE_AMOUNT,
+    TRADE_AMOUNT, ALLOWED_ORIGINS,
 )
 from logger import get_logger
 
@@ -63,6 +69,9 @@ import rules as rules_module
 import billing_routes as billing_module
 import backtest_routes as backtest_module
 import funds_routes as funds_module
+import broker_accounts_routes as broker_accounts_module
+import notifications as notifications_module
+import event_stream_routes as event_stream_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -96,7 +105,34 @@ logger = get_logger("axim.ui", filename="ui.log")
 database.initialize_database()
 database.seed_risk_profile_templates()
 
-app = FastAPI(title="AXIM Control API")
+app = FastAPI(title="AXIM TradeStation API")
+
+# CORS (docs/AXIM_REMOTE_ACCESS.md) - empty ALLOWED_ORIGINS (the default)
+# means no cross-origin browser requests are permitted at all, matching
+# today's local-only behavior exactly. A Remote Client's browser only
+# needs this if it loads the web UI from a different origin than the API
+# itself (e.g. a future separately-hosted dashboard); the desktop Remote
+# Client and same-origin web UI never hit this path. "*" is rejected
+# outright rather than silently ignored - it's incompatible with
+# allow_credentials=True (browsers refuse the combination outright, so a
+# wildcard here would just be a confusing dead setting) and this app's
+# cookie-based sessions require credentials.
+_cors_origins = [o for o in ALLOWED_ORIGINS if o != "*"]
+if "*" in ALLOWED_ORIGINS:
+    logger.warning(
+        "ALLOWED_ORIGINS contains '*' - wildcard origins are incompatible "
+        "with credentialed (cookie) requests and have been ignored. List "
+        "explicit origins instead, e.g. https://your-machine.tailnet-name.ts.net"
+    )
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 app.include_router(auth_module.router)
 app.include_router(admin_module.router)
 app.include_router(telegram_admin_module.router)
@@ -108,6 +144,9 @@ app.include_router(rules_module.router)
 app.include_router(billing_module.router)
 app.include_router(backtest_module.router)
 app.include_router(funds_module.router)
+app.include_router(broker_accounts_module.router)
+app.include_router(notifications_module.router)
+app.include_router(event_stream_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -188,6 +227,11 @@ def login_page():
     return _serve("login.html")
 
 
+@app.get("/reset-password")
+def reset_password_page():
+    return _serve("reset_password.html")
+
+
 @app.get("/dashboard")
 def dashboard_page():
     return _serve("dashboard.html")
@@ -233,9 +277,18 @@ def broker_page():
     return _serve("broker.html")
 
 
+@app.get("/automation")
+def automation_page():
+    return _serve("automation.html")
+
+
 @app.get("/rules")
-def rules_page():
-    return _serve("rules.html")
+def rules_page_redirect(request: Request):
+    """Automation Studio was renamed from "Rule Builder" - keep the old
+    URL working (preserves any existing bookmarks/links) rather than
+    silently 404ing. Forwards the query string (e.g. ?fund=X) unchanged."""
+    suffix = f"?{request.url.query}" if request.url.query else ""
+    return RedirectResponse(url=f"/automation{suffix}")
 
 
 @app.get("/billing")
@@ -271,14 +324,6 @@ def settings_page():
 @app.get("/wizard")
 def wizard_page():
     return _serve("wizard.html")
-
-
-@app.get("/legacy")
-def legacy_page():
-    """The original dark-theme single-page control UI - kept reachable
-    (not deleted) while its panels are migrated into the new light-theme
-    per-page structure (docs/AXIM_UI_PLAN.md)."""
-    return _serve("index.html")
 
 
 @app.get("/api/channels")

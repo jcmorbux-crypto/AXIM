@@ -1,8 +1,16 @@
 """Authentication routes and RBAC dependencies for the AXIM control API.
 
-Cookie-based sessions (httpOnly, SameSite=Lax) - this is a local-first
-app served over http://127.0.0.1 today, so no Secure flag; revisit if/when
-this is ever served over anything but localhost (docs/AXIM_APP_PLAN.md).
+Two parallel auth transports share one underlying session model
+(core/database.py's auth_sessions table / core/auth.py's token hashing):
+cookie-based sessions (httpOnly, SameSite=Lax, Secure whenever the actual
+request came in over HTTPS - see _request_is_https() and
+docs/AXIM_REMOTE_ACCESS.md) for the local web UI, and an
+`Authorization: Bearer <token>` header for Remote Clients (a laptop over
+Tailscale, and eventually native mobile/tablet apps) that don't want
+cookie-jar/CORS semantics. Both resolve through the exact same
+get_current_user() - a request carrying either is authenticated
+identically; the header is checked first, cookie is the fallback, so an
+unrelated/expired cookie never shadows a valid token.
 """
 import sys
 from pathlib import Path
@@ -10,18 +18,23 @@ from pathlib import Path
 API_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = API_DIR.parent
 CORE_DIR = PROJECT_ROOT / "core"
+CONFIG_DIR = PROJECT_ROOT / "config"
 sys.path.insert(0, str(CORE_DIR))
+sys.path.insert(0, str(CONFIG_DIR))
 
 from typing import Optional
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Response
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response
 from pydantic import BaseModel
 
 import database
+import email_sender
+from settings import APP_BASE_URL
 
 SESSION_COOKIE = "axim_session"
 REMEMBER_ME_HOURS = 720  # 30 days
 DEFAULT_SESSION_HOURS = 12
+_VALID_CLIENT_TYPES = {"web", "desktop", "mobile", "tablet", "api"}
 
 # access_states that must never be allowed to authenticate at all, even
 # with the correct password - "pending_approval" is deliberately NOT in
@@ -32,19 +45,48 @@ _BLOCKED_ACCESS_STATES = {"disabled", "suspended", "expired"}
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
+def _request_is_https(request: Request) -> bool:
+    """Whether to set the Secure cookie flag - tied to the actual request
+    scheme, not the server's bind host, so a Tailscale/reverse-proxy setup
+    that terminates TLS in front of a plain-HTTP local process (e.g.
+    `tailscale serve`) still gets Secure cookies, and a misconfigured bind
+    host can't silently ship a cookie over plaintext. X-Forwarded-Proto is
+    trusted here because it's only ever meaningful behind a proxy the
+    operator themselves put in front of AXIM (Tailscale serve, or a future
+    hosted reverse proxy) - there is no untrusted intermediary in this
+    deployment model that could spoof it to our advantage."""
+    if request.url.scheme == "https":
+        return True
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    return forwarded_proto.split(",")[0].strip().lower() == "https"
+
+
 class BootstrapOwnerRequest(BaseModel):
     email: str
     password: str
+    client_name: Optional[str] = None
+    client_type: str = "web"
 
 
 class LoginRequest(BaseModel):
     email: str
     password: str
     remember_me: bool = False
+    client_name: Optional[str] = None
+    client_type: str = "web"
 
 
 class ChangePasswordRequest(BaseModel):
     current_password: str
+    new_password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+
+class ResetPasswordRequest(BaseModel):
+    token: str
     new_password: str
 
 
@@ -63,10 +105,21 @@ def public_user(user):
     }
 
 
-def get_current_user(axim_session: Optional[str] = Cookie(default=None)):
-    if not axim_session:
+def _extract_bearer_token(authorization):
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    return authorization[len("bearer "):].strip() or None
+
+
+def get_current_user(authorization: Optional[str] = Header(default=None),
+                      axim_session: Optional[str] = Cookie(default=None)):
+    """Header checked before cookie - a Remote Client sending a valid
+    Bearer token must never be shadowed by a stale/unrelated cookie the
+    same request happens to also carry."""
+    raw_token = _extract_bearer_token(authorization) or axim_session
+    if not raw_token:
         raise HTTPException(status_code=401, detail="not authenticated")
-    user = database.get_session_user(axim_session)
+    user = database.get_session_user(raw_token)
     if user is None:
         raise HTTPException(status_code=401, detail="session expired or invalid")
     user = database.check_and_expire_trial(user)
@@ -93,7 +146,7 @@ def bootstrap_status():
 
 
 @router.post("/bootstrap-owner")
-def bootstrap_owner(body: BootstrapOwnerRequest, response: Response):
+def bootstrap_owner(body: BootstrapOwnerRequest, response: Response, request: Request):
     """Creates the very first account as Owner with full access - only
     callable while the users table is empty, so this can't be used to
     mint a second owner later. This is the ONE place a real account gets
@@ -106,20 +159,32 @@ def bootstrap_owner(body: BootstrapOwnerRequest, response: Response):
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="password must be at least 8 characters")
 
+    if body.client_type not in _VALID_CLIENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"invalid client_type: {body.client_type!r}")
+
     user_id = database.create_user(
         body.email, body.password,
         role="owner", access_tier="owner", access_state="active",
     )
     database.update_user(user_id, live_trading_allowed=True)
     database.record_login(user_id)
-    raw_token = database.create_session(user_id, expires_hours=REMEMBER_ME_HOURS)
+    raw_token = database.create_session(user_id, expires_hours=REMEMBER_ME_HOURS,
+                                         client_name=body.client_name, client_type=body.client_type)
     response.set_cookie(SESSION_COOKIE, raw_token, httponly=True, samesite="lax",
-                         max_age=REMEMBER_ME_HOURS * 3600)
-    return public_user(database.get_user_by_id(user_id))
+                         secure=_request_is_https(request), max_age=REMEMBER_ME_HOURS * 3600)
+    # token is always returned alongside the cookie - a browser client
+    # simply ignores it (it already has the cookie), a token-mode Remote
+    # Client stores it and sends it as Authorization: Bearer going
+    # forward. One response shape for both transports, no client_type
+    # branching in the response itself.
+    return {**public_user(database.get_user_by_id(user_id)), "token": raw_token}
 
 
 @router.post("/login")
-def login(body: LoginRequest, response: Response):
+def login(body: LoginRequest, response: Response, request: Request):
+    if body.client_type not in _VALID_CLIENT_TYPES:
+        raise HTTPException(status_code=400, detail=f"invalid client_type: {body.client_type!r}")
+
     user = database.verify_user_credentials(body.email, body.password)
     if user is None:
         raise HTTPException(status_code=401, detail="incorrect email or password")
@@ -129,16 +194,19 @@ def login(body: LoginRequest, response: Response):
 
     database.record_login(user["id"])
     hours = REMEMBER_ME_HOURS if body.remember_me else DEFAULT_SESSION_HOURS
-    raw_token = database.create_session(user["id"], expires_hours=hours)
+    raw_token = database.create_session(user["id"], expires_hours=hours,
+                                         client_name=body.client_name, client_type=body.client_type)
     response.set_cookie(SESSION_COOKIE, raw_token, httponly=True, samesite="lax",
-                         max_age=hours * 3600)
-    return public_user(database.get_user_by_id(user["id"]))
+                         secure=_request_is_https(request), max_age=hours * 3600)
+    return {**public_user(database.get_user_by_id(user["id"])), "token": raw_token}
 
 
 @router.post("/logout")
-def logout(response: Response, axim_session: Optional[str] = Cookie(default=None)):
-    if axim_session:
-        database.delete_session(axim_session)
+def logout(response: Response, authorization: Optional[str] = Header(default=None),
+           axim_session: Optional[str] = Cookie(default=None)):
+    raw_token = _extract_bearer_token(authorization) or axim_session
+    if raw_token:
+        database.delete_session(raw_token)
     response.delete_cookie(SESSION_COOKIE)
     return {"status": "logged_out"}
 
@@ -160,3 +228,64 @@ def change_password(body: ChangePasswordRequest, user=Depends(get_current_user))
         raise HTTPException(status_code=400, detail="new password must be at least 8 characters")
     database.set_user_password(user["id"], body.new_password)
     return {"status": "password changed"}
+
+
+@router.get("/sessions")
+def list_my_sessions(user=Depends(get_current_user)):
+    """The 'Connected Devices' panel's data source - every session
+    belonging to the caller's own account (this browser, a laptop's
+    Remote Client, etc.), never another user's."""
+    return database.list_user_sessions(user["id"])
+
+
+@router.delete("/sessions/{session_id}")
+def revoke_my_session(session_id: int, user=Depends(get_current_user)):
+    """Log out one specific device of the caller's own - scoped to
+    user["id"] so a user can never revoke someone else's session by
+    guessing an id (see database.revoke_session)."""
+    database.revoke_session(session_id, user_id=user["id"])
+    return {"status": "revoked"}
+
+
+_GENERIC_FORGOT_PASSWORD_MESSAGE = "If an account exists for that email, a reset link has been sent."
+
+
+@router.post("/forgot-password")
+def forgot_password(body: ForgotPasswordRequest):
+    """Always returns the same generic message regardless of whether the
+    email has an account - a distinct error/success here would let
+    someone enumerate registered emails. The real per-case difference
+    (no account / SMTP not configured / real send failure) is only ever
+    visible server-side, in the log line email_sender.py already writes."""
+    user = database.get_user_by_email(body.email)
+    if user is not None and user["access_state"] not in _BLOCKED_ACCESS_STATES \
+            and not database.password_reset_recently_requested(user["id"]):
+        raw_token, _ = database.create_password_reset_token(user["id"])
+        reset_url = f"{APP_BASE_URL}/reset-password?token={raw_token}"
+        email_sender.send_password_reset_email(user["email"], reset_url)
+    return {"status": "ok", "message": _GENERIC_FORGOT_PASSWORD_MESSAGE}
+
+
+@router.get("/reset-password/validate")
+def validate_reset_token(token: str):
+    """Read-only check so the reset-password page can tell the user
+    upfront that a link is already used/expired, rather than only
+    discovering it after they've filled out and submitted the form."""
+    user = database.get_valid_password_reset_token(token)
+    return {"valid": user is not None}
+
+
+@router.post("/reset-password")
+def reset_password(body: ResetPasswordRequest):
+    user = database.get_valid_password_reset_token(body.token)
+    if user is None:
+        raise HTTPException(status_code=400, detail="this reset link is invalid or has expired - request a new one")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="password must be at least 8 characters")
+    database.set_user_password(user["id"], body.new_password)
+    database.consume_password_reset_token(body.token)
+    # A reset is a credential-compromise-recovery action - every existing
+    # session (possibly including whatever session an attacker who
+    # triggered this had) must be invalidated, not just the token used.
+    database.revoke_all_sessions(user["id"])
+    return {"status": "password reset"}

@@ -132,7 +132,8 @@ def compute_position_size(session_id, static_default_amount):
         return risk_manager.compute_trade_amount(static_default_amount)
 
     amount = _base_amount(profile, session)
-    amount = _apply_martingale(amount, profile["martingale"], session["current_martingale_step"])
+    if not session["martingale_disabled"]:
+        amount = _apply_martingale(amount, profile["martingale"], session["current_martingale_step"])
 
     if profile["max_trade_amount"] > 0:
         amount = min(amount, profile["max_trade_amount"])

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Broker - AXIM</title>
+<title>Broker - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 </head>
@@ -58,7 +58,45 @@
       </div>
       <div id="test-trade-result" class="muted" style="margin-top:10px; display:none; white-space:pre-wrap;"></div>
     </div>
+
+    <div class="page-header" style="margin-top:8px;">
+      <div>
+        <h2 style="margin-bottom:2px;">Broker Accounts</h2>
+        <div class="subtitle">Each Fund connects to its own Pocket Option account - add and manage them here.</div>
+      </div>
+      <button class="primary" onclick="openAddAccountModal()">Add Pocket Option Account</button>
+    </div>
+
+    <div class="card solid full-width">
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Mode</th><th>Connection</th><th>Balance</th><th>Used by</th><th>Live</th><th></th></tr>
+        </thead>
+        <tbody id="accounts-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+      </table>
+    </div>
   </main>
+</div>
+
+<div class="modal-backdrop" id="add-account-modal">
+  <div class="modal">
+    <h2 style="margin-top:0;">Add Pocket Option Account</h2>
+    <div class="field"><label>Name</label><input type="text" id="acc-name" placeholder="e.g. Main Live Account"></div>
+    <div class="field">
+      <label>Mode</label>
+      <select id="acc-mode">
+        <option value="demo">Demo only</option>
+        <option value="live">Live only</option>
+        <option value="both">Both (demo + live)</option>
+      </select>
+    </div>
+    <div class="muted" style="font-size:11.5px; margin-bottom:14px;">After creating it, click Connect - a real browser window opens for you to log in to this specific Pocket Option account. It closes automatically once login is detected.</div>
+    <div class="row" style="justify-content:flex-end;">
+      <button class="subtle" onclick="closeModal('add-account-modal')">Cancel</button>
+      <button class="primary" onclick="createAccount()">Create</button>
+    </div>
+    <span id="add-account-status" class="muted"></span>
+  </div>
 </div>
 
 <script src="/web/shell.js"></script>
@@ -176,11 +214,127 @@ async function runTestTrade() {
   }
 }
 
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
+
+const CONNECTION_BADGE = {
+  connected: "on", connecting: "warn", disconnected: "off", error: "danger",
+};
+
+async function refreshAccounts() {
+  const body = document.getElementById("accounts-body");
+  let accounts;
+  try {
+    accounts = await fetchJSON("/api/broker-accounts");
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="7" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    return;
+  }
+  if (!accounts.length) {
+    body.innerHTML = '<tr><td colspan="7" class="empty">No broker accounts yet - add one to attach it to a Fund.</td></tr>';
+    return;
+  }
+  body.innerHTML = accounts.map(a => `
+    <tr>
+      <td>${escapeHtml(a.name)}</td>
+      <td><span class="badge off">${a.mode}</span></td>
+      <td><span class="badge ${CONNECTION_BADGE[a.connection_status] || "off"}">${a.connection_status}</span></td>
+      <td>${a.last_balance !== null && a.last_balance !== undefined ? "$" + Number(a.last_balance).toFixed(2) : "-"}</td>
+      <td class="muted">${a.funds.length ? a.funds.map(f => escapeHtml(f.name)).join(", ") : "-"}</td>
+      <td>
+        <input type="checkbox" style="width:auto;" ${a.live_enabled ? "checked" : ""} onchange="toggleLive(${a.id}, this.checked)">
+      </td>
+      <td class="row" style="gap:6px; justify-content:flex-end;">
+        ${a.connection_status === "connected"
+          ? `<button class="subtle" onclick="disconnectAccount(${a.id})">Disconnect</button>`
+          : `<button class="subtle" onclick="connectAccount(${a.id})" ${a.connection_status === "connecting" ? "disabled" : ""}>${a.connection_status === "connecting" ? "Connecting..." : "Connect"}</button>`}
+        <button class="subtle" onclick="archiveAccount(${a.id})">Archive</button>
+      </td>
+    </tr>
+  `).join("");
+}
+
+function openAddAccountModal() {
+  document.getElementById("acc-name").value = "";
+  document.getElementById("acc-mode").value = "demo";
+  document.getElementById("add-account-status").textContent = "";
+  openModal("add-account-modal");
+}
+
+async function createAccount() {
+  const statusEl = document.getElementById("add-account-status");
+  const name = document.getElementById("acc-name").value.trim();
+  if (!name) { statusEl.textContent = "Name is required."; return; }
+  try {
+    await fetchJSON("/api/broker-accounts", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, mode: document.getElementById("acc-mode").value }),
+    });
+    closeModal("add-account-modal");
+    await refreshAccounts();
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+async function connectAccount(id) {
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}/connect`, { method: "POST" });
+    await refreshAccounts();
+    // Poll a little faster than the normal 10s refresh while a connection
+    // attempt is in flight, so "connecting" -> "connected"/"error" shows
+    // up promptly once the operator finishes logging in.
+    let ticks = 0;
+    const poll = setInterval(async () => {
+      ticks += 1;
+      await refreshAccounts();
+      const account = (await fetchJSON("/api/broker-accounts")).find(a => a.id === id);
+      if (!account || account.connection_status !== "connecting" || ticks > 60) clearInterval(poll);
+    }, 5000);
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function disconnectAccount(id) {
+  if (!confirm("Disconnect this broker account? Any Fund using it won't be able to start a session until it's reconnected.")) return;
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}/disconnect`, { method: "POST" });
+    await refreshAccounts();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function archiveAccount(id) {
+  if (!confirm("Archive this broker account?")) return;
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}/archive`, { method: "POST" });
+    await refreshAccounts();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function toggleLive(id, checked) {
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ live_enabled: checked }),
+    });
+  } catch (e) {
+    alert("Failed: " + e.message);
+    await refreshAccounts();
+  }
+}
+
 (async () => {
   const user = await AximShell.init({ active: "pocketoption" });
   if (!user) return;
   refreshStatus();
+  refreshAccounts();
   setInterval(refreshStatus, 10000);
+  setInterval(refreshAccounts, 10000);
 })();
 </script>
 </body>

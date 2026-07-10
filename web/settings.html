@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Settings - AXIM</title>
+<title>Settings - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -66,6 +66,11 @@
         <button class="primary" onclick="changePassword()">Change Password</button>
         <span id="password-status" class="muted"></span>
       </div>
+      <div class="card solid" style="margin-bottom:16px;">
+        <h3>Connected Devices</h3>
+        <div class="muted" style="margin-bottom:12px;">Every device currently signed in as you - this browser, a Remote Client on another PC, etc. Revoke any you don't recognize.</div>
+        <div id="devices-list" class="muted">Loading...</div>
+      </div>
       <div class="card solid">
         <h3>Telegram API Credentials</h3>
         <div class="muted" style="margin-bottom:12px;" id="telegram-cred-status">Loading...</div>
@@ -86,6 +91,12 @@
         <div class="muted" style="margin-bottom:14px;">Used by any session that doesn't have a Risk Engine profile attached - see the Risk Engine page for full profiles with Martingale/Compounding/Vault.</div>
         <div class="muted" id="mm-preview" style="margin-bottom:14px;"></div>
         <table><tbody id="settings-body"></tbody></table>
+        <details class="advanced-toggle">
+          <summary>Advanced <span class="hint">Daily limits, trade pacing, minimum payout</span></summary>
+          <div class="advanced-toggle-body">
+            <table><tbody id="settings-body-advanced"></tbody></table>
+          </div>
+        </details>
         <div class="row" style="margin-top:14px;">
           <button class="primary" onclick="saveTradingSettings()">Save Settings</button>
           <span id="trading-settings-status" class="muted"></span>
@@ -123,7 +134,7 @@
     <div class="tab-panel" id="tab-developer">
       <div class="card solid">
         <h3>Developer Mode</h3>
-        <div class="muted" style="margin-bottom:12px;">Reveals raw technical detail in a few places for troubleshooting - internal trade/session IDs in Trade Center, and raw result data on Broker's test trades. Off by default: AXIM's day-to-day screens stay focused on your trading operation, not its internals. System diagnostics (process status, connection health) are always available in a collapsed "diagnostics" section on Mission Control and Broker, independent of this toggle.</div>
+        <div class="muted" style="margin-bottom:12px;">Reveals raw technical detail in a few places for troubleshooting - internal trade/session IDs and raw execution error text in Trade Center, and raw result data on Broker's test trades. Off by default: AXIM's day-to-day screens stay focused on your trading operation, not its internals. Mission Control never shows technical detail regardless of this toggle; connection/process diagnostics are always available in a collapsed "diagnostics" section on the Broker page.</div>
         <label style="display:flex; align-items:center; gap:8px;">
           <input type="checkbox" id="dev-mode-toggle" style="width:auto;" onchange="toggleDeveloperMode()">
           Enable Developer Mode
@@ -180,6 +191,41 @@ async function changePassword() {
   }
 }
 
+const CLIENT_TYPE_LABEL = { web: "Browser", desktop: "Desktop app", mobile: "Mobile app", tablet: "Tablet", api: "API client" };
+
+async function loadDevices() {
+  const listEl = document.getElementById("devices-list");
+  try {
+    const sessions = await fetchJSON("/api/auth/sessions");
+    if (!sessions.length) {
+      listEl.innerHTML = '<div class="empty">No active sessions.</div>';
+      return;
+    }
+    listEl.innerHTML = sessions.map(s => `
+      <div class="stat-row">
+        <span class="stat-label">
+          ${escapeHtml(s.client_name || CLIENT_TYPE_LABEL[s.client_type] || "Unnamed device")}
+          <span class="badge off" style="font-size:10px;">${escapeHtml(CLIENT_TYPE_LABEL[s.client_type] || s.client_type)}</span>
+          <span class="muted" style="font-size:11px;"> - last active ${new Date(s.last_seen_at).toLocaleString()}</span>
+        </span>
+        <button class="subtle" onclick="revokeDevice(${s.id})">Sign out</button>
+      </div>
+    `).join("");
+  } catch (e) {
+    listEl.textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function revokeDevice(sessionId) {
+  if (!confirm("Sign this device out? It will need to log in again.")) return;
+  try {
+    await fetchJSON(`/api/auth/sessions/${sessionId}`, { method: "DELETE" });
+    await loadDevices();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
 async function loadTelegramCredStatus() {
   try {
     const status = await fetchJSON("/api/telegram/credentials-status");
@@ -213,12 +259,14 @@ async function rotateCredentials() {
   }
 }
 
-const SETTINGS_FIELDS = [
+const BASIC_SETTINGS_FIELDS = [
   { key: "starting_bankroll", label: "Starting bankroll ($)", step: "0.01" },
   { key: "trade_sizing_mode", label: "Trade sizing mode (fixed | percent)", type: "text" },
   { key: "fixed_trade_amount", label: "Fixed trade amount ($)", step: "0.01" },
   { key: "trade_sizing_percent", label: "Percent of bankroll per trade (%)", step: "0.01" },
   { key: "max_trade_amount", label: "Max trade amount ($)", step: "0.01" },
+];
+const ADVANCED_SETTINGS_FIELDS = [
   { key: "max_daily_loss", label: "Daily loss limit ($, 0 = disabled)", step: "0.01" },
   { key: "daily_profit_target", label: "Daily profit target ($, 0 = disabled)", step: "0.01" },
   { key: "max_trades_per_hour", label: "Max trades per hour" },
@@ -228,7 +276,17 @@ const SETTINGS_FIELDS = [
   { key: "minimum_payout", label: "Minimum payout (%)" },
   { key: "duplicate_signal_window_seconds", label: "Duplicate signal window (seconds)" },
 ];
+const SETTINGS_FIELDS = [...BASIC_SETTINGS_FIELDS, ...ADVANCED_SETTINGS_FIELDS];
 let currentSettings = {};
+
+function _settingsRow(f, overriddenKeys) {
+  return `
+      <tr>
+        <td style="width:320px;">${f.label}${overriddenKeys.includes(f.key) ? ' <span class="badge on" style="font-size:10px;">customized</span>' : ""}</td>
+        <td><input type="${f.type || 'number'}" ${f.step ? `step="${f.step}"` : ""} id="setting-${f.key}" value="${currentSettings[f.key]}" style="width:160px;"></td>
+      </tr>
+  `;
+}
 
 async function loadTradingSettings() {
   try {
@@ -236,13 +294,8 @@ async function loadTradingSettings() {
     currentSettings = data.effective;
     document.getElementById("mm-preview").innerHTML =
       `Current bankroll: <b>$${data.current_bankroll.toFixed(2)}</b> (lifetime realized P/L: $${data.lifetime_realized_pnl.toFixed(2)}) - next trade without a Risk Engine profile would be sized at <b>$${data.next_trade_amount_preview}</b>`;
-    const tbody = document.getElementById("settings-body");
-    tbody.innerHTML = SETTINGS_FIELDS.map(f => `
-      <tr>
-        <td style="width:320px;">${f.label}${data.overridden_keys.includes(f.key) ? ' <span class="badge on" style="font-size:10px;">customized</span>' : ""}</td>
-        <td><input type="${f.type || 'number'}" ${f.step ? `step="${f.step}"` : ""} id="setting-${f.key}" value="${currentSettings[f.key]}" style="width:160px;"></td>
-      </tr>
-    `).join("");
+    document.getElementById("settings-body").innerHTML = BASIC_SETTINGS_FIELDS.map(f => _settingsRow(f, data.overridden_keys)).join("");
+    document.getElementById("settings-body-advanced").innerHTML = ADVANCED_SETTINGS_FIELDS.map(f => _settingsRow(f, data.overridden_keys)).join("");
   } catch (e) {
     document.getElementById("mm-preview").textContent = "Failed to load: " + e.message;
   }
@@ -320,6 +373,7 @@ async function toggleDeveloperMode() {
   currentUser = await AximShell.init({ active: "settings" });
   if (!currentUser) return;
   loadGeneral();
+  loadDevices();
   loadTelegramCredStatus();
   loadTradingSettings();
   loadBackups();

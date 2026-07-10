@@ -23,7 +23,7 @@ from logger import get_logger
 from settings import MAX_SIGNAL_AGE, PREVIEW_ONLY, AUTO_EXECUTE, TRADE_AMOUNT, WORKER_ACQUIRE_TIMEOUT_SECONDS
 
 import pocket_executor
-import asset_cache
+from asset_cache import AssetCache
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -45,13 +45,19 @@ class TradeCoordinator:
     indefinitely.
     """
 
-    def __init__(self, worker_pool, warmup_service, event_bus=None):
+    def __init__(self, worker_pool, warmup_service, asset_cache=None, event_bus=None):
         self.worker_pool = worker_pool
         # Passed through to pocket_executor.prepare_trade so its background
         # track_outcome task reads outcomes from this service's own
         # dedicated (otherwise-idle) page instead of borrowing a placement
         # worker - see pocket_executor.track_outcome's docstring.
         self.warmup_service = warmup_service
+        # Real callers pass warmup_service.asset_cache explicitly (each
+        # broker account's own cache - see AssetCache's docstring); a
+        # fresh empty instance here is just a safe default for callers
+        # that don't care (e.g. unit tests constructing a coordinator with
+        # warmup_service=None).
+        self.asset_cache = asset_cache if asset_cache is not None else AssetCache()
         self.event_bus = event_bus or get_event_bus()
 
     def _log_stage(self, trade_id, stage, status, elapsed, reason=None):
@@ -61,7 +67,8 @@ class TradeCoordinator:
         )
 
     async def handle_signal(self, signal, source=None, sender=None, message_id=None,
-                             sent_at=None, timeline=None, session_id=None):
+                             sent_at=None, timeline=None, session_id=None,
+                             fund_id=None, broker_account_id=None):
         timeline = timeline or TradeTimeline()
         token = timeline.activate()
         try:
@@ -73,10 +80,16 @@ class TradeCoordinator:
             # Bookkeeping: record the signal immediately, before any gate runs,
             # so an ignored or rejected signal still has a row to log against -
             # otherwise "signals ignored"/"signals rejected" statistics would
-            # have nothing to count.
+            # have nothing to count. fund_id/broker_account_id are the
+            # multi-broker-account routing this coordinator instance was
+            # already resolved for (see core/broker_account_manager.py) -
+            # recorded on the trade itself so history stays attributable
+            # per docs/AXIM_APP_PLAN.md ("Each trade must store fund_id
+            # and broker_account_id"), not re-derived here.
             stage_t0 = time.monotonic()
             trade_id = database.record_signal_received(
                 signal, source=source, sender=sender, message_id=message_id, session_id=session_id,
+                fund_id=fund_id, broker_account_id=broker_account_id,
             )
             timeline.trade_id = trade_id
             self._log_stage(trade_id, TradeStatus.SIGNAL_RECEIVED.value, "recorded", time.monotonic() - stage_t0)
@@ -148,14 +161,14 @@ class TradeCoordinator:
                 # select_asset() does an exact-text DOM match, so a parsed
                 # name that's right except for casing would otherwise reach
                 # the browser and fail as "not found" for no real reason.
-                asset = asset_cache.resolve_exact_name(asset)
+                asset = self.asset_cache.resolve_exact_name(asset)
 
                 # Fast-path rejection using the startup asset cache: if we
                 # already know (from the last scan) that this asset is
                 # untradeable, reject now without touching the browser/lock at
                 # all. The cache can go stale, so "unknown" (None) falls through
                 # to the normal flow, where pocket_dom does the live DOM check.
-                cached_tradeable = asset_cache.is_known_tradeable(asset)
+                cached_tradeable = self.asset_cache.is_known_tradeable(asset)
                 if cached_tradeable is False:
                     reason = f"{asset!r} was untradeable at last asset-cache scan"
                     self._log_stage(trade_id, "asset_cache", "rejected", 0.0, reason)

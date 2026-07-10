@@ -261,6 +261,56 @@ class MetricsTests(unittest.TestCase):
         self.assertEqual(backtest_engine._best_for_label(5, 5), "Capital Preservation")
         self.assertEqual(backtest_engine._best_for_label(80, 20), "Aggressive Growth")
 
+    def test_profit_factor_all_wins_has_no_losses_to_divide_by(self):
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "win") for i in range(3)]
+        result = backtest_engine.simulate_strategy(pool, _fixed_profile(fixed_amount=10), 1000)
+        metrics = backtest_engine.compute_metrics(result["sessions"], result["trades"], 1000)
+        self.assertGreater(metrics["profit_factor"], 0)
+
+    def test_profit_factor_mixed_results(self):
+        # 2 wins @ $8.5 profit each (85% payout on $10), 1 loss @ -$10
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-01T10:05:00", "win"),
+                _signal("2026-01-01T10:10:00", "loss")]
+        result = backtest_engine.simulate_strategy(pool, _fixed_profile(fixed_amount=10), 1000)
+        metrics = backtest_engine.compute_metrics(result["sessions"], result["trades"], 1000)
+        # gross_profit=17.0, gross_loss=10.0 -> profit_factor=1.7
+        self.assertAlmostEqual(metrics["profit_factor"], 1.7, places=2)
+
+    def test_consistency_percent_across_multiple_sessions(self):
+        # Two daily sessions: day 1 all wins (profitable), day 2 all losses (not profitable)
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-01T10:05:00", "win"),
+                _signal("2026-01-02T10:00:00", "loss"), _signal("2026-01-02T10:05:00", "loss")]
+        result = backtest_engine.simulate_strategy(pool, _fixed_profile(fixed_amount=10), 1000)
+        metrics = backtest_engine.compute_metrics(result["sessions"], result["trades"], 1000)
+        self.assertEqual(len(result["sessions"]), 2)
+        self.assertEqual(metrics["consistency_percent"], 50.0)
+
+    def test_recovery_factor_relates_profit_to_max_drawdown(self):
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-01T10:05:00", "loss"),
+                _signal("2026-01-01T10:10:00", "win"), _signal("2026-01-01T10:15:00", "win")]
+        result = backtest_engine.simulate_strategy(pool, _fixed_profile(fixed_amount=10), 1000)
+        metrics = backtest_engine.compute_metrics(result["sessions"], result["trades"], 1000)
+        self.assertGreater(metrics["max_drawdown_amount"], 0)
+        self.assertIsNotNone(metrics["recovery_factor"])
+        self.assertAlmostEqual(
+            metrics["recovery_factor"],
+            round(metrics["total_profit_loss"] / metrics["max_drawdown_amount"], 2),
+        )
+
+    def test_sharpe_like_score_needs_at_least_two_sessions(self):
+        pool = [_signal("2026-01-01T10:00:00", "win")]
+        result = backtest_engine.simulate_strategy(pool, _fixed_profile(fixed_amount=10), 1000)
+        metrics = backtest_engine.compute_metrics(result["sessions"], result["trades"], 1000)
+        self.assertIsNone(metrics["sharpe_like_score"])
+
+    def test_sharpe_like_score_computed_with_multiple_sessions(self):
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-02T10:00:00", "win"),
+                _signal("2026-01-03T10:00:00", "loss")]
+        result = backtest_engine.simulate_strategy(pool, _fixed_profile(fixed_amount=10), 1000)
+        metrics = backtest_engine.compute_metrics(result["sessions"], result["trades"], 1000)
+        self.assertIsNotNone(metrics["sharpe_like_score"])
+        self.assertGreater(metrics["volatility"], 0)
+
 
 class RankStrategiesTests(unittest.TestCase):
     def test_ranks_best_roi_and_lowest_drawdown(self):

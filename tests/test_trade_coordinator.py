@@ -13,7 +13,6 @@ sys.path.insert(0, str(PROJECT_ROOT / "execution"))
 
 import database
 import risk_manager
-import asset_cache
 import session_manager
 import trade_coordinator
 import pocket_executor
@@ -58,8 +57,6 @@ class TradeCoordinatorTests(unittest.TestCase):
         self._original_preview_only = trade_coordinator.PREVIEW_ONLY
         self._original_auto_execute = trade_coordinator.AUTO_EXECUTE
         self._original_max_signal_age = trade_coordinator.MAX_SIGNAL_AGE
-        self._original_cache = asset_cache._cache
-        asset_cache._cache = {}
 
         # Isolated risk thresholds - a unit test of the coordinator's
         # orchestration shouldn't fail because whatever the real .env
@@ -82,7 +79,6 @@ class TradeCoordinatorTests(unittest.TestCase):
         trade_coordinator.PREVIEW_ONLY = self._original_preview_only
         trade_coordinator.AUTO_EXECUTE = self._original_auto_execute
         trade_coordinator.MAX_SIGNAL_AGE = self._original_max_signal_age
-        asset_cache._cache = self._original_cache
         risk_manager.MAX_TRADE_AMOUNT = self._original_max_trade_amount
         risk_manager.MAX_TRADES_PER_HOUR = self._original_max_trades_per_hour
         risk_manager.MAX_CONSECUTIVE_LOSSES = self._original_max_consecutive_losses
@@ -131,9 +127,9 @@ class TradeCoordinatorTests(unittest.TestCase):
     def test_asset_untradeable_cached_rejects_without_touching_pool(self):
         trade_coordinator.PREVIEW_ONLY = False
         trade_coordinator.AUTO_EXECUTE = True
-        asset_cache._cache = {"EUR/USD OTC": {"tradeable": False, "category": "Currencies"}}
         pool = FakeWorkerPool()
         coordinator = TradeCoordinator(pool, warmup_service=None)
+        coordinator.asset_cache._cache = {"EUR/USD OTC": {"tradeable": False, "category": "Currencies"}}
         result = _run(coordinator.handle_signal(self._signal()))
         self.assertEqual(result["status"], "rejected")
         self.assertEqual(result["rule"], "asset_untradeable_cached")
@@ -253,8 +249,6 @@ class TradeConfirmationGateIntegrationTests(unittest.TestCase):
         trade_coordinator.AUTO_EXECUTE = True
         database.set_control_state(test_mode=False)
 
-        self._original_cache = asset_cache._cache
-        asset_cache._cache = {}
         self._original_max_trade_amount = risk_manager.MAX_TRADE_AMOUNT
         risk_manager.MAX_TRADE_AMOUNT = 50
 
@@ -264,7 +258,6 @@ class TradeConfirmationGateIntegrationTests(unittest.TestCase):
         trade_coordinator.PREVIEW_ONLY = self._original_preview_only
         trade_coordinator.AUTO_EXECUTE = self._original_auto_execute
         session_manager.TRADE_CONFIRMATION_TIMEOUT_SECONDS = self._original_timeout
-        asset_cache._cache = self._original_cache
         risk_manager.MAX_TRADE_AMOUNT = self._original_max_trade_amount
 
     def _signal(self):

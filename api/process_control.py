@@ -53,7 +53,20 @@ def stop_listener():
     from outside can't deliver that signal reliably to a Scheduled-Task-
     launched process. Always followed by the same targeted Chrome cleanup
     scripts/cleanup_axim_chrome.ps1 uses, so this never leaves orphaned
-    tabs behind for the operator to find later."""
+    tabs behind for the operator to find later.
+
+    Stops the Scheduled Task FIRST, before killing any python.exe pid -
+    found live: the task's action is scripts/run_listener_supervised.ps1,
+    an unconditional restart-on-any-exit loop (see that script's own
+    docstring for why Task Scheduler's own RestartOnFailure doesn't work
+    for forced termination). Killing only the python child left that
+    supervisor loop running, which relaunched a fresh listener ~60s later
+    - a deliberate Stop silently un-stopping itself. Stopping the task
+    kills the supervisor's root process first, so there's nothing left to
+    do the relaunching; only then is any remaining/orphaned python.exe
+    (e.g. one started outside the task, or a child that outlived a
+    supervisor killed some other way) force-stopped directly."""
+    _run_powershell(f"Stop-ScheduledTask -TaskName '{SCHEDULED_TASK_NAME}' -ErrorAction SilentlyContinue")
     pids = find_listener_pids()
     if not pids:
         return {"status": "not_running"}

@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 import database
 import session_manager
+import fund_manager
 from settings import ACCOUNT, TRADE_CONFIRMATION_TIMEOUT_SECONDS
 from auth_routes import get_current_user, require_admin
 
@@ -94,7 +95,22 @@ def delete_profile(profile_id: int, user=Depends(require_admin)):
 
 @router.get("/active")
 def active_session(user=Depends(get_current_user)):
+    """The single newest active session app-wide - kept for backward
+    compatibility. Now that different Funds can each have their own
+    concurrently active session, prefer /active-list (all of them) or
+    /active-for-fund/{fund_id} (one specific fund's), either of which
+    stays correct once more than one session is running at once."""
     return _with_progress(database.get_active_trading_session())
+
+
+@router.get("/active-list")
+def active_sessions(user=Depends(get_current_user)):
+    return [_with_progress(s) for s in database.list_active_trading_sessions()]
+
+
+@router.get("/active-for-fund/{fund_id}")
+def active_session_for_fund(fund_id: int, user=Depends(get_current_user)):
+    return _with_progress(database.get_active_trading_session_for_fund(fund_id))
 
 
 @router.get("")
@@ -159,31 +175,76 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
     reflects the real, currently-connected ACCOUNT (config/settings.py),
     same deliberate choice as GET /api/pocket-option/status: a session
     can't claim to be running LIVE while the actual browser is connected
-    to DEMO, or vice versa.
+    to DEMO, or vice versa. (Per-fund/per-account live_enabled flags are
+    real and enforced below, but actually EXECUTING a live trade still
+    requires the separate, deliberately-deferred live-cabinet-URL work
+    core/broker_account_manager.py's docstring calls out - this endpoint
+    only ever launches the demo cabinet today, so account_mode staying
+    tied to the global ACCOUNT setting is a deliberate safety choice, not
+    an oversight.)
 
     fund_id is required - every session must be attributed to a Fund
     (docs/AXIM_APP_PLAN.md) so P&L/vault history stays organized per
-    portfolio rather than one undifferentiated pile. If the caller
-    doesn't explicitly pick a risk profile, the fund's own
-    default_risk_profile_id is used - the fund's "assigned money
-    management profile" setting actually does something, not just a
-    label."""
+    portfolio rather than one undifferentiated pile, AND must have a
+    real, connected Pocket Option account attached (fund_manager.
+    can_trade) - "Do not let a Fund trade unless it has a valid broker
+    account attached." If the caller doesn't explicitly pick a risk
+    profile, the fund's own default_risk_profile_id is used, but a
+    session cannot start with no Money Management profile at all
+    (neither explicit nor fund default) - every session requires one."""
     if not body.channel_ids:
         raise HTTPException(status_code=400, detail="a session must include at least one channel")
     fund = database.get_fund(body.fund_id)
     if fund is None:
         raise HTTPException(status_code=404, detail="fund not found")
+
+    can_trade, reason, _ = fund_manager.can_trade(body.fund_id)
+    if not can_trade:
+        raise HTTPException(status_code=409, detail=reason)
+
     risk_profile_id = body.risk_profile_id if body.risk_profile_id is not None else fund["default_risk_profile_id"]
+    if risk_profile_id is None:
+        raise HTTPException(
+            status_code=400,
+            detail="select a Money Management profile before starting a session (either on this session or as the fund's default)",
+        )
+
+    broker_account = database.get_fund_primary_broker_account(body.fund_id)
     try:
         session_id = database.start_trading_session(
             name=body.name, channel_ids=body.channel_ids, account_mode=ACCOUNT,
             profit_target=body.profit_target, loss_limit=body.loss_limit, max_trades=body.max_trades,
             require_confirmation=body.require_confirmation, profile_id=body.profile_id,
             risk_profile_id=risk_profile_id, fund_id=body.fund_id,
+            broker_account_id=broker_account["id"] if broker_account else None,
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return _with_progress(database.get_trading_session(session_id))
+
+
+@router.get("/pre-start-summary/{fund_id}")
+def pre_start_summary(fund_id: int, user=Depends(get_current_user)):
+    """Everything Trading Sessions' "Start New Session" screen needs to
+    show BEFORE the operator commits (docs/AXIM_APP_PLAN.md: "Before
+    starting a session, AXIM TradeStation must show: Fund name, Pocket
+    Option account, Demo/Live mode, Balance, ..."), in one call - avoids
+    the UI re-deriving the same can_trade logic start_session itself
+    enforces, which would risk the two drifting apart."""
+    fund = database.get_fund(fund_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="fund not found")
+    can_trade, reason, can_go_live = fund_manager.can_trade(fund_id)
+    broker_account = database.get_fund_primary_broker_account(fund_id)
+    balances = fund_manager.get_fund_balances(fund_id)
+    return {
+        "fund": fund,
+        "broker_account": broker_account,
+        "can_trade": can_trade,
+        "blocking_reason": reason,
+        "can_go_live": can_go_live,
+        "balances": balances,
+    }
 
 
 @router.patch("/{session_id}/risk-profile")
@@ -215,13 +276,14 @@ def emergency_stop_session(session_id: int, user=Depends(get_current_user)):
     POST /api/control/emergency-stop: a non-admin who spots a problem must
     still be able to halt trading immediately. Flips the SAME global
     ui_control_state emergency_stop (stops requesting/executing signals
-    everywhere, not just this session) and marks this specific session
-    stopped, matching the product spec's Emergency Stop requirements
-    exactly."""
+    everywhere, not just this session) and marks EVERY currently active
+    session stopped - not just this one - so a stale "active" session
+    row never lingers for a different Fund after an emergency stop,
+    matching the product spec's Emergency Stop requirements exactly."""
     session = database.get_trading_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     database.set_control_state(paused=True, emergency_stop=True)
-    if session["status"] == "active":
-        session_manager.end_session(session_id, "stopped_emergency", f"emergency stop by {user['email']}")
+    for active in database.list_active_trading_sessions():
+        session_manager.end_session(active["id"], "stopped_emergency", f"emergency stop by {user['email']}")
     return _with_progress(database.get_trading_session(session_id))

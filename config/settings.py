@@ -70,6 +70,23 @@ WORKER_ACQUIRE_TIMEOUT_SECONDS = float(os.getenv("WORKER_ACQUIRE_TIMEOUT_SECONDS
 ENABLE_DASHBOARD = os.getenv("ENABLE_DASHBOARD", "true").lower() == "true"
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", 8080))
 
+# Main API (api/main.py) bind address and remote-client access
+# (docs/AXIM_REMOTE_ACCESS.md). Defaults keep the server local-only, exactly
+# today's behavior - a Remote Client (over Tailscale or any other private
+# network) is opt-in only, never automatic. Setting API_BIND_HOST to a
+# Tailscale interface IP (or 0.0.0.0) is what actually allows another
+# device to reach this API; ALLOWED_ORIGINS must then list that device's
+# own origin for its browser-based requests to be accepted (CORS is a
+# browser-side check, not a security boundary against non-browser clients,
+# but it's still required for the web UI to function remotely).
+API_BIND_HOST = os.getenv("API_BIND_HOST", "127.0.0.1")
+API_BIND_PORT = int(os.getenv("API_BIND_PORT", 8090))
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
+
 # Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - core/billing.py treats
 # an unset STRIPE_SECRET_KEY as "billing not configured" and disables real
 # Stripe calls entirely; Owner manual tier activation (api/admin.py) remains
@@ -81,3 +98,15 @@ STRIPE_PRICE_BASIC = os.getenv("STRIPE_PRICE_BASIC")
 STRIPE_PRICE_PRO = os.getenv("STRIPE_PRICE_PRO")
 STRIPE_PRICE_ELITE = os.getenv("STRIPE_PRICE_ELITE")
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://127.0.0.1:8090")
+
+# Password reset email (core/email_sender.py) - treats an unset SMTP_HOST
+# as "email not configured" and falls back to logging the reset link
+# server-side (an Owner/Admin can relay it manually), the same
+# gate-don't-fabricate pattern billing.py uses for Stripe. Setting these
+# activates real email delivery with no other code changes.
+SMTP_HOST = os.getenv("SMTP_HOST")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+SMTP_USER = os.getenv("SMTP_USER")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", "no-reply@axim.local")
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() == "true"

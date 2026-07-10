@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Signal Sources - AXIM</title>
+<title>Signal Sources - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -13,6 +13,33 @@
   .message-item { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
   .message-item:last-child { border-bottom: none; }
   .message-time { color: var(--text-faint); font-size: 11px; }
+
+  /* ---- My Sources: simple, followed-only list - the everyday view.
+     Full configuration (source type, priority, bot command fields) is
+     one click away via "Configure", not always-visible columns. ---- */
+  .source-card {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 16px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+    background: var(--bg); margin-bottom: 8px;
+  }
+  .source-card .info { flex: 1; min-width: 0; }
+  .source-card .name { font-weight: 600; font-size: 14px; }
+  .source-card .meta { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+  .source-card .stats { display: flex; gap: 20px; }
+  .source-card .stats .stat { text-align: right; }
+  .source-card .stats .stat .label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); }
+  .source-card .stats .stat .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .source-config { background: var(--surface); border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 10px; display: none; }
+  .source-config.open { display: block; }
+
+  /* ---- Add Sources: search-as-you-type over channels not yet
+     followed, replacing "dump every Telegram channel in a table". ---- */
+  .add-source-results { max-height: 260px; overflow-y: auto; margin-top: 10px; }
+  .add-source-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 4px; border-bottom: 1px solid var(--border); font-size: 13.5px;
+  }
+  .add-source-row:last-child { border-bottom: none; }
 </style>
 </head>
 <body>
@@ -42,27 +69,15 @@
       </div>
     </div>
 
-    <div class="card solid full-width" style="margin-bottom:16px;">
-      <div class="row" style="margin-bottom:14px;">
-        <input type="text" id="filter-input" placeholder="Search channels by name/username..." style="width:280px;" oninput="renderChannels()">
-        <select id="type-filter" onchange="renderChannels()" style="width:auto;">
-          <option value="">All types</option>
-          <option value="passive">Passive Channel</option>
-          <option value="bot_command">Bot Command Channel</option>
-          <option value="group">Group Chat</option>
-          <option value="manual_review">Manual Review</option>
-        </select>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Enabled</th><th>Title</th><th>Username</th><th>Source type</th>
-            <th>Priority</th><th>Last message</th><th>Last signal</th>
-            <th>Win rate</th><th>P/L</th><th></th>
-          </tr>
-        </thead>
-        <tbody id="channels-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
-      </table>
+    <div class="page-header" style="margin-bottom:14px;">
+      <h2 style="margin:0; font-size:16px;">My Sources</h2>
+    </div>
+    <div id="my-sources-list" style="margin-bottom:24px;"><div class="empty">Loading...</div></div>
+
+    <div class="card solid full-width">
+      <h3>Add a Source</h3>
+      <input type="text" id="add-source-search" placeholder="Search all your Telegram chats by name or @username..." oninput="renderAddSourceResults()">
+      <div class="add-source-results" id="add-source-results"></div>
     </div>
   </main>
 </div>
@@ -228,59 +243,85 @@ async function syncChannels() {
 }
 
 async function refreshChannels() {
-  const tbody = document.getElementById("channels-body");
   try {
     allChannels = await fetchJSON("/api/channels");
-    await renderChannels();
+    renderMySources();
+    renderAddSourceResults();
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    document.getElementById("my-sources-list").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
   }
 }
 
-async function renderChannels() {
-  const filter = document.getElementById("filter-input").value.toLowerCase();
-  const typeFilter = document.getElementById("type-filter").value;
-  const tbody = document.getElementById("channels-body");
-  const filtered = allChannels.filter(c =>
-    (!filter || (c.title || "").toLowerCase().includes(filter) || (c.username || "").toLowerCase().includes(filter)) &&
-    (!typeFilter || c.source_type === typeFilter)
-  );
-  if (!filtered.length) {
-    tbody.innerHTML = `<tr><td colspan="10" class="empty">No channels match.</td></tr>`;
+function renderMySources() {
+  const listEl = document.getElementById("my-sources-list");
+  const followed = allChannels.filter(c => c.enabled);
+  if (!followed.length) {
+    listEl.innerHTML = '<div class="card"><div class="empty">No sources followed yet - search below to add one.</div></div>';
     return;
   }
-  tbody.innerHTML = filtered.map(c => `
-    <tr>
-      <td>
-        <label class="toggle">
-          <input type="checkbox" ${c.enabled ? "checked" : ""} onchange="toggleChannel(${c.id}, this.checked)">
-          <span class="slider"></span>
-        </label>
-      </td>
-      <td class="title-cell">${escapeHtml(c.title || "(no title)")}</td>
-      <td class="muted">${c.username ? "@" + escapeHtml(c.username) : ""}</td>
-      <td>
-        <select class="type-select" onchange="setSourceType(${c.id}, this.value)">
-          <option value="passive" ${c.source_type === "passive" ? "selected" : ""}>Passive</option>
-          <option value="bot_command" ${c.source_type === "bot_command" ? "selected" : ""}>Bot Command</option>
-          <option value="group" ${c.source_type === "group" ? "selected" : ""}>Group Chat</option>
-          <option value="manual_review" ${c.source_type === "manual_review" ? "selected" : ""}>Manual Review</option>
-        </select>
-        ${c.source_type === "bot_command" ? botFields(c) : ""}
-      </td>
-      <td><input type="number" class="priority-input" value="${c.priority || 0}" onchange="setPriority(${c.id}, this.value)"></td>
-      <td class="muted" style="font-size:12px;">${fmtTime(c.last_signal_at) === "never" ? "-" : ""}<span id="lastmsg-${c.id}">loading...</span></td>
-      <td class="muted">${fmtTime(c.last_signal_at)}</td>
-      <td id="winrate-${c.id}" class="muted">-</td>
-      <td id="pl-${c.id}" class="muted">-</td>
-      <td><button class="subtle" onclick="openMessages(${c.id}, '${escapeHtml(c.title || "").replace(/'/g, "")}')">Messages</button></td>
-    </tr>
+  listEl.innerHTML = followed.map(c => `
+    <div class="source-card card-interactive" onclick="toggleConfig(event, ${c.id})">
+      <label class="toggle" onclick="event.stopPropagation()">
+        <input type="checkbox" checked onchange="toggleChannel(${c.id}, this.checked)">
+        <span class="slider"></span>
+      </label>
+      <div class="info">
+        <div class="name">${escapeHtml(c.title || "(no title)")}</div>
+        <div class="meta">${c.username ? "@" + escapeHtml(c.username) + " &middot; " : ""}<span class="badge off">${c.source_type}</span></div>
+        <div class="source-config" id="config-${c.id}">
+          <div class="row">
+            <div class="field"><label>Source type</label>
+              <select class="type-select" onclick="event.stopPropagation()" onchange="setSourceType(${c.id}, this.value)">
+                <option value="passive" ${c.source_type === "passive" ? "selected" : ""}>Passive</option>
+                <option value="bot_command" ${c.source_type === "bot_command" ? "selected" : ""}>Bot Command</option>
+                <option value="group" ${c.source_type === "group" ? "selected" : ""}>Group Chat</option>
+                <option value="manual_review" ${c.source_type === "manual_review" ? "selected" : ""}>Manual Review</option>
+              </select>
+            </div>
+            <div class="field"><label>Priority</label><input type="number" class="priority-input" onclick="event.stopPropagation()" value="${c.priority || 0}" onchange="setPriority(${c.id}, this.value)"></div>
+          </div>
+          ${c.source_type === "bot_command" ? botFields(c) : ""}
+          <div class="muted" style="font-size:12px; margin-top:8px;">Last signal: ${fmtTime(c.last_signal_at)}</div>
+          <button class="subtle" onclick="event.stopPropagation(); openMessages(${c.id}, '${escapeHtml(c.title || "").replace(/'/g, "")}')">View recent messages</button>
+        </div>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="label">Win rate</div><div class="value" id="winrate-${c.id}">-</div></div>
+        <div class="stat"><div class="label">P/L</div><div class="value" id="pl-${c.id}">-</div></div>
+      </div>
+    </div>
   `).join("");
 
-  filtered.forEach(c => {
-    loadLastMessage(c.id);
-    loadPerformance(c.id);
-  });
+  followed.forEach(c => loadPerformance(c.id));
+}
+
+function toggleConfig(event, id) {
+  const el = document.getElementById(`config-${id}`);
+  if (el) el.classList.toggle("open");
+}
+
+function renderAddSourceResults() {
+  const query = document.getElementById("add-source-search").value.trim().toLowerCase();
+  const resultsEl = document.getElementById("add-source-results");
+  const candidates = allChannels.filter(c => !c.enabled);
+  const matches = query
+    ? candidates.filter(c => (c.title || "").toLowerCase().includes(query) || (c.username || "").toLowerCase().includes(query))
+    : candidates.slice(0, 8);
+  if (!matches.length) {
+    resultsEl.innerHTML = query
+      ? '<div class="empty" style="padding:10px 4px;">No matching chats found.</div>'
+      : (candidates.length === 0 ? '<div class="empty" style="padding:10px 4px;">You\'re following every synced chat.</div>' : "");
+    return;
+  }
+  resultsEl.innerHTML = matches.map(c => `
+    <div class="add-source-row">
+      <div>
+        <span style="font-weight:550;">${escapeHtml(c.title || "(no title)")}</span>
+        <span class="muted">${c.username ? " @" + escapeHtml(c.username) : ""}</span>
+      </div>
+      <button class="primary" onclick="toggleChannel(${c.id}, true).then(refreshChannels)">+ Add</button>
+    </div>
+  `).join("");
 }
 
 function botFields(c) {
@@ -350,17 +391,6 @@ async function setWaitForResult(id, checked) {
   }
 }
 
-async function loadLastMessage(id) {
-  const el = document.getElementById(`lastmsg-${id}`);
-  if (!el) return;
-  try {
-    const messages = await fetchJSON(`/api/channels/${id}/messages?limit=1`);
-    el.textContent = messages.length ? fmtTime(messages[0].received_at) : "never";
-  } catch (e) {
-    el.textContent = "-";
-  }
-}
-
 async function loadPerformance(id) {
   const winEl = document.getElementById(`winrate-${id}`);
   const plEl = document.getElementById(`pl-${id}`);
@@ -369,7 +399,7 @@ async function loadPerformance(id) {
     const perf = await fetchJSON(`/api/channels/${id}/performance`);
     winEl.textContent = perf.win_rate !== null ? (perf.win_rate * 100).toFixed(1) + "%" : "-";
     plEl.textContent = perf.total_closed > 0 ? "$" + perf.profit_loss.toFixed(2) : "-";
-    plEl.className = perf.profit_loss > 0 ? "pos" : (perf.profit_loss < 0 ? "neg" : "muted");
+    plEl.className = "value " + (perf.profit_loss > 0 ? "pos" : (perf.profit_loss < 0 ? "neg" : "muted"));
   } catch (e) {
     winEl.textContent = "-";
   }

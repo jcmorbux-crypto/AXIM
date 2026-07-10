@@ -20,6 +20,8 @@ _NEW_COLUMNS = {
     "trade_timeline_json": "TEXT",
     "category_timings_json": "TEXT",
     "session_id": "INTEGER",
+    "fund_id": "INTEGER",
+    "broker_account_id": "INTEGER",
 }
 
 # source_type: "passive" (default - existing behavior) | "bot_command"
@@ -39,6 +41,8 @@ _NEW_SESSION_COLUMNS = {
     "current_martingale_step": "INTEGER DEFAULT 0",
     "vaulted_amount": "REAL DEFAULT 0",
     "fund_id": "INTEGER",
+    "broker_account_id": "INTEGER",
+    "martingale_disabled": "INTEGER DEFAULT 0",
 }
 
 # Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - links a user to a
@@ -49,11 +53,32 @@ _NEW_USER_COLUMNS = {
     "stripe_subscription_id": "TEXT",
 }
 
+# Multi-broker-account architecture (docs/AXIM_APP_PLAN.md) - a Fund-level
+# Live gate, independent of any individual broker_accounts.live_enabled -
+# both must be true for a fund to actually place live trades (see
+# fund_manager.can_trade_live).
+_NEW_FUND_COLUMNS = {
+    "live_enabled": "INTEGER DEFAULT 0",
+}
+
 
 def get_connection():
+    """WAL mode + a busy_timeout are required now that two OS processes
+    (the API and the Telegram listener) - and, per
+    docs/AXIM_REMOTE_ACCESS.md, potentially several remote clients on top
+    of that - all open short-lived connections against the same SQLite
+    file. Without WAL, a writer briefly locks the whole file against
+    other writers under the default rollback-journal mode; busy_timeout
+    makes a connection that arrives mid-lock wait and retry rather than
+    immediately raising "database is locked". journal_mode is a
+    persistent property of the DB file itself (set once, sticks), so this
+    PRAGMA is cheap on every subsequent connection - SQLite no-ops if
+    already in WAL mode."""
     DB_FILE.parent.mkdir(exist_ok=True)
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -76,6 +101,11 @@ def _migrate_schema(conn):
     for column, sql_type in _NEW_SESSION_COLUMNS.items():
         if column not in session_columns:
             conn.execute(f"ALTER TABLE trading_sessions ADD COLUMN {column} {sql_type}")
+
+    fund_columns = {row["name"] for row in conn.execute("PRAGMA table_info(funds)")}
+    for column, sql_type in _NEW_FUND_COLUMNS.items():
+        if column not in fund_columns:
+            conn.execute(f"ALTER TABLE funds ADD COLUMN {column} {sql_type}")
 
 
 def initialize_database():
@@ -222,12 +252,12 @@ def initialize_database():
     # so a fund's balance can never drift out of sync with its actual
     # trade history.
     #
-    # assigned_broker_label is a free-text description, NOT a real
-    # separate broker connection - AXIM has exactly one shared Telegram/
-    # Pocket Option connection today (see "Known gaps"), so multiple
-    # funds sharing that one real connection is the honest current
-    # architecture; this field just labels which account a fund
-    # conceptually represents.
+    # assigned_broker_label is a free-text description from before real
+    # multi-broker-account support existed - kept for backward
+    # compatibility with existing rows, superseded by the real
+    # broker_accounts/fund_broker_accounts relationship below. A fund's
+    # actual attached account is now a real, independently-connected
+    # Pocket Option session, not a shared label.
     conn.execute("""
     CREATE TABLE IF NOT EXISTS funds (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -253,6 +283,58 @@ def initialize_database():
         channel_id INTEGER NOT NULL,
         created_at TEXT,
         UNIQUE(fund_id, channel_id)
+    );
+    """)
+
+    # Broker Accounts (docs/AXIM_APP_PLAN.md) - a real, independently-
+    # connected Pocket Option login, not a label. Each account gets its
+    # own persistent browser profile directory (user_data_dir - see
+    # execution/browser_session.py's PocketBrowserSession, which already
+    # accepted a user_data_dir parameter before this feature existed) so
+    # its cookies/login session can never bleed into another account's.
+    # `mode` describes what the account IS ("demo"/"live"/"both" - which
+    # cabinet URL(s) it can be pointed at); `live_enabled` is a SEPARATE,
+    # explicit safety gate on top of that (a "both" account can still be
+    # demo-only in practice until this is flipped) - see fund_broker_
+    # accounts and funds.live_enabled below for the matching Fund-level
+    # gate. Real balance/connection facts (last_balance,
+    # connection_status) are observed facts written by the execution
+    # layer, not user input - never fabricated if unobserved (see
+    # api/pocket-option/status's existing "balance: None, not yet
+    # implemented" precedent).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS broker_accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        name TEXT NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'demo',
+        live_enabled INTEGER NOT NULL DEFAULT 0,
+        user_data_dir TEXT,
+        connection_status TEXT NOT NULL DEFAULT 'disconnected',
+        last_connected_at TEXT,
+        last_balance REAL,
+        last_balance_checked_at TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT,
+        updated_at TEXT
+    );
+    """)
+
+    # A fund's attachment to a real broker_accounts row. Modeled as a join
+    # table (not a plain broker_account_id FK on funds) because the
+    # product spec explicitly calls for future "distribute trades across
+    # multiple broker accounts" support - is_primary marks which one is
+    # authoritative today (exactly one primary per fund, enforced in
+    # assign_broker_account_to_fund) without a later schema migration
+    # being needed to add the rest.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS fund_broker_accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fund_id INTEGER NOT NULL,
+        broker_account_id INTEGER NOT NULL,
+        is_primary INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT,
+        UNIQUE(fund_id, broker_account_id)
     );
     """)
 
@@ -444,6 +526,32 @@ def initialize_database():
     );
     """)
 
+    # Cross-process real-time event outbox (docs/AXIM_REMOTE_ACCESS.md) -
+    # the API process's SSE endpoint (GET /api/events/stream) and the
+    # listener process's core/event_bus.EventBus don't share memory (two
+    # separate OS processes, same as everywhere else in this codebase -
+    # see ui_control_state/ui_listener_heartbeat/pending_trade_confirmations
+    # above for the same "coupled only via SQLite, one side writes, the
+    # other polls" pattern already in production use). core/event_stream.py
+    # subscribes to the listener's event_bus and writes one row here per
+    # meaningful event; the API process tails this table on a short
+    # internal poll and pushes new rows to connected SSE clients. id is
+    # the resume cursor a reconnecting client sends back as Last-Event-ID -
+    # a monotonic autoincrement id, not created_at, since SQLite guarantees
+    # strictly increasing ids even when multiple events land in the same
+    # millisecond (concurrent workers can do exactly that), which a
+    # timestamp cursor can't guarantee. Pruned periodically (see
+    # prune_server_events) so this never grows unbounded.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS server_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL,
+        payload_json TEXT,
+        created_at TEXT NOT NULL
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_server_events_created_at ON server_events (created_at)")
+
     # Rule Builder (docs/AXIM_APP_PLAN.md) - visual IF/THEN automation.
     # Every condition evaluator is a pure function returning (bool, ...)
     # and every action executor calls an existing real mutation function
@@ -452,6 +560,17 @@ def initialize_database():
     # triggering (fire only on false->true transitions) so a rule whose
     # condition stays true across many trades (e.g. daily_profit_gte
     # after the target is hit) fires once, not on every subsequent trade.
+    #
+    # Rules belong to a Fund, not a session - a Fund is the permanent
+    # trading object, sessions are disposable (docs/AXIM_APP_PLAN.md).
+    # scope='fund' rules are evaluated against whichever session is
+    # currently active for that fund (or not at all, if none is); these
+    # persist across sessions exactly like the rest of a fund's config.
+    # scope='session' rules are a temporary override tied to ONE specific
+    # trading_sessions row (session_id) - session_manager.end_session
+    # deletes them when that session ends, so they never outlive it.
+    # fund_id is nullable only for pre-this-feature legacy rows; the API
+    # layer requires it on every new rule.
     conn.execute("""
     CREATE TABLE IF NOT EXISTS rules (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -466,6 +585,46 @@ def initialize_database():
         trigger_count INTEGER DEFAULT 0,
         created_at TEXT,
         updated_at TEXT
+    );
+    """)
+    _NEW_RULE_COLUMNS = {
+        "fund_id": "INTEGER",
+        "scope": "TEXT NOT NULL DEFAULT 'fund'",
+        "session_id": "INTEGER",
+    }
+    rule_columns = {row["name"] for row in conn.execute("PRAGMA table_info(rules)")}
+    for column, sql_type in _NEW_RULE_COLUMNS.items():
+        if column not in rule_columns:
+            conn.execute(f"ALTER TABLE rules ADD COLUMN {column} {sql_type}")
+
+    # Automation Studio's per-rule activity trail - one row per actual
+    # fire (edge-triggered, same as rules.trigger_count), so "Fired 12
+    # times" on the list view can expand into an honest, real history
+    # instead of just a counter. outcome_message is the exact string the
+    # action executor returned (core/rule_engine.py's evaluate_rule) -
+    # never a separately-composed summary that could drift from what
+    # actually happened.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS rule_firings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        rule_id INTEGER NOT NULL,
+        fired_at TEXT NOT NULL,
+        outcome_message TEXT
+    );
+    """)
+
+    # In-app notifications - a rule's "notify Owner" action (and future
+    # non-email/push alerts) writes here; web/shell.js polls the unread
+    # count. Deliberately in-app only, no email/SMS/push - those need an
+    # external provider and credentials, out of scope here.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        message TEXT NOT NULL,
+        source TEXT,
+        created_at TEXT NOT NULL,
+        read_at TEXT
     );
     """)
 
@@ -613,6 +772,22 @@ def initialize_database():
         rank_risk_adjusted INTEGER
     );
     """)
+    # AI Strategy Lab analyst metrics (docs/AXIM_APP_PLAN.md) - added
+    # after the table above already shipped, so migrated inline here
+    # (this table is created AFTER _migrate_schema()'s call site, same
+    # reason backtest_runs' fund_id gets the same inline treatment).
+    _NEW_BACKTEST_METRICS_COLUMNS = {
+        "sharpe_like_score": "REAL",
+        "profit_factor": "REAL",
+        "consistency_percent": "REAL",
+        "recovery_factor": "REAL",
+        "max_drawdown_amount": "REAL",
+        "volatility": "REAL",
+    }
+    backtest_metrics_columns = {row["name"] for row in conn.execute("PRAGMA table_info(backtest_metrics)")}
+    for column, sql_type in _NEW_BACKTEST_METRICS_COLUMNS.items():
+        if column not in backtest_metrics_columns:
+            conn.execute(f"ALTER TABLE backtest_metrics ADD COLUMN {column} {sql_type}")
 
     # Auth/access-control layer (docs/AXIM_APP_PLAN.md) - who may log into
     # the control UI at all, separate from the single shared Telegram/
@@ -644,8 +819,10 @@ def initialize_database():
             conn.execute(f"ALTER TABLE users ADD COLUMN {column} {sql_type}")
 
     # token_hash only - the raw bearer token lives in the browser's cookie
-    # and is never persisted, same reasoning as password_hash: a DB read
-    # alone can't be replayed as a valid session (see core/auth.py).
+    # (or, for a Remote Client, an Authorization: Bearer header - see
+    # docs/AXIM_REMOTE_ACCESS.md) and is never persisted, same reasoning
+    # as password_hash: a DB read alone can't be replayed as a valid
+    # session (see core/auth.py).
     conn.execute("""
     CREATE TABLE IF NOT EXISTS auth_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -654,6 +831,39 @@ def initialize_database():
         created_at TEXT,
         last_seen_at TEXT,
         expires_at TEXT
+    );
+    """)
+    # Remote-client identification - lets the "Connected Devices" view
+    # show which physical device/app a session belongs to (this browser
+    # vs. a laptop's Remote Client vs. a future mobile app), not just an
+    # opaque token. client_type defaults to 'web' since every session
+    # created before this column existed (and every plain browser login
+    # going forward) is exactly that. Added after auth_sessions already
+    # shipped, so migrated inline here (this table is created AFTER
+    # _migrate_schema()'s call site), same as backtest_metrics/users above.
+    _NEW_AUTH_SESSION_COLUMNS = {
+        "client_name": "TEXT",
+        "client_type": "TEXT DEFAULT 'web'",
+    }
+    auth_session_columns = {row["name"] for row in conn.execute("PRAGMA table_info(auth_sessions)")}
+    for column, sql_type in _NEW_AUTH_SESSION_COLUMNS.items():
+        if column not in auth_session_columns:
+            conn.execute(f"ALTER TABLE auth_sessions ADD COLUMN {column} {sql_type}")
+
+    # Password reset (web/login.html "Forgot password?" -> core/
+    # email_sender.py). token_hash only, same reasoning as auth_sessions -
+    # the raw token lives in the emailed link, never persisted. One
+    # outstanding token per user in practice (requesting a new one
+    # invalidates prior ones - see invalidate_password_reset_tokens_for_user)
+    # so an old, possibly-leaked reset link can't still be redeemed later.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS password_reset_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        token_hash TEXT UNIQUE NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT
     );
     """)
 
@@ -673,16 +883,18 @@ def initialize_database():
 
 
 @timed("database")
-def record_signal_received(signal, source=None, sender=None, message_id=None, session_id=None):
+def record_signal_received(signal, source=None, sender=None, message_id=None, session_id=None,
+                            fund_id=None, broker_account_id=None):
     from trade_lifecycle import TradeStatus
 
     conn = get_connection()
     cursor = conn.execute("""
     INSERT INTO signals (
         message_id, channel, sender, asset, direction, timeframe,
-        trade_amount, message, received_at, executed, execution_status, session_id
+        trade_amount, message, received_at, executed, execution_status, session_id,
+        fund_id, broker_account_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
     """, (
         message_id,
         source,
@@ -695,6 +907,8 @@ def record_signal_received(signal, source=None, sender=None, message_id=None, se
         datetime.now().isoformat(),
         TradeStatus.SIGNAL_RECEIVED.value,
         session_id,
+        fund_id,
+        broker_account_id,
     ))
     conn.commit()
     trade_id = cursor.lastrowid
@@ -847,14 +1061,22 @@ def count_trades_since(since_iso):
 
 
 @timed("database")
-def get_recent_results(limit):
+def get_recent_results(limit, fund_id=None):
     conn = get_connection()
-    rows = conn.execute("""
-        SELECT result FROM signals
-        WHERE result IS NOT NULL
-        ORDER BY closed_at DESC
-        LIMIT ?
-    """, (limit,)).fetchall()
+    if fund_id is not None:
+        rows = conn.execute("""
+            SELECT result FROM signals
+            WHERE result IS NOT NULL AND fund_id = ?
+            ORDER BY closed_at DESC
+            LIMIT ?
+        """, (fund_id, limit)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT result FROM signals
+            WHERE result IS NOT NULL
+            ORDER BY closed_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
     conn.close()
     return [row["result"] for row in rows]
 
@@ -936,32 +1158,48 @@ def get_signal_detail(trade_id):
 
 
 @timed("database")
-def get_open_trades():
+def get_open_trades(broker_account_id=None):
+    """broker_account_id scopes recovery to one account's own open
+    positions - resuming a trade under the WRONG account's browser
+    context would check the wrong Pocket Option account's Closed-trades
+    list entirely, silently reporting a missing/wrong outcome. None
+    (the default) is the pre-multi-account behavior, unscoped - still
+    correct for a single legacy connection with no broker_account_id on
+    any of its rows."""
     conn = get_connection()
-    rows = conn.execute("""
-        SELECT * FROM signals
-        WHERE execution_status IN ('trade_clicked', 'trade_opened')
-        ORDER BY opened_at ASC
-    """).fetchall()
+    if broker_account_id is not None:
+        rows = conn.execute("""
+            SELECT * FROM signals
+            WHERE execution_status IN ('trade_clicked', 'trade_opened') AND broker_account_id = ?
+            ORDER BY opened_at ASC
+        """, (broker_account_id,)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT * FROM signals
+            WHERE execution_status IN ('trade_clicked', 'trade_opened')
+            ORDER BY opened_at ASC
+        """).fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
 
 @timed("database")
-def get_trades_between(start_iso, end_iso, closed_only=False):
+def get_trades_between(start_iso, end_iso, closed_only=False, fund_id=None):
     conn = get_connection()
+    fund_clause = " AND fund_id = ?" if fund_id is not None else ""
+    fund_params = (fund_id,) if fund_id is not None else ()
     if closed_only:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT * FROM signals
-            WHERE closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?
+            WHERE closed_at IS NOT NULL AND closed_at >= ? AND closed_at <= ?{fund_clause}
             ORDER BY closed_at ASC
-        """, (start_iso, end_iso)).fetchall()
+        """, (start_iso, end_iso) + fund_params).fetchall()
     else:
-        rows = conn.execute("""
+        rows = conn.execute(f"""
             SELECT * FROM signals
-            WHERE received_at >= ? AND received_at <= ?
+            WHERE received_at >= ? AND received_at <= ?{fund_clause}
             ORDER BY received_at ASC
-        """, (start_iso, end_iso)).fetchall()
+        """, (start_iso, end_iso) + fund_params).fetchall()
     conn.close()
     return [dict(row) for row in rows]
 
@@ -1173,14 +1411,22 @@ def record_channel_message(chat_id=None, username=None, title=None, message_text
 
 @timed("database")
 def get_last_channel_message(chat_id=None, username=None):
+    # id DESC as a tiebreaker, not just received_at DESC - found live via a
+    # real intermittent test failure: datetime.now().isoformat() can tie
+    # between two inserts under load (Windows clock resolution), and
+    # SQLite gives no ordering guarantee among tied rows without a second
+    # sort key, so the "most recent" message could come back wrong even
+    # though it was correctly inserted last (id is autoincrement, so it's
+    # a genuine insertion-order tiebreaker, unlike received_at).
     conn = get_connection()
     if chat_id is not None:
         row = conn.execute(
-            "SELECT * FROM channel_messages WHERE chat_id = ? ORDER BY received_at DESC LIMIT 1", (str(chat_id),)
+            "SELECT * FROM channel_messages WHERE chat_id = ? ORDER BY received_at DESC, id DESC LIMIT 1",
+            (str(chat_id),),
         ).fetchone()
     elif username:
         row = conn.execute(
-            "SELECT * FROM channel_messages WHERE LOWER(username) = LOWER(?) ORDER BY received_at DESC LIMIT 1",
+            "SELECT * FROM channel_messages WHERE LOWER(username) = LOWER(?) ORDER BY received_at DESC, id DESC LIMIT 1",
             (username,),
         ).fetchone()
     else:
@@ -1194,17 +1440,17 @@ def list_recent_channel_messages(chat_id=None, username=None, limit=25):
     conn = get_connection()
     if chat_id is not None:
         rows = conn.execute(
-            "SELECT * FROM channel_messages WHERE chat_id = ? ORDER BY received_at DESC LIMIT ?",
+            "SELECT * FROM channel_messages WHERE chat_id = ? ORDER BY received_at DESC, id DESC LIMIT ?",
             (str(chat_id), limit),
         ).fetchall()
     elif username:
         rows = conn.execute(
-            "SELECT * FROM channel_messages WHERE LOWER(username) = LOWER(?) ORDER BY received_at DESC LIMIT ?",
+            "SELECT * FROM channel_messages WHERE LOWER(username) = LOWER(?) ORDER BY received_at DESC, id DESC LIMIT ?",
             (username, limit),
         ).fetchall()
     else:
         rows = conn.execute(
-            "SELECT * FROM channel_messages ORDER BY received_at DESC LIMIT ?", (limit,)
+            "SELECT * FROM channel_messages ORDER BY received_at DESC, id DESC LIMIT ?", (limit,)
         ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1339,6 +1585,7 @@ def get_decrypted_telegram_credentials():
 _FUND_FIELDS = {
     "name", "starting_balance", "assigned_broker_label", "default_risk_profile_id",
     "default_session_profile_id", "profit_target", "loss_limit", "max_trades", "status",
+    "live_enabled",
 }
 _VALID_FUND_STATUSES = {"active", "paused", "archived"}
 
@@ -1469,6 +1716,173 @@ def list_fund_backtest_runs(fund_id, limit=50):
 
 
 # ---------------------------------------------------------------------
+# Broker Accounts (docs/AXIM_APP_PLAN.md) - real, independently-connected
+# Pocket Option logins. api/broker_accounts_routes.py is the HTTP surface;
+# execution/browser_warmup.py is what actually opens each account's
+# persistent browser context using user_data_dir.
+# ---------------------------------------------------------------------
+
+_BROKER_ACCOUNT_FIELDS = {
+    "name", "mode", "live_enabled", "user_data_dir", "connection_status",
+    "last_connected_at", "last_balance", "last_balance_checked_at", "status",
+}
+_VALID_BROKER_ACCOUNT_MODES = {"demo", "live", "both"}
+_VALID_BROKER_ACCOUNT_STATUSES = {"active", "disabled", "archived"}
+_VALID_CONNECTION_STATUSES = {"disconnected", "connecting", "connected", "error"}
+
+
+@timed("database")
+def create_broker_account(name, mode="demo", user_id=None):
+    if mode not in _VALID_BROKER_ACCOUNT_MODES:
+        raise ValueError(f"invalid broker account mode: {mode!r}")
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute(
+        "INSERT INTO broker_accounts (user_id, name, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (user_id, name, mode, now, now),
+    )
+    account_id = cursor.lastrowid
+    # user_data_dir depends on the id, so it's set right after insert
+    # rather than pre-computed - matches the same "known after INSERT"
+    # ordering used elsewhere in this module (e.g. trade_id-derived rows).
+    user_data_dir = f"sessions/pocket_broker_{account_id}"
+    conn.execute("UPDATE broker_accounts SET user_data_dir = ? WHERE id = ?", (user_data_dir, account_id))
+    conn.commit()
+    conn.close()
+    return account_id
+
+
+@timed("database")
+def get_broker_account(account_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM broker_accounts WHERE id = ?", (account_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def list_broker_accounts(user_id=None, status=None):
+    conn = get_connection()
+    query = "SELECT * FROM broker_accounts WHERE 1=1"
+    params = []
+    if user_id is not None:
+        query += " AND user_id = ?"
+        params.append(user_id)
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY name"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def update_broker_account(account_id, **fields):
+    for key in fields:
+        if key not in _BROKER_ACCOUNT_FIELDS:
+            raise ValueError(f"Unknown broker account field: {key!r}")
+    if "mode" in fields and fields["mode"] not in _VALID_BROKER_ACCOUNT_MODES:
+        raise ValueError(f"invalid broker account mode: {fields['mode']!r}")
+    if "status" in fields and fields["status"] not in _VALID_BROKER_ACCOUNT_STATUSES:
+        raise ValueError(f"invalid broker account status: {fields['status']!r}")
+    if "connection_status" in fields and fields["connection_status"] not in _VALID_CONNECTION_STATUSES:
+        raise ValueError(f"invalid connection status: {fields['connection_status']!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields] + ["updated_at = ?"]
+    params = list(fields.values()) + [datetime.now().isoformat()]
+    params.append(account_id)
+    conn = get_connection()
+    conn.execute(f"UPDATE broker_accounts SET {', '.join(set_clauses)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def assign_broker_account_to_fund(fund_id, broker_account_id, is_primary=True):
+    """Attaches a broker account to a fund. Only one broker account may be
+    primary per fund today (a fund "distributing trades across multiple
+    broker accounts" is explicitly future scope) - assigning a new primary
+    demotes any existing one rather than allowing two."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    if is_primary:
+        conn.execute("UPDATE fund_broker_accounts SET is_primary = 0 WHERE fund_id = ?", (fund_id,))
+    conn.execute(
+        """
+        INSERT INTO fund_broker_accounts (fund_id, broker_account_id, is_primary, created_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(fund_id, broker_account_id) DO UPDATE SET is_primary = excluded.is_primary
+        """,
+        (fund_id, broker_account_id, 1 if is_primary else 0, now),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def unassign_broker_account_from_fund(fund_id, broker_account_id):
+    conn = get_connection()
+    conn.execute(
+        "DELETE FROM fund_broker_accounts WHERE fund_id = ? AND broker_account_id = ?",
+        (fund_id, broker_account_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_fund_primary_broker_account(fund_id):
+    conn = get_connection()
+    row = conn.execute(
+        """
+        SELECT ba.* FROM broker_accounts ba
+        JOIN fund_broker_accounts fba ON fba.broker_account_id = ba.id
+        WHERE fba.fund_id = ? AND fba.is_primary = 1
+        """,
+        (fund_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def list_fund_broker_accounts(fund_id):
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT ba.*, fba.is_primary FROM broker_accounts ba
+        JOIN fund_broker_accounts fba ON fba.broker_account_id = ba.id
+        WHERE fba.fund_id = ?
+        ORDER BY fba.is_primary DESC, ba.name
+        """,
+        (fund_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def list_broker_account_funds(broker_account_id):
+    """Which funds currently point at this account - needed both for the
+    Broker Accounts UI ("used by: Fund A, Fund B") and to warn before an
+    operator disconnects/archives an account still in active use."""
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT f.* FROM funds f
+        JOIN fund_broker_accounts fba ON fba.fund_id = f.id
+        WHERE fba.broker_account_id = ?
+        ORDER BY f.name
+        """,
+        (broker_account_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------
 # Trading Sessions (docs/AXIM_SESSION_ARCHITECTURE.md) - api/sessions.py,
 # core/session_manager.py, core/telegram_listener.py
 # ---------------------------------------------------------------------
@@ -1510,6 +1924,12 @@ def delete_session_profile(profile_id):
 
 @timed("database")
 def get_active_trading_session():
+    """Newest active session across the WHOLE app, regardless of fund/
+    broker account - kept for legacy/test call sites and rule_engine's
+    unscoped fallback. Prefer get_active_trading_session_for_fund/
+    _for_broker_account/_for_channel below, which are concurrency-safe;
+    this one silently picks only the most-recently-started session once
+    more than one is active."""
     conn = get_connection()
     row = conn.execute("SELECT * FROM trading_sessions WHERE status = 'active' ORDER BY id DESC LIMIT 1").fetchone()
     conn.close()
@@ -1517,22 +1937,88 @@ def get_active_trading_session():
 
 
 @timed("database")
+def list_active_trading_sessions():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM trading_sessions WHERE status = 'active' ORDER BY id DESC").fetchall()
+    conn.close()
+    return [_session_row_to_dict(r) for r in rows]
+
+
+@timed("database")
+def get_active_trading_session_for_broker_account(broker_account_id):
+    if broker_account_id is None:
+        return None
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM trading_sessions WHERE status = 'active' AND broker_account_id = ? ORDER BY id DESC LIMIT 1",
+        (broker_account_id,),
+    ).fetchone()
+    conn.close()
+    return _session_row_to_dict(row) if row else None
+
+
+@timed("database")
+def get_active_trading_session_for_fund(fund_id):
+    if fund_id is None:
+        return None
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM trading_sessions WHERE status = 'active' AND fund_id = ? ORDER BY id DESC LIMIT 1",
+        (fund_id,),
+    ).fetchone()
+    conn.close()
+    return _session_row_to_dict(row) if row else None
+
+
+@timed("database")
+def get_active_trading_session_for_channel(channel_id):
+    """The one active session (if any) whose channel_ids_json covers this
+    channel - the correct scoping for signal routing once more than one
+    session can be active at a time. Concurrently active sessions are
+    never expected to share a channel (a Signal Source belongs to one
+    Fund), but if that ever happened this deterministically returns the
+    newest rather than guessing."""
+    if channel_id is None:
+        return None
+    for session in list_active_trading_sessions():
+        if channel_id in session["channel_ids"]:
+            return session
+    return None
+
+
+@timed("database")
 def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss_limit=0, max_trades=0,
-                           require_confirmation=False, profile_id=None, risk_profile_id=None, fund_id=None):
-    """Raises ValueError if a session is already active - only one active
-    session at a time (single shared trading connection, see
-    docs/AXIM_APP_PLAN.md's "known gaps" - this means funds cannot yet
-    run truly concurrent sessions either, a documented follow-up, not
-    hidden). profile_id is the Phase 3 session_profiles start-config
-    template; risk_profile_id is the Risk Engine sizing/martingale/
-    compounding/vault profile; fund_id is the Fund this session's P&L
-    should be attributed to - three independent, optional attachments,
-    not the same concept. fund_id defaults to None (not required at the
-    database layer) so every existing test/call site keeps working
-    unchanged - "a session must have a fund" is a UI/API-layer rule
-    (api/sessions.py), the same soft-enforcement pattern this codebase
-    already uses for other evolving requirements."""
-    if get_active_trading_session() is not None:
+                           require_confirmation=False, profile_id=None, risk_profile_id=None, fund_id=None,
+                           broker_account_id=None):
+    """Raises ValueError if a session is already active ON THE SAME
+    BROKER ACCOUNT - that's the real concurrency boundary (one physical
+    Pocket Option login can only run one session at a time; different
+    Funds on different broker accounts can each run their own). When
+    broker_account_id is None (legacy/test call sites that predate the
+    multi-broker-account architecture, or a session started with no Fund
+    attached), falls back to the old whole-app exclusivity check, since
+    there's no account to scope it to.
+
+    profile_id is the Phase 3 session_profiles start-config template;
+    risk_profile_id is the Risk Engine sizing/martingale/compounding/
+    vault profile; fund_id is the Fund this session's P&L should be
+    attributed to - three independent, optional attachments, not the
+    same concept. fund_id defaults to None (not required at the database
+    layer) so every existing test/call site keeps working unchanged -
+    "a session must have a fund" is a UI/API-layer rule (api/sessions.py),
+    the same soft-enforcement pattern this codebase already uses for
+    other evolving requirements.
+
+    broker_account_id is also a point-in-time snapshot of the fund's
+    primary broker account at session-start, for display/audit only -
+    actual trade routing (core/broker_account_manager.py) always
+    resolves the fund's CURRENT primary account dynamically per signal,
+    not this stored value, so a mid-session account reassignment can't
+    leave trades silently routed by a stale snapshot."""
+    if broker_account_id is not None:
+        if get_active_trading_session_for_broker_account(broker_account_id) is not None:
+            raise ValueError("this broker account already has an active session - stop it before starting another")
+    elif get_active_trading_session() is not None:
         raise ValueError("a session is already active - stop it before starting another")
     if not channel_ids:
         raise ValueError("a session must have at least one channel")
@@ -1542,11 +2028,11 @@ def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss
         INSERT INTO trading_sessions (
             profile_id, name, channel_ids_json, account_mode, profit_target, loss_limit,
             max_trades, require_confirmation, status, trades_count, realized_pnl, started_at,
-            risk_profile_id, fund_id
+            risk_profile_id, fund_id, broker_account_id
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?)
     """, (profile_id, name, json.dumps(channel_ids), account_mode, profit_target, loss_limit,
-          max_trades, 1 if require_confirmation else 0, now, risk_profile_id, fund_id))
+          max_trades, 1 if require_confirmation else 0, now, risk_profile_id, fund_id, broker_account_id))
     conn.commit()
     session_id = cursor.lastrowid
     conn.close()
@@ -1572,6 +2058,7 @@ def list_trading_sessions(limit=50):
 _VALID_SESSION_STOP_STATUSES = {
     "stopped_target", "stopped_loss_limit", "stopped_max_trades", "stopped_manual",
     "stopped_emergency", "stopped_connection_lost", "stopped_parse_failures", "stopped_rule",
+    "stopped_fund_target", "stopped_fund_loss_limit", "stopped_fund_max_trades",
 }
 
 
@@ -1723,13 +2210,27 @@ def duplicate_risk_profile(profile_id, new_name):
     source = get_risk_profile(profile_id)
     if source is None:
         raise ValueError(f"no risk profile with id {profile_id}")
+    return create_risk_profile_from_snapshot(new_name, source)
+
+
+@timed("database")
+def create_risk_profile_from_snapshot(new_name, snapshot):
+    """Same copy logic as duplicate_risk_profile, but sourced from an
+    arbitrary snapshot dict (get_risk_profile()'s exact shape) rather
+    than re-fetching a live profile by id - used to deploy a Strategy
+    Lab backtest_strategy's point-in-time profile_snapshot to a Fund
+    (docs/AXIM_APP_PLAN.md "Deploy to Fund"), which may reflect a
+    template or profile that's since been edited or deleted. Always a
+    fresh, independent, non-template profile - deploying to two Funds
+    never leaves them silently sharing (and able to drift) the same
+    row."""
     new_id = create_risk_profile(
-        new_name, is_template=False, description=source["description"],
-        **{k: source[k] for k in _RISK_PROFILE_FIELDS if k not in ("name", "description")},
+        new_name, is_template=False, description=snapshot.get("description"),
+        **{k: snapshot[k] for k in _RISK_PROFILE_FIELDS if k not in ("name", "description")},
     )
-    update_martingale_settings(new_id, **{k: source["martingale"][k] for k in _MARTINGALE_FIELDS})
-    update_compounding_settings(new_id, **{k: source["compounding"][k] for k in _COMPOUNDING_FIELDS})
-    update_profit_vault_settings(new_id, **{k: source["profit_vault"][k] for k in _VAULT_FIELDS})
+    update_martingale_settings(new_id, **{k: snapshot["martingale"][k] for k in _MARTINGALE_FIELDS})
+    update_compounding_settings(new_id, **{k: snapshot["compounding"][k] for k in _COMPOUNDING_FIELDS})
+    update_profit_vault_settings(new_id, **{k: snapshot["profit_vault"][k] for k in _VAULT_FIELDS})
     return new_id
 
 
@@ -1856,6 +2357,21 @@ def advance_martingale_step(session_id):
 def reset_martingale_step(session_id):
     conn = get_connection()
     conn.execute("UPDATE trading_sessions SET current_martingale_step = 0 WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def set_session_martingale_disabled(session_id, disabled=True):
+    """A per-session override, not a mutation of the shared risk profile
+    (which other sessions/funds may also be using) - see
+    risk_engine.compute_position_size, which checks this before applying
+    the profile's martingale ladder at all."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE trading_sessions SET martingale_disabled = ? WHERE id = ?",
+        (1 if disabled else 0, session_id),
+    )
     conn.commit()
     conn.close()
 
@@ -2183,17 +2699,26 @@ def _rule_row_to_dict(row):
     return d
 
 
+_VALID_RULE_SCOPES = {"fund", "session"}
+
+
 @timed("database")
-def create_rule(name, condition_type, condition_params, action_type, action_params, enabled=True):
+def create_rule(name, condition_type, condition_params, action_type, action_params, enabled=True,
+                 fund_id=None, scope="fund", session_id=None):
+    if scope not in _VALID_RULE_SCOPES:
+        raise ValueError(f"invalid rule scope: {scope!r}")
+    if scope == "session" and session_id is None:
+        raise ValueError("a session-scoped rule needs a session_id")
     conn = get_connection()
     now = datetime.now().isoformat()
     cursor = conn.execute("""
         INSERT INTO rules (
             name, enabled, condition_type, condition_params_json,
-            action_type, action_params_json, last_condition_state, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+            action_type, action_params_json, last_condition_state, created_at, updated_at,
+            fund_id, scope, session_id
+        ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
     """, (name, 1 if enabled else 0, condition_type, json.dumps(condition_params),
-          action_type, json.dumps(action_params), now, now))
+          action_type, json.dumps(action_params), now, now, fund_id, scope, session_id))
     conn.commit()
     rule_id = cursor.lastrowid
     conn.close()
@@ -2209,14 +2734,17 @@ def get_rule(rule_id):
 
 
 @timed("database")
-def list_rules():
+def list_rules(fund_id=None):
     conn = get_connection()
-    rows = conn.execute("SELECT * FROM rules ORDER BY id DESC").fetchall()
+    if fund_id is not None:
+        rows = conn.execute("SELECT * FROM rules WHERE fund_id = ? ORDER BY id DESC", (fund_id,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM rules ORDER BY id DESC").fetchall()
     conn.close()
     return [_rule_row_to_dict(r) for r in rows]
 
 
-_RULE_UPDATABLE_FIELDS = {"name", "enabled", "condition_type", "action_type"}
+_RULE_UPDATABLE_FIELDS = {"name", "enabled", "condition_type", "action_type", "fund_id", "scope", "session_id"}
 
 
 @timed("database")
@@ -2224,6 +2752,8 @@ def update_rule(rule_id, condition_params=None, action_params=None, **fields):
     for key in fields:
         if key not in _RULE_UPDATABLE_FIELDS:
             raise ValueError(f"Unknown rule field: {key!r}")
+    if "scope" in fields and fields["scope"] not in _VALID_RULE_SCOPES:
+        raise ValueError(f"invalid rule scope: {fields['scope']!r}")
     set_clauses = [f"{key} = ?" for key in fields]
     params = list(fields.values())
     if condition_params is not None:
@@ -2247,6 +2777,18 @@ def update_rule(rule_id, condition_params=None, action_params=None, **fields):
 def delete_rule(rule_id):
     conn = get_connection()
     conn.execute("DELETE FROM rules WHERE id = ?", (rule_id,))
+    conn.execute("DELETE FROM rule_firings WHERE rule_id = ?", (rule_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def delete_session_rules(session_id):
+    """Session-scoped rules are a temporary override for exactly one
+    trading_sessions row - called from session_manager.end_session so
+    they never outlive the session they were created for."""
+    conn = get_connection()
+    conn.execute("DELETE FROM rules WHERE scope = 'session' AND session_id = ?", (session_id,))
     conn.commit()
     conn.close()
 
@@ -2268,6 +2810,163 @@ def record_rule_evaluation(rule_id, condition_state, fired):
             "UPDATE rules SET last_condition_state = ? WHERE id = ?",
             (1 if condition_state else 0, rule_id),
         )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def record_rule_firing(rule_id, outcome_message):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO rule_firings (rule_id, fired_at, outcome_message) VALUES (?, ?, ?)",
+        (rule_id, datetime.now().isoformat(), outcome_message),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_rule_firings(rule_id, limit=20):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM rule_firings WHERE rule_id = ? ORDER BY id DESC LIMIT ?", (rule_id, limit)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------
+# Cross-process real-time event outbox - core/event_stream.py (listener
+# process) writes, api/event_stream_routes.py's SSE endpoint (API
+# process) reads. See server_events' own CREATE TABLE comment above for
+# the full reasoning.
+# ---------------------------------------------------------------------
+
+@timed("database")
+def record_server_event(event_type, payload=None):
+    conn = get_connection()
+    cursor = conn.execute(
+        "INSERT INTO server_events (event_type, payload_json, created_at) VALUES (?, ?, ?)",
+        (event_type, json.dumps(payload) if payload is not None else None, datetime.now().isoformat()),
+    )
+    conn.commit()
+    event_id = cursor.lastrowid
+    conn.close()
+    return event_id
+
+
+@timed("database")
+def list_server_events_since(last_id, limit=200):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM server_events WHERE id > ? ORDER BY id ASC LIMIT ?", (last_id, limit)
+    ).fetchall()
+    conn.close()
+    results = []
+    for r in rows:
+        d = dict(r)
+        d["payload"] = json.loads(d["payload_json"]) if d["payload_json"] else None
+        results.append(d)
+    return results
+
+
+@timed("database")
+def oldest_server_event_id():
+    """Used by the SSE tailer to detect a stale Last-Event-ID (one older
+    than anything still in the table, because prune_server_events already
+    removed it) so it can emit an explicit resync signal instead of
+    silently skipping the gap. None if the table is empty."""
+    conn = get_connection()
+    row = conn.execute("SELECT MIN(id) AS min_id FROM server_events").fetchone()
+    conn.close()
+    return row["min_id"]
+
+
+@timed("database")
+def prune_server_events(older_than_hours=72):
+    conn = get_connection()
+    cutoff = (datetime.now() - timedelta(hours=older_than_hours)).isoformat()
+    conn.execute("DELETE FROM server_events WHERE created_at < ?", (cutoff,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def latest_server_event_id():
+    """The SSE poller's starting cursor when it first starts up - a fresh
+    poller begins from "now" (only new events going forward), not from
+    the start of history. None if the table is empty."""
+    conn = get_connection()
+    row = conn.execute("SELECT MAX(id) AS max_id FROM server_events").fetchone()
+    conn.close()
+    return row["max_id"]
+
+
+# ---------------------------------------------------------------------
+# In-app notifications - api/notifications.py, core/rule_engine.py's
+# notify_owner action.
+# ---------------------------------------------------------------------
+
+@timed("database")
+def create_notification(user_id, message, source=None):
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute(
+        "INSERT INTO notifications (user_id, message, source, created_at) VALUES (?, ?, ?, ?)",
+        (user_id, message, source, now),
+    )
+    conn.commit()
+    notification_id = cursor.lastrowid
+    conn.close()
+    record_server_event("notification.created", {"user_id": user_id, "message": message, "source": source})
+    return notification_id
+
+
+@timed("database")
+def list_notifications(user_id, unread_only=False, limit=50):
+    conn = get_connection()
+    if unread_only:
+        rows = conn.execute(
+            "SELECT * FROM notifications WHERE user_id = ? AND read_at IS NULL ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def count_unread_notifications(user_id):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM notifications WHERE user_id = ? AND read_at IS NULL", (user_id,)
+    ).fetchone()
+    conn.close()
+    return row["n"]
+
+
+@timed("database")
+def mark_notification_read(notification_id):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE notifications SET read_at = ? WHERE id = ? AND read_at IS NULL",
+        (datetime.now().isoformat(), notification_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def mark_all_notifications_read(user_id):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE notifications SET read_at = ? WHERE user_id = ? AND read_at IS NULL",
+        (datetime.now().isoformat(), user_id),
+    )
     conn.commit()
     conn.close()
 
@@ -2326,6 +3025,17 @@ def list_users():
     rows = conn.execute("SELECT * FROM users ORDER BY created_at").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+@timed("database")
+def get_owner_user():
+    """The account created via /bootstrap-owner - there is exactly one,
+    by construction (see auth_routes.bootstrap_owner). Used to resolve
+    who "notify Owner" rule actions actually notify."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM users WHERE role = 'owner' ORDER BY id LIMIT 1").fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 @timed("database")
@@ -2413,18 +3123,22 @@ def record_login(user_id):
 
 
 @timed("database")
-def create_session(user_id, expires_hours=720):
+def create_session(user_id, expires_hours=720, client_name=None, client_type="web"):
     """Default 30-day expiry (720h) - a local single-operator-class tool
-    with a 'remember me' checkbox on login, not a bank session timeout."""
+    with a 'remember me' checkbox on login, not a bank session timeout.
+    client_name/client_type identify a Remote Client device (see
+    docs/AXIM_REMOTE_ACCESS.md) for the "Connected Devices" view - both
+    optional, default to an unnamed 'web' session (today's plain browser
+    login), so every existing call site keeps working unchanged."""
     import auth
     raw_token, token_hash = auth.generate_session_token()
     now = datetime.now()
     expires_at = (now + timedelta(hours=expires_hours)).isoformat()
     conn = get_connection()
     conn.execute(
-        """INSERT INTO auth_sessions (user_id, token_hash, created_at, last_seen_at, expires_at)
-           VALUES (?, ?, ?, ?, ?)""",
-        (user_id, token_hash, now.isoformat(), now.isoformat(), expires_at),
+        """INSERT INTO auth_sessions (user_id, token_hash, created_at, last_seen_at, expires_at, client_name, client_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, token_hash, now.isoformat(), now.isoformat(), expires_at, client_name, client_type),
     )
     conn.commit()
     conn.close()
@@ -2474,7 +3188,8 @@ def delete_session(raw_token):
 def list_user_sessions(user_id):
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, created_at, last_seen_at, expires_at FROM auth_sessions WHERE user_id = ? ORDER BY last_seen_at DESC",
+        """SELECT id, created_at, last_seen_at, expires_at, client_name, client_type
+           FROM auth_sessions WHERE user_id = ? ORDER BY last_seen_at DESC""",
         (user_id,),
     ).fetchall()
     conn.close()
@@ -2487,6 +3202,121 @@ def revoke_all_sessions(user_id):
     every active session for this user, forcing re-login everywhere."""
     conn = get_connection()
     conn.execute("DELETE FROM auth_sessions WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def revoke_session(session_id, user_id=None):
+    """Revoke ONE device/session (the 'Connected Devices' panel's per-row
+    action) rather than every session for a user. user_id, if given,
+    scopes the delete to that user too - the self-service "log out this
+    device of mine" call site passes the caller's own id so a user can
+    never revoke someone else's session by guessing an id; the admin
+    'revoke any user's session' call site omits it."""
+    conn = get_connection()
+    if user_id is not None:
+        conn.execute("DELETE FROM auth_sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+    else:
+        conn.execute("DELETE FROM auth_sessions WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
+_PASSWORD_RESET_TOKEN_TTL_MINUTES = 30
+_PASSWORD_RESET_MIN_REQUEST_INTERVAL_SECONDS = 60
+
+
+@timed("database")
+def password_reset_recently_requested(user_id):
+    """True if a reset was requested within the last
+    _PASSWORD_RESET_MIN_REQUEST_INTERVAL_SECONDS - a basic guard against
+    using the forgot-password endpoint to spam a real user's inbox
+    (repeated requests can't be told apart from a genuine retry by the
+    caller alone, since the HTTP response is deliberately the same
+    either way - see api/auth_routes.py's forgot_password)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT created_at FROM password_reset_tokens WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return False
+    elapsed = (datetime.now() - datetime.fromisoformat(row["created_at"])).total_seconds()
+    return elapsed < _PASSWORD_RESET_MIN_REQUEST_INTERVAL_SECONDS
+
+
+@timed("database")
+def invalidate_password_reset_tokens_for_user(user_id):
+    """Deletes every not-yet-used token for this user - called before
+    issuing a new one (a fresh 'forgot password' request supersedes any
+    prior link) and after a successful reset (the token that was just
+    redeemed, plus any other still-outstanding ones, must all stop
+    working)."""
+    conn = get_connection()
+    conn.execute("DELETE FROM password_reset_tokens WHERE user_id = ? AND used_at IS NULL", (user_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def create_password_reset_token(user_id):
+    """Returns (raw_token, expires_at) - only token_hash is persisted,
+    same reasoning as auth_sessions. Invalidates any prior outstanding
+    token for this user first, so at most one reset link is ever valid
+    at a time."""
+    import auth
+    invalidate_password_reset_tokens_for_user(user_id)
+    raw_token, token_hash = auth.generate_session_token()
+    now = datetime.now()
+    expires_at = (now + timedelta(minutes=_PASSWORD_RESET_TOKEN_TTL_MINUTES)).isoformat()
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO password_reset_tokens (user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        (user_id, token_hash, now.isoformat(), expires_at),
+    )
+    conn.commit()
+    conn.close()
+    return raw_token, expires_at
+
+
+@timed("database")
+def get_valid_password_reset_token(raw_token):
+    """Returns the owning user's row if raw_token hashes to a token that
+    exists, hasn't been used, and hasn't expired - else None. Never
+    distinguishes "wrong token" from "expired token" from "already used"
+    in what it returns, so a caller can't be tricked into leaking which
+    case applies."""
+    import auth
+    token_hash = auth.hash_token(raw_token)
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM password_reset_tokens WHERE token_hash = ? AND used_at IS NULL", (token_hash,)
+    ).fetchone()
+    if row is None:
+        conn.close()
+        return None
+    if row["expires_at"] < datetime.now().isoformat():
+        conn.close()
+        return None
+    user = conn.execute("SELECT * FROM users WHERE id = ?", (row["user_id"],)).fetchone()
+    conn.close()
+    return dict(user) if user else None
+
+
+@timed("database")
+def consume_password_reset_token(raw_token):
+    """Marks the token used - called only after the password has already
+    been successfully updated, so a failure partway through never leaves
+    a token burned with no password change to show for it."""
+    import auth
+    token_hash = auth.hash_token(raw_token)
+    conn = get_connection()
+    conn.execute(
+        "UPDATE password_reset_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL",
+        (datetime.now().isoformat(), token_hash),
+    )
     conn.commit()
     conn.close()
 

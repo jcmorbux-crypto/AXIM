@@ -111,6 +111,36 @@ class SessionTests(unittest.TestCase):
         database.create_session(self.user_id)
         self.assertEqual(len(database.list_user_sessions(self.user_id)), 2)
 
+    def test_client_name_and_type_round_trip(self):
+        database.create_session(self.user_id, client_name="Jay's Laptop", client_type="desktop")
+        sessions = database.list_user_sessions(self.user_id)
+        self.assertEqual(sessions[0]["client_name"], "Jay's Laptop")
+        self.assertEqual(sessions[0]["client_type"], "desktop")
+
+    def test_client_type_defaults_to_web(self):
+        database.create_session(self.user_id)
+        sessions = database.list_user_sessions(self.user_id)
+        self.assertEqual(sessions[0]["client_type"], "web")
+        self.assertIsNone(sessions[0]["client_name"])
+
+    def test_revoke_session_removes_only_that_one(self):
+        database.create_session(self.user_id)
+        database.create_session(self.user_id)
+        session_rows = database.list_user_sessions(self.user_id)
+        self.assertEqual(len(session_rows), 2)
+        database.revoke_session(session_rows[0]["id"])
+        remaining = database.list_user_sessions(self.user_id)
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0]["id"], session_rows[1]["id"])
+
+    def test_revoke_session_scoped_to_user_id_ignores_other_users(self):
+        other_user_id = database.create_user("b@example.com", "supersecret2")
+        database.create_session(self.user_id)
+        session_row = database.list_user_sessions(self.user_id)[0]
+        # Attempting to revoke user A's session while scoped as user B must be a no-op.
+        database.revoke_session(session_row["id"], user_id=other_user_id)
+        self.assertEqual(len(database.list_user_sessions(self.user_id)), 1)
+
 
 class AdminActionTests(unittest.TestCase):
     def setUp(self):

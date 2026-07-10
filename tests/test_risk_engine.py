@@ -86,6 +86,16 @@ class ComputePositionSizeTests(unittest.TestCase):
         database.advance_martingale_step(self.session_id)
         self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 40)  # step 2
 
+    def test_martingale_disabled_for_session_overrides_profile_setting(self):
+        profile_id = database.create_risk_profile("Martingale Test", sizing_mode="fixed", fixed_amount=10)
+        database.update_martingale_settings(profile_id, enabled=True, max_steps=5, multiplier=2.0)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.advance_martingale_step(self.session_id)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 20)  # stepped, martingale on
+
+        database.set_session_martingale_disabled(self.session_id, True)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 10)  # flat base amount now
+
     def test_martingale_resets_after_win_when_configured(self):
         profile_id = database.create_risk_profile("Martingale Reset", sizing_mode="fixed", fixed_amount=10)
         database.update_martingale_settings(profile_id, enabled=True, max_steps=5, multiplier=2.0, reset_after_win=True)

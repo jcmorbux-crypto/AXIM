@@ -292,11 +292,13 @@ def compute_metrics(sessions, trades, starting_bankroll):
 
     peak = starting_bankroll
     max_dd_percent = 0.0
+    max_dd_amount = 0.0
     for t in trades:
         peak = max(peak, t["running_balance"])
         if peak > 0:
             dd = (peak - t["running_balance"]) / peak * 100
             max_dd_percent = max(max_dd_percent, dd)
+            max_dd_amount = max(max_dd_amount, peak - t["running_balance"])
 
     by_date = defaultdict(float)
     for t in trades:
@@ -324,6 +326,34 @@ def compute_metrics(sessions, trades, starting_bankroll):
     total_protected_profit = round(sum(s["ending_vaulted_amount"] for s in sessions), 2)
 
     max_dd_percent = round(max_dd_percent, 2)
+    max_dd_amount = round(max_dd_amount, 2)
+
+    # ---- Analyst-grade metrics (docs/AXIM_APP_PLAN.md's AI Strategy Lab) -
+    # standard trading-performance formulas, computed from the SAME real
+    # session/trade data everything else above uses, not a separate
+    # simulation. Documented as heuristics where the formula itself is a
+    # simplification (no risk-free rate exists for binary options, so
+    # "Sharpe-like" is mean/stddev of session returns, not a textbook
+    # Sharpe ratio) - never presented as more rigorous than it is.
+    session_pnls = [s["realized_pnl"] for s in sessions]
+    if len(session_pnls) >= 2:
+        mean_session_pnl = sum(session_pnls) / len(session_pnls)
+        variance = sum((p - mean_session_pnl) ** 2 for p in session_pnls) / len(session_pnls)
+        volatility = round(variance ** 0.5, 2)
+        sharpe_like_score = round(mean_session_pnl / volatility, 3) if volatility > 0 else None
+    else:
+        volatility = 0.0
+        sharpe_like_score = None
+
+    gross_profit = sum(t["profit_loss"] for t in trades if t["profit_loss"] > 0)
+    gross_loss = abs(sum(t["profit_loss"] for t in trades if t["profit_loss"] < 0))
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else (round(gross_profit, 2) if gross_profit > 0 else None)
+
+    profitable_sessions = sum(1 for p in session_pnls if p > 0)
+    consistency_percent = round((profitable_sessions / len(session_pnls)) * 100, 1) if session_pnls else None
+
+    recovery_factor = round(total_profit_loss / max_dd_amount, 2) if max_dd_amount > 0 else None
+
     return {
         "final_bankroll": final_bankroll,
         "total_profit_loss": total_profit_loss,
@@ -331,6 +361,7 @@ def compute_metrics(sessions, trades, starting_bankroll):
         "win_rate": win_rate,
         "loss_rate": loss_rate,
         "max_drawdown_percent": max_dd_percent,
+        "max_drawdown_amount": max_dd_amount,
         "best_day_pnl": best_day_pnl,
         "worst_day_pnl": worst_day_pnl,
         "longest_win_streak": longest_win,
@@ -344,6 +375,11 @@ def compute_metrics(sessions, trades, starting_bankroll):
         "total_protected_profit": total_protected_profit,
         "risk_score": _risk_score(max_dd_percent, max_martingale_step_used),
         "best_for_label": _best_for_label(roi_percent, max_dd_percent),
+        "sharpe_like_score": sharpe_like_score,
+        "profit_factor": profit_factor,
+        "consistency_percent": consistency_percent,
+        "recovery_factor": recovery_factor,
+        "volatility": volatility,
     }
 
 

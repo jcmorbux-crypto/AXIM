@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Users - AXIM</title>
+<title>Users - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 </head>
@@ -143,6 +143,11 @@
       <div id="manage-detail" class="muted">Loading...</div>
     </div>
 
+    <div class="card" style="margin-bottom:12px;">
+      <h3>Connected Devices</h3>
+      <div id="manage-devices" class="muted">Loading...</div>
+    </div>
+
     <div class="row" style="justify-content:flex-end;">
       <button class="subtle" onclick="closeModal('manage-modal')">Close</button>
     </div>
@@ -263,8 +268,39 @@ async function openManageModal(userId) {
       <div class="stat-row"><span class="stat-label">Trade count</span><span class="stat-value">${detail.trade_count ?? "N/A - shared account, not yet per-user"}</span></div>
       <div class="stat-row"><span class="stat-label">P/L summary</span><span class="stat-value">${detail.pl_summary ?? "N/A - shared account, not yet per-user"}</span></div>
     `;
+    renderManageDevices(userId, sessions);
   } catch (e) {
     document.getElementById("manage-detail").textContent = "Failed to load: " + e.message;
+  }
+}
+
+const CLIENT_TYPE_LABEL = { web: "Browser", desktop: "Desktop app", mobile: "Mobile app", tablet: "Tablet", api: "API client" };
+
+function renderManageDevices(userId, sessions) {
+  const el = document.getElementById("manage-devices");
+  if (!sessions.length) {
+    el.innerHTML = '<div class="empty">No active sessions.</div>';
+    return;
+  }
+  el.innerHTML = sessions.map(s => `
+    <div class="stat-row">
+      <span class="stat-label">
+        ${escapeHtml(s.client_name || CLIENT_TYPE_LABEL[s.client_type] || "Unnamed device")}
+        <span class="badge off" style="font-size:10px;">${escapeHtml(CLIENT_TYPE_LABEL[s.client_type] || s.client_type)}</span>
+        <span class="muted" style="font-size:11px;"> - last active ${new Date(s.last_seen_at).toLocaleString()}</span>
+      </span>
+      <button class="subtle" onclick="revokeManageDevice(${userId}, ${s.id})">Sign out</button>
+    </div>
+  `).join("");
+}
+
+async function revokeManageDevice(userId, sessionId) {
+  if (!confirm("Sign this device out?")) return;
+  try {
+    await fetchJSON(`/api/admin/users/${userId}/sessions/${sessionId}`, { method: "DELETE" });
+    await openManageModal(userId);
+  } catch (e) {
+    alert("Failed: " + e.message);
   }
 }
 

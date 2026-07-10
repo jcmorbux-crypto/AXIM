@@ -18,28 +18,86 @@
 }
 
 .container {
-  margin: 0;
-  padding-top: 10vh;
+  margin: 0 auto;
+  max-width: 480px;
+  padding: 10vh 24px 24px;
   display: flex;
   flex-direction: column;
   justify-content: center;
   text-align: center;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
-}
-
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
-}
-
-.row {
+.panel {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  gap: 14px;
+  text-align: left;
+}
+
+.hint {
+  color: #666;
+  font-size: 0.9em;
+  margin: 0;
+}
+
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 12px;
+  cursor: pointer;
+}
+
+.option input[type="radio"] {
+  margin-top: 3px;
+  box-shadow: none;
+  padding: 0;
+}
+
+.option span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.option small {
+  color: #666;
+  font-weight: 400;
+}
+
+#server-address-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+
+#server-address {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.error {
+  color: #c0392b;
+  font-size: 0.9em;
+}
+
+.link-button {
+  background: none;
+  border: none;
+  box-shadow: none;
+  color: #646cff;
+  text-decoration: underline;
+  font-weight: 400;
+  padding: 0;
+}
+
+button.primary {
+  align-self: flex-start;
+  background-color: #396cd8;
+  color: #ffffff;
 }
 
 a {
@@ -87,10 +145,6 @@ button {
   outline: none;
 }
 
-#greet-input {
-  margin-right: 5px;
-}
-
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f6f6f6;
@@ -108,5 +162,14 @@ button {
   }
   button:active {
     background-color: #0f0f0f69;
+  }
+
+  .option {
+    border-color: #444;
+  }
+
+  .hint,
+  .option small {
+    color: #aaa;
   }
 }

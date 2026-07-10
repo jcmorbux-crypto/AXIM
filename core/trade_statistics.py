@@ -30,10 +30,10 @@ def _summarize(rows):
     }
 
 
-def daily_stats(now=None):
+def daily_stats(now=None, fund_id=None):
     now = now or datetime.now()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    rows = database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True)
+    rows = database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True, fund_id=fund_id)
     return _summarize(rows)
 
 
@@ -44,8 +44,8 @@ def weekly_stats(now=None):
     return _summarize(rows)
 
 
-def _consecutive(kind):
-    results = database.get_recent_results(1000)
+def _consecutive(kind, fund_id=None):
+    results = database.get_recent_results(1000, fund_id=fund_id)
     count = 0
     for r in results:
         if r == kind:
@@ -55,12 +55,12 @@ def _consecutive(kind):
     return count
 
 
-def consecutive_wins():
-    return _consecutive("win")
+def consecutive_wins(fund_id=None):
+    return _consecutive("win", fund_id=fund_id)
 
 
-def consecutive_losses():
-    return _consecutive("loss")
+def consecutive_losses(fund_id=None):
+    return _consecutive("loss", fund_id=fund_id)
 
 
 def signals_ignored_count(since_iso=None):
@@ -99,9 +99,9 @@ def yearly_stats(now=None):
     return _summarize(database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True))
 
 
-def lifetime_stats(now=None):
+def lifetime_stats(now=None, fund_id=None):
     now = now or datetime.now()
-    return _summarize(database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True))
+    return _summarize(database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True, fund_id=fund_id))
 
 
 def _grouped_performance(rows, key):

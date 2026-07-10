@@ -800,20 +800,29 @@ real state, not hardcoded.
 
 ## Known gaps / honest state as of Phase 1
 
-- **Single shared trading connection, not multi-tenant.** Every user
-  account controls/views the SAME Telegram session and Pocket Option
-  browser - there is no per-user broker isolation. The admin panel's
-  "user's Telegram connection status" / "Pocket Option status" /
-  "trade count" / "P/L summary" fields honestly report the shared
-  connection state and `None` for the not-yet-real per-user trade
-  count/P&L, rather than fabricate numbers. Real per-user isolation is a
-  bigger future SaaS step, not scoped into any phase above yet.
+**Superseded by the AXIM TradeStation multi-fund/multi-broker-account
+rebuild** (`broker_accounts`/`fund_broker_accounts` tables, Fund-scoped
+concurrent trading sessions, Fund-owned Rule Builder - see
+`docs/AXIM_SESSION_ARCHITECTURE.md`):
+- ~~Single shared trading connection, not multi-tenant~~ - each Fund now
+  has its own independently-connected Pocket Option account (own browser
+  profile, own `connection_status`/`live_enabled`), and different Funds
+  can run genuinely concurrent trading sessions on different accounts.
+  Still not full per-USER SaaS isolation (a Fund's account is shared by
+  every user who can see that Fund, not partitioned per login) - that
+  remains a bigger future step, not scoped into any phase above yet.
+- ~~8 of 11 sidebar pages still point at the legacy dark page~~ - every
+  page now uses the current design system (Mission Control, Funds,
+  Signal Sources, Risk Engine, Rule Builder, Strategy Lab, Trade Center,
+  Broker, Settings all consistent).
+
+**Still genuinely open:**
 - **Demo/live toggle still not wired to actually flip `ACCOUNT`** -
   same deliberate hold from `docs/AXIM_UI_PLAN.md`, pending an explicit
-  decision on how live-trading activation should work per-user.
-- **8 of 11 sidebar pages still point at the legacy dark page** - see
-  Phase 1 status above. Functionally complete, visually inconsistent
-  with the new theme until Phases 2/4/5 relocate them.
+  decision on how live-trading activation should work per-user. (Per-Fund
+  Live gating - the Fund's own `live_enabled` AND its broker account's
+  `live_enabled`, both required - is real and enforced; this gap is
+  specifically about the global `.env` `ACCOUNT` setting itself.)
 - **Password reset ("forgot password")** is a placeholder link in
   `web/login.html` - real self-service reset (email-based) isn't built;
   today an Owner/Admin resets a user's password from Users / Access.

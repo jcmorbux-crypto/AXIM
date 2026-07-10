@@ -20,20 +20,30 @@ import pocket_executor
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 
-async def resume_pending_trades(warmup_service):
+async def resume_pending_trades(warmup_service, broker_account_id=None):
     """
-    Called once at startup, after the browser worker pool is up. Any trade
-    left in trade_clicked/trade_opened when the process last stopped had a
-    real position opened on Pocket Option that was never resolved in our
-    database - re-attach outcome tracking to it (via warmup_service's own
-    dedicated page, not a placement worker - see
-    pocket_executor.track_outcome) for the remaining time until expiry.
+    Called once per browser context (at process startup for the legacy
+    default connection, and once per broker account the first time it's
+    lazily built - see core/broker_account_manager.py), after that
+    context's worker pool is up. Any trade left in trade_clicked/
+    trade_opened when the process last stopped had a real position opened
+    on Pocket Option that was never resolved in our database - re-attach
+    outcome tracking to it (via warmup_service's own dedicated page, not a
+    placement worker - see pocket_executor.track_outcome) for the
+    remaining time until expiry.
+
+    broker_account_id scopes which trades this call looks at - resuming a
+    trade under the wrong account's browser context would check the wrong
+    Pocket Option account's Closed-trades list entirely. None (default)
+    means the legacy single-connection behavior, unscoped.
 
     A trade stuck at trade_prepared was never clicked (either ARMED was
     false or the process died before the click), so there is no real
-    position to reconcile - it's marked abandoned rather than "resumed".
+    position to reconcile - it's marked abandoned rather than "resumed"
+    (handled separately, once, by mark_abandoned_preparations() - not
+    scoped per account, since it never touches a browser).
     """
-    open_trades = database.get_open_trades()
+    open_trades = database.get_open_trades(broker_account_id=broker_account_id)
     if not open_trades:
         logger.info("recovery: no pending trades to resume")
         return
@@ -110,9 +120,16 @@ def mark_abandoned_preparations():
         database.update_trade_status(trade_id, TradeStatus.ERROR, result="error:abandoned_on_restart")
 
 
-async def run_recovery(warmup_service):
+async def run_recovery(warmup_service, broker_account_id=None, skip_abandoned_pass=False):
     """Single entry point for startup: reconcile abandoned preparations,
     then resume tracking for any genuinely open positions. Must be called
-    after the worker pool and warmup_service are both up."""
-    mark_abandoned_preparations()
-    await resume_pending_trades(warmup_service)
+    after the worker pool and warmup_service are both up.
+
+    skip_abandoned_pass=True for a per-account lazy-build call (see
+    core/broker_account_manager.py) - mark_abandoned_preparations() scans
+    every trade_prepared row process-wide and never touches a browser, so
+    it only needs to run once, at real process startup, not redundantly
+    for every account built after that."""
+    if not skip_abandoned_pass:
+        mark_abandoned_preparations()
+    await resume_pending_trades(warmup_service, broker_account_id=broker_account_id)

@@ -27,7 +27,7 @@ const AximShell = (() => {
     { key: "telegram", label: "Signal Sources", href: "/telegram", icon: ICONS.telegram },
     { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
     { key: "money", label: "Risk Engine", href: "/risk", icon: ICONS.money },
-    { key: "rules", label: "Rule Builder", href: "/rules", icon: ICONS.rules },
+    { key: "automation", label: "Automation Studio", href: "/automation", icon: ICONS.rules },
     { key: "lab", label: "Strategy Lab", href: "/strategy-lab", icon: ICONS.lab },
     { key: "trades", label: "Trade Center", href: "/trades", icon: ICONS.trades },
     { key: "stats", label: "Performance", href: "/performance", icon: ICONS.stats },
@@ -56,7 +56,7 @@ const AximShell = (() => {
     const isAdmin = user.role === "owner" || user.role === "admin";
     const items = NAV_ITEMS.filter(i => !i.adminOnly || isAdmin);
     root.innerHTML = `
-      <div class="sidebar-logo"><span class="mark">A</span> AXIM</div>
+      <div class="sidebar-logo"><span class="mark">A</span> <span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">TradeStation</span></span></div>
       <div class="nav-group">
         ${items.map(i => `
           <a class="nav-item ${i.key === activeKey ? "active" : ""}" href="${i.href}">
@@ -66,6 +66,20 @@ const AximShell = (() => {
       </div>
       <div class="nav-spacer"></div>
       <div class="sidebar-footer">
+        <div class="notif-bell-wrap">
+          <button class="notif-bell" id="axim-notif-bell" onclick="AximShell._toggleNotifDropdown()">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6.5a4 4 0 0 1 8 0c0 3.5 1.2 4.5 1.2 4.5H2.8S4 10 4 6.5Z"/><path d="M6.3 13a1.8 1.8 0 0 0 3.4 0"/></svg>
+            <span>Notifications</span>
+            <span class="notif-count" id="axim-notif-count" style="display:none;">0</span>
+          </button>
+          <div class="notif-dropdown" id="axim-notif-dropdown">
+            <div class="notif-dropdown-header">
+              <span>Notifications</span>
+              <button class="subtle" onclick="AximShell._markAllNotifsRead()">Mark all read</button>
+            </div>
+            <div id="axim-notif-list"><div class="notif-empty">Loading...</div></div>
+          </div>
+        </div>
         <div class="user-chip">
           <div class="avatar">${initials(user.email)}</div>
           <div style="overflow:hidden;">
@@ -78,6 +92,13 @@ const AximShell = (() => {
         </div>
       </div>
     `;
+    document.addEventListener("click", (e) => {
+      const wrap = document.querySelector(".notif-bell-wrap");
+      if (wrap && !wrap.contains(e.target)) {
+        const dd = document.getElementById("axim-notif-dropdown");
+        if (dd) dd.classList.remove("open");
+      }
+    });
   }
 
   async function logout() {
@@ -203,6 +224,121 @@ const AximShell = (() => {
     confirmCountdownTimer = setInterval(updateConfirmCountdown, 1000);
   }
 
+  // ---- In-app notifications (core/rule_engine.py's notify_owner
+  // action writes these; polled here so any page reflects new ones
+  // without a reload) -----------------------------------------------
+  function fmtNotifTime(iso) {
+    if (!iso) return "";
+    const d = new Date(iso);
+    return d.toLocaleString();
+  }
+
+  async function pollNotifCount() {
+    try {
+      const { count } = await fetchJSON("/api/notifications/unread-count");
+      const badge = document.getElementById("axim-notif-count");
+      if (!badge) return;
+      if (count > 0) {
+        badge.textContent = count > 99 ? "99+" : String(count);
+        badge.style.display = "inline-block";
+      } else {
+        badge.style.display = "none";
+      }
+    } catch (e) {}
+  }
+
+  async function _toggleNotifDropdown() {
+    const dd = document.getElementById("axim-notif-dropdown");
+    if (!dd) return;
+    const opening = !dd.classList.contains("open");
+    dd.classList.toggle("open");
+    if (opening) await loadNotifList();
+  }
+
+  async function loadNotifList() {
+    const list = document.getElementById("axim-notif-list");
+    try {
+      const rows = await fetchJSON("/api/notifications");
+      if (!rows.length) {
+        list.innerHTML = '<div class="notif-empty">No notifications yet.</div>';
+        return;
+      }
+      list.innerHTML = rows.map(n => `
+        <div class="notif-item ${n.read_at ? "" : "unread"}">
+          <div class="notif-message">${(n.message || "").replace(/</g, "&lt;")}</div>
+          <div class="notif-time">${fmtNotifTime(n.created_at)}</div>
+        </div>
+      `).join("");
+    } catch (e) {
+      list.innerHTML = '<div class="notif-empty">Failed to load.</div>';
+    }
+  }
+
+  async function _markAllNotifsRead() {
+    try { await fetchJSON("/api/notifications/read-all", { method: "POST" }); } catch (e) {}
+    await loadNotifList();
+    await pollNotifCount();
+  }
+
+  function startNotifPolling() {
+    pollNotifCount();
+    setInterval(pollNotifCount, 20000);
+    subscribeEvents({
+      "notification.created": {
+        onEvent: () => {
+          pollNotifCount();
+          const dropdown = document.getElementById("axim-notif-dropdown");
+          if (dropdown && dropdown.classList.contains("open")) loadNotifList();
+        },
+        onResync: pollNotifCount,
+      },
+    });
+  }
+
+  // ---- Real-time event stream (docs/AXIM_REMOTE_ACCESS.md) - one shared
+  // EventSource per page, dispatching to whichever handlers a page
+  // registers via AximShell.subscribeEvents(). Purely an enhancement:
+  // every page keeps its existing polling as a fallback, so a dropped/
+  // unavailable stream degrades to "a bit less instant," never "broken".
+  let eventSource = null;
+  const eventHandlers = {}; // event_type -> [{ onEvent, onResync }]
+
+  function subscribeEvents(handlers) {
+    for (const type in handlers) {
+      if (!eventHandlers[type]) eventHandlers[type] = [];
+      eventHandlers[type].push(handlers[type]);
+      if (eventSource) _bindEventType(type);
+    }
+    _ensureEventStream();
+  }
+
+  function _bindEventType(type) {
+    eventSource.addEventListener(type, (e) => {
+      let payload = null;
+      try { payload = JSON.parse(e.data); } catch (err) {}
+      (eventHandlers[type] || []).forEach(h => { try { h.onEvent(payload); } catch (err) {} });
+    });
+  }
+
+  function _ensureEventStream() {
+    if (eventSource) return;
+    try {
+      eventSource = new EventSource("/api/events/stream");
+    } catch (err) {
+      return; // browser lacks EventSource support - polling fallback still runs
+    }
+    eventSource.addEventListener("resync", () => {
+      for (const type in eventHandlers) {
+        eventHandlers[type].forEach(h => { if (h.onResync) { try { h.onResync(); } catch (err) {} } });
+      }
+    });
+    Object.keys(eventHandlers).forEach(_bindEventType);
+    // onerror fires on every disconnect, including normal ones the
+    // browser's built-in auto-reconnect (with Last-Event-ID) already
+    // handles - nothing to do here but let it retry.
+    eventSource.onerror = () => {};
+  }
+
   async function init(opts) {
     let user;
     try {
@@ -223,8 +359,49 @@ const AximShell = (() => {
     sidebar.id = "sidebar";
     shellRoot.insertBefore(sidebar, shellRoot.firstChild);
     renderSidebar(sidebar, user, opts.active);
+    _initMobileNav(shellRoot, sidebar);
     startConfirmationPolling();
+    startNotifPolling();
     return user;
+  }
+
+  // Below theme.css's 900px breakpoint the sidebar becomes an off-canvas
+  // drawer (see the matching @media block) - without this, mobile users
+  // had literally no way to navigate between pages, since the sidebar
+  // was the only nav and previously just vanished with nothing in its
+  // place. Toggle button + backdrop are injected here (once, shared
+  // across every page) rather than duplicated in each page's own HTML.
+  function _initMobileNav(shellRoot, sidebar) {
+    const toggle = document.createElement("button");
+    toggle.className = "mobile-nav-toggle";
+    toggle.setAttribute("aria-label", "Open navigation menu");
+    toggle.innerHTML = '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4.5h12M2 8h12M2 11.5h12"/></svg>';
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "mobile-nav-backdrop";
+
+    const closeMobileNav = () => {
+      sidebar.classList.remove("mobile-open");
+      backdrop.classList.remove("visible");
+    };
+    const openMobileNav = () => {
+      sidebar.classList.add("mobile-open");
+      backdrop.classList.add("visible");
+    };
+
+    toggle.addEventListener("click", () => {
+      sidebar.classList.contains("mobile-open") ? closeMobileNav() : openMobileNav();
+    });
+    backdrop.addEventListener("click", closeMobileNav);
+    // Tapping any nav link should close the drawer - the click still
+    // navigates normally (a plain <a href>), this just avoids the next
+    // page loading with the drawer already open.
+    sidebar.addEventListener("click", (e) => {
+      if (e.target.closest(".nav-item")) closeMobileNav();
+    });
+
+    shellRoot.appendChild(toggle);
+    shellRoot.appendChild(backdrop);
   }
 
   // Every technical/operational surface (raw ids, pids, heartbeats,
@@ -235,5 +412,8 @@ const AximShell = (() => {
   // Settings > Developer.
   function isDeveloperMode() { return developerMode; }
 
-  return { init, logout, fetchJSON, isDeveloperMode, _confirmPendingTrade, _rejectPendingTrade };
+  return {
+    init, logout, fetchJSON, isDeveloperMode, _confirmPendingTrade, _rejectPendingTrade,
+    _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents,
+  };
 })();

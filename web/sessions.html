@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Trading Sessions - AXIM</title>
+<title>Trading Sessions - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -11,6 +11,8 @@
   .progress-bar { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; margin-top: 6px; }
   .progress-bar > div { height: 100%; background: var(--blue); }
   .progress-bar.loss > div { background: var(--red); }
+  .session-active-item { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 12px; }
+  .session-active-item:last-child { margin-bottom: 0; }
 </style>
 </head>
 <body>
@@ -31,7 +33,8 @@
     <div class="muted" style="margin-bottom:16px; font-size:12.5px;">A session can only run while the listener process is running - start it here if it's stopped.</div>
 
     <div id="active-session-card" class="card full-width" style="margin-bottom:20px;">
-      <h3>Active Session</h3>
+      <h3>Active Sessions</h3>
+      <div class="muted" style="font-size:12px; margin-bottom:10px;">Different Funds can each run their own session at the same time - one per Fund's Pocket Option account.</div>
       <div id="active-session-body" class="muted">Loading...</div>
     </div>
 
@@ -43,6 +46,7 @@
             <option value="">Select a fund...</option>
           </select>
         </div>
+        <div id="fund-broker-summary" style="display:none; margin-bottom:14px;"></div>
         <div class="field"><label>Session name</label><input type="text" id="new-session-name" placeholder="e.g. Morning Go+ Session"></div>
 
         <div class="field"><label>Signal channels (select at least one)</label>
@@ -118,6 +122,7 @@ function statusBadge(status) {
     active: "on", stopped_target: "info", stopped_manual: "off",
     stopped_loss_limit: "danger", stopped_max_trades: "info",
     stopped_emergency: "danger", stopped_connection_lost: "warn", stopped_parse_failures: "warn",
+    stopped_fund_target: "info", stopped_fund_loss_limit: "danger", stopped_fund_max_trades: "info",
   };
   return `<span class="badge ${map[status] || "off"}">${status.replace(/_/g, " ")}</span>`;
 }
@@ -143,9 +148,13 @@ async function loadRiskProfiles() {
 }
 
 let allFunds = [];
+let allFundsAnyStatus = [];
 
 async function loadFunds() {
-  allFunds = await fetchJSON("/api/funds?status=active");
+  [allFunds, allFundsAnyStatus] = await Promise.all([
+    fetchJSON("/api/funds?status=active"),
+    fetchJSON("/api/funds"),
+  ]);
   const select = document.getElementById("new-fund");
   select.innerHTML = '<option value="">Select a fund...</option>' +
     allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("") +
@@ -155,12 +164,43 @@ async function loadFunds() {
   }
 }
 
-function onFundSelectChange() {
+let currentPreStartSummary = null;
+
+async function onFundSelectChange() {
   const fundId = document.getElementById("new-fund").value;
+  const summaryEl = document.getElementById("fund-broker-summary");
   const fund = allFunds.find(f => f.id === parseInt(fundId, 10));
   if (fund && fund.default_risk_profile_id) {
     document.getElementById("new-risk-profile").value = fund.default_risk_profile_id;
   }
+  if (!fundId) {
+    summaryEl.style.display = "none";
+    currentPreStartSummary = null;
+    return;
+  }
+  try {
+    currentPreStartSummary = await fetchJSON(`/api/sessions/pre-start-summary/${fundId}`);
+  } catch (e) {
+    currentPreStartSummary = null;
+    summaryEl.style.display = "none";
+    return;
+  }
+  const s = currentPreStartSummary;
+  summaryEl.style.display = "block";
+  if (!s.can_trade) {
+    summaryEl.innerHTML = `<div class="banner danger">${escapeHtml(s.blocking_reason)}</div>`;
+    return;
+  }
+  const acc = s.broker_account;
+  const badgeClass = { connected: "on", connecting: "warn", disconnected: "off", error: "danger" }[acc.connection_status] || "off";
+  summaryEl.innerHTML = `
+    <div class="card" style="padding:12px 14px;">
+      <div class="stat-row"><span class="stat-label">Fund</span><span class="stat-value">${escapeHtml(s.fund.name)}</span></div>
+      <div class="stat-row"><span class="stat-label">Pocket Option account</span><span class="stat-value">${escapeHtml(acc.name)} <span class="badge ${badgeClass}">${acc.connection_status}</span></span></div>
+      <div class="stat-row"><span class="stat-label">Mode</span><span class="stat-value">${s.can_go_live ? "Live-eligible" : "Demo"}</span></div>
+      <div class="stat-row"><span class="stat-label">Trading balance</span><span class="stat-value">${s.balances ? "$" + Number(s.balances.trading_balance).toFixed(2) : "-"}</span></div>
+    </div>
+  `;
 }
 
 async function loadAccountMode() {
@@ -196,6 +236,14 @@ async function confirmStartSession() {
   const body = currentFormValues();
   if (!body.fund_id) { statusEl.textContent = "Select a Fund before starting a session."; return; }
   if (!body.channel_ids.length) { statusEl.textContent = "Select at least one channel."; return; }
+  if (!body.risk_profile_id && !(allFunds.find(f => f.id === body.fund_id) || {}).default_risk_profile_id) {
+    statusEl.textContent = "Select a Money Management profile before starting a session.";
+    return;
+  }
+  if (currentPreStartSummary && !currentPreStartSummary.can_trade) {
+    statusEl.textContent = currentPreStartSummary.blocking_reason;
+    return;
+  }
 
   let accountMode = "unknown";
   try {
@@ -257,19 +305,19 @@ async function callControl(path) {
   refreshProcessStatus();
 }
 
-async function refreshActiveSession() {
-  const bodyEl = document.getElementById("active-session-body");
-  try {
-    const session = await fetchJSON("/api/sessions/active");
-    if (!session) {
-      bodyEl.innerHTML = '<div class="empty">No active session. Start one below.</div>';
-      return;
-    }
-    const tradesPct = session.max_trades > 0 ? Math.min(100, (session.trades_count / session.max_trades) * 100) : 0;
-    bodyEl.innerHTML = `
+function fundNameFor(fundId) {
+  const f = allFundsAnyStatus.find(x => x.id === fundId);
+  return f ? f.name : (fundId ? `Fund #${fundId}` : "(no fund)");
+}
+
+function renderSessionCard(session) {
+  const tradesPct = session.max_trades > 0 ? Math.min(100, (session.trades_count / session.max_trades) * 100) : 0;
+  return `
+    <div class="session-active-item">
       <div class="row" style="margin-bottom:10px;">
         <strong>${escapeHtml(session.name || "(unnamed session)")}</strong> ${statusBadge(session.status)}
         <span class="badge ${session.account_mode === "DEMO" ? "info" : "danger"}">${session.account_mode}</span>
+        <span class="badge off">${escapeHtml(fundNameFor(session.fund_id))}</span>
       </div>
       <div class="grid" style="margin-bottom:10px;">
         <div class="stat-row"><span class="stat-label">Current P/L</span><span class="stat-value ${plClass(session.realized_pnl)}">${fmtMoney(session.realized_pnl)}</span></div>
@@ -279,10 +327,22 @@ async function refreshActiveSession() {
       </div>
       ${session.max_trades > 0 ? `<div class="progress-bar"><div style="width:${tradesPct}%;"></div></div>` : ""}
       <div class="row" style="margin-top:14px;">
-        <button onclick="stopSession(${session.id})">Stop Session</button>
-        <button class="danger" onclick="emergencyStopSession(${session.id})">Emergency Stop</button>
+        <button onclick="stopSession(${session.id})">Stop This Session</button>
+        <button class="danger" onclick="emergencyStopSession(${session.id})">Emergency Stop (all Funds)</button>
       </div>
-    `;
+    </div>
+  `;
+}
+
+async function refreshActiveSession() {
+  const bodyEl = document.getElementById("active-session-body");
+  try {
+    const sessions = await fetchJSON("/api/sessions/active-list");
+    if (!sessions.length) {
+      bodyEl.innerHTML = '<div class="empty">No active sessions. Start one below.</div>';
+      return;
+    }
+    bodyEl.innerHTML = sessions.map(renderSessionCard).join("");
   } catch (e) {
     bodyEl.textContent = "Failed to load: " + e.message;
   }
@@ -408,6 +468,9 @@ async function saveCurrentAsProfile() {
   refreshHistory();
   setInterval(refreshActiveSession, 5000);
   setInterval(refreshProcessStatus, 10000);
+  AximShell.subscribeEvents({
+    "trade.closed": { onEvent: refreshActiveSession, onResync: refreshActiveSession },
+  });
 })();
 </script>
 </body>

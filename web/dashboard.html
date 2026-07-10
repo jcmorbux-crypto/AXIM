@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Mission Control - AXIM</title>
+<title>Mission Control - AXIM TradeStation</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
@@ -17,6 +17,57 @@
   .checklist-item .check.pending { background: var(--surface); color: var(--text-faint); border: 1px solid var(--border); }
   .checklist-item.done .label { color: var(--text-faint); text-decoration: line-through; }
   .checklist-item a { color: var(--blue); text-decoration: none; font-size: 12px; margin-left: auto; }
+
+  /* ---- The Fund Card: everything that matters about "how am I doing
+     right now" in one confident surface - status pill, hero number,
+     goal progress, broker chip, next action. Replaces the previous
+     status-line + hero-panel + broker-row as three separate boxes. ---- */
+  .fund-hero {
+    background: linear-gradient(165deg, #fbfcff 0%, var(--bg) 60%);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    padding: 30px 34px;
+    margin-bottom: 20px;
+    position: relative;
+    overflow: hidden;
+  }
+  .fund-hero:before {
+    content: "";
+    position: absolute; top: 0; right: 0; width: 260px; height: 260px;
+    background: radial-gradient(circle at top right, var(--blue-soft) 0%, transparent 70%);
+    opacity: 0.7; pointer-events: none;
+  }
+  .fund-hero-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 4px; }
+  .status-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--text-dim); }
+  .fund-hero-name { font-size: 15px; font-weight: 650; color: var(--text-dim); margin-bottom: 2px; }
+  .fund-hero-value { font-size: 46px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.05; }
+  .fund-hero-caption { color: var(--text-dim); font-size: 13.5px; margin-top: 6px; }
+  .goal-progress { margin-top: 20px; max-width: 420px; }
+  .goal-progress-track { height: 7px; border-radius: 999px; background: var(--border); overflow: hidden; }
+  .goal-progress-fill { height: 100%; border-radius: 999px; background: var(--blue); transition: width 0.7s var(--ease); }
+  .goal-progress-caption { font-size: 12.5px; color: var(--text-dim); margin-top: 7px; }
+  .fund-hero-subrow { display: flex; gap: 32px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); flex-wrap: wrap; align-items: flex-end; }
+  .fund-hero-subrow .stat { display: flex; flex-direction: column; gap: 3px; }
+  .fund-hero-subrow .stat .label { font-size: 12px; color: var(--text-dim); }
+  .fund-hero-subrow .stat .value { font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .fund-hero-subrow .spacer { flex: 1; }
+
+  /* ---- Funds Overview: a multi-fund operator's real "mission control"
+     need - see every Fund's standing at a glance instead of stepping
+     through the selector one at a time. Only rendered when there's more
+     than one Fund (see renderFundsOverview) - with exactly one Fund the
+     hero panel above already shows everything this would duplicate. ---- */
+  .funds-overview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-top: 4px; }
+  .fund-overview-item {
+    border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px;
+    cursor: pointer; text-align: left; background: var(--bg); width: 100%;
+    transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  }
+  .fund-overview-item:hover { border-color: var(--blue); box-shadow: var(--shadow); }
+  .fund-overview-item.active { border-color: var(--blue); background: var(--blue-soft); }
+  .fund-overview-item .name { font-weight: 600; font-size: 13.5px; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; }
+  .fund-overview-item .pl { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -27,14 +78,13 @@
 
     <div class="page-header">
       <div>
-        <h1>Mission Control <a href="/guide#sec-mission-control" class="help-link" title="Help: Mission Control">?</a></h1>
-        <div class="subtitle">Your trading operation, at a glance.</div>
+        <div class="greeting-eyebrow" id="greeting-eyebrow">&nbsp;</div>
+        <div class="greeting-title" id="greeting-title">Mission Control</div>
       </div>
       <div class="row">
         <select id="fund-selector" onchange="onFundChange()" style="width:220px;">
           <option value="">All Funds (combined)</option>
         </select>
-        <button class="primary" onclick="window.location.href='/sessions'">Start Session</button>
         <button class="subtle" onclick="callControl('/api/control/pause')">Pause</button>
         <button class="danger" onclick="confirmEmergencyStop()">Emergency Stop</button>
       </div>
@@ -48,22 +98,36 @@
       <div id="onboarding-items"></div>
     </div>
 
-    <div class="status-line">
-      <span id="status-dot" class="dot off"></span>
-      <div>
-        <div class="headline" id="status-headline">Loading...</div>
-        <div class="detail" id="status-detail">&nbsp;</div>
-      </div>
+    <div class="card solid" id="funds-overview-card" style="margin-bottom:20px; display:none;">
+      <h3>Your Funds</h3>
+      <div id="funds-overview-list" class="funds-overview-grid"></div>
     </div>
 
-    <div class="hero-panel">
-      <div class="hero-label" id="hero-label-text">Today's Performance</div>
-      <div class="hero-value" id="daily-pl">-</div>
-      <div class="hero-caption" id="daily-pl-caption">&nbsp;</div>
-      <div class="hero-subrow">
+    <div class="fund-hero">
+      <div class="fund-hero-top">
+        <div>
+          <div class="fund-hero-name" id="hero-label-text">Today's Performance</div>
+          <div class="fund-hero-value count-up" id="daily-pl">-</div>
+          <div class="fund-hero-caption" id="daily-pl-caption">&nbsp;</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="status-pill"><span id="status-dot" class="dot off"></span><span id="status-headline">Loading...</span></div>
+          <div class="muted" style="font-size:12px; margin-top:4px; max-width:220px;" id="status-detail">&nbsp;</div>
+          <div id="broker-account-chip" style="margin-top:8px;"></div>
+        </div>
+      </div>
+
+      <div class="goal-progress" id="goal-progress-wrap" style="display:none;">
+        <div class="goal-progress-track"><div class="goal-progress-fill" id="goal-progress-fill" style="width:0%;"></div></div>
+        <div class="goal-progress-caption" id="goal-progress-caption">&nbsp;</div>
+      </div>
+
+      <div class="fund-hero-subrow">
         <div class="stat"><span class="label">Win rate</span><span class="value" id="win-rate">-</span></div>
         <div class="stat"><span class="label">Trades today</span><span class="value" id="trades-today">-</span></div>
         <div class="stat"><span class="label" id="session-pl-label">Active session P/L</span><span class="value" id="session-pl">-</span></div>
+        <div class="spacer"></div>
+        <button class="primary" id="start-session-cta" onclick="window.location.href='/sessions'">Start Session</button>
       </div>
     </div>
 
@@ -84,11 +148,6 @@
         </div>
       </div>
     </div>
-
-    <details class="diagnostics" id="system-diagnostics">
-      <summary>System diagnostics</summary>
-      <div class="diagnostics-body" id="system-diagnostics-body"></div>
-    </details>
   </main>
 </div>
 
@@ -97,6 +156,23 @@
 let currentUser = null;
 let allFunds = [];
 let selectedFundId = "";
+
+function displayName(email) {
+  const local = (email || "").split("@")[0] || "there";
+  const first = local.split(/[._-]/)[0];
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+function greetingPhrase() {
+  const hour = new Date().getHours();
+  if (hour < 5) return "Good evening";
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  return "Good evening";
+}
+function renderGreeting(user) {
+  document.getElementById("greeting-eyebrow").textContent = `${greetingPhrase()}, ${displayName(user.email)}`;
+  document.getElementById("greeting-title").textContent = "Your trading operation";
+}
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, { credentials: "same-origin", ...opts });
@@ -169,11 +245,39 @@ async function loadFundSelector() {
   selector.innerHTML = '<option value="">All Funds (combined)</option>' +
     allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("");
   selector.value = previous;
+  renderFundsOverview();
 }
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 
+// Built entirely from allFunds (already fetched for the selector, which
+// includes each Fund's balances via fund_manager.list_funds_with_balances)
+// rather than a request per Fund - trading_balance - starting_balance is
+// the same "current standing" figure refreshForFund's own session-pl stat
+// already shows for a single selected Fund.
+function renderFundsOverview() {
+  const card = document.getElementById("funds-overview-card");
+  if (allFunds.length < 2) { card.style.display = "none"; return; }
+  card.style.display = "block";
+  document.getElementById("funds-overview-list").innerHTML = allFunds.map(f => {
+    const pl = (f.balances.trading_balance ?? 0) - (f.balances.starting_balance ?? 0);
+    const isActive = String(f.id) === String(selectedFundId);
+    return `
+      <button type="button" class="fund-overview-item ${isActive ? "active" : ""}" onclick="selectFundFromOverview(${f.id})">
+        <div class="name"><span>${escapeHtml(f.name)}</span>${f.broker_account ? `<span class="badge ${f.broker_account.connection_status === "connected" ? "on" : "off"}" style="font-size:10.5px;">${escapeHtml(f.broker_account.connection_status)}</span>` : ""}</div>
+        <div class="pl ${plClass(pl)}">${fmtMoney(pl)}</div>
+      </button>
+    `;
+  }).join("");
+}
+
+function selectFundFromOverview(fundId) {
+  document.getElementById("fund-selector").value = fundId;
+  onFundChange();
+}
+
 function onFundChange() {
   selectedFundId = document.getElementById("fund-selector").value;
+  renderFundsOverview();
   refreshAll();
 }
 
@@ -189,20 +293,56 @@ async function refreshAll() {
   }
 }
 
+function renderBrokerChip(account) {
+  const chip = document.getElementById("broker-account-chip");
+  if (!account) {
+    chip.innerHTML = `<a href="/funds" class="badge danger" style="text-decoration:none;">Broker not connected</a>`;
+    return;
+  }
+  const badgeClass = { connected: "on", connecting: "warn", disconnected: "off", error: "danger" }[account.connection_status] || "off";
+  chip.innerHTML = `<span class="badge off">${escapeHtml(account.name)}</span> <span class="badge ${badgeClass}">${account.connection_status}</span>`;
+}
+
+function renderGoalProgress(current, target) {
+  const wrap = document.getElementById("goal-progress-wrap");
+  if (!target || target <= 0) { wrap.style.display = "none"; return; }
+  wrap.style.display = "block";
+  const pct = Math.max(0, Math.min(100, (current / target) * 100));
+  document.getElementById("goal-progress-fill").style.width = pct.toFixed(0) + "%";
+  document.getElementById("goal-progress-caption").textContent =
+    current >= target
+      ? `Goal reached - ${fmtMoney(current)} of ${fmtMoney(target)}`
+      : `${fmtMoney(Math.max(current, 0))} of ${fmtMoney(target)} goal (${pct.toFixed(0)}%)`;
+}
+
+function renderStartCta(activeSession) {
+  const btn = document.getElementById("start-session-cta");
+  if (activeSession) {
+    btn.textContent = "View Active Session";
+    btn.onclick = () => window.location.href = "/sessions";
+  } else {
+    btn.textContent = "Start Session";
+    btn.onclick = () => window.location.href = "/sessions";
+  }
+}
+
 async function refreshForFund(fundId) {
-  const [status, po, report, channels] = await Promise.all([
+  const [status, po, report, channels, activeSession] = await Promise.all([
     fetchJSON("/api/status"),
     fetchJSON("/api/pocket-option/status"),
     fetchJSON(`/api/funds/${fundId}`),
     fetchJSON("/api/channels"),
+    fetchJSON(`/api/sessions/active-for-fund/${fundId}`),
   ]);
   renderStatusLine(status, po, channels);
+  renderStartCta(activeSession);
+  renderBrokerChip(report.broker_account);
 
   const perf = report.performance;
   const dailyPlEl = document.getElementById("daily-pl");
   document.getElementById("hero-label-text").textContent = `${report.fund.name} - Lifetime Performance`;
   dailyPlEl.textContent = fmtMoney(perf.profit_loss);
-  dailyPlEl.className = "hero-value " + plClass(perf.profit_loss);
+  dailyPlEl.className = "fund-hero-value count-up " + plClass(perf.profit_loss);
   document.getElementById("daily-pl-caption").textContent =
     perf.total_closed > 0 ? `${perf.wins} win${perf.wins === 1 ? "" : "s"}, ${perf.losses} loss${perf.losses === 1 ? "" : "es"} all-time` : "No trades closed yet.";
   document.getElementById("win-rate").textContent = perf.win_rate !== null ? (perf.win_rate * 100).toFixed(1) + "%" : "-";
@@ -211,6 +351,8 @@ async function refreshForFund(fundId) {
   const sessionPlEl = document.getElementById("session-pl");
   sessionPlEl.textContent = fmtMoney(report.balances.trading_balance);
   sessionPlEl.className = "value " + plClass(report.balances.trading_balance - report.fund.starting_balance);
+
+  renderGoalProgress(perf.profit_loss, report.fund.profit_target);
 
   const riskLine = document.getElementById("risk-line");
   riskLine.innerHTML = report.balances.protected_balance > 0
@@ -234,12 +376,6 @@ async function refreshForFund(fundId) {
         </div>
       `).join("")
     : '<div class="empty">No sessions yet for this fund.</div>';
-
-  document.getElementById("system-diagnostics-body").innerHTML = `
-    <div>Account mode: ${po.account_mode} (set via .env, not switchable in-app yet)</div>
-    <div>Listener process: ${status.process.running ? `running (pid ${status.process.pids.join(", ")})` : "not running"}</div>
-    <div>Balance tracking: computed from this fund's recorded sessions, not a live broker balance read</div>
-  `;
 }
 
 function renderStatusLine(status, po, channels) {
@@ -267,7 +403,7 @@ function renderStatusLine(status, po, channels) {
     detail.textContent = "AXIM is running but re-establishing its connection - this usually resolves itself within a minute.";
     banner.style.display = "none";
   } else {
-    dot.className = "dot on"; headline.textContent = "Running normally";
+    dot.className = "dot on live"; headline.textContent = "Running normally";
     detail.textContent = `Connected and watching ${enabledChannels.length} signal source${enabledChannels.length === 1 ? "" : "s"}.`;
     banner.style.display = "none";
   }
@@ -277,33 +413,38 @@ function renderStatusLine(status, po, channels) {
 }
 
 async function refreshGlobal() {
-    const [status, po, dash, channels, settings, activeSession] = await Promise.all([
+    const [status, po, dash, channels, settings, activeSessions] = await Promise.all([
       fetchJSON("/api/status"),
       fetchJSON("/api/pocket-option/status"),
       fetchJSON("/api/dashboard"),
       fetchJSON("/api/channels"),
       fetchJSON("/api/settings"),
-      fetchJSON("/api/sessions/active"),
+      fetchJSON("/api/sessions/active-list"),
     ]);
     document.getElementById("hero-label-text").textContent = "Today's Performance";
-    document.getElementById("session-pl-label").textContent = "Active session P/L";
+    document.getElementById("session-pl-label").textContent =
+      activeSessions.length > 1 ? "Active sessions P/L (combined)" : "Active session P/L";
+    document.getElementById("goal-progress-wrap").style.display = "none";
+    document.getElementById("broker-account-chip").innerHTML = "";
 
     renderStatusLine(status, po, channels);
+    renderStartCta(activeSessions.length ? activeSessions[0] : null);
 
     // ---- Hero: Today's Performance ----
     const daily = dash.statistics.daily;
     const dailyPlEl = document.getElementById("daily-pl");
     dailyPlEl.textContent = fmtMoney(daily.profit_loss);
-    dailyPlEl.className = "hero-value " + plClass(daily.profit_loss);
+    dailyPlEl.className = "fund-hero-value count-up " + plClass(daily.profit_loss);
     document.getElementById("daily-pl-caption").textContent =
       daily.total_closed > 0 ? `${daily.wins} win${daily.wins === 1 ? "" : "s"}, ${daily.losses} loss${daily.losses === 1 ? "" : "es"} today` : "No trades closed yet today.";
     document.getElementById("win-rate").textContent = daily.win_rate !== null ? (daily.win_rate * 100).toFixed(1) + "%" : "-";
     document.getElementById("trades-today").textContent = daily.total_closed;
 
     const sessionPlEl = document.getElementById("session-pl");
-    if (activeSession) {
-      sessionPlEl.textContent = fmtMoney(activeSession.realized_pnl);
-      sessionPlEl.className = "value " + plClass(activeSession.realized_pnl);
+    if (activeSessions.length) {
+      const combinedPnl = activeSessions.reduce((sum, s) => sum + (s.realized_pnl || 0), 0);
+      sessionPlEl.textContent = fmtMoney(combinedPnl);
+      sessionPlEl.className = "value " + plClass(combinedPnl);
     } else {
       sessionPlEl.textContent = "No active session";
       sessionPlEl.className = "value faint";
@@ -354,14 +495,6 @@ async function refreshGlobal() {
     } else {
       activityList.innerHTML = '<div class="empty">No signals yet.</div>';
     }
-
-    // ---- Everything technical lives here, collapsed by default ----
-    document.getElementById("system-diagnostics-body").innerHTML = `
-      <div>Account mode: ${po.account_mode} (set via .env, not switchable in-app yet)</div>
-      <div>Listener process: ${status.process.running ? `running (pid ${status.process.pids.join(", ")})` : "not running"}</div>
-      <div>Pocket Option: ${po.process_running ? (po.heartbeat_stale ? "connected, heartbeat stale" : "connected") : "not running"}${po.process_running && po.heartbeat ? ` - ${po.heartbeat.worker_count} worker(s), generation ${po.heartbeat.generation}` : ""}</div>
-      <div>Balance tracking: not implemented yet (no live broker balance read)</div>
-    `;
 }
 
 async function callControl(path) {
@@ -382,10 +515,14 @@ function confirmEmergencyStop() {
 (async () => {
   currentUser = await AximShell.init({ active: "dashboard" });
   if (!currentUser) return;
+  renderGreeting(currentUser);
   await loadFundSelector();
   loadOnboardingChecklist();
   refreshAll();
   setInterval(refreshAll, 5000);
+  AximShell.subscribeEvents({
+    "trade.closed": { onEvent: refreshAll, onResync: refreshAll },
+  });
 })();
 </script>
 </body>

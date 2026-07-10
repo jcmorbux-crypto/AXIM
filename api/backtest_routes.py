@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 import database
 import backtest_engine
+import ai_analysis
 from auth_routes import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
@@ -59,6 +60,29 @@ class CsvImportRequest(BaseModel):
 @router.get("/sources")
 def list_sources(user=Depends(get_current_user)):
     return database.list_historical_signal_sources()
+
+
+# Caps how many candidate profiles a scorecard tests per source - each
+# one is a real simulate_strategy() run over that source's full signal
+# history, so an unbounded profile count would make this endpoint slow
+# for no real benefit (a scorecard needs "the best fit", not every
+# profile ever created tested against every source).
+_SCORECARD_MAX_CANDIDATES = 15
+
+
+@router.get("/scorecard/{source_label}")
+def get_scorecard(source_label: str, user=Depends(get_current_user)):
+    """Signal Provider Scorecard (docs/AXIM_APP_PLAN.md) - runs a real
+    backtest across every available risk profile (templates + the
+    user's own, capped) restricted to this source's own graded signal
+    history, and reports the result via core/ai_analysis.py. Returns 404
+    if the source has no graded history at all - never a fabricated
+    scorecard for a source with no evidence."""
+    candidates = database.list_risk_profiles(include_templates=True)[:_SCORECARD_MAX_CANDIDATES]
+    card = ai_analysis.generate_signal_provider_scorecard(source_label, candidates)
+    if card is None:
+        raise HTTPException(status_code=404, detail=f"no graded signal history for {source_label!r}")
+    return card
 
 
 @router.get("/signals")
@@ -179,6 +203,27 @@ def get_run(run_id: int, user=Depends(get_current_user)):
     return report
 
 
+@router.get("/runs/{run_id}/ai-summary")
+def get_run_ai_summary(run_id: int, user=Depends(get_current_user)):
+    """The AI Strategy Lab's analyst layer over one run's real, already-
+    computed metrics (core/ai_analysis.py) - narrative synthesis, direct
+    answers to the standard comparison questions, and ranking categories
+    beyond the four backtest_engine.rank_strategies already covers."""
+    report = database.get_backtest_report(run_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="backtest run not found")
+    extended_ranks = ai_analysis.generate_extended_rankings(report)
+    return {
+        "run_narrative": ai_analysis.generate_run_narrative(report),
+        "strategy_narratives": {
+            s["id"]: ai_analysis.generate_strategy_narrative(s["label"], s["metrics"])
+            for s in report["strategies"]
+        },
+        "questions": ai_analysis.answer_strategy_questions(report),
+        "extended_rankings": extended_ranks,
+    }
+
+
 @router.get("/runs/{run_id}/strategies/{strategy_id}/sessions")
 def get_strategy_sessions(run_id: int, strategy_id: int, user=Depends(get_current_user)):
     strategy = database.get_backtest_strategy(strategy_id)
@@ -196,6 +241,39 @@ def get_strategy_trades(run_id: int, strategy_id: int, session_id: Optional[int]
     if session_id is not None:
         return database.list_backtest_trades(session_id)
     return database.list_backtest_trades_for_strategy(strategy_id)
+
+
+class DeployRequest(BaseModel):
+    fund_id: int
+    new_profile_name: Optional[str] = None
+
+
+@router.post("/runs/{run_id}/strategies/{strategy_id}/deploy")
+def deploy_strategy(run_id: int, strategy_id: int, body: DeployRequest, user=Depends(require_admin)):
+    """Deploy to Fund (docs/AXIM_APP_PLAN.md) - closes the Strategy Lab
+    loop. Takes this backtest strategy's point-in-time profile_snapshot,
+    creates a fresh, independent risk profile from it (never silently
+    reuses/mutates a shared template - see
+    database.create_risk_profile_from_snapshot), and sets it as the
+    target Fund's default money management profile. Does not touch the
+    fund's broker account, sources, or Live-enablement - deploying a
+    strategy is a sizing decision, not a full fund reconfiguration."""
+    strategy = database.get_backtest_strategy(strategy_id)
+    if strategy is None or strategy["backtest_run_id"] != run_id:
+        raise HTTPException(status_code=404, detail="strategy not found in this run")
+    fund = database.get_fund(body.fund_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="fund not found")
+
+    profile_name = body.new_profile_name or f"{fund['name']} - {strategy['label']} (deployed)"
+    new_profile_id = database.create_risk_profile_from_snapshot(profile_name, strategy["profile_snapshot"])
+    database.update_fund(body.fund_id, default_risk_profile_id=new_profile_id)
+
+    return {
+        "fund": database.get_fund(body.fund_id),
+        "deployed_profile_id": new_profile_id,
+        "deployed_profile_name": profile_name,
+    }
 
 
 @router.delete("/runs/{run_id}")

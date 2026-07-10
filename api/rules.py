@@ -32,6 +32,9 @@ class RuleCreate(BaseModel):
     action_type: str
     action_params: dict = {}
     enabled: bool = True
+    fund_id: int
+    scope: str = "fund"
+    session_id: Optional[int] = None
 
 
 class RuleUpdate(BaseModel):
@@ -41,6 +44,9 @@ class RuleUpdate(BaseModel):
     condition_params: Optional[dict] = None
     action_type: Optional[str] = None
     action_params: Optional[dict] = None
+    fund_id: Optional[int] = None
+    scope: Optional[str] = None
+    session_id: Optional[int] = None
 
 
 def _validate_types(condition_type, action_type):
@@ -75,17 +81,29 @@ def get_catalog(user=Depends(get_current_user)):
 
 
 @router.get("")
-def list_rules(user=Depends(get_current_user)):
-    return database.list_rules()
+def list_rules(fund_id: Optional[int] = None, user=Depends(get_current_user)):
+    return database.list_rules(fund_id=fund_id)
 
 
 @router.post("")
 def create_rule(body: RuleCreate, user=Depends(require_admin)):
     _validate_types(body.condition_type, body.action_type)
-    rule_id = database.create_rule(
-        body.name, body.condition_type, body.condition_params,
-        body.action_type, body.action_params, enabled=body.enabled,
-    )
+    if database.get_fund(body.fund_id) is None:
+        raise HTTPException(status_code=404, detail="fund not found")
+    if body.scope == "session":
+        if body.session_id is None:
+            raise HTTPException(status_code=400, detail="a session-scoped rule needs a session_id")
+        session = database.get_trading_session(body.session_id)
+        if session is None or session["fund_id"] != body.fund_id:
+            raise HTTPException(status_code=400, detail="session_id must belong to this fund")
+    try:
+        rule_id = database.create_rule(
+            body.name, body.condition_type, body.condition_params,
+            body.action_type, body.action_params, enabled=body.enabled,
+            fund_id=body.fund_id, scope=body.scope, session_id=body.session_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return database.get_rule(rule_id)
 
 
@@ -94,12 +112,23 @@ def get_rule(rule_id: int, user=Depends(get_current_user)):
     return _get_or_404(rule_id)
 
 
+@router.get("/{rule_id}/firings")
+def get_rule_firings(rule_id: int, user=Depends(get_current_user)):
+    _get_or_404(rule_id)
+    return database.list_rule_firings(rule_id)
+
+
 @router.patch("/{rule_id}")
 def update_rule(rule_id: int, body: RuleUpdate, user=Depends(require_admin)):
     _get_or_404(rule_id)
     _validate_types(body.condition_type, body.action_type)
+    if body.fund_id is not None and database.get_fund(body.fund_id) is None:
+        raise HTTPException(status_code=404, detail="fund not found")
     updates = body.model_dump(exclude_unset=True, exclude={"condition_params", "action_params"})
-    database.update_rule(rule_id, condition_params=body.condition_params, action_params=body.action_params, **updates)
+    try:
+        database.update_rule(rule_id, condition_params=body.condition_params, action_params=body.action_params, **updates)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return database.get_rule(rule_id)
 
 

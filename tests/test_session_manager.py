@@ -74,6 +74,34 @@ class SessionManagerTests(unittest.TestCase):
         self.assertFalse(session_manager.channel_in_session(None, {"id": 1}))
         self.assertFalse(session_manager.channel_in_session({"channel_ids": [1]}, None))
 
+    def test_get_active_session_for_channel_routes_to_the_right_session(self):
+        account_a = database.create_broker_account("Acct A")
+        account_b = database.create_broker_account("Acct B")
+        session_a = database.start_trading_session("SA", [1, 2], "DEMO", broker_account_id=account_a)
+        session_b = database.start_trading_session("SB", [3], "DEMO", broker_account_id=account_b)
+        self.assertEqual(session_manager.get_active_session_for_channel({"id": 2})["id"], session_a)
+        self.assertEqual(session_manager.get_active_session_for_channel({"id": 3})["id"], session_b)
+        self.assertIsNone(session_manager.get_active_session_for_channel({"id": 999}))
+
+    def test_get_active_session_for_channel_none_when_channel_row_none(self):
+        database.start_trading_session("Test", [1], "DEMO")
+        self.assertIsNone(session_manager.get_active_session_for_channel(None))
+
+    def test_end_session_deletes_its_own_session_scoped_rules(self):
+        fund_id = database.create_fund("F1")
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+        rule_id = database.create_rule(
+            "Temp override", "daily_profit_gte", {"threshold": 10}, "stop_active_session", {},
+            fund_id=fund_id, scope="session", session_id=session_id,
+        )
+        fund_wide_rule_id = database.create_rule(
+            "Permanent", "daily_profit_gte", {"threshold": 10}, "stop_active_session", {},
+            fund_id=fund_id, scope="fund",
+        )
+        session_manager.end_session(session_id, "stopped_manual")
+        self.assertIsNone(database.get_rule(rule_id))
+        self.assertIsNotNone(database.get_rule(fund_wide_rule_id))
+
     def test_record_trade_started_noop_when_session_id_none(self):
         session_manager.record_trade_started(None)  # must not raise
 
@@ -87,6 +115,30 @@ class SessionManagerTests(unittest.TestCase):
         session = database.get_trading_session(session_id)
         self.assertEqual(session["realized_pnl"], 12.0)
         self.assertEqual(session["status"], "stopped_target")
+
+    def test_on_trade_closed_also_checks_the_sessions_fund_limits(self):
+        import trade_lifecycle
+        fund_id = database.create_fund("F", loss_limit=10)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+        trade_id = database.record_signal_received(signal, session_id=session_id)
+        # get_fund_performance (which check_fund_limits reads) only counts
+        # trades with a real result - matching production, where the
+        # trade's outcome is recorded before the "trade.closed" event
+        # this handler responds to is ever published.
+        database.update_trade_status(trade_id, trade_lifecycle.TradeStatus.RESULT_LOSS,
+                                      result="loss", profit_loss=-15.0)
+
+        _run(session_manager._on_trade_closed({"trade_id": trade_id, "profit_loss": -15.0}))
+
+        self.assertEqual(database.get_fund(fund_id)["status"], "paused")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_fund_loss_limit")
+
+    def test_on_trade_closed_skips_fund_check_when_session_has_no_fund(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO")
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+        trade_id = database.record_signal_received(signal, session_id=session_id)
+        _run(session_manager._on_trade_closed({"trade_id": trade_id, "profit_loss": -1000.0}))  # must not raise
 
     def test_on_trade_closed_ignores_trade_with_no_session(self):
         signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}

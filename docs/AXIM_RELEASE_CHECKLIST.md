@@ -30,7 +30,10 @@ flags that it's still needed.
 ## Functional
 
 - [x] Full automated regression suite passes (`python -m unittest discover
-      -s tests -p "test_*.py"` - 53 tests as of this release)
+      -s tests -p "test_*.py"` - 420 tests as of this release, up from 53 at
+      initial release; covers the multi-fund/multi-broker-account
+      architecture, concurrent trading sessions, Fund-owned Rule Builder,
+      and AI Strategy Lab added since)
 - [x] Parser validated against every asset category (forex, crypto,
       commodity, stock, index) and against real messages from the actual
       production signal source

@@ -73,9 +73,9 @@ def get_fund_performance(fund_id):
 
 def get_fund_report(fund_id):
     """Everything the Funds page needs for one fund in a single call:
-    the fund row, computed balances, performance, and recent session/
-    backtest history (capped at a UI-reasonable page size, unlike the
-    _ALL-scoped aggregation above)."""
+    the fund row, computed balances, performance, attached broker
+    account, and recent session/backtest history (capped at a UI-
+    reasonable page size, unlike the _ALL-scoped aggregation above)."""
     fund = database.get_fund(fund_id)
     if fund is None:
         return None
@@ -84,6 +84,7 @@ def get_fund_report(fund_id):
         "balances": get_fund_balances(fund_id),
         "performance": get_fund_performance(fund_id),
         "sources": database.list_fund_source_channel_ids(fund_id),
+        "broker_account": database.get_fund_primary_broker_account(fund_id),
         "recent_sessions": database.list_fund_sessions(fund_id, limit=20),
         "recent_backtests": database.list_fund_backtest_runs(fund_id, limit=20),
     }
@@ -91,11 +92,106 @@ def get_fund_report(fund_id):
 
 def list_funds_with_balances(status=None):
     """Powers the Funds page list view and Mission Control's fund
-    selector - every fund plus its current computed balance, in one
-    pass, without the caller needing a request per fund."""
+    selector - every fund plus its current computed balance and attached
+    broker account, in one pass, without the caller needing a request
+    per fund."""
     funds = database.list_funds(status=status)
     result = []
     for fund in funds:
         balances = get_fund_balances(fund["id"])
-        result.append({**fund, "balances": balances})
+        broker_account = database.get_fund_primary_broker_account(fund["id"])
+        result.append({**fund, "balances": balances, "broker_account": broker_account})
     return result
+
+
+class FundLimitReached(Exception):
+    """Same (rule, reason) shape as session_manager.SessionLimitReached -
+    core/session_manager.py's _on_trade_closed handles either
+    identically."""
+
+    def __init__(self, rule, reason):
+        self.rule = rule
+        self.reason = reason
+        super().__init__(f"{rule}: {reason}")
+
+
+def check_fund_limits(fund_id):
+    """A Fund's own profit_target/loss_limit/max_trades are a LIFETIME
+    circuit breaker on that Fund's bankroll, distinct from any individual
+    session's own (resettable, per-run) limits - a Fund is a persistent
+    portfolio, not a disposable session (docs/AXIM_APP_PLAN.md). Measured
+    against get_fund_performance's cumulative realized P/L and trade
+    count across every session the fund has ever run, not "since
+    midnight" or "this session only".
+
+    On breach: pauses the Fund (blocks future session-starts via
+    can_trade, and blocks its current session's future signals via
+    core/telegram_listener.py's per-fund pause check) AND ends its
+    currently active session, if any - the same two real, already-wired
+    primitives Automation Studio's pause_fund/stop_active_session actions
+    use, not a new enforcement path. No-op if the fund has no limits set
+    (all zero) or doesn't exist."""
+    fund = database.get_fund(fund_id)
+    if fund is None or fund["status"] != "active":
+        return
+    performance = get_fund_performance(fund_id)
+    realized_pnl = performance["profit_loss"]
+    total_closed = performance["total_closed"]
+
+    breach = None
+    if fund["profit_target"] > 0 and realized_pnl >= fund["profit_target"]:
+        breach = ("fund_profit_target",
+                   f"fund {fund_id} reached its lifetime profit target ${fund['profit_target']:.2f} "
+                   f"(realized ${realized_pnl:.2f}) - fund paused")
+    elif fund["loss_limit"] > 0 and realized_pnl <= -fund["loss_limit"]:
+        breach = ("fund_loss_limit",
+                   f"fund {fund_id} breached its lifetime loss limit ${fund['loss_limit']:.2f} "
+                   f"(realized ${realized_pnl:.2f}) - fund paused")
+    elif fund["max_trades"] > 0 and total_closed >= fund["max_trades"]:
+        breach = ("fund_max_trades",
+                   f"fund {fund_id} reached its lifetime max trades {fund['max_trades']} "
+                   f"({total_closed} closed) - fund paused")
+
+    if breach is None:
+        return
+
+    rule, reason = breach
+    import session_manager
+    active_session = database.get_active_trading_session_for_fund(fund_id)
+    if active_session is not None:
+        stop_status = {"fund_profit_target": "stopped_fund_target",
+                        "fund_loss_limit": "stopped_fund_loss_limit",
+                        "fund_max_trades": "stopped_fund_max_trades"}[rule]
+        session_manager.end_session(active_session["id"], stop_status, reason)
+    database.update_fund(fund_id, status="paused")
+    raise FundLimitReached(rule, reason)
+
+
+def can_trade(fund_id):
+    """The safety gate docs/AXIM_APP_PLAN.md requires before a session can
+    even start: a fund needs a connected broker account, period - Live
+    trading additionally needs BOTH the fund's own live_enabled AND the
+    attached account's live_enabled (two independent switches, neither
+    sufficient alone, matching the explicit "separately enabled at the
+    Fund level and Broker Account level" requirement). Returns
+    (allowed: bool, reason: str | None, can_go_live: bool) rather than
+    raising, so callers (the session-start endpoint, the UI's pre-start
+    summary) can show a clear reason instead of a bare 4xx."""
+    fund = database.get_fund(fund_id)
+    if fund is None:
+        return False, "fund not found", False
+    if fund["status"] == "paused":
+        return False, "this Fund is paused - resume it before starting a session", False
+    if fund["status"] == "archived":
+        return False, "this Fund is archived", False
+
+    account = database.get_fund_primary_broker_account(fund_id)
+    if account is None:
+        return False, "Broker account not connected. Connect this Fund to a Pocket Option account before starting a session.", False
+    if account["status"] != "active":
+        return False, f"the attached broker account ({account['name']}) is {account['status']}, not active", False
+    if account["connection_status"] != "connected":
+        return False, f"the attached broker account ({account['name']}) is not connected - reconnect it before starting a session", False
+
+    can_go_live = bool(fund["live_enabled"]) and bool(account["live_enabled"]) and account["mode"] in ("live", "both")
+    return True, None, can_go_live

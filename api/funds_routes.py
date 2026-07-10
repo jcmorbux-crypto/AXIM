@@ -32,6 +32,7 @@ class FundCreate(BaseModel):
     loss_limit: float = 0
     max_trades: int = 0
     status: str = "active"
+    live_enabled: bool = False
 
 
 class FundUpdate(BaseModel):
@@ -44,6 +45,7 @@ class FundUpdate(BaseModel):
     loss_limit: Optional[float] = None
     max_trades: Optional[int] = None
     status: Optional[str] = None
+    live_enabled: Optional[bool] = None
 
 
 class DuplicateFundRequest(BaseModel):
@@ -52,6 +54,11 @@ class DuplicateFundRequest(BaseModel):
 
 class AddSourceRequest(BaseModel):
     channel_id: int
+
+
+class AssignBrokerAccountRequest(BaseModel):
+    broker_account_id: int
+    is_primary: bool = True
 
 
 def _get_or_404(fund_id):
@@ -101,6 +108,25 @@ def archive_fund(fund_id: int, user=Depends(require_admin)):
     return fund_manager.get_fund_report(fund_id)
 
 
+@router.post("/{fund_id}/pause")
+def pause_fund(fund_id: int, user=Depends(require_admin)):
+    """Pausing a Fund blocks new sessions from starting (fund_manager.
+    can_trade) and stops its currently active session's channels from
+    processing new signals (core/telegram_listener.py) - without
+    stopping the session outright, so resuming picks back up exactly
+    where it left off rather than requiring a fresh start."""
+    _get_or_404(fund_id)
+    database.update_fund(fund_id, status="paused")
+    return fund_manager.get_fund_report(fund_id)
+
+
+@router.post("/{fund_id}/resume")
+def resume_fund(fund_id: int, user=Depends(require_admin)):
+    _get_or_404(fund_id)
+    database.update_fund(fund_id, status="active")
+    return fund_manager.get_fund_report(fund_id)
+
+
 @router.post("/{fund_id}/duplicate")
 def duplicate_fund(fund_id: int, body: DuplicateFundRequest, user=Depends(require_admin)):
     _get_or_404(fund_id)
@@ -120,6 +146,22 @@ def remove_source(fund_id: int, channel_id: int, user=Depends(require_admin)):
     _get_or_404(fund_id)
     database.remove_fund_source(fund_id, channel_id)
     return {"sources": database.list_fund_source_channel_ids(fund_id)}
+
+
+@router.post("/{fund_id}/broker-account")
+def assign_broker_account(fund_id: int, body: AssignBrokerAccountRequest, user=Depends(require_admin)):
+    _get_or_404(fund_id)
+    if database.get_broker_account(body.broker_account_id) is None:
+        raise HTTPException(status_code=404, detail="broker account not found")
+    database.assign_broker_account_to_fund(fund_id, body.broker_account_id, is_primary=body.is_primary)
+    return fund_manager.get_fund_report(fund_id)
+
+
+@router.delete("/{fund_id}/broker-account/{broker_account_id}")
+def unassign_broker_account(fund_id: int, broker_account_id: int, user=Depends(require_admin)):
+    _get_or_404(fund_id)
+    database.unassign_broker_account_from_fund(fund_id, broker_account_id)
+    return fund_manager.get_fund_report(fund_id)
 
 
 @router.get("/{fund_id}/sessions")

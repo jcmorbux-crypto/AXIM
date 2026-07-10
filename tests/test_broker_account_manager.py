@@ -1,0 +1,177 @@
+import asyncio
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import AsyncMock
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "core"))
+sys.path.insert(0, str(PROJECT_ROOT / "config"))
+sys.path.insert(0, str(PROJECT_ROOT / "execution"))
+
+import database
+import broker_account_manager
+from broker_account_manager import AccountUnavailable
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+class FakeCoordinator:
+    def __init__(self):
+        self.calls = []
+
+    async def handle_signal(self, signal, **kwargs):
+        self.calls.append(kwargs)
+        return {"status": "clicked", "trade_id": 999, **kwargs}
+
+
+class BrokerAccountManagerTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+
+    def _signal(self):
+        return {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+
+    # ---- resolve_coordinator_for_session: every failure mode ----------
+
+    def test_raises_when_session_not_found(self):
+        with self.assertRaises(AccountUnavailable):
+            _run(broker_account_manager.resolve_coordinator_for_session(99999))
+
+    def test_raises_when_session_has_no_fund(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO")
+        self.assertIsNone(database.get_trading_session(session_id)["fund_id"])
+        with self.assertRaises(AccountUnavailable):
+            _run(broker_account_manager.resolve_coordinator_for_session(session_id))
+
+    def test_raises_when_fund_has_no_broker_account(self):
+        fund_id = database.create_fund("F1", starting_balance=100)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+        with self.assertRaises(AccountUnavailable) as ctx:
+            _run(broker_account_manager.resolve_coordinator_for_session(session_id))
+        self.assertIn("not connected", str(ctx.exception))
+
+    def test_raises_when_broker_account_not_connected(self):
+        fund_id = database.create_fund("F1", starting_balance=100)
+        account_id = database.create_broker_account("Acc1", mode="demo")
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+        with self.assertRaises(AccountUnavailable) as ctx:
+            _run(broker_account_manager.resolve_coordinator_for_session(session_id))
+        self.assertIn("not connected", str(ctx.exception))
+
+    def test_resolves_to_registered_coordinator_when_connected(self):
+        fund_id = database.create_fund("F1", starting_balance=100)
+        account_id = database.create_broker_account("Acc1", mode="demo")
+        database.update_broker_account(account_id, connection_status="connected")
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+
+        fake_coordinator = FakeCoordinator()
+        broker_account_manager._registry[account_id] = {
+            "warmup": None, "pool": None, "coordinator": fake_coordinator,
+        }
+
+        coordinator, resolved_fund_id, resolved_account_id = _run(
+            broker_account_manager.resolve_coordinator_for_session(session_id)
+        )
+        self.assertIs(coordinator, fake_coordinator)
+        self.assertEqual(resolved_fund_id, fund_id)
+        self.assertEqual(resolved_account_id, account_id)
+
+    # ---- route_signal: the actual dispatcher ---------------------------
+
+    def test_route_signal_with_no_session_uses_default_coordinator(self):
+        default_coordinator = FakeCoordinator()
+        result = _run(broker_account_manager.route_signal(
+            self._signal(), default_coordinator, session_id=None,
+        ))
+        self.assertEqual(result["status"], "clicked")
+        self.assertEqual(len(default_coordinator.calls), 1)
+
+    def test_route_signal_with_unusable_account_rejects_without_touching_default(self):
+        fund_id = database.create_fund("F1", starting_balance=100)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+        default_coordinator = FakeCoordinator()
+
+        result = _run(broker_account_manager.route_signal(
+            self._signal(), default_coordinator, session_id=session_id,
+        ))
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["rule"], "broker_account_unavailable")
+        self.assertEqual(default_coordinator.calls, [])  # never touched - fail closed
+        # Still recorded for audit, per the "always record" principle.
+        trade = database.get_signal_detail(result["trade_id"])
+        self.assertIsNotNone(trade)
+
+    def test_route_signal_delegates_to_resolved_account_and_threads_ids(self):
+        fund_id = database.create_fund("F1", starting_balance=100)
+        account_id = database.create_broker_account("Acc1", mode="demo")
+        database.update_broker_account(account_id, connection_status="connected")
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+
+        fake_coordinator = FakeCoordinator()
+        broker_account_manager._registry[account_id] = {
+            "warmup": None, "pool": None, "coordinator": fake_coordinator,
+        }
+        default_coordinator = FakeCoordinator()
+
+        result = _run(broker_account_manager.route_signal(
+            self._signal(), default_coordinator, session_id=session_id,
+        ))
+        self.assertEqual(default_coordinator.calls, [])  # the OTHER account, not default
+        self.assertEqual(len(fake_coordinator.calls), 1)
+        self.assertEqual(fake_coordinator.calls[0]["fund_id"], fund_id)
+        self.assertEqual(fake_coordinator.calls[0]["broker_account_id"], account_id)
+
+    def test_concurrent_resolution_for_same_account_only_builds_once(self):
+        """get_or_build_account_context's lock should serialize concurrent
+        builders for the SAME account rather than racing two real browser
+        launches - verified with a fake _build_account_context that counts
+        calls and yields control, so two concurrent callers actually
+        interleave instead of trivially running sequentially."""
+        account_id = database.create_broker_account("Acc1", mode="demo")
+        database.update_broker_account(account_id, connection_status="connected")
+
+        build_calls = []
+
+        async def fake_build(acc_id):
+            build_calls.append(acc_id)
+            await asyncio.sleep(0.05)
+            entry = {"warmup": None, "pool": None, "coordinator": FakeCoordinator()}
+            broker_account_manager._registry[acc_id] = entry
+            return entry
+
+        original_build = broker_account_manager._build_account_context
+        broker_account_manager._build_account_context = fake_build
+        try:
+            async def _scenario():
+                return await asyncio.gather(
+                    broker_account_manager.get_or_build_account_context(account_id),
+                    broker_account_manager.get_or_build_account_context(account_id),
+                )
+            entry_a, entry_b = _run(_scenario())
+        finally:
+            broker_account_manager._build_account_context = original_build
+
+        self.assertEqual(len(build_calls), 1)  # built exactly once, not twice
+        self.assertIs(entry_a, entry_b)
+
+
+if __name__ == "__main__":
+    unittest.main()

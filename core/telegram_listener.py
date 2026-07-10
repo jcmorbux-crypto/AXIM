@@ -31,6 +31,8 @@ from event_bus import get_event_bus
 import recovery
 import database
 import session_manager
+import broker_account_manager
+import event_stream
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -163,15 +165,25 @@ async def handler(event):
     # still matches.
     channel_row = database.find_channel(chat_id=event.chat_id, username=chat_username, title=chat_title)
 
-    # When a Trading Session is active, IT is the authoritative allow-list
-    # for its duration - only its own channels execute, whether or not
-    # they're separately "enabled" in the channel manager. With no active
-    # session, existing global behavior (WATCH_CHANNELS/enabled channels)
-    # is unchanged - see docs/AXIM_SESSION_ARCHITECTURE.md.
-    active_session = session_manager.get_active_session()
+    # When a Trading Session covers this channel, IT is the authoritative
+    # allow-list for its duration - only its own channels execute,
+    # whether or not they're separately "enabled" in the channel manager.
+    # Resolved per-channel (not "the" newest active session app-wide) so
+    # different Funds' concurrently active sessions each route correctly
+    # - see docs/AXIM_SESSION_ARCHITECTURE.md and core/database.py's
+    # get_active_trading_session_for_channel.
+    active_session = session_manager.get_active_session_for_channel(channel_row)
     if active_session:
-        if not session_manager.channel_in_session(active_session, channel_row):
-            return
+        if active_session["fund_id"] is not None:
+            fund = database.get_fund(active_session["fund_id"])
+            if fund is not None and fund["status"] == "paused":
+                print(f"\n[FUND PAUSED] Signal from {_debug_safe(chat_title)!r} skipped - "
+                      f"Fund {fund['name']!r} is paused.")
+                return
+    # No session covers this channel specifically - a DIFFERENT channel
+    # having its own active session (a different Fund) must not block
+    # this one, so fall back to the legacy global WATCH_CHANNELS/
+    # enabled-channels check exactly as if no session existed anywhere.
     elif not channel_allowed(chat_title, chat_username):
         return
 
@@ -208,8 +220,14 @@ async def handler(event):
     timeline.mark("signal_parsed")
 
     if signal:
-        execution_result = await coordinator.handle_signal(
+        # route_signal resolves which broker account's coordinator should
+        # actually handle this (via the session's Fund -> attached Pocket
+        # Option account - see core/broker_account_manager.py), falling
+        # back to `coordinator` (the legacy single-shared-connection
+        # default) only when no session covers this channel at all.
+        execution_result = await broker_account_manager.route_signal(
             signal,
+            coordinator,
             source=chat_title,
             sender=str(sender.id),
             message_id=event.id,
@@ -227,6 +245,22 @@ async def handler(event):
 
 
 HEARTBEAT_INTERVAL_SECONDS = 30
+MAINTENANCE_INTERVAL_SECONDS = 3600  # hourly - cheap, infrequent housekeeping
+
+
+async def _maintenance_loop():
+    """Periodic housekeeping that doesn't need the tight heartbeat
+    interval - today just pruning core/database.py's server_events
+    outbox (docs/AXIM_REMOTE_ACCESS.md) so it never grows unbounded.
+    No cron/scheduler exists in this codebase; piggybacking on this
+    process's own asyncio loop is the simplest option, matching how
+    _heartbeat_loop already does the same for a different interval."""
+    while True:
+        try:
+            database.prune_server_events()
+        except Exception as e:
+            logger.error("telegram_listener: server_events prune failed: %s", e)
+        await asyncio.sleep(MAINTENANCE_INTERVAL_SECONDS)
 
 
 async def _heartbeat_loop():
@@ -300,11 +334,13 @@ async def _startup():
     print(f"AXIM: starting browser worker pool ({MAX_CONCURRENT_WORKERS} worker(s))...")
     worker_pool = BrowserWorkerPool(warmup_service, num_workers=MAX_CONCURRENT_WORKERS)
     await worker_pool.start()
-    coordinator = TradeCoordinator(worker_pool, warmup_service)
+    coordinator = TradeCoordinator(worker_pool, warmup_service, asset_cache=warmup_service.asset_cache)
     print("AXIM: worker pool ready, running startup recovery...")
     await recovery.run_recovery(warmup_service)
     session_manager.register(get_event_bus())
+    event_stream.register(get_event_bus())
     asyncio.create_task(_heartbeat_loop())
+    asyncio.create_task(_maintenance_loop())
     asyncio.create_task(_test_trade_poll_loop())
 
 
@@ -320,6 +356,10 @@ async def _shutdown():
             await warmup_service.stop()
         except Exception as e:
             logger.error("telegram_listener: error stopping browser: %s", e)
+    try:
+        await broker_account_manager.stop_all()
+    except Exception as e:
+        logger.error("telegram_listener: error stopping broker account contexts: %s", e)
 
 
 def run_forever():

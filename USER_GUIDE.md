@@ -1,4 +1,4 @@
-# AXIM User Guide
+# AXIM TradeStation User Guide
 
 ## What AXIM does
 
