@@ -204,7 +204,7 @@ async function refreshAll() {
 function renderTemplates() {
   const templates = allProfiles.filter(p => p.is_template);
   document.getElementById("templates-grid").innerHTML = templates.map(t => `
-    <div class="template-card" onclick="useTemplate(${t.id}, '${escapeHtml(t.name).replace(/'/g, "")}')">
+    <div class="template-card" onclick="useTemplate(${t.id})">
       <h4>${escapeHtml(t.name)}</h4>
       <p>${escapeHtml(t.description || "")}</p>
     </div>
@@ -226,7 +226,9 @@ function renderProfileList() {
   `).join("");
 }
 
-async function useTemplate(templateId, name) {
+async function useTemplate(templateId) {
+  const template = allProfiles.find(p => p.id === templateId);
+  const name = template ? template.name : "";
   const newName = prompt(`New profile name (duplicating "${name}"):`, name + " (copy)");
   if (!newName) return;
   try {

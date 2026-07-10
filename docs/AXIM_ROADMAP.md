@@ -690,3 +690,52 @@ real stream, and confirmed it terminated on its very first recheck *and*
 that the user's `access_state` in the database was actually flipped to
 `'expired'` as a side effect - not just that the stream happened to stop.
 Full regression suite re-run clean after this change.
+
+## Stored XSS via attribute-context escape bypass fixed (3 sites) (done)
+A full sweep of every `innerHTML =`/`+=` template-literal assignment
+across all 20 `web/*.html` files (not sampled - every call site checked)
+found one direct miss and one recurring pattern bug:
+- `web/dashboard.html`'s recent-activity renderer interpolated `t.asset`/
+  `t.direction` - fields parsed directly out of a raw incoming Telegram
+  signal - with no `escapeHtml()` at all, unlike every other trade-list
+  view in the app. Fixed by wrapping both in the page's own `escapeHtml`.
+- `web/telegram.html`, `web/risk.html`, `web/strategy_lab.html` each had
+  the same bug shape: `onclick="doThing(${id}, '${escapeHtml(name)
+  .replace(/'/g, "")}')"` - embedding an untrusted string inside a
+  **double-quoted** HTML attribute. This codebase's `escapeHtml()`
+  (`div.textContent = s; return div.innerHTML`) only encodes `&`/`<`/`>`
+  during text-node serialization - it never encodes `"`, since quotes
+  aren't special in a text node. A channel title (real, attacker-
+  controlled via a Telegram chat's display name), a risk-profile name,
+  or a backtest strategy label containing a `"` could break out of the
+  attribute and inject a new event handler entirely - the `.replace(/'/g,
+  "")` only stripped single quotes and did nothing for the actual `"`
+  vector.
+
+  Fixed at the root rather than patching the escaping: switched all
+  three `onclick` handlers to pass only the numeric `id` (never
+  string-interpolated, nothing to escape) and look the name/label back
+  up from data the page already holds in memory
+  (`allChannels.find(...)`, `allProfiles.find(...)`,
+  `currentReport.strategies.find(...)`) inside `openMessages`/
+  `useTemplate`/`openDeployModal` themselves - eliminates the
+  vulnerability class rather than adding a second escaping layer that
+  could just as easily be gotten wrong again later. Re-swept the whole
+  `web/` directory afterward for the same anti-pattern (`grep
+  "escapeHtml(.*)\.replace(/'/g"`) and for the broader shape (any
+  `onclick="...('${...}` interpolation) - zero remaining instances; the
+  two other matches found (`billing.html`'s plan tier, `trades.html`'s
+  server-generated screenshot URL) are both closed-enum/server-
+  constructed values, not free text from an untrusted source.
+
+Verified live, not just by reading the code: seeded a real channel via
+`database.upsert_channel` with a title of
+`Evil" onmouseover="window.__XSS_FIRED=true" x="` (a realistic malicious
+Telegram chat title), loaded `/telegram` in a real Playwright-driven
+browser, and confirmed the injected handler never fires
+(`window.__XSS_FIRED` stayed `undefined`), the malicious title still
+renders correctly as plain visible text, and the "View recent messages"
+feature (the refactored `openMessages(id)`) still works end-to-end -
+the modal correctly shows the full title, proving the id-lookup fix
+didn't break the feature it was patching. Full regression suite re-run
+clean after this change.

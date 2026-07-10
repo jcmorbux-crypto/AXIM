@@ -417,7 +417,7 @@ async function renderResults(report) {
         <div class="strategy-narrative" id="narrative-${s.id}"></div>
         <div class="row" style="margin-top:12px; justify-content:space-between;">
           <button class="toggle-narrative" onclick="toggleNarrative(${s.id})" id="narrative-toggle-${s.id}">Read analysis &darr;</button>
-          <button class="subtle" onclick="openDeployModal(${s.id}, '${escapeHtml(s.label).replace(/'/g, "")}')">Deploy to Fund</button>
+          <button class="subtle" onclick="openDeployModal(${s.id})">Deploy to Fund</button>
         </div>
       </div>
     `;
@@ -674,9 +674,10 @@ function toggleNarrative(strategyId) {
 
 let deployStrategyId = null;
 
-async function openDeployModal(strategyId, label) {
+async function openDeployModal(strategyId) {
   deployStrategyId = strategyId;
-  document.getElementById("deploy-strategy-label").textContent = `Strategy: ${label}`;
+  const strategy = (currentReport && currentReport.strategies || []).find(s => s.id === strategyId);
+  document.getElementById("deploy-strategy-label").textContent = `Strategy: ${strategy ? strategy.label : ""}`;
   document.getElementById("deploy-profile-name").value = "";
   document.getElementById("deploy-status").textContent = "";
   const funds = await fetchJSON("/api/funds?status=active");
