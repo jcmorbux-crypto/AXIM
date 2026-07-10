@@ -637,3 +637,32 @@ valid, then called the exact same `database.delete_session()` the
 Connected Devices "Revoke" button calls and confirmed the generator's
 `while True` loop broke on its very next iteration
 (`StopAsyncIteration`), instead of continuing indefinitely.
+
+## API docs (/docs, /redoc, /openapi.json) disabled by default (done)
+Found while auditing the auth surface: `FastAPI(title=...)` was
+constructed with no overrides, so its default interactive docs were
+live and completely unauthenticated - nothing in `api/main.py`
+disabled them, and being FastAPI-generated routes, they never pass
+through any of this app's own auth dependencies. Confirmed live against
+a real running server: `GET /openapi.json` with zero auth returned the
+full schema for **159 endpoints**, admin-only routes included, and
+`GET /docs` served a fully interactive Swagger UI - anyone who can
+merely reach the API (any device on the Tailscale network once
+`API_BIND_HOST` is opened up per `docs/AXIM_REMOTE_ACCESS.md`, no login
+needed) could browse the entire route map and every request/response
+shape. Doesn't leak actual data (no auth bypass on the real endpoints
+themselves), but it's real reconnaissance value handed out for free on
+a system controlling live trading, and contradicts the "no public
+exposure by default" design goal in spirit even where Tailscale is the
+actual boundary.
+
+Added `ENABLE_API_DOCS` (`config/settings.py`, default `false`) and wired
+it into `docs_url`/`redoc_url`/`openapi_url` on the `FastAPI(...)`
+constructor - `None` disables each route entirely (a real 404, not just
+hidden from a UI) unless explicitly opted into for local debugging.
+
+Verified live against a real running server, not just reading the code:
+confirmed all three endpoints return `404` with no env var set (today's
+new default), then confirmed setting `ENABLE_API_DOCS=true` correctly
+restores all three to `200` - the opt-in path genuinely works, not just
+the default. Full regression suite re-run clean after this change.

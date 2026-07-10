@@ -54,7 +54,7 @@ from settings import (
     WATCH_CHANNELS, ACCOUNT, MAX_TRADE_AMOUNT, MAX_TRADES_PER_HOUR,
     MAX_CONSECUTIVE_LOSSES, COOLDOWN_AFTER_LOSS_SECONDS,
     DUPLICATE_SIGNAL_WINDOW_SECONDS, MINIMUM_PAYOUT, MAX_DAILY_LOSS,
-    TRADE_AMOUNT, ALLOWED_ORIGINS,
+    TRADE_AMOUNT, ALLOWED_ORIGINS, ENABLE_API_DOCS,
 )
 from logger import get_logger
 
@@ -105,7 +105,17 @@ logger = get_logger("axim.ui", filename="ui.log")
 database.initialize_database()
 database.seed_risk_profile_templates()
 
-app = FastAPI(title="AXIM TradeStation API")
+# /docs, /redoc, /openapi.json are unauthenticated by FastAPI's own
+# design - off by default (ENABLE_API_DOCS, config/settings.py) so
+# opening API_BIND_HOST up to a Tailscale network doesn't also hand out
+# the full route/schema map, admin endpoints included, to anyone who can
+# merely reach the server without logging in.
+app = FastAPI(
+    title="AXIM TradeStation API",
+    docs_url="/docs" if ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
+)
 
 # CORS (docs/AXIM_REMOTE_ACCESS.md) - empty ALLOWED_ORIGINS (the default)
 # means no cross-origin browser requests are permitted at all, matching
