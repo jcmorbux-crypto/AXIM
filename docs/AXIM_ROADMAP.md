@@ -453,3 +453,52 @@ only ever returns the requesting user's own rows, confirmed `unread_only`
 filtering and both per-notification and mark-all read paths transition
 the right rows and nothing else. Full regression suite re-run clean
 after this change: 503 passed, 1 skipped, 0 failed.
+
+## Safety-critical control state and trade confirmations made real-time (done)
+The two most safety/time-critical pieces of live state in the app were
+still poll-only, unlike everything closed out above:
+- **Emergency Stop / pause / resume / test-mode.** `web/dashboard.html`'s
+  status banner (the "Emergency stop active" red banner, the run/paused/
+  reconnecting dot) only ever learned about these via its own 5s poll -
+  a Remote Client watching Mission Control from another device could see
+  a stale "running normally" state for up to 5 seconds after someone
+  else hit Emergency Stop elsewhere. Added `control.updated` (full
+  `ui_control_state` as the payload) emitted from all 6 mutation points
+  in `api/main.py` (`pause`/`resume`/`emergency-stop`/`clear-emergency-
+  stop`/`test-mode enable`/`disable`) plus `api/sessions.py`'s
+  session-level `emergency_stop_session` (which flips the same global
+  state). Wired `web/dashboard.html` to it; existing 5s poll kept as the
+  fallback floor.
+- **Live-mode per-trade confirmation.** The single most time-critical UI
+  in the app - a live trade sits waiting on a human decision with a
+  countdown - and `web/shell.js`'s global confirmation modal (injected
+  on every page) only checked every 2s. Since the row is created and
+  polled from inside `core/session_manager.wait_for_trade_confirmation`,
+  which runs in the *separate* Telegram listener process, made it write
+  straight to the `server_events` outbox itself (`database.
+  record_server_event`, same direct-write technique
+  `scripts/connect_broker_account.py` already uses from its own separate
+  process - no `event_bus` bridge needed, since `record_server_event`
+  just writes to the shared SQLite file any process can reach) - one new
+  event on creation (`trade.confirmation_requested`) and one on every
+  resolution path: `api/sessions.py`'s `confirm`/`reject` endpoints, and
+  `session_manager`'s own timeout-expiry branch
+  (`trade.confirmation_decided` on all three, so a second admin's modal
+  for the same trade dismisses immediately once anyone - or the timeout
+  itself - decides it, instead of lingering for up to 2s showing a
+  decision that's already been made). The existing 2s
+  `setInterval(pollPendingConfirmations, 2000)` stays as the fallback
+  floor; both new events just call the same `pollPendingConfirmations()`
+  function immediately.
+
+Verified live against a real running server (not mocks): logged in over
+real HTTP, opened the real `GET /api/events/stream` SSE connection in a
+background thread, then drove `POST /api/control/emergency-stop` ->
+`clear-emergency-stop` -> `pause` -> `resume` and confirmed each produced
+the correct `control.updated` event with the right state. Separately,
+created a pending-confirmation row the same way the listener process
+does (crossing the same process boundary a real deployment would),
+confirmed `trade.confirmation_requested` fired, then confirmed it
+through the real `POST .../confirm` endpoint and confirmed
+`trade.confirmation_decided` fired. Full regression suite re-run clean
+after this change.

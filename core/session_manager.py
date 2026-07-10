@@ -146,6 +146,18 @@ async def wait_for_trade_confirmation(trade_id, session_id, asset, direction, ex
     database.create_pending_trade_confirmation(trade_id, session_id, asset, direction, expiry, amount)
     logger.info("session_manager: trade_id=%s awaiting Live-mode confirmation (timeout=%ss)",
                 trade_id, TRADE_CONFIRMATION_TIMEOUT_SECONDS)
+    # This is the single most time-critical thing in the whole app - a
+    # live trade sits waiting on a human decision with a countdown, from
+    # this (the listener) process. web/shell.js's confirmation modal
+    # polls every 2s as a floor, but writing straight to the
+    # server_events outbox here (same technique
+    # scripts/connect_broker_account.py uses from its own separate
+    # process) means every connected Remote Client sees the modal appear
+    # the instant it's actually requested, not up to 2s late.
+    try:
+        database.record_server_event("trade.confirmation_requested", {"trade_id": trade_id})
+    except Exception:
+        pass
 
     deadline = time.monotonic() + TRADE_CONFIRMATION_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
@@ -163,6 +175,10 @@ async def wait_for_trade_confirmation(trade_id, session_id, asset, direction, ex
         await asyncio.sleep(0.5)
 
     database.expire_trade_confirmation(trade_id)
+    try:
+        database.record_server_event("trade.confirmation_decided", {"trade_id": trade_id})
+    except Exception:
+        pass
     raise TradeNotConfirmed(
         "trade_not_confirmed",
         f"no confirmation within {TRADE_CONFIRMATION_TIMEOUT_SECONDS}s - trade rejected",

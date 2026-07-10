@@ -417,6 +417,22 @@ def remove_signal_rule(rule_id: int, user=Depends(require_admin)):
     return {"status": "deleted"}
 
 
+def _emit_control_updated():
+    """Emergency stop / pause / resume / test-mode all flip the one
+    global ui_control_state row every connected client's status display
+    depends on (web/dashboard.html) - broadcasting this (like trade.*,
+    unscoped - see api/event_stream_routes.py's _visible_to) means an
+    Emergency Stop triggered from one Remote Client is reflected on every
+    OTHER connected client immediately, not just on that device's own
+    next 5s poll. Same reasoning as api/funds_routes.py's
+    _emit_fund_updated: this route runs inside the API process, so it
+    can write the server_events outbox directly."""
+    try:
+        database.record_server_event("control.updated", database.get_control_state())
+    except Exception:
+        pass
+
+
 @app.get("/api/control")
 def get_control_state(user=Depends(get_current_user)):
     return database.get_control_state()
@@ -426,6 +442,7 @@ def get_control_state(user=Depends(get_current_user)):
 def pause(user=Depends(require_admin)):
     database.set_control_state(paused=True)
     logger.info("api: trading paused via UI by %s", user["email"])
+    _emit_control_updated()
     return database.get_control_state()
 
 
@@ -433,6 +450,7 @@ def pause(user=Depends(require_admin)):
 def resume(user=Depends(require_admin)):
     database.set_control_state(paused=False)
     logger.info("api: trading resumed via UI by %s", user["email"])
+    _emit_control_updated()
     return database.get_control_state()
 
 
@@ -444,6 +462,7 @@ def emergency_stop(user=Depends(get_current_user)):
     # couldn't stop it). Every other mutating control stays admin-only.
     database.set_control_state(paused=True, emergency_stop=True)
     logger.warning("api: EMERGENCY STOP triggered via UI by %s", user["email"])
+    _emit_control_updated()
     return database.get_control_state()
 
 
@@ -451,6 +470,7 @@ def emergency_stop(user=Depends(get_current_user)):
 def clear_emergency_stop(user=Depends(require_admin)):
     database.set_control_state(emergency_stop=False)
     logger.info("api: emergency stop cleared via UI by %s", user["email"])
+    _emit_control_updated()
     return database.get_control_state()
 
 
@@ -463,6 +483,7 @@ def enable_test_mode(user=Depends(require_admin)):
     just runtime-flippable from the UI instead of requiring a restart."""
     database.set_control_state(test_mode=True)
     logger.info("api: test mode enabled via UI by %s", user["email"])
+    _emit_control_updated()
     return database.get_control_state()
 
 
@@ -470,6 +491,7 @@ def enable_test_mode(user=Depends(require_admin)):
 def disable_test_mode(user=Depends(require_admin)):
     database.set_control_state(test_mode=False)
     logger.info("api: test mode disabled via UI by %s", user["email"])
+    _emit_control_updated()
     return database.get_control_state()
 
 

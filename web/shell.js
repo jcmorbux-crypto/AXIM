@@ -225,6 +225,15 @@ const AximShell = (() => {
     pollPendingConfirmations();
     setInterval(pollPendingConfirmations, 2000);
     confirmCountdownTimer = setInterval(updateConfirmCountdown, 1000);
+    // trade.confirmation_requested/decided (core/session_manager.py,
+    // api/sessions.py) let the modal appear/dismiss the instant a
+    // decision is actually needed or made, on every connected client -
+    // the 2s poll above stays as the floor/fallback, same "SSE is a
+    // pure enhancement" discipline as everywhere else.
+    subscribeEvents({
+      "trade.confirmation_requested": { onEvent: pollPendingConfirmations, onResync: pollPendingConfirmations },
+      "trade.confirmation_decided": { onEvent: pollPendingConfirmations, onResync: pollPendingConfirmations },
+    });
   }
 
   // ---- In-app notifications (core/rule_engine.py's notify_owner

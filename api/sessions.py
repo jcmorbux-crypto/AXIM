@@ -158,11 +158,24 @@ def list_pending_confirmations(user=Depends(get_current_user)):
     return rows
 
 
+def _emit_confirmation_decided(trade_id):
+    """So every OTHER connected client's modal for this same trade_id
+    (web/shell.js) dismisses immediately once anyone decides it, instead
+    of each client discovering that independently on its own next 2s
+    poll - avoids a stale "still pending" modal on a second admin's
+    screen after someone else already acted."""
+    try:
+        database.record_server_event("trade.confirmation_decided", {"trade_id": trade_id})
+    except Exception:
+        pass
+
+
 @router.post("/pending-confirmations/{trade_id}/confirm")
 def confirm_trade(trade_id: int, user=Depends(get_current_user)):
     updated = database.decide_trade_confirmation(trade_id, "confirmed", decided_by=user["email"])
     if not updated:
         raise HTTPException(status_code=409, detail="already decided or no longer pending")
+    _emit_confirmation_decided(trade_id)
     return database.get_pending_trade_confirmation(trade_id)
 
 
@@ -171,6 +184,7 @@ def reject_trade(trade_id: int, user=Depends(get_current_user)):
     updated = database.decide_trade_confirmation(trade_id, "rejected", decided_by=user["email"])
     if not updated:
         raise HTTPException(status_code=409, detail="already decided or no longer pending")
+    _emit_confirmation_decided(trade_id)
     return database.get_pending_trade_confirmation(trade_id)
 
 
@@ -300,6 +314,10 @@ def emergency_stop_session(session_id: int, user=Depends(get_current_user)):
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     database.set_control_state(paused=True, emergency_stop=True)
+    try:
+        database.record_server_event("control.updated", database.get_control_state())
+    except Exception:
+        pass
     for active in database.list_active_trading_sessions():
         session_manager.end_session(active["id"], "stopped_emergency", f"emergency stop by {user['email']}")
         _emit_session_updated(active["id"])
