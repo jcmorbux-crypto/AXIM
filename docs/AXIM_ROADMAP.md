@@ -1052,3 +1052,60 @@ file (10 total) covering all three call sites plus the legitimate-
 owner-can-still-grant-it and ordinary-tier-still-works cases. Full
 regression suite: 521 passed, 1 skipped, 0 failed (role fix) confirmed
 separately, then re-run clean again after the tier fix.
+
+## Mission Control stuck on "Loading..." for 5-8s on every page load (fixed)
+Found by actually looking at the app, not just reading code: took real
+Playwright screenshots of the main pages (visual QA hadn't been done
+this session, everything else was functional/security testing) and
+Mission Control's "Today's Performance"/"Risk" cards were visibly stuck
+showing "Loading..." well past when they should have resolved. Confirmed
+100% reproducible across 5 fresh page loads, not a flake - and confirmed
+it eventually DID resolve, just after 5-8 real seconds every time,
+ruling out a hard failure and pointing at something genuinely slow
+rather than broken.
+
+Root-caused with real timing instrumentation (not guessed): `api/
+process_control.py`'s `find_listener_pids()` spawns an actual
+`powershell.exe` process and runs a WMI query
+(`Get-CimInstance Win32_Process`) to check whether the listener is
+running - measured directly at **1.4-1.65 seconds per call**, purely
+from Windows process-spawn + WMI overhead, nothing AXIM itself computes
+slowly. `web/dashboard.html`'s `refreshGlobal()` fires `/api/status` and
+`/api/pocket-option/status` concurrently in one `Promise.all` - both
+call this same expensive function independently, and `Promise.all`
+waits for the slowest of all 6 concurrent calls, so the whole dashboard
+blocked on it every single load.
+
+(First tried a different theory - that the SSE poller loop and the
+session-recheck code added earlier this session were blocking the
+asyncio event loop with un-offloaded synchronous DB calls, a real and
+separately-worth-fixing issue, offloaded via `asyncio.to_thread` - but
+verified live that this alone did NOT fix the reported symptom, which
+is what led to actually timing `get_status()` directly and finding the
+real cause. Kept the event-loop fix anyway since it's still correct and
+was a real, if secondary, issue.)
+
+Added a short-TTL cache (`CACHE_TTL_SECONDS = 3`) to
+`find_listener_pids()` - a few seconds of staleness on "is the listener
+running" is an acceptable trade-off for a background status display,
+the same tolerance the app already extends to heartbeat staleness.
+`start_listener()`/`stop_listener()` explicitly bypass the cache
+(`use_cache=False`) for their own action-gating checks immediately
+before actually starting/stopping, where a stale read matters more, and
+both invalidate the cache afterward so the next status read is fresh.
+Added a single-flight lock (double-checked locking) so two concurrent
+callers hitting a cold cache at the same moment don't each independently
+pay the ~1.4s cost - the second reuses the first's fresh result.
+
+Verified live, before and after, with the exact same reproduction:
+before the fix, 0/5 fresh page loads resolved within 2.5s (all 5-8s);
+after, most resolve near-instantly and the worst case dropped
+substantially - residual variance in this specific sandboxed
+environment traced to login-request timing noise unrelated to this fix,
+not a further instance of the same bug (confirmed by direct,
+repeated timing of `get_status()` in isolation: 1.35s uncached, 0.00s on
+every cached repeat call). Added `tests/test_process_control_cache.py`
+(6 tests, new file) covering cache hit/miss/expiry, the
+use-cache-false bypass, and that `start_listener()` genuinely sees fresh
+data rather than trusting a stale cache. Full regression suite re-run
+clean after this change.

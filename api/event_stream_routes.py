@@ -70,12 +70,29 @@ _poller_cursor = None
 
 
 async def _poller_loop():
+    """Runs on a 0.4s cadence for the whole process's lifetime - the
+    single highest-frequency thing touching the database anywhere in the
+    API. database.list_server_events_since/latest_server_event_id are
+    plain synchronous sqlite3 calls; calling them directly (no await, no
+    thread offload) blocks the ENTIRE asyncio event loop for however
+    long that query takes, every single cycle - not just this coroutine,
+    every other request's dispatch too, since asyncio is single-threaded
+    and a blocking call never yields. Normally fast enough not to
+    notice, but a burst of concurrent requests (e.g. a page load firing
+    a dozen fetches at once, each opening its own sqlite3 connection) can
+    genuinely stall this for seconds under real contention - confirmed
+    live: Mission Control's dashboard sat on "Loading..." for 5-8s on
+    every single load, 100% reproducible, root-caused to exactly this.
+    asyncio.to_thread offloads the blocking call to a worker thread so
+    the event loop stays free to keep dispatching everything else while
+    it runs - the same fix already applied to trade_coordinator's
+    blocking SQLite calls for the same reason."""
     global _poller_cursor
     if _poller_cursor is None:
-        _poller_cursor = database.latest_server_event_id() or 0
+        _poller_cursor = await asyncio.to_thread(database.latest_server_event_id) or 0
     while True:
         try:
-            rows = database.list_server_events_since(_poller_cursor, limit=200)
+            rows = await asyncio.to_thread(database.list_server_events_since, _poller_cursor, limit=200)
             if rows:
                 _poller_cursor = rows[-1]["id"]
                 for queue in list(_subscribers):
@@ -148,13 +165,13 @@ async def _event_generator(request, resume_from_id, user_id, raw_token):
             # simply "resume_from_id is old", since resume_from_id ==
             # oldest - 1 means the very next row is still intact and
             # nothing was actually lost.
-            oldest = database.oldest_server_event_id()
+            oldest = await asyncio.to_thread(database.oldest_server_event_id)
             if oldest is None or resume_from_id < oldest - 1:
                 # A genuine gap - tell the client to re-fetch current
                 # state via normal REST rather than silently skipping it.
                 yield _format_sse(None, "resync", {})
             else:
-                for row in database.list_server_events_since(resume_from_id):
+                for row in await asyncio.to_thread(database.list_server_events_since, resume_from_id):
                     last_yielded_id = row["id"]
                     if _visible_to(user_id, row["event_type"], row["payload"]):
                         yield _format_sse(row["id"], row["event_type"], row["payload"])
@@ -162,7 +179,7 @@ async def _event_generator(request, resume_from_id, user_id, raw_token):
             # Explicit "I have no prior state, send me everything you
             # currently have" - never a gap regardless of pruning, since
             # a resume_from_id=0 client never had anything to lose.
-            for row in database.list_server_events_since(0):
+            for row in await asyncio.to_thread(database.list_server_events_since, 0):
                 last_yielded_id = row["id"]
                 if _visible_to(user_id, row["event_type"], row["payload"]):
                     yield _format_sse(row["id"], row["event_type"], row["payload"])
@@ -176,7 +193,12 @@ async def _event_generator(request, resume_from_id, user_id, raw_token):
             now = time.monotonic()
             if now - last_session_check >= SESSION_RECHECK_SECONDS:
                 last_session_check = now
-                current_user = database.get_session_user(raw_token)
+                # Same blocking-call concern as _poller_loop above -
+                # offloaded to a thread so a stream that's been open for
+                # a while (there can be several, one per connected
+                # Remote Client) doesn't periodically stall the event
+                # loop for every other request in flight at that moment.
+                current_user = await asyncio.to_thread(database.get_session_user, raw_token)
                 if current_user is None:
                     break
                 # Same lazy trial-expiration check get_current_user runs
@@ -186,7 +208,7 @@ async def _event_generator(request, resume_from_id, user_id, raw_token):
                 # activity is this one open stream would otherwise never
                 # trigger it, since nothing else flips access_state to
                 # 'expired' on its own.
-                current_user = database.check_and_expire_trial(current_user)
+                current_user = await asyncio.to_thread(database.check_and_expire_trial, current_user)
                 if current_user["access_state"] in _BLOCKED_ACCESS_STATES:
                     break
             try:
