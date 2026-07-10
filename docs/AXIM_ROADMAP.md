@@ -888,3 +888,31 @@ build`/`tauri build`, so verified what could be: `tauri.conf.json`/
 changes are pure string/metadata edits - no code, no dependency, no
 build-config-affecting field touched - so this is a low-risk change even
 without a full build to confirm it.
+
+## Missing favicon and empty root README fixed (done)
+Found while checking for more of the same "unedited scaffold" pattern
+that turned up the Tauri metadata gap above: the web app had no favicon
+at all (no `.ico`/`.png` file, no `<link rel="icon">` anywhere) - every
+browser tab showing any of the 20 pages fell back to a blank/default tab
+icon, one of the more commonly-noticed "this looks unfinished" signals
+in a web product. Added `web/favicon.svg` - a small inline SVG matching
+the sidebar's existing "blue rounded-square A" mark exactly (same
+`#2452eb` blue from `theme.css`'s `--blue` token, same shape) - and a
+`<link rel="icon">` to all 20 pages' `<head>`, right before the existing
+`theme.css` link.
+
+Also found the repository's root `README.md` was completely empty (0
+bytes) - the first thing anyone browsing the repo or evaluating the
+project sees, despite genuinely thorough documentation existing
+everywhere else (`INSTALL.md`, `USER_GUIDE.md`, `DEPLOYMENT.md`, a dozen
+files under `docs/`). Wrote a real one: what AXIM does, the client/
+server architecture in brief, links out to the existing detailed docs
+rather than duplicating them, and an honest project-status line
+(`0.9.0-dev`, pointing at the readiness/release-checklist docs).
+
+Verified live against a real running server: `GET /web/favicon.svg`
+returns `200` with `content-type: image/svg+xml` and the expected SVG
+body through the existing `/web` static mount (no new route needed).
+Confirmed all 20 pages picked up the `<link rel="icon">` (grepped for
+files missing it - zero). Full regression suite re-run clean after this
+change (no backend logic touched - static asset + two doc files).
