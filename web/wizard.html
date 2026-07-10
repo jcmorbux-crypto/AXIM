@@ -154,8 +154,8 @@ async function renderStep() {
     content.innerHTML = `
       <h2>Create your Owner account</h2>
       <div class="wizard-subtitle">This account will have full, permanent control over AXIM.</div>
-      <div class="field"><label>Email</label><input type="email" id="w-email"></div>
-      <div class="field"><label>Password</label><input type="password" id="w-password" placeholder="At least 8 characters"></div>
+      <div class="field"><label for="w-email">Email</label><input type="email" id="w-email"></div>
+      <div class="field"><label for="w-password">Password</label><input type="password" id="w-password" placeholder="At least 8 characters"></div>
       <div id="w-error" class="banner danger" style="display:none;"></div>
     `;
     nextBtn.textContent = "Create Account";
@@ -220,12 +220,12 @@ async function renderStep() {
     content.innerHTML = `
       <h2>Create your first Trading Session</h2>
       <div class="wizard-subtitle">Sessions are how AXIM trades - bounded by a profit target, loss limit, or trade count, not "running forever." Every session belongs to a Fund, so your results stay organized as you add more portfolios later.</div>
-      <div class="field"><label>Fund name</label><input type="text" id="w-fund-name" value="My First Fund"></div>
-      <div class="field"><label>Session name</label><input type="text" id="w-session-name" placeholder="My First Session"></div>
+      <div class="field"><label for="w-fund-name">Fund name</label><input type="text" id="w-fund-name" value="My First Fund"></div>
+      <div class="field"><label for="w-session-name">Session name</label><input type="text" id="w-session-name" placeholder="My First Session"></div>
       <div class="row">
-        <div class="field"><label>Profit target ($)</label><input type="number" id="w-profit-target" value="0"></div>
-        <div class="field"><label>Loss limit ($)</label><input type="number" id="w-loss-limit" value="0"></div>
-        <div class="field"><label>Max trades</label><input type="number" id="w-max-trades" value="0"></div>
+        <div class="field"><label for="w-profit-target">Profit target ($)</label><input type="number" id="w-profit-target" value="0"></div>
+        <div class="field"><label for="w-loss-limit">Loss limit ($)</label><input type="number" id="w-loss-limit" value="0"></div>
+        <div class="field"><label for="w-max-trades">Max trades</label><input type="number" id="w-max-trades" value="0"></div>
       </div>
       <div class="muted" style="font-size:12px;">You can skip this and start a session later from Trading Sessions.</div>
       <div id="w-error" class="banner danger" style="display:none; margin-top:10px;"></div>

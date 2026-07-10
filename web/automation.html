@@ -59,7 +59,7 @@
     </div>
 
     <div class="field" style="max-width:340px; margin-bottom:18px;">
-      <label>Fund</label>
+      <label for="fund-filter">Fund</label>
       <select id="fund-filter" onchange="onFundFilterChange()">
         <option value="">Select a fund...</option>
       </select>
@@ -79,16 +79,16 @@
 <div class="modal-backdrop" id="editor-backdrop">
   <div class="modal" style="width:560px;">
     <h2 style="margin-top:0;" id="editor-title">New Automation</h2>
-    <div class="field"><label>Name</label><input type="text" id="r-name" placeholder="e.g. Stop at daily target"></div>
+    <div class="field"><label for="r-name">Name</label><input type="text" id="r-name" placeholder="e.g. Stop at daily target"></div>
     <div class="field">
-      <label>Scope</label>
+      <label for="r-scope">Scope</label>
       <select id="r-scope" onchange="onScopeChange()">
         <option value="fund">This Fund - applies to every session it runs</option>
         <option value="session">This session only - a temporary override, deleted when the session ends</option>
       </select>
     </div>
     <div class="field" id="r-session-field" style="display:none;">
-      <label>Session</label>
+      <label for="r-session-id">Session</label>
       <select id="r-session-id"></select>
       <div class="muted" style="font-size:11.5px;">Only this Fund's currently active session can be targeted.</div>
     </div>
@@ -267,16 +267,16 @@ function paramInputHtml(prefix, key, kind) {
   const id = `${prefix}-${key}`;
   if (kind === "channel") {
     const opts = allChannels.map(c => `<option value="${c.id}">${escapeHtml(c.title)}</option>`).join("");
-    return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><select id="${id}"><option value="">Select a source</option>${opts}</select></div>`;
+    return `<div class="field"><label for="${id}">${escapeHtml(key.replace(/_/g, " "))}</label><select id="${id}"><option value="">Select a source</option>${opts}</select></div>`;
   }
   if (kind === "risk_profile") {
     const opts = allRiskProfiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
-    return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><select id="${id}"><option value="">Select a profile</option>${opts}</select></div>`;
+    return `<div class="field"><label for="${id}">${escapeHtml(key.replace(/_/g, " "))}</label><select id="${id}"><option value="">Select a profile</option>${opts}</select></div>`;
   }
   if (kind === "text") {
-    return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><input type="text" id="${id}"></div>`;
+    return `<div class="field"><label for="${id}">${escapeHtml(key.replace(/_/g, " "))}</label><input type="text" id="${id}"></div>`;
   }
-  return `<div class="field"><label>${escapeHtml(key.replace(/_/g, " "))}</label><input type="number" id="${id}" step="any"></div>`;
+  return `<div class="field"><label for="${id}">${escapeHtml(key.replace(/_/g, " "))}</label><input type="number" id="${id}" step="any"></div>`;
 }
 
 function renderConditionParams(existingParams) {
@@ -432,7 +432,7 @@ const TEMPLATES = [
 
 function openTemplates() {
   document.getElementById("templates-list").innerHTML = TEMPLATES.map((t, i) => `
-    <div class="template-card" onclick="useTemplate(${i})">
+    <div class="template-card" role="button" tabindex="0" onclick="useTemplate(${i})">
       <div class="template-name">${escapeHtml(t.name)}</div>
       <div class="template-desc">${escapeHtml(t.desc)}</div>
     </div>
@@ -445,8 +445,8 @@ function useTemplate(index) {
   openEditor(null, TEMPLATES[index]);
 }
 
-function openModal(id) { document.getElementById(id).style.display = "flex"; }
-function closeModal(id) { document.getElementById(id).style.display = "none"; }
+function openModal(id) { AximShell.openModal(id); }
+function closeModal(id) { AximShell.closeModal(id); }
 
 async function saveRule() {
   const name = document.getElementById("r-name").value.trim();

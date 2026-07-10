@@ -98,28 +98,28 @@
       <div class="grid" style="grid-template-columns: 1fr 1fr;">
         <div class="card solid">
           <h3>Backtest Setup</h3>
-          <div class="field"><label>Run name</label><input type="text" id="r-name" placeholder="e.g. Go+ Channel - January"></div>
+          <div class="field"><label for="r-name">Run name</label><input type="text" id="r-name" placeholder="e.g. Go+ Channel - January"></div>
           <div class="row">
-            <div class="field" style="flex:1;"><label>Signal source</label>
+            <div class="field" style="flex:1;"><label for="r-source">Signal source</label>
               <select id="r-source">
                 <option value="both">Live + Imported</option>
                 <option value="live">Live only</option>
                 <option value="imported">Imported only</option>
               </select>
             </div>
-            <div class="field" style="flex:1;"><label>Channel (optional)</label>
+            <div class="field" style="flex:1;"><label for="r-channel">Channel (optional)</label>
               <select id="r-channel"><option value="">All channels</option></select>
             </div>
           </div>
           <div class="row">
-            <div class="field" style="flex:1;"><label>From date</label><input type="date" id="r-date-from"></div>
-            <div class="field" style="flex:1;"><label>To date</label><input type="date" id="r-date-to"></div>
+            <div class="field" style="flex:1;"><label for="r-date-from">From date</label><input type="date" id="r-date-from"></div>
+            <div class="field" style="flex:1;"><label for="r-date-to">To date</label><input type="date" id="r-date-to"></div>
           </div>
           <div class="row">
-            <div class="field" style="flex:1;"><label>Starting bankroll ($)</label><input type="number" id="r-bankroll" value="1000" step="1"></div>
-            <div class="field" style="flex:1;"><label>Default payout (%, used when a signal has none)</label><input type="number" id="r-payout" value="85" step="1"></div>
+            <div class="field" style="flex:1;"><label for="r-bankroll">Starting bankroll ($)</label><input type="number" id="r-bankroll" value="1000" step="1"></div>
+            <div class="field" style="flex:1;"><label for="r-payout">Default payout (%, used when a signal has none)</label><input type="number" id="r-payout" value="85" step="1"></div>
           </div>
-          <div class="field"><label>Session window</label>
+          <div class="field"><label for="r-window">Session window</label>
             <select id="r-window">
               <option value="daily">One session per day</option>
               <option value="all">Entire range as one session</option>
@@ -191,7 +191,7 @@
 
         <div class="card solid full-width">
           <h3>Session-by-Session Results</h3>
-          <div class="field" style="max-width:320px;"><label>Strategy</label><select id="session-strategy-select" onchange="loadSessions()"></select></div>
+          <div class="field" style="max-width:320px;"><label for="session-strategy-select">Strategy</label><select id="session-strategy-select" onchange="loadSessions()"></select></div>
           <div class="signal-table-wrap">
             <table>
               <thead><tr><th>#</th><th>Started</th><th>Status</th><th>Trades</th><th>P/L</th><th>Vaulted</th></tr></thead>
@@ -207,7 +207,7 @@
       <div class="card solid" style="margin-bottom:20px;">
         <h3>Generate a Scorecard</h3>
         <div class="row">
-          <div class="field" style="flex:1;"><label>Signal source</label>
+          <div class="field" style="flex:1;"><label for="sc-source">Signal source</label>
             <select id="sc-source"><option value="">Choose a source...</option></select>
           </div>
           <button class="primary" style="align-self:flex-end;" onclick="generateScorecard()">Generate</button>
@@ -230,21 +230,21 @@
         <div class="card solid">
           <h3>Add a Signal Manually</h3>
           <div class="row">
-            <div class="field" style="flex:1;"><label>Source</label><input type="text" id="m-source" placeholder="e.g. Manual Entry"></div>
-            <div class="field" style="flex:1;"><label>Asset</label><input type="text" id="m-asset" placeholder="EUR/USD OTC"></div>
+            <div class="field" style="flex:1;"><label for="m-source">Source</label><input type="text" id="m-source" placeholder="e.g. Manual Entry"></div>
+            <div class="field" style="flex:1;"><label for="m-asset">Asset</label><input type="text" id="m-asset" placeholder="EUR/USD OTC"></div>
           </div>
           <div class="row">
-            <div class="field" style="flex:1;"><label>Direction</label>
+            <div class="field" style="flex:1;"><label for="m-direction">Direction</label>
               <select id="m-direction"><option>BUY</option><option>SELL</option></select>
             </div>
-            <div class="field" style="flex:1;"><label>Expiry</label><input type="text" id="m-expiry" placeholder="1 Minute"></div>
+            <div class="field" style="flex:1;"><label for="m-expiry">Expiry</label><input type="text" id="m-expiry" placeholder="1 Minute"></div>
           </div>
-          <div class="field"><label>Timestamp</label><input type="datetime-local" id="m-timestamp"></div>
+          <div class="field"><label for="m-timestamp">Timestamp</label><input type="datetime-local" id="m-timestamp"></div>
           <div class="row">
-            <div class="field" style="flex:1;"><label>Result</label>
+            <div class="field" style="flex:1;"><label for="m-result">Result</label>
               <select id="m-result"><option value="">Ungraded</option><option value="win">Win</option><option value="loss">Loss</option><option value="draw">Draw</option></select>
             </div>
-            <div class="field" style="flex:1;"><label>Payout (%)</label><input type="number" id="m-payout" placeholder="85"></div>
+            <div class="field" style="flex:1;"><label for="m-payout">Payout (%)</label><input type="number" id="m-payout" placeholder="85"></div>
           </div>
           <button class="primary" onclick="addManualSignal()">Add Signal</button>
           <span id="manual-add-status" class="muted"></span>
@@ -252,10 +252,10 @@
         <div class="card solid">
           <h3>Import from Telegram History</h3>
           <div class="stat-caption" style="margin-bottom:10px;">Scans real past messages from a channel your account can already see and imports whatever parses as a signal. Results/payouts are never known from the message alone - grade imported signals manually afterward, same as a CSV row with no result column.</div>
-          <div class="field"><label>Channel</label>
+          <div class="field"><label for="tg-history-channel">Channel</label>
             <select id="tg-history-channel"><option value="">Loading channels...</option></select>
           </div>
-          <div class="field"><label>Messages to scan (most recent first)</label>
+          <div class="field"><label for="tg-history-limit">Messages to scan (most recent first)</label>
             <input type="number" id="tg-history-limit" value="200" min="1" max="2000">
           </div>
           <button id="tg-history-import-btn" onclick="importTelegramHistory()">Scan and Import</button>
@@ -293,10 +293,10 @@
   <div class="modal">
     <h2 style="margin-top:0;">Deploy to Fund</h2>
     <div class="muted" style="font-size:12.5px; margin-bottom:14px;" id="deploy-strategy-label"></div>
-    <div class="field"><label>Fund</label>
+    <div class="field"><label for="deploy-fund-select">Fund</label>
       <select id="deploy-fund-select"></select>
     </div>
-    <div class="field"><label>New profile name</label>
+    <div class="field"><label for="deploy-profile-name">New profile name</label>
       <input type="text" id="deploy-profile-name">
     </div>
     <div class="muted" style="font-size:11.5px; margin-bottom:14px;">This creates a fresh, independent Money Management profile from this strategy's results and sets it as the Fund's default - it won't affect any existing profile.</div>
@@ -326,8 +326,8 @@ async function fetchJSON(url, opts) {
 }
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function fmtMoney(n) { if (n === null || n === undefined) return "-"; const sign = n > 0 ? "+" : ""; return `${sign}$${Number(n).toFixed(2)}`; }
-function openModal(id) { document.getElementById(id).style.display = "flex"; }
-function closeModal(id) { document.getElementById(id).style.display = "none"; }
+function openModal(id) { AximShell.openModal(id); }
+function closeModal(id) { AximShell.closeModal(id); }
 
 document.getElementById("tabs").addEventListener("click", (e) => {
   if (!e.target.dataset.tab) return;

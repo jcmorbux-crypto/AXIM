@@ -1,3 +1,12 @@
+/* Screen-reader-only: visually hidden but still in the accessibility
+   tree - e.g. a page's real <h1> where the visible heading is already
+   styled by a more specific selector (.page-header h1) that a bare <h1>
+   would otherwise inherit unwanted font-size/margin from. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
 /* AXIM design system - "premium wealth management platform", not a
    monitoring dashboard. White background, soft warm-gray surfaces,
    generous whitespace, restrained color (blue accent; green/red

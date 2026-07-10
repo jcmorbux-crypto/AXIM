@@ -39,9 +39,9 @@
 <div class="modal-backdrop" id="create-modal">
   <div class="modal">
     <h2 style="margin-top:0;">Add User</h2>
-    <div class="field"><label>Email</label><input type="email" id="create-email"></div>
-    <div class="field"><label>Temporary password</label><input type="password" id="create-password" placeholder="At least 8 characters"></div>
-    <div class="field"><label>Role</label>
+    <div class="field"><label for="create-email">Email</label><input type="email" id="create-email"></div>
+    <div class="field"><label for="create-password">Temporary password</label><input type="password" id="create-password" placeholder="At least 8 characters"></div>
+    <div class="field"><label for="create-role">Role</label>
       <select id="create-role">
         <option value="user">User</option>
         <option value="admin">Admin</option>
@@ -50,7 +50,7 @@
         <option value="disabled_user">Disabled User</option>
       </select>
     </div>
-    <div class="field"><label>Access tier</label>
+    <div class="field"><label for="create-tier">Access tier</label>
       <select id="create-tier">
         <option value="trial">Trial</option>
         <option value="internal">Internal</option>
@@ -60,7 +60,7 @@
         <option value="elite">Elite</option>
       </select>
     </div>
-    <div class="field"><label>Access state</label>
+    <div class="field"><label for="create-state">Access state</label>
       <select id="create-state">
         <option value="pending_approval">Pending Approval</option>
         <option value="active">Active</option>
@@ -81,7 +81,7 @@
   <div class="modal" style="width:520px;">
     <h2 style="margin-top:0;" id="manage-email">-</h2>
 
-    <div class="field"><label>Role</label>
+    <div class="field"><label for="manage-role">Role</label>
       <select id="manage-role">
         <option value="owner">Owner</option>
         <option value="admin">Admin</option>
@@ -91,7 +91,7 @@
         <option value="disabled_user">Disabled User</option>
       </select>
     </div>
-    <div class="field"><label>Access tier</label>
+    <div class="field"><label for="manage-tier">Access tier</label>
       <select id="manage-tier">
         <option value="owner">Owner</option>
         <option value="internal">Internal</option>
@@ -103,7 +103,7 @@
         <option value="suspended">Suspended</option>
       </select>
     </div>
-    <div class="field"><label>Access state</label>
+    <div class="field"><label for="manage-state">Access state</label>
       <select id="manage-state">
         <option value="active">Active</option>
         <option value="free_access">Free Access</option>
@@ -180,8 +180,8 @@ const TIER_DISPLAY_NAMES = {
 };
 function tierLabel(tier) { return TIER_DISPLAY_NAMES[tier] || tier; }
 
-function openModal(id) { document.getElementById(id).style.display = "flex"; }
-function closeModal(id) { document.getElementById(id).style.display = "none"; }
+function openModal(id) { AximShell.openModal(id); }
+function closeModal(id) { AximShell.closeModal(id); }
 
 function openCreateModal() {
   document.getElementById("create-error").style.display = "none";

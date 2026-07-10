@@ -88,9 +88,9 @@
     <h2 style="margin-top:0;">Connect Telegram</h2>
     <div id="connect-step-1">
       <div class="muted" style="margin-bottom:12px;">Credentials are encrypted at rest and only used server-side.</div>
-      <div class="field"><label>API ID</label><input type="text" id="conn-api-id" placeholder="leave blank to reuse saved/.env credentials"></div>
-      <div class="field"><label>API Hash</label><input type="text" id="conn-api-hash" placeholder="leave blank to reuse saved/.env credentials"></div>
-      <div class="field"><label>Phone number</label><input type="text" id="conn-phone" placeholder="+15551234567"></div>
+      <div class="field"><label for="conn-api-id">API ID</label><input type="text" id="conn-api-id" placeholder="leave blank to reuse saved/.env credentials"></div>
+      <div class="field"><label for="conn-api-hash">API Hash</label><input type="text" id="conn-api-hash" placeholder="leave blank to reuse saved/.env credentials"></div>
+      <div class="field"><label for="conn-phone">Phone number</label><input type="text" id="conn-phone" placeholder="+15551234567"></div>
       <div id="connect-error-1" class="banner danger" style="display:none;"></div>
       <div class="row" style="justify-content:flex-end;">
         <button class="subtle" onclick="closeModal('connect-modal')">Cancel</button>
@@ -99,8 +99,8 @@
     </div>
     <div id="connect-step-2" style="display:none;">
       <div class="muted" style="margin-bottom:12px;" id="connect-code-sent-msg"></div>
-      <div class="field"><label>Verification code</label><input type="text" id="conn-code"></div>
-      <div class="field"><label>2FA password (only if your account has one)</label><input type="password" id="conn-password"></div>
+      <div class="field"><label for="conn-code">Verification code</label><input type="text" id="conn-code"></div>
+      <div class="field"><label for="conn-password">2FA password (only if your account has one)</label><input type="password" id="conn-password"></div>
       <div id="connect-error-2" class="banner danger" style="display:none;"></div>
       <div class="row" style="justify-content:flex-end;">
         <button class="subtle" onclick="closeModal('connect-modal')">Cancel</button>
@@ -136,8 +136,8 @@ async function fetchJSON(url, opts) {
   return res.json();
 }
 
-function openModal(id) { document.getElementById(id).style.display = "flex"; }
-function closeModal(id) { document.getElementById(id).style.display = "none"; }
+function openModal(id) { AximShell.openModal(id); }
+function closeModal(id) { AximShell.closeModal(id); }
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
 
@@ -260,7 +260,7 @@ function renderMySources() {
     return;
   }
   listEl.innerHTML = followed.map(c => `
-    <div class="source-card card-interactive" onclick="toggleConfig(event, ${c.id})">
+    <div class="source-card card-interactive" role="button" tabindex="0" onclick="toggleConfig(event, ${c.id})">
       <label class="toggle" onclick="event.stopPropagation()">
         <input type="checkbox" checked onchange="toggleChannel(${c.id}, this.checked)">
         <span class="slider"></span>
@@ -270,15 +270,15 @@ function renderMySources() {
         <div class="meta">${c.username ? "@" + escapeHtml(c.username) + " &middot; " : ""}<span class="badge off">${c.source_type}</span></div>
         <div class="source-config" id="config-${c.id}">
           <div class="row">
-            <div class="field"><label>Source type</label>
-              <select class="type-select" onclick="event.stopPropagation()" onchange="setSourceType(${c.id}, this.value)">
+            <div class="field"><label for="source-type-${c.id}">Source type</label>
+              <select id="source-type-${c.id}" class="type-select" onclick="event.stopPropagation()" onchange="setSourceType(${c.id}, this.value)">
                 <option value="passive" ${c.source_type === "passive" ? "selected" : ""}>Passive</option>
                 <option value="bot_command" ${c.source_type === "bot_command" ? "selected" : ""}>Bot Command</option>
                 <option value="group" ${c.source_type === "group" ? "selected" : ""}>Group Chat</option>
                 <option value="manual_review" ${c.source_type === "manual_review" ? "selected" : ""}>Manual Review</option>
               </select>
             </div>
-            <div class="field"><label>Priority</label><input type="number" class="priority-input" onclick="event.stopPropagation()" value="${c.priority || 0}" onchange="setPriority(${c.id}, this.value)"></div>
+            <div class="field"><label for="priority-${c.id}">Priority</label><input type="number" id="priority-${c.id}" class="priority-input" onclick="event.stopPropagation()" value="${c.priority || 0}" onchange="setPriority(${c.id}, this.value)"></div>
           </div>
           ${c.source_type === "bot_command" ? botFields(c) : ""}
           <div class="muted" style="font-size:12px; margin-top:8px;">Last signal: ${fmtTime(c.last_signal_at)}</div>

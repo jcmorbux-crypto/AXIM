@@ -69,7 +69,7 @@
           <div id="broker-account-summary" class="muted">Loading...</div>
           <div class="row" style="margin-top:10px;">
             <div class="field" style="flex:2;">
-              <label>Attached Pocket Option account</label>
+              <label for="f-broker-account">Attached Pocket Option account</label>
               <select id="f-broker-account"><option value="">Not attached</option></select>
             </div>
             <button class="subtle" style="align-self:flex-end;" onclick="assignBrokerAccount()">Attach</button>
@@ -95,19 +95,19 @@
 
         <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Fund Settings</div>
         <div class="row">
-          <div class="field" style="flex:2;"><label>Name</label><input type="text" id="f-name"></div>
-          <div class="field" style="flex:1;"><label>Starting balance ($)</label><input type="number" id="f-starting-balance" step="0.01"></div>
+          <div class="field" style="flex:2;"><label for="f-name">Name</label><input type="text" id="f-name"></div>
+          <div class="field" style="flex:1;"><label for="f-starting-balance">Starting balance ($)</label><input type="number" id="f-starting-balance" step="0.01"></div>
         </div>
-        <div class="field"><label>Broker / account label</label><input type="text" id="f-broker-label" placeholder="e.g. Pocket Option Demo"></div>
+        <div class="field"><label for="f-broker-label">Broker / account label</label><input type="text" id="f-broker-label" placeholder="e.g. Pocket Option Demo"></div>
         <div class="row">
-          <div class="field" style="flex:1;"><label>Default money management profile</label><select id="f-risk-profile"><option value="">None</option></select></div>
-          <div class="field" style="flex:1;"><label>Default session template</label><select id="f-session-profile"><option value="">None</option></select></div>
+          <div class="field" style="flex:1;"><label for="f-risk-profile">Default money management profile</label><select id="f-risk-profile"><option value="">None</option></select></div>
+          <div class="field" style="flex:1;"><label for="f-session-profile">Default session template</label><select id="f-session-profile"><option value="">None</option></select></div>
         </div>
         <div class="muted" style="font-size:11.5px; margin-bottom:4px;">Lifetime circuit breaker for this Fund - measured against its all-time realized P/L and trade count, not reset daily. Separate from any individual session's own limits.</div>
         <div class="row">
-          <div class="field" style="flex:1;"><label>Lifetime profit target ($, 0=off)</label><input type="number" id="f-profit-target" step="0.01"></div>
-          <div class="field" style="flex:1;"><label>Lifetime loss limit ($, 0=off)</label><input type="number" id="f-loss-limit" step="0.01"></div>
-          <div class="field" style="flex:1;"><label>Lifetime max trades (0=off)</label><input type="number" id="f-max-trades"></div>
+          <div class="field" style="flex:1;"><label for="f-profit-target">Lifetime profit target ($, 0=off)</label><input type="number" id="f-profit-target" step="0.01"></div>
+          <div class="field" style="flex:1;"><label for="f-loss-limit">Lifetime loss limit ($, 0=off)</label><input type="number" id="f-loss-limit" step="0.01"></div>
+          <div class="field" style="flex:1;"><label for="f-max-trades">Lifetime max trades (0=off)</label><input type="number" id="f-max-trades"></div>
         </div>
         <div class="muted" style="font-size:11.5px; margin-top:2px;">Breaching any of these pauses the Fund and stops its active session, if one is running.</div>
         <button class="primary" onclick="saveFund()">Save Settings</button>
@@ -135,8 +135,8 @@
 <div class="modal-backdrop" id="create-modal">
   <div class="modal">
     <h2 style="margin-top:0;">New Fund</h2>
-    <div class="field"><label>Name</label><input type="text" id="c-name" placeholder="e.g. Aggressive Growth Fund"></div>
-    <div class="field"><label>Starting balance ($)</label><input type="number" id="c-starting-balance" value="1000" step="0.01"></div>
+    <div class="field"><label for="c-name">Name</label><input type="text" id="c-name" placeholder="e.g. Aggressive Growth Fund"></div>
+    <div class="field"><label for="c-starting-balance">Starting balance ($)</label><input type="number" id="c-starting-balance" value="1000" step="0.01"></div>
     <div class="row" style="justify-content:flex-end;">
       <button class="subtle" onclick="closeModal('create-modal')">Cancel</button>
       <button class="primary" onclick="createFund()">Create Fund</button>
@@ -165,8 +165,8 @@ async function fetchJSON(url, opts) {
 }
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 function fmtMoney(n) { if (n === null || n === undefined) return "-"; return `$${Number(n).toFixed(2)}`; }
-function openModal(id) { document.getElementById(id).style.display = "flex"; }
-function closeModal(id) { document.getElementById(id).style.display = "none"; }
+function openModal(id) { AximShell.openModal(id); }
+function closeModal(id) { AximShell.closeModal(id); }
 
 async function refreshAll() {
   const [funds, channels, riskProfiles, sessionProfiles, brokerAccounts] = await Promise.all([
@@ -188,7 +188,7 @@ function renderFundsList() {
   const list = document.getElementById("funds-list");
   if (!allFunds.length) { list.innerHTML = '<div class="empty">No funds yet - create one to get started.</div>'; return; }
   list.innerHTML = allFunds.map(f => `
-    <div class="fund-list-item ${f.id === currentFundId ? "active" : ""}" onclick="selectFund(${f.id})">
+    <div class="fund-list-item ${f.id === currentFundId ? "active" : ""}" role="button" tabindex="0" onclick="selectFund(${f.id})">
       <div class="fund-name">${escapeHtml(f.name)} ${f.status !== "active" ? `<span class="badge off">${f.status}</span>` : ""}</div>
       <div class="fund-value">${fmtMoney(f.balances.total_account_value)}</div>
     </div>

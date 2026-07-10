@@ -72,12 +72,12 @@ const AximShell = (() => {
           <span class="dot warn"></span> Reconnecting to AXIM Server...
         </div>
         <div class="notif-bell-wrap">
-          <button class="notif-bell" id="axim-notif-bell" onclick="AximShell._toggleNotifDropdown()">
+          <button class="notif-bell" id="axim-notif-bell" aria-expanded="false" aria-controls="axim-notif-dropdown" onclick="AximShell._toggleNotifDropdown()">
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6.5a4 4 0 0 1 8 0c0 3.5 1.2 4.5 1.2 4.5H2.8S4 10 4 6.5Z"/><path d="M6.3 13a1.8 1.8 0 0 0 3.4 0"/></svg>
             <span>Notifications</span>
             <span class="notif-count" id="axim-notif-count" style="display:none;">0</span>
           </button>
-          <div class="notif-dropdown" id="axim-notif-dropdown">
+          <div class="notif-dropdown" id="axim-notif-dropdown" role="menu" aria-label="Notifications">
             <div class="notif-dropdown-header">
               <span>Notifications</span>
               <button class="subtle" onclick="AximShell._markAllNotifsRead()">Mark all read</button>
@@ -103,7 +103,14 @@ const AximShell = (() => {
       if (wrap && !wrap.contains(e.target)) {
         const dd = document.getElementById("axim-notif-dropdown");
         if (dd) dd.classList.remove("open");
+        const bell = document.getElementById("axim-notif-bell");
+        if (bell) bell.setAttribute("aria-expanded", "false");
       }
+    });
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      const dd = document.getElementById("axim-notif-dropdown");
+      if (dd && dd.classList.contains("open")) _toggleNotifDropdown();
     });
   }
 
@@ -130,6 +137,14 @@ const AximShell = (() => {
     const modal = document.createElement("div");
     modal.className = "modal-backdrop";
     modal.id = "axim-confirm-modal";
+    // Deliberately NOT wired into the shared openModal/closeModal below -
+    // no Escape-to-close, no click-outside-to-close. This gate exists so a
+    // Live trade can never proceed without an explicit Confirm/Reject (or
+    // the timeout's own auto-reject) - adding a silent dismiss path here
+    // would undo that safety property, not just be a UX nicety.
+    modal.setAttribute("role", "alertdialog");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("aria-label", "Live trade confirmation required");
     modal.innerHTML = `
       <div class="modal" style="width:440px;">
         <div class="banner danger" style="margin-bottom:14px;">LIVE TRADE - CONFIRMATION REQUIRED</div>
@@ -151,8 +166,17 @@ const AximShell = (() => {
     document.getElementById("axim-confirm-headline").textContent = `${row.asset || "-"} ${row.direction || ""}`;
     document.getElementById("axim-confirm-expiry").textContent = row.expiry || "-";
     document.getElementById("axim-confirm-amount").textContent = row.amount != null ? `$${Number(row.amount).toFixed(2)}` : "-";
-    document.getElementById("axim-confirm-modal").style.display = "flex";
+    const modal = document.getElementById("axim-confirm-modal");
+    modal.style.display = "flex";
     updateConfirmCountdown();
+    // Focus the dialog container itself, not either action button - a
+    // screen-reader/keyboard user is dropped straight into this
+    // safety-critical decision instead of it silently appearing
+    // somewhere off-screen, but a stray Enter keypress can't accidentally
+    // confirm a real-money trade the way focusing "Confirm Trade" by
+    // default could.
+    const dialog = modal.querySelector(".modal");
+    if (dialog) { dialog.setAttribute("tabindex", "-1"); dialog.focus(); }
   }
 
   function updateConfirmCountdown() {
@@ -264,9 +288,11 @@ const AximShell = (() => {
 
   async function _toggleNotifDropdown() {
     const dd = document.getElementById("axim-notif-dropdown");
+    const bell = document.getElementById("axim-notif-bell");
     if (!dd) return;
     const opening = !dd.classList.contains("open");
     dd.classList.toggle("open");
+    if (bell) bell.setAttribute("aria-expanded", opening ? "true" : "false");
     if (opening) await loadNotifList();
   }
 
@@ -444,8 +470,84 @@ const AximShell = (() => {
   // Settings > Developer.
   function isDeveloperMode() { return developerMode; }
 
+  // ---- Shared modal helper -------------------------------------------
+  // Every page (automation/broker/funds/strategy_lab/telegram/trades/
+  // users .html) previously defined its own byte-for-byte identical
+  // openModal/closeModal that just toggled display:flex/none - no
+  // keyboard/screen-reader support at all (no role, no focus moved on
+  // open, no focus restored on close, no Escape to close). Centralized
+  // here once; each page's own openModal/closeModal now just delegates
+  // to this. Deliberately NOT used by the Live-trade confirmation modal
+  // above (#axim-confirm-modal) - that one must never be dismissible via
+  // Escape or an outside click, only an explicit Confirm/Reject or its
+  // own timeout, so it manages its own display state entirely separately.
+  let _modalStack = [];
+
+  function openModal(id) {
+    const backdrop = document.getElementById(id);
+    if (!backdrop) return;
+    const dialog = backdrop.querySelector(".modal") || backdrop;
+    _modalStack.push({ id, previouslyFocused: document.activeElement });
+    backdrop.style.display = "flex";
+    backdrop.setAttribute("role", "dialog");
+    backdrop.setAttribute("aria-modal", "true");
+    if (!dialog.hasAttribute("tabindex")) dialog.setAttribute("tabindex", "-1");
+    const focusable = dialog.querySelector("input, select, textarea, button, a[href]");
+    (focusable || dialog).focus();
+  }
+
+  function closeModal(id) {
+    const backdrop = document.getElementById(id);
+    if (!backdrop) return;
+    backdrop.style.display = "none";
+    backdrop.removeAttribute("role");
+    backdrop.removeAttribute("aria-modal");
+    const idx = _modalStack.findIndex(m => m.id === id);
+    if (idx === -1) return;
+    const [entry] = _modalStack.splice(idx, 1);
+    if (entry.previouslyFocused && typeof entry.previouslyFocused.focus === "function") {
+      entry.previouslyFocused.focus();
+    }
+  }
+
+  // Only ever acts on modals opened through openModal() above (tracked
+  // in _modalStack) - #axim-confirm-modal is never pushed there, so
+  // neither of these can ever dismiss it.
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && _modalStack.length) {
+      closeModal(_modalStack[_modalStack.length - 1].id);
+    }
+  });
+  document.addEventListener("click", (e) => {
+    if (e.target.classList && e.target.classList.contains("modal-backdrop")
+        && _modalStack.some(m => m.id === e.target.id)) {
+      closeModal(e.target.id);
+    }
+  });
+
+  // Several pages use a clickable <div onclick="..."> (a fund/rule/
+  // template/profile card, a message row) instead of a real <button> -
+  // fine visually, but a plain div with an onclick gets no keyboard
+  // focus and no Enter/Space activation for free, and isn't announced as
+  // interactive to a screen reader. Rather than duplicate a keydown
+  // handler on every such element across every page, mark each one
+  // role="button" tabindex="0" in its own markup (the only per-element
+  // change needed) and handle Enter/Space activation for all of them
+  // here, once, via delegation.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    const target = e.target.closest('[role="button"]');
+    if (!target) return;
+    // Don't hijack Enter/Space when it's meant for a real form control
+    // (checkbox, select, nested real button) inside the card - only the
+    // card itself, when it's the actual focused element.
+    if (target !== e.target) return;
+    e.preventDefault();
+    target.click();
+  });
+
   return {
     init, logout, fetchJSON, isDeveloperMode, _confirmPendingTrade, _rejectPendingTrade,
-    _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents,
+    _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents, openModal, closeModal,
   };
 })();

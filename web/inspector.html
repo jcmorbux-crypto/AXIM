@@ -27,7 +27,7 @@
     <div class="grid">
       <div class="card">
         <h3>Load a recent message</h3>
-        <div class="field"><label>Channel</label>
+        <div class="field"><label for="channel-picker">Channel</label>
           <select id="channel-picker" onchange="loadChannelMessages()"><option value="">Select a channel...</option></select>
         </div>
         <div id="recent-messages-list" class="muted">Pick a channel to see its recent messages.</div>
@@ -66,7 +66,7 @@
     <div class="card full-width">
       <h3>Parsing Rules</h3>
       <div class="muted" style="margin-bottom:12px;">A rule is a find/replace applied to a channel's raw messages BEFORE the parser sees them - useful for channels with unusual label spelling.</div>
-      <div class="field"><label>Apply to channel</label>
+      <div class="field"><label for="rule-channel-picker">Apply to channel</label>
         <select id="rule-channel-picker" onchange="loadRules()"><option value="">Select a channel...</option></select>
       </div>
       <div class="row" style="margin-bottom:12px;">
@@ -114,7 +114,7 @@ async function loadChannelMessages() {
     const messages = await fetchJSON(`/api/channels/${id}/messages?limit=15`);
     if (!messages.length) { listEl.innerHTML = '<div class="empty">No messages captured yet for this channel.</div>'; return; }
     listEl.innerHTML = messages.map((m, i) => `
-      <div class="msg-pick-item" onclick="pickMessage(${i})">
+      <div class="msg-pick-item" role="button" tabindex="0" onclick="pickMessage(${i})">
         <div class="muted" style="font-size:11px;">${fmtTime(m.received_at)}</div>
         <div>${escapeHtml((m.message_text || "").slice(0, 120))}</div>
       </div>

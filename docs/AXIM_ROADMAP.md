@@ -739,3 +739,85 @@ feature (the refactored `openMessages(id)`) still works end-to-end -
 the modal correctly shows the full title, proving the id-lookup fix
 didn't break the feature it was patching. Full regression suite re-run
 clean after this change.
+
+## Accessibility pass: modals, forms, keyboard operability, screen-reader support (done)
+Zero `role=`, `tabindex=`, or `aria-*` attributes existed anywhere in the
+app except one `aria-label` (mobile nav toggle) before this pass - a
+full audit surfaced the gaps, all fixed and verified live:
+
+- **Modals had no keyboard support at all.** `openModal`/`closeModal`
+  were duplicated byte-for-byte across 7 files (`automation.html`,
+  `broker.html`, `funds.html`, `strategy_lab.html`, `telegram.html`,
+  `trades.html`, `users.html`), each just toggling `display`. Centralized
+  into `web/shell.js` as `AximShell.openModal`/`closeModal` (each page's
+  local function now delegates), fixing the duplication and the
+  accessibility gap in one move: `role="dialog"`/`aria-modal="true"` set
+  on open, focus moves to the first focusable control, focus restores to
+  whatever triggered the modal on close, and a shared, stack-aware
+  Escape-key handler closes the topmost one. Backdrop click-to-close
+  added too (only for the element actually clicked, not bubbled from
+  inside `.modal`).
+- **The Live-trade confirmation modal (`#axim-confirm-modal`) was
+  deliberately excluded** from all of the above - it's never pushed onto
+  the shared modal stack, so Escape and outside-click can never dismiss
+  it, preserving its fail-closed design (only an explicit Confirm/
+  Reject, or the timeout's own auto-reject, can resolve it). Given
+  `role="alertdialog"`/`aria-modal`/focus-on-open too, but focus
+  deliberately lands on the `.modal` container itself, not either action
+  button - a stray Enter keypress can't accidentally confirm a real-
+  money trade the way defaulting focus to "Confirm Trade" would.
+- **111 form `<label>`s were visually present but not programmatically
+  associated** with their input (`<label>Name</label><input id="x">` as
+  siblings, no `for=`) - including email/password on the login page,
+  the first thing every user touches. A script added `for="<id>"` to 104
+  automatically (pattern-matched safely); the remaining 7 needed manual
+  fixes: two labels contained a nested `<a>` link (regex-excluded on
+  purpose, fixed by hand in `sessions.html`), two `telegram.html` inputs
+  had no `id` at all (added one, scoped per-channel-card since the
+  markup is a per-row template), and one `sessions.html` label pointed
+  at a checkbox group, not a single control (given `role="group"`/
+  `aria-labelledby` instead of `for=`). Two more `<label><input
+  type="checkbox">...</label>` cases were already correctly accessible
+  (input nested inside the label needs no `for=`) and were correctly
+  left alone.
+- **7 clickable `<div>`s had no keyboard path** - a fund/rule template/
+  profile-list/message-pick/signal-source card, and a clickable table
+  row, all `onclick` with no way to Tab to or activate them. Added
+  `role="button" tabindex="0"` to each and one shared Enter/Space
+  activation handler in `shell.js` (delegated, not duplicated per
+  element) that calls `.click()` - but only when the card itself is the
+  focused element, not when Enter/Space was meant for a real nested
+  control (checkbox, select) inside it.
+- Screenshot images (`trades.html`) had no `alt` text and the thumbnail
+  was an `<img onclick>` with no keyboard equivalent - added `alt=`
+  everywhere and wrapped the thumbnail in a real (visually reset)
+  `<button>`.
+- The notification bell (every page) never exposed its open/closed
+  state - added `aria-expanded`, `aria-controls`, `role="menu"` on the
+  dropdown, and Escape-to-close (kept separate from the shared modal
+  stack, since the dropdown isn't a modal).
+- `dashboard.html` had no real `<h1>` (its title was a styled `<div>`) -
+  a `.page-header h1` CSS rule elsewhere in the app has higher
+  specificity than `.greeting-title` alone, so simply renaming the tag
+  would have visually shrunk it. Added a new `.sr-only` utility class
+  and a visually-hidden real `<h1>` instead - zero visual change,
+  correct heading structure for screen-reader navigation.
+
+Verified live with a real Playwright browser against a real running
+server, not by reading the code: swept all 16 touched pages for console
+errors and confirmed each has exactly one `<h1>` (zero errors, zero
+duplicates); opened the Funds "New Fund" modal and confirmed
+`role="dialog"`, focus landing on the first input, Escape closing it,
+and focus correctly restoring to the button that opened it; created two
+real funds and confirmed keyboard-only `Tab` + `Enter` activates a
+`fund-list-item` exactly like a mouse click; toggled the notification
+bell and confirmed `aria-expanded` flips correctly on open, click-
+outside, and Escape. Separately and most carefully, verified the safety
+property of the Live-trade confirmation modal specifically: created a
+real pending confirmation, confirmed Escape does **not** close it,
+confirmed clicking outside it does **not** close it, and confirmed its
+real Reject button still works end-to-end (the database row's `status`
+actually changes to `rejected`) - the accessibility pass added real
+keyboard/screen-reader support everywhere else without weakening this
+one deliberately-not-dismissible dialog. Full regression suite re-run
+clean after this change.

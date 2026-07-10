@@ -81,7 +81,7 @@
 </div>
 
 <div id="screenshot-modal" class="modal-backdrop" onclick="closeModal('screenshot-modal')">
-  <img id="screenshot-modal-img" src="" style="max-width:92vw; max-height:92vh; border-radius:8px;">
+  <img id="screenshot-modal-img" src="" alt="Enlarged trade screenshot" style="max-width:92vw; max-height:92vh; border-radius:8px;">
 </div>
 
 <script src="/web/shell.js"></script>
@@ -99,8 +99,8 @@ function escapeHtml(s) { const d = document.createElement("div"); d.textContent 
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "-"; }
 function fmtMoney(n) { return (n === null || n === undefined) ? "-" : `${n > 0 ? "+" : ""}$${Number(n).toFixed(2)}`; }
 function plClass(v) { return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral"); }
-function openModal(id) { document.getElementById(id).style.display = "flex"; }
-function closeModal(id) { document.getElementById(id).style.display = "none"; }
+function openModal(id) { AximShell.openModal(id); }
+function closeModal(id) { AximShell.closeModal(id); }
 
 function resultBadge(status) {
   if (status === "result_win") return '<span class="badge on">WIN</span>';
@@ -134,7 +134,7 @@ async function refreshTrades() {
       return;
     }
     tbody.innerHTML = trades.map(t => `
-      <tr class="trade-row" onclick="openDetail(${t.id})">
+      <tr class="trade-row" role="button" tabindex="0" onclick="openDetail(${t.id})">
         <td class="muted">${fmtTime(t.received_at)}</td>
         <td class="title-cell">${escapeHtml(t.channel || "-")}</td>
         <td>${escapeHtml(t.asset || "-")}</td>
@@ -208,7 +208,9 @@ async function openDetail(tradeId) {
       shotsEl.innerHTML = t.screenshot_urls.map(s => `
         <div>
           <span class="muted" style="font-size:12px;">${escapeHtml(s.label)}</span>
-          <img class="screenshot-thumb" src="${s.url}" onclick="showScreenshot('${s.url}')">
+          <button type="button" style="all:unset; display:block; cursor:zoom-in;" onclick="showScreenshot('${s.url}')">
+            <img class="screenshot-thumb" src="${s.url}" alt="${escapeHtml(s.label)} screenshot - click to enlarge">
+          </button>
         </div>
       `).join("");
     } else {
