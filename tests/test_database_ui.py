@@ -93,6 +93,52 @@ class DatabaseUITests(unittest.TestCase):
         database.set_control_state(test_mode=False)
         self.assertFalse(database.get_control_state()["test_mode"])
 
+    # ---- Listener heartbeat process-health columns (soak-test support) ----
+
+    def test_heartbeat_process_health_columns_round_trip(self):
+        database.update_listener_heartbeat(
+            generation=2, worker_count=6, demo_mode_verified=True,
+            listener_pid=12345, listener_uptime_min=42.5, listener_mem_mb=110.3,
+            chrome_count=10, chrome_mem_mb=1500.7,
+        )
+        hb = database.get_listener_heartbeat()
+        self.assertEqual(hb["listener_pid"], 12345)
+        self.assertEqual(hb["listener_uptime_min"], 42.5)
+        self.assertEqual(hb["listener_mem_mb"], 110.3)
+        self.assertEqual(hb["chrome_count"], 10)
+        self.assertEqual(hb["chrome_mem_mb"], 1500.7)
+
+    def test_heartbeat_process_health_columns_default_to_none(self):
+        """Callers that don't pass the new process-health kwargs (e.g.
+        any future caller unaware of them) must not error, and the
+        columns should read back as None, not some fabricated 0/false
+        value - matches this project's own never-fabricate discipline."""
+        database.update_listener_heartbeat(generation=1, worker_count=2, demo_mode_verified=True)
+        hb = database.get_listener_heartbeat()
+        self.assertIsNone(hb["listener_pid"])
+        self.assertIsNone(hb["listener_uptime_min"])
+        self.assertIsNone(hb["listener_mem_mb"])
+        self.assertIsNone(hb["chrome_count"])
+        self.assertIsNone(hb["chrome_mem_mb"])
+
+    def test_heartbeat_process_health_columns_update_on_second_call(self):
+        """update_listener_heartbeat upserts a singleton row (id=1) - the
+        second call's process-health values must overwrite the first,
+        not merge/preserve stale ones from an earlier generation."""
+        database.update_listener_heartbeat(
+            generation=1, worker_count=2, demo_mode_verified=True,
+            listener_pid=111, listener_uptime_min=1.0, listener_mem_mb=50.0,
+            chrome_count=2, chrome_mem_mb=200.0,
+        )
+        database.update_listener_heartbeat(
+            generation=2, worker_count=6, demo_mode_verified=True,
+            listener_pid=222, listener_uptime_min=99.0, listener_mem_mb=150.0,
+            chrome_count=10, chrome_mem_mb=1600.0,
+        )
+        hb = database.get_listener_heartbeat()
+        self.assertEqual(hb["listener_pid"], 222)
+        self.assertEqual(hb["chrome_count"], 10)
+
 
 if __name__ == "__main__":
     unittest.main()

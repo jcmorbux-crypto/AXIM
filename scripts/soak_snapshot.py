@@ -5,10 +5,20 @@ workers, and real trade/error counts from the DB, appended to
 logs/soak_test_log.csv. Run repeatedly (not continuously) over a
 multi-hour window via a scheduler - the CSV built up across many runs is
 the actual soak-test evidence, not any single snapshot.
+
+Listener PID/uptime/memory and Chrome count/memory are read from
+core/database.py's ui_listener_heartbeat table (self-reported by the
+listener process itself, see core/telegram_listener.py's
+_query_own_process_health) rather than discovered here via WMI process
+enumeration - confirmed by live testing that when THIS script runs via
+Windows Task Scheduler, Windows blocks it from reading another process's
+CommandLine/Path across the logon-session boundary (even under the same
+user account), which silently zeroed out every process-health column
+while the listener was genuinely healthy the whole time. Self-reporting
+sidesteps that boundary entirely instead of working around it.
 """
 import csv
 import datetime
-import subprocess
 import sys
 from pathlib import Path
 
@@ -21,47 +31,39 @@ LOG_CSV = PROJECT_ROOT / "logs" / "soak_test_log.csv"
 AXIM_LOG = PROJECT_ROOT / "logs" / "axim.log"
 STATE_FILE = PROJECT_ROOT / "logs" / ".soak_state"
 
+# Matches api/main.py's own HEARTBEAT_STALE_THRESHOLD_SECONDS (3x the
+# listener's 30s heartbeat interval) - a heartbeat row can exist but be
+# stale if the listener crashed without updating it since.
+HEARTBEAT_STALE_THRESHOLD_SECONDS = 45
+
 FIELDS = [
     "timestamp", "listener_pid", "listener_uptime_min", "listener_mem_mb",
     "chrome_count", "chrome_mem_mb", "signals_total", "wins", "losses",
     "draws", "errors_total", "rejected_total", "recovery_events_total",
-    "new_error_lines",
+    "new_error_lines", "heartbeat_stale",
 ]
 
 
-def _ps(cmd):
-    out = subprocess.run(
-        ["powershell", "-NoProfile", "-Command", cmd],
-        capture_output=True, text=True, timeout=30,
+def get_listener_health():
+    """Reads the listener's own self-reported health from the heartbeat
+    row rather than querying the OS directly - see module docstring.
+    Returns (pid, uptime_min, mem_mb, chrome_count, chrome_mem_mb,
+    heartbeat_stale). All process-health fields are None (and
+    heartbeat_stale True) if no heartbeat row exists at all yet."""
+    hb = database.get_listener_heartbeat()
+    if hb is None:
+        return None, None, None, None, None, True
+
+    stale = True
+    updated_at = hb.get("updated_at")
+    if updated_at:
+        age_seconds = (datetime.datetime.now() - datetime.datetime.fromisoformat(updated_at)).total_seconds()
+        stale = age_seconds > HEARTBEAT_STALE_THRESHOLD_SECONDS
+
+    return (
+        hb.get("listener_pid"), hb.get("listener_uptime_min"), hb.get("listener_mem_mb"),
+        hb.get("chrome_count"), hb.get("chrome_mem_mb"), stale,
     )
-    return out.stdout.strip()
-
-
-def get_listener_stats():
-    out = _ps(
-        "$p = Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-        "Where-Object { $_.CommandLine -like '*telegram_listener.py*' } | Select-Object -First 1; "
-        "if ($p) { $proc = Get-Process -Id $p.ProcessId; "
-        "$uptime = (New-TimeSpan -Start $p.CreationDate -End (Get-Date)).TotalMinutes; "
-        "\"$($p.ProcessId)|$([math]::Round($proc.WorkingSet64/1MB,1))|$([math]::Round($uptime,1))\" }"
-    )
-    if not out:
-        return None, None, None
-    pid, mem, uptime = out.split("|")
-    return int(pid), float(mem), float(uptime)
-
-
-def get_chrome_stats():
-    out = _ps(
-        "$procs = Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
-        "Where-Object { $_.CommandLine -like '*sessions\\pocket_browser*' }; "
-        "$total = 0; foreach ($p in $procs) { try { $total += (Get-Process -Id $p.ProcessId).WorkingSet64 } catch {} }; "
-        "\"$($procs.Count)|$([math]::Round($total/1MB,1))\""
-    )
-    if not out:
-        return 0, 0.0
-    count, mem = out.split("|")
-    return int(count), float(mem)
 
 
 def get_db_stats():
@@ -102,8 +104,7 @@ def count_new_error_lines():
 def main():
     now = datetime.datetime.now().isoformat(timespec="seconds")
 
-    pid, mem, uptime = get_listener_stats()
-    chrome_count, chrome_mem = get_chrome_stats()
+    pid, uptime, mem, chrome_count, chrome_mem, stale = get_listener_health()
     total, wins, losses, draws, errors, rejected, recovery = get_db_stats()
     new_errors = count_new_error_lines()
 
@@ -122,6 +123,7 @@ def main():
         "rejected_total": rejected,
         "recovery_events_total": recovery,
         "new_error_lines": new_errors,
+        "heartbeat_stale": stale,
     }
 
     is_new = not LOG_CSV.exists()
@@ -135,10 +137,11 @@ def main():
           f"chrome: {chrome_count} procs, {chrome_mem}MB | "
           f"signals: {total} (win={wins} loss={losses} draw={draws} "
           f"error={errors} rejected={rejected}) | "
-          f"recovery_events={recovery} | new_error_lines_in_log={new_errors}")
+          f"recovery_events={recovery} | new_error_lines_in_log={new_errors} | "
+          f"heartbeat_stale={stale}")
 
-    if pid is None:
-        print("WARNING: telegram_listener.py process not found - soak test vehicle is down!")
+    if pid is None or stale:
+        print("WARNING: listener heartbeat is missing or stale - soak test vehicle may be down!")
 
 
 if __name__ == "__main__":

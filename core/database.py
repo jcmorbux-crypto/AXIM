@@ -483,6 +483,30 @@ def initialize_database():
         updated_at TEXT
     );
     """)
+    # Process-health columns for scripts/soak_snapshot.py (docs/
+    # AXIM_RELEASE_CHECKLIST.md) - added after the table above already
+    # shipped, so migrated inline here (same reason auth_sessions'
+    # client_name/client_type get the same treatment). Deliberately
+    # SELF-reported by the listener process itself (see
+    # telegram_listener.py's _heartbeat_loop) rather than discovered
+    # externally via WMI process enumeration: a process reading its OWN
+    # session's CommandLine/Path is unrestricted, but Windows blocks
+    # another process (e.g. a Task-Scheduler-spawned one, a different
+    # logon session even for the same user) from reading those same
+    # properties on a process outside its session - confirmed by live
+    # testing, not assumed. Self-reporting sidesteps that boundary
+    # entirely instead of working around it.
+    _NEW_HEARTBEAT_COLUMNS = {
+        "listener_pid": "INTEGER",
+        "listener_uptime_min": "REAL",
+        "listener_mem_mb": "REAL",
+        "chrome_count": "INTEGER",
+        "chrome_mem_mb": "REAL",
+    }
+    heartbeat_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ui_listener_heartbeat)")}
+    for column, sql_type in _NEW_HEARTBEAT_COLUMNS.items():
+        if column not in heartbeat_columns:
+            conn.execute(f"ALTER TABLE ui_listener_heartbeat ADD COLUMN {column} {sql_type}")
 
     # Singleton "Test Trade" request queue (Broker page) - the API process
     # never imports/calls the trading engine directly (see docs/AXIM_APP_PLAN.md's
@@ -2536,18 +2560,27 @@ def get_lifetime_realized_pnl():
 # ---------------------------------------------------------------------
 
 @timed("database")
-def update_listener_heartbeat(generation, worker_count, demo_mode_verified):
+def update_listener_heartbeat(generation, worker_count, demo_mode_verified,
+                               listener_pid=None, listener_uptime_min=None, listener_mem_mb=None,
+                               chrome_count=None, chrome_mem_mb=None):
     conn = get_connection()
+    now = datetime.now().isoformat()
     conn.execute("""
         UPDATE ui_listener_heartbeat
-        SET generation = ?, worker_count = ?, demo_mode_verified = ?, updated_at = ?
+        SET generation = ?, worker_count = ?, demo_mode_verified = ?, updated_at = ?,
+            listener_pid = ?, listener_uptime_min = ?, listener_mem_mb = ?,
+            chrome_count = ?, chrome_mem_mb = ?
         WHERE id = 1
-    """, (generation, worker_count, 1 if demo_mode_verified else 0, datetime.now().isoformat()))
+    """, (generation, worker_count, 1 if demo_mode_verified else 0, now,
+          listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb))
     if conn.total_changes == 0:
         conn.execute("""
-            INSERT INTO ui_listener_heartbeat (id, generation, worker_count, demo_mode_verified, updated_at)
-            VALUES (1, ?, ?, ?, ?)
-        """, (generation, worker_count, 1 if demo_mode_verified else 0, datetime.now().isoformat()))
+            INSERT INTO ui_listener_heartbeat (
+                id, generation, worker_count, demo_mode_verified, updated_at,
+                listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (generation, worker_count, 1 if demo_mode_verified else 0, now,
+              listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb))
     conn.commit()
     conn.close()
 

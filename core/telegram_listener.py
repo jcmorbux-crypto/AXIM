@@ -1,6 +1,7 @@
 from telethon import TelegramClient, events
 import asyncio
 import os
+import subprocess
 import sys
 import time
 from dotenv import load_dotenv
@@ -35,6 +36,12 @@ import broker_account_manager
 import event_stream
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
+
+# Captured once at process (module) load, not per _startup() call - a
+# _startup() re-run (internal recovery) doesn't reset the OS process
+# itself, so this should reflect the real process lifetime for
+# scripts/soak_snapshot.py's uptime column.
+_PROCESS_START_MONOTONIC = time.monotonic()
 
 load_dotenv()
 
@@ -263,21 +270,81 @@ async def _maintenance_loop():
         await asyncio.sleep(MAINTENANCE_INTERVAL_SECONDS)
 
 
+def _query_own_process_health():
+    """Self-reported PID/memory (this process) and Chrome worker
+    count/memory (its own spawned children), for scripts/soak_snapshot.py
+    (docs/AXIM_RELEASE_CHECKLIST.md) - see core/database.py's
+    ui_listener_heartbeat migration comment for why this is self-reported
+    rather than discovered externally via WMI. A process reading its OWN
+    session's CommandLine/memory isn't restricted; a DIFFERENT process in
+    a different logon session (confirmed live: a Task-Scheduler-spawned
+    process, even under the same user account) reading those same
+    properties on a process outside its session IS blocked by Windows -
+    self-reporting sidesteps that boundary entirely. Synchronous
+    (subprocess.run) - always called via asyncio.to_thread, never
+    directly on the event loop."""
+    my_pid = os.getpid()
+    listener_uptime_min = round((time.monotonic() - _PROCESS_START_MONOTONIC) / 60, 1)
+    listener_mem_mb = None
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"$proc = Get-Process -Id {my_pid} -ErrorAction SilentlyContinue; "
+             "if ($proc) { [math]::Round($proc.WorkingSet64/1MB,1) }"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if out.stdout.strip():
+            listener_mem_mb = float(out.stdout.strip())
+    except Exception as e:
+        logger.warning("telegram_listener: self-reported memory query failed: %s", e)
+
+    chrome_count, chrome_mem_mb = None, None
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             "$procs = Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+             "Where-Object { $_.CommandLine -like '*sessions\\pocket_browser*' }; "
+             "$total = 0; foreach ($p in $procs) { try { $total += (Get-Process -Id $p.ProcessId).WorkingSet64 } catch {} }; "
+             "\"$($procs.Count)|$([math]::Round($total/1MB,1))\""],
+            capture_output=True, text=True, timeout=10,
+        )
+        stripped = out.stdout.strip()
+        if stripped:
+            count_str, mem_str = stripped.split("|")
+            chrome_count = int(count_str)
+            chrome_mem_mb = float(mem_str)
+    except Exception as e:
+        logger.warning("telegram_listener: self-reported Chrome stats query failed: %s", e)
+
+    return my_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb
+
+
 async def _heartbeat_loop():
-    """Periodically writes generation/worker-count/demo-mode-verified to
-    ui_listener_heartbeat - the (separate-process) API/UI's only way to
-    show "is the browser/worker pool actually healthy right now" without
-    sharing memory with this process. Runs for the life of the asyncio
-    loop; a new one is implicitly started by the next _startup() call
-    after a process-level restart, so nothing needs explicit cancellation
-    here - the old loop (and this task with it) is simply gone by then."""
+    """Periodically writes generation/worker-count/demo-mode-verified
+    (plus self-reported process-health stats, see
+    _query_own_process_health) to ui_listener_heartbeat - the (separate-
+    process) API/UI's only way to show "is the browser/worker pool
+    actually healthy right now" without sharing memory with this
+    process. Runs for the life of the asyncio loop; a new one is
+    implicitly started by the next _startup() call after a process-level
+    restart, so nothing needs explicit cancellation here - the old loop
+    (and this task with it) is simply gone by then."""
     while True:
         try:
             if warmup_service is not None and worker_pool is not None:
-                database.update_listener_heartbeat(
+                listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb = (
+                    await asyncio.to_thread(_query_own_process_health)
+                )
+                await asyncio.to_thread(
+                    database.update_listener_heartbeat,
                     generation=warmup_service.generation,
                     worker_count=worker_pool.num_workers,
                     demo_mode_verified=True,
+                    listener_pid=listener_pid,
+                    listener_uptime_min=listener_uptime_min,
+                    listener_mem_mb=listener_mem_mb,
+                    chrome_count=chrome_count,
+                    chrome_mem_mb=chrome_mem_mb,
                 )
         except Exception as e:
             logger.error("telegram_listener: heartbeat write failed: %s", e)
