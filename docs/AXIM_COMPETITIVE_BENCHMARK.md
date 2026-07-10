@@ -112,14 +112,33 @@ flagged with how confident the finding is.
    `os.getenv` like every neighboring setting; `execution/pocket_executor.py`
    checks it before capturing). This finding predated that fix.
 
-3. **`select_expiry` makes 3 sequential Playwright round trips** (hours/
-   minutes/seconds inputs, each `fill()` + `expect().to_have_value()`) where
-   the underlying DOM operation could plausibly be done as one `page.
-   evaluate()` setting all three native input values and dispatching input
-   events once. Each round trip is IPC + a real browser paint/validation
-   cycle, not free. *Confidence: medium - plausible optimization, not yet
-   tested for whether Pocket Option's own input handlers tolerate a
-   synthetic multi-field batch write instead of sequential user-like input.*
+3. **INVESTIGATED - NOT VIABLE, confirmed by live testing, production code
+   unchanged.** The 3 sequential round trips (hours/minutes/seconds, each
+   `fill()` + `expect().to_have_value()`) were tested against a batched
+   `page.evaluate()` alternative (the native-HTMLInputElement-value-setter
+   trick, needed since this UI's inputs are framework-controlled and a plain
+   `input.value = x` is invisible to it - then dispatching real `input`/
+   `change` events for each field in one JS round trip instead of three
+   Playwright round trips).
+
+   **Result: the batched write is measurably faster (15-46ms vs 235-344ms)
+   but produces the WRONG expiry** whenever the hours or minutes field
+   actually changes - both "1 Minute" and "5 Minutes" targets landed on a
+   clamped `00:00:03` instead of the intended value; only the "30 Seconds"
+   case (where hours/minutes were already 0 and unchanged) happened to work,
+   which would have looked like a false positive if that were the only case
+   tested. The sequential approach was re-verified working correctly
+   immediately afterward, confirming the panel wasn't left in some broken
+   state - the batch approach itself is what's unreliable, not a corrupted
+   test environment.
+
+   This is exactly the risk this item's original "medium confidence" caveat
+   flagged, and confirms why it needed live verification before any code
+   change: deploying the batched write would have meant real trades placed
+   with a **wrong expiry duration** whenever the request changed hours/
+   minutes - a genuine correctness/safety bug, not just a missed performance
+   opportunity. `execution/pocket_dom.py`'s sequential `select_expiry`
+   implementation is unchanged and remains the correct approach.
 
 4. **INVESTIGATED - real signal confirmed, production integration deferred
    pending a scope decision.** Captured real WebSocket traffic two ways:
