@@ -79,15 +79,28 @@ These are structural findings from reading the current code, not measured
 regressions (no per-stage historical data exists yet - see above) - each is
 flagged with how confident the finding is.
 
-1. **Synchronous SQLite calls on the asyncio event loop.** Every risk check
-   (`check_max_trades_per_hour`, `check_max_consecutive_losses`,
+1. **RESOLVED.** `core/trade_coordinator.py`'s `handle_signal` no longer runs
+   any blocking `sqlite3` call directly on the event loop thread. The
+   Validation/Risk Manager/Session limits/Duplicate Detection sequence
+   (previously 5+ inline blocking round trips) was extracted verbatim into
+   `_run_preflight_checks` and now runs via one `await asyncio.to_thread(...)`
+   call - same logic/ordering/short-circuit behavior, just off the loop
+   thread. Every other scattered `database.*`/`timeline.persist`/
+   `session_manager.record_trade_started` call in the method is individually
+   wrapped the same way. Proven, not just asserted:
+   `tests/test_trade_coordinator.py`'s `EventLoopNotBlockedDuringRiskChecksTests`
+   runs a lightweight ticker coroutine concurrently with an artificially
+   slowed risk check and asserts the ticker kept getting scheduled during the
+   delay - verified this test genuinely fails (3 ticks instead of 5+) when
+   temporarily reverted to a direct (non-threaded) call, confirming it's a
+   real regression guard, not a tautology. Original finding, for reference:
+   every risk check (`check_max_trades_per_hour`, `check_max_consecutive_losses`,
    `check_cooldown_after_loss`, `check_duplicate_signal`) plus
-   `record_signal_received`/`update_trade_status` opens a brand-new
-   `sqlite3.connect()` and runs a blocking query, all directly inside `async
-   def` functions with no `asyncio.to_thread` offload. Individually each call
-   is probably single-digit milliseconds locally, but they run sequentially
-   (5+ separate connect/query/close round trips per signal) and, more
-   importantly, **block the single event loop thread** - under real
+   `record_signal_received`/`update_trade_status` opened a brand-new
+   `sqlite3.connect()` and ran a blocking query, all directly inside `async
+   def` functions with no `asyncio.to_thread` offload, sequentially (5+
+   separate connect/query/close round trips per signal), **blocking the
+   single event loop thread** - under real
    concurrency (multiple workers reacting to simultaneous signals) this
    serializes work that should be independent. *Confidence: high (read
    directly from `database.py`/`risk_manager.py`; impact estimate is

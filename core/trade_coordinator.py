@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import time
 from datetime import datetime
@@ -66,6 +67,79 @@ class TradeCoordinator:
             trade_id, stage, status, elapsed, reason,
         )
 
+    def _run_preflight_checks(self, trade_id, amount, session_id, asset, direction, expiry, sent_at, timeline):
+        """The Validation/Risk Manager/Session limits/Duplicate Detection
+        stages, extracted verbatim from handle_signal so they can run via
+        asyncio.to_thread instead of directly on the event loop thread -
+        this sequential chain is 5+ separate blocking sqlite3 connect/
+        query/close round trips per signal (docs/AXIM_COMPETITIVE_
+        BENCHMARK.md item 1), which previously ran inline inside an
+        `async def`, meaning every OTHER coroutine on the loop (other
+        concurrent signals, the SSE poller, etc.) stalled for however
+        long this took. Logic/ordering/short-circuit behavior is
+        byte-for-byte unchanged - only WHERE it runs changed.
+
+        Returns (outcome, payload):
+        - ("stale", ignored_result_dict) - handle_signal still needs to
+          publish signal.ignored itself (event_bus.publish is async,
+          needs the event loop, so that one side effect couldn't move
+          into this synchronous function).
+        - ("rejected", reject_result_dict) - no event to publish for
+          this outcome, matches the original code exactly.
+        - ("passed", None) - handle_signal continues its own flow.
+        """
+        # Stage: Validation (freshness)
+        stage_t0 = time.monotonic()
+        if sent_at is not None:
+            now = datetime.now(sent_at.tzinfo) if sent_at.tzinfo else datetime.now()
+            age_seconds = (now - sent_at).total_seconds()
+            if age_seconds > MAX_SIGNAL_AGE:
+                reason = f"signal age {age_seconds:.1f}s exceeds MAX_SIGNAL_AGE {MAX_SIGNAL_AGE}s"
+                self._log_stage(trade_id, "validation", "ignored", time.monotonic() - stage_t0, reason)
+                database.update_trade_status(trade_id, TradeStatus.ERROR, result="ignored:stale_signal")
+                timeline.persist(database)
+                return "stale", {"status": "ignored", "trade_id": trade_id, "reason": "stale_signal", "age_seconds": age_seconds}
+        self._log_stage(trade_id, "validation", "passed", time.monotonic() - stage_t0)
+
+        # Stage: Risk Manager
+        stage_t0 = time.monotonic()
+        try:
+            risk_manager.check_demo_only()
+            risk_manager.check_max_trade_amount(amount)
+            risk_manager.check_max_trades_per_hour()
+            risk_manager.check_max_trades_per_day()
+            risk_manager.check_max_consecutive_losses()
+            risk_manager.check_cooldown_after_loss()
+            risk_manager.check_max_daily_loss()
+            risk_manager.check_daily_profit_target()
+        except risk_manager.RiskViolation as violation:
+            timeline.persist(database)
+            return "rejected", self._reject(trade_id, violation, time.monotonic() - stage_t0)
+        self._log_stage(trade_id, "risk_manager", "passed", time.monotonic() - stage_t0)
+
+        # Stage: Session limits - no-op if session_id is None (no
+        # active session covers this signal). Layered alongside the
+        # global risk_manager checks above, never instead of them -
+        # see docs/AXIM_SESSION_ARCHITECTURE.md.
+        stage_t0 = time.monotonic()
+        try:
+            session_manager.check_session_limits(session_id)
+        except session_manager.SessionLimitReached as violation:
+            timeline.persist(database)
+            return "rejected", self._reject(trade_id, violation, time.monotonic() - stage_t0)
+        self._log_stage(trade_id, "session_manager", "passed", time.monotonic() - stage_t0)
+
+        # Stage: Duplicate Detection
+        stage_t0 = time.monotonic()
+        try:
+            risk_manager.check_duplicate_signal(asset, direction, expiry, exclude_id=trade_id)
+        except risk_manager.RiskViolation as violation:
+            timeline.persist(database)
+            return "rejected", self._reject(trade_id, violation, time.monotonic() - stage_t0)
+        self._log_stage(trade_id, "duplicate_detection", "passed", time.monotonic() - stage_t0)
+        timeline.mark("risk_evaluated")
+        return "passed", None
+
     async def handle_signal(self, signal, source=None, sender=None, message_id=None,
                              sent_at=None, timeline=None, session_id=None,
                              fund_id=None, broker_account_id=None):
@@ -87,8 +161,9 @@ class TradeCoordinator:
             # per docs/AXIM_APP_PLAN.md ("Each trade must store fund_id
             # and broker_account_id"), not re-derived here.
             stage_t0 = time.monotonic()
-            trade_id = database.record_signal_received(
-                signal, source=source, sender=sender, message_id=message_id, session_id=session_id,
+            trade_id = await asyncio.to_thread(
+                database.record_signal_received, signal,
+                source=source, sender=sender, message_id=message_id, session_id=session_id,
                 fund_id=fund_id, broker_account_id=broker_account_id,
             )
             timeline.trade_id = trade_id
@@ -101,60 +176,18 @@ class TradeCoordinator:
             # or percent-of-bankroll from the UI) when this session has no
             # risk_profile_id attached - a profile-less session's sizing
             # is completely unchanged by the Risk Engine.
-            amount = risk_engine.compute_position_size(session_id, TRADE_AMOUNT)
+            amount = await asyncio.to_thread(risk_engine.compute_position_size, session_id, TRADE_AMOUNT)
 
             try:
-                # Stage: Validation (freshness)
-                stage_t0 = time.monotonic()
-                if sent_at is not None:
-                    now = datetime.now(sent_at.tzinfo) if sent_at.tzinfo else datetime.now()
-                    age_seconds = (now - sent_at).total_seconds()
-                    if age_seconds > MAX_SIGNAL_AGE:
-                        reason = f"signal age {age_seconds:.1f}s exceeds MAX_SIGNAL_AGE {MAX_SIGNAL_AGE}s"
-                        self._log_stage(trade_id, "validation", "ignored", time.monotonic() - stage_t0, reason)
-                        database.update_trade_status(trade_id, TradeStatus.ERROR, result="ignored:stale_signal")
-                        await self.event_bus.publish("signal.ignored", {"trade_id": trade_id, "reason": "stale_signal"})
-                        timeline.persist(database)
-                        return {"status": "ignored", "trade_id": trade_id, "reason": "stale_signal", "age_seconds": age_seconds}
-                self._log_stage(trade_id, "validation", "passed", time.monotonic() - stage_t0)
-
-                # Stage: Risk Manager
-                stage_t0 = time.monotonic()
-                try:
-                    risk_manager.check_demo_only()
-                    risk_manager.check_max_trade_amount(amount)
-                    risk_manager.check_max_trades_per_hour()
-                    risk_manager.check_max_trades_per_day()
-                    risk_manager.check_max_consecutive_losses()
-                    risk_manager.check_cooldown_after_loss()
-                    risk_manager.check_max_daily_loss()
-                    risk_manager.check_daily_profit_target()
-                except risk_manager.RiskViolation as violation:
-                    timeline.persist(database)
-                    return self._reject(trade_id, violation, time.monotonic() - stage_t0)
-                self._log_stage(trade_id, "risk_manager", "passed", time.monotonic() - stage_t0)
-
-                # Stage: Session limits - no-op if session_id is None (no
-                # active session covers this signal). Layered alongside the
-                # global risk_manager checks above, never instead of them -
-                # see docs/AXIM_SESSION_ARCHITECTURE.md.
-                stage_t0 = time.monotonic()
-                try:
-                    session_manager.check_session_limits(session_id)
-                except session_manager.SessionLimitReached as violation:
-                    timeline.persist(database)
-                    return self._reject(trade_id, violation, time.monotonic() - stage_t0)
-                self._log_stage(trade_id, "session_manager", "passed", time.monotonic() - stage_t0)
-
-                # Stage: Duplicate Detection
-                stage_t0 = time.monotonic()
-                try:
-                    risk_manager.check_duplicate_signal(asset, direction, expiry, exclude_id=trade_id)
-                except risk_manager.RiskViolation as violation:
-                    timeline.persist(database)
-                    return self._reject(trade_id, violation, time.monotonic() - stage_t0)
-                self._log_stage(trade_id, "duplicate_detection", "passed", time.monotonic() - stage_t0)
-                timeline.mark("risk_evaluated")
+                outcome, payload = await asyncio.to_thread(
+                    self._run_preflight_checks, trade_id, amount, session_id, asset, direction, expiry,
+                    sent_at, timeline,
+                )
+                if outcome == "stale":
+                    await self.event_bus.publish("signal.ignored", {"trade_id": trade_id, "reason": "stale_signal"})
+                    return payload
+                if outcome == "rejected":
+                    return payload
 
                 # Correct a case-only mismatch against the real scanned asset
                 # list before anything else - execution/pocket_dom.py's
@@ -172,8 +205,11 @@ class TradeCoordinator:
                 if cached_tradeable is False:
                     reason = f"{asset!r} was untradeable at last asset-cache scan"
                     self._log_stage(trade_id, "asset_cache", "rejected", 0.0, reason)
-                    database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable_cached")
-                    timeline.persist(database)
+
+                    def _record_asset_cache_rejection():
+                        database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable_cached")
+                        timeline.persist(database)
+                    await asyncio.to_thread(_record_asset_cache_rejection)
                     return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable_cached", "reason": reason}
 
                 # Stage: Trade Lifecycle - cleared for execution
@@ -187,12 +223,13 @@ class TradeCoordinator:
                 # the .env-level setting in logs/dashboard.
                 if PREVIEW_ONLY or not AUTO_EXECUTE:
                     self._log_stage(trade_id, "pocket_executor", "preview_only", 0.0)
-                    timeline.persist(database)
+                    await asyncio.to_thread(timeline.persist, database)
                     return {"status": "preview", "trade_id": trade_id}
 
-                if database.get_control_state().get("test_mode"):
+                test_mode = await asyncio.to_thread(lambda: database.get_control_state().get("test_mode"))
+                if test_mode:
                     self._log_stage(trade_id, "pocket_executor", "test_mode_skipped", 0.0)
-                    timeline.persist(database)
+                    await asyncio.to_thread(timeline.persist, database)
                     return {"status": "test_mode", "trade_id": trade_id}
 
                 # Stage: Live-mode confirmation gate - a no-op unless this
@@ -207,8 +244,8 @@ class TradeCoordinator:
                         trade_id, session_id, asset, direction, expiry, amount,
                     )
                 except session_manager.TradeNotConfirmed as violation:
-                    timeline.persist(database)
-                    return self._reject(trade_id, violation, time.monotonic() - stage_t0)
+                    await asyncio.to_thread(timeline.persist, database)
+                    return await asyncio.to_thread(self._reject, trade_id, violation, time.monotonic() - stage_t0)
                 self._log_stage(trade_id, "trade_confirmation", "passed", time.monotonic() - stage_t0)
 
                 # Counts toward the session's max_trades the instant we
@@ -216,7 +253,7 @@ class TradeCoordinator:
                 # and not gated behind the outcome (a trade that errors out
                 # after this point still counted as "a trade", same as
                 # trades_count everywhere else in this codebase).
-                session_manager.record_trade_started(session_id)
+                await asyncio.to_thread(session_manager.record_trade_started, session_id)
 
                 # Stage: Worker Pool - acquire one of N warm pages. Queues
                 # (FIFO) up to WORKER_ACQUIRE_TIMEOUT_SECONDS if all are busy;
@@ -229,8 +266,11 @@ class TradeCoordinator:
                         f"longer than WORKER_ACQUIRE_TIMEOUT_SECONDS={WORKER_ACQUIRE_TIMEOUT_SECONDS}s"
                     )
                     self._log_stage(trade_id, "worker_pool", "rejected", time.monotonic() - stage_t0, reason)
-                    database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:all_workers_busy")
-                    timeline.persist(database)
+
+                    def _record_worker_pool_rejection():
+                        database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:all_workers_busy")
+                        timeline.persist(database)
+                    await asyncio.to_thread(_record_worker_pool_rejection)
                     return {"status": "rejected", "trade_id": trade_id, "rule": "all_workers_busy", "reason": reason}
                 self._log_stage(trade_id, "worker_pool", f"acquired worker_id={worker.worker_id}", time.monotonic() - stage_t0)
 
@@ -247,9 +287,9 @@ class TradeCoordinator:
                 return result
             except Exception as e:
                 logger.error("trade_coordinator: trade_id=%s unhandled error=%s", trade_id, e)
-                database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
+                await asyncio.to_thread(database.update_trade_status, trade_id, TradeStatus.ERROR, result=f"error:{e}")
                 await self.event_bus.publish("trade.error", {"trade_id": trade_id, "error": str(e)})
-                timeline.persist(database)
+                await asyncio.to_thread(timeline.persist, database)
                 raise
         finally:
             # Safe even though a background track_outcome task may still be

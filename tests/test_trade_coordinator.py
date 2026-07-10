@@ -324,5 +324,74 @@ class TradeConfirmationGateIntegrationTests(unittest.TestCase):
         self.assertEqual(database.list_pending_trade_confirmations(), [])
 
 
+class EventLoopNotBlockedDuringRiskChecksTests(unittest.TestCase):
+    """docs/AXIM_COMPETITIVE_BENCHMARK.md item 1: the Validation/Risk
+    Manager/Session limits/Duplicate Detection stages used to run
+    directly on the event loop thread as blocking sqlite3 calls -
+    proven here to no longer be true, not just asserted. A slow
+    (artificially delayed) risk check runs concurrently with a
+    lightweight ticker coroutine; if the risk check still blocked the
+    loop, the ticker would get zero ticks during the delay. This is a
+    genuine concurrency test (real asyncio.sleep interleaving), not a
+    mock of asyncio.to_thread itself - it would fail if handle_signal
+    were reverted to calling _run_preflight_checks directly instead of
+    through asyncio.to_thread."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self._original_preview_only = trade_coordinator.PREVIEW_ONLY
+        trade_coordinator.PREVIEW_ONLY = True
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+        trade_coordinator.PREVIEW_ONLY = self._original_preview_only
+
+    def test_ticker_keeps_running_during_a_slow_risk_check(self):
+        import time as time_module
+
+        SLOW_CHECK_SECONDS = 0.3
+        original_check = risk_manager.check_max_trades_per_hour
+
+        def slow_check_max_trades_per_hour():
+            time_module.sleep(SLOW_CHECK_SECONDS)  # simulates a slow blocking DB round trip
+            return original_check()
+
+        ticks = []
+
+        async def ticker():
+            while True:
+                ticks.append(time_module.monotonic())
+                await asyncio.sleep(0.02)
+
+        async def scenario():
+            pool = FakeWorkerPool()
+            coordinator = TradeCoordinator(pool, warmup_service=None)
+            ticker_task = asyncio.create_task(ticker())
+            try:
+                result = await coordinator.handle_signal({
+                    "asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test",
+                })
+            finally:
+                ticker_task.cancel()
+            return result
+
+        risk_manager.check_max_trades_per_hour = slow_check_max_trades_per_hour
+        try:
+            result = _run(scenario())
+        finally:
+            risk_manager.check_max_trades_per_hour = original_check
+
+        self.assertEqual(result["status"], "preview")
+        # With a 0.3s blocking delay and a 0.02s ticker interval, a
+        # genuinely non-blocked loop gets roughly 10+ ticks during the
+        # delay alone. Asserting a conservative floor (not an exact
+        # count) to stay robust against real scheduling jitter.
+        self.assertGreaterEqual(len(ticks), 5)
+
+
 if __name__ == "__main__":
     unittest.main()
