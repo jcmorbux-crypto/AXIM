@@ -213,6 +213,51 @@ class VaultTriggerTests(unittest.TestCase):
         risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=50)
         self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 10.0)
 
+    def test_daily_target_used_to_be_dead_now_skims_once_target_reached(self):
+        profile_id = database.create_risk_profile("Daily Target Vault", sizing_mode="fixed", fixed_amount=10)
+        database.update_profit_vault_settings(profile_id, enabled=True, vault_percent=25,
+                                               trigger_event="daily_target", milestone_amount=100)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 40)  # below the $100 target
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=40)
+        self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 0.0)
+
+        database.update_session_pnl(self.session_id, 70)  # now at 110, past the target
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=70)
+        self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 27.5)  # 25% of 110
+
+    def test_weekly_target_also_works_same_as_daily_target(self):
+        profile_id = database.create_risk_profile("Weekly Target Vault", sizing_mode="fixed", fixed_amount=10)
+        database.update_profit_vault_settings(profile_id, enabled=True, vault_percent=10,
+                                               trigger_event="weekly_target", milestone_amount=50)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 60)
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=60)
+        self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 6.0)
+
+    def test_target_vault_only_fires_once_per_session_not_repeatedly(self):
+        profile_id = database.create_risk_profile("Daily Target Vault", sizing_mode="fixed", fixed_amount=10)
+        database.update_profit_vault_settings(profile_id, enabled=True, vault_percent=25,
+                                               trigger_event="daily_target", milestone_amount=50)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 60)
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=60)
+        self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 15.0)
+
+        # profit keeps growing well past the target - must not skim again
+        database.update_session_pnl(self.session_id, 100)
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=100)
+        self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 15.0)
+
+    def test_target_vault_no_effect_without_a_configured_target(self):
+        profile_id = database.create_risk_profile("No Target Vault", sizing_mode="fixed", fixed_amount=10)
+        database.update_profit_vault_settings(profile_id, enabled=True, vault_percent=25,
+                                               trigger_event="daily_target", milestone_amount=0)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 1000)
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=1000)
+        self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

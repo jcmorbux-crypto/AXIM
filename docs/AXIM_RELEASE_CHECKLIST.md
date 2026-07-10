@@ -344,13 +344,28 @@ flags that it's still needed.
       12 new tests using a fake Telethon client with scripted replies/
       timeouts, covering the full request/parse/route/stop-condition
       matrix
-- [ ] Money-management fidelity gaps: Compounding "modes" run identical
-      generic logic regardless of selection (daily doesn't reset daily,
-      every-win isn't win-triggered); Profit Vault's `daily_target`/
-      `weekly_target` triggers are selectable in the UI but never fire;
-      several `risk_profiles`-level columns (`max_trades`,
-      `profit_target`, `max_daily_loss`, `max_session_loss`) are stored
-      and API-editable but never enforced - not yet addressed
+- [x] **Profit Vault `daily_target`/`weekly_target` triggers fixed**:
+      completely dead before this - selectable in the UI, zero
+      implementation existed. Added `target_vault_skim()` (session-
+      scoped, reuses `milestone_amount`, fires once per session when the
+      target is first reached - not a repeating ladder like
+      `milestone_based`). 4 new tests
+- [x] **`risk_profiles`-level `max_trades`/`profit_target`/
+      `max_session_loss` fixed**: stored, API-editable, documented as
+      Money Management settings, but never read - only a session's own
+      copies of these same three concepts were enforced. Added
+      `session_manager._check_profile_limits()`, checked after the
+      session-level limits (which still take priority if both are set -
+      proved the ordering with a dedicated test). `max_daily_loss`
+      deliberately left alone - a true calendar-day, cross-session
+      aggregate, not a same-session concept like the other three. 5 new
+      tests
+- [ ] Compounding "modes" run identical generic logic regardless of
+      selection (daily doesn't reset daily, every-win isn't win-
+      triggered) - left as-is. `core/risk_engine.py`'s own docstring
+      already documents this as a deliberate scoping simplification, not
+      a broken promise; giving each mode real differentiated behavior is
+      a product/architecture decision, not a same-shape bug fix
 - [ ] Mission Control/Trade Center/Logs completeness gaps (per-Fund
       dashboard view missing several required live-monitoring fields,
       Trade Center missing Fund/broker-account columns, parser has no

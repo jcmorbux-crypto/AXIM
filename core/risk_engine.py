@@ -190,11 +190,40 @@ def every_winning_session_vault_skim(vault, realized_pnl):
     return 0
 
 
+def target_vault_skim(vault, realized_pnl, vaulted_amount):
+    """Pure: how much to skim for a 'daily_target' or 'weekly_target'
+    trigger - these were selectable in the UI (web/risk.html) but had no
+    implementation at all, unlike every other trigger_event value, so
+    selecting either silently vaulted nothing, forever. Evaluated against
+    the SESSION's own realized P&L, not a true calendar-spanning daily/
+    weekly aggregate - the same session-not-calendar scoping simplification
+    this module's docstring already documents and Compounding's daily/
+    weekly modes already use, reused here for consistency rather than
+    building a separate calendar-tracking layer for just this one field.
+
+    There's no dedicated "daily/weekly target amount" column - reuses
+    milestone_amount as the goal, same as milestone_based. Unlike
+    milestone_based's repeating ladder (skims again at every multiple),
+    a "target" is a single goalpost: fires exactly once per session, the
+    moment realized_pnl first reaches it, skimming a percentage of
+    everything realized so far (mirroring every_winning_session's shape,
+    since "hit today's goal, bank it" is closer in spirit to "bank a cut
+    of what you made" than "bank a fixed slice per milestone crossed")."""
+    if not vault["enabled"] or vault["trigger_event"] not in ("daily_target", "weekly_target"):
+        return 0
+    if vault["milestone_amount"] <= 0 or vaulted_amount > 0:
+        return 0  # no target configured, or already skimmed once this session
+    if realized_pnl >= vault["milestone_amount"]:
+        return realized_pnl * (vault["vault_percent"] / 100.0)
+    return 0
+
+
 def on_trade_closed(session_id, won, profit_loss):
     """Advances/resets the Martingale step and skims the Profit Vault on
-    a milestone trigger - called by core/session_manager.py's
-    trade.closed subscriber, right alongside its own P&L update, so both
-    happen from the same single hook into the outcome-tracking path."""
+    a milestone or daily/weekly-target trigger - called by
+    core/session_manager.py's trade.closed subscriber, right alongside
+    its own P&L update, so both happen from the same single hook into
+    the outcome-tracking path."""
     session = database.get_trading_session(session_id)
     if session is None or session["risk_profile_id"] is None:
         return
@@ -215,6 +244,13 @@ def on_trade_closed(session_id, won, profit_loss):
     if skim > 0:
         database.add_to_vault(session_id, skim)
         logger.info("risk_engine: vaulted $%.2f for session %s at a milestone", skim, session_id)
+        return  # a profile only has one trigger_event; no double-skim to check
+
+    skim = target_vault_skim(vault, session["realized_pnl"], session["vaulted_amount"])
+    if skim > 0:
+        database.add_to_vault(session_id, skim)
+        logger.info("risk_engine: vaulted $%.2f for session %s reaching its %s",
+                    skim, session_id, vault["trigger_event"])
 
 
 def on_session_ended(session_id):

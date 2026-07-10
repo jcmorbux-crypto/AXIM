@@ -59,6 +59,62 @@ class SessionManagerTests(unittest.TestCase):
         self.assertEqual(ctx.exception.rule, "session_max_trades")
         self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_max_trades")
 
+    def test_profile_profit_target_stops_session_even_without_a_session_level_target(self):
+        """risk_profiles.profit_target was stored and API-editable but
+        never read - a profile's own limit had zero effect unless the
+        operator also happened to set a matching session-level value on
+        the Start Session form."""
+        profile_id = database.create_risk_profile("Capped Profile", sizing_mode="fixed", fixed_amount=10,
+                                                    profit_target=30)
+        session_id = database.start_trading_session("Test", [1], "DEMO")  # no session-level profit_target
+        database.set_session_risk_profile(session_id, profile_id)
+        database.update_session_pnl(session_id, 30)
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.check_session_limits(session_id)
+        self.assertEqual(ctx.exception.rule, "profile_profit_target")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_target")
+
+    def test_profile_max_session_loss_stops_session_even_without_a_session_level_limit(self):
+        profile_id = database.create_risk_profile("Capped Profile", sizing_mode="fixed", fixed_amount=10,
+                                                    max_session_loss=15)
+        session_id = database.start_trading_session("Test", [1], "DEMO")
+        database.set_session_risk_profile(session_id, profile_id)
+        database.update_session_pnl(session_id, -15)
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.check_session_limits(session_id)
+        self.assertEqual(ctx.exception.rule, "profile_max_session_loss")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_loss_limit")
+
+    def test_profile_max_trades_stops_session_even_without_a_session_level_cap(self):
+        profile_id = database.create_risk_profile("Capped Profile", sizing_mode="fixed", fixed_amount=10,
+                                                    max_trades=2)
+        session_id = database.start_trading_session("Test", [1], "DEMO")
+        database.set_session_risk_profile(session_id, profile_id)
+        database.record_session_trade(session_id)
+        database.record_session_trade(session_id)
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.check_session_limits(session_id)
+        self.assertEqual(ctx.exception.rule, "profile_max_trades")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_max_trades")
+
+    def test_session_level_limit_takes_priority_when_both_are_set(self):
+        profile_id = database.create_risk_profile("Capped Profile", sizing_mode="fixed", fixed_amount=10,
+                                                    profit_target=1000)  # much higher, would never fire first
+        session_id = database.start_trading_session("Test", [1], "DEMO", profit_target=30)
+        database.set_session_risk_profile(session_id, profile_id)
+        database.update_session_pnl(session_id, 30)
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.check_session_limits(session_id)
+        self.assertEqual(ctx.exception.rule, "session_profit_target")  # session's own limit wins
+
+    def test_profile_without_a_configured_limit_has_no_effect(self):
+        profile_id = database.create_risk_profile("Unlimited Profile", sizing_mode="fixed", fixed_amount=10)
+        session_id = database.start_trading_session("Test", [1], "DEMO")
+        database.set_session_risk_profile(session_id, profile_id)
+        database.update_session_pnl(session_id, 100000)
+        session_manager.check_session_limits(session_id)  # must not raise
+        self.assertEqual(database.get_trading_session(session_id)["status"], "active")
+
     def test_record_trade_started_raises_once_cap_reached(self):
         session_id = database.start_trading_session("Test", [1], "DEMO", max_trades=1)
         session_manager.record_trade_started(session_id)  # consumes the only slot

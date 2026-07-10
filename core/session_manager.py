@@ -105,11 +105,14 @@ def end_all_active_sessions(status, reason=None):
 
 def check_session_limits(session_id):
     """No-op if session_id is None (no active session covers this
-    signal). Otherwise checks the three stop conditions in order and, on
-    the first breach, transitions the session to stopped AND raises -
-    the caller (trade_coordinator.handle_signal) treats this exactly like
-    a RiskViolation: reject the current signal, same as every other
-    rejected-before-execution path."""
+    signal). Otherwise checks the three session-level stop conditions in
+    order and, on the first breach, transitions the session to stopped
+    AND raises - the caller (trade_coordinator.handle_signal) treats
+    this exactly like a RiskViolation: reject the current signal, same
+    as every other rejected-before-execution path. Then checks the
+    attached risk profile's OWN copies of the same three limits, if any
+    are set - see _check_profile_limits below for why these are a real,
+    independent safety net, not a duplicate of the session-level check."""
     if session_id is None:
         return
     session = database.get_trading_session(session_id)
@@ -133,6 +136,55 @@ def check_session_limits(session_id):
                     f"{session['trades_count']} trades reached max {session['max_trades']}")
         raise SessionLimitReached("session_max_trades",
                                    f"session {session_id} reached its max trades - session stopped")
+
+    _check_profile_limits(session_id, session)
+
+
+def _check_profile_limits(session_id, session):
+    """risk_profiles.max_trades/profit_target/max_session_loss were
+    stored, API-editable (web/risk.html, api/risk_engine_routes.py), and
+    documented as Money Management settings, but nothing ever read them -
+    only a session's OWN copies of these same three concepts (set on the
+    Start Session form, independently of whatever profile is attached)
+    were enforced. That meant a profile's own limits couldn't act as an
+    independent safety net tied to the STRATEGY itself, regardless of
+    what an operator happened to type into a particular session's start
+    form - exactly the gap that matters if a profile is reused across
+    many sessions and is supposed to cap risk consistently.
+
+    max_daily_loss is deliberately NOT checked here - that's a true
+    calendar-day, cross-session aggregate (this module's sibling,
+    risk_manager.check_max_daily_loss, already covers that at the global
+    level), not a same-session concept like the other three. Building
+    real per-profile calendar-day aggregation is a materially bigger
+    feature, not a same-shape bug fix, and is explicitly out of scope
+    per this module's docstring's existing session-not-calendar
+    scoping note."""
+    if session["risk_profile_id"] is None:
+        return
+    profile = database.get_risk_profile(session["risk_profile_id"])
+    if profile is None:
+        return
+
+    if profile["profit_target"] > 0 and session["realized_pnl"] >= profile["profit_target"]:
+        end_session(session_id, "stopped_target",
+                    f"realized P/L ${session['realized_pnl']:.2f} reached the risk profile's "
+                    f"profit target ${profile['profit_target']:.2f}")
+        raise SessionLimitReached("profile_profit_target",
+                                   f"session {session_id} reached its risk profile's profit target - session stopped")
+
+    if profile["max_session_loss"] > 0 and session["realized_pnl"] <= -profile["max_session_loss"]:
+        end_session(session_id, "stopped_loss_limit",
+                    f"realized P/L ${session['realized_pnl']:.2f} breached the risk profile's "
+                    f"max session loss ${profile['max_session_loss']:.2f}")
+        raise SessionLimitReached("profile_max_session_loss",
+                                   f"session {session_id} breached its risk profile's max session loss - session stopped")
+
+    if profile["max_trades"] > 0 and session["trades_count"] >= profile["max_trades"]:
+        end_session(session_id, "stopped_max_trades",
+                    f"{session['trades_count']} trades reached the risk profile's max {profile['max_trades']}")
+        raise SessionLimitReached("profile_max_trades",
+                                   f"session {session_id} reached its risk profile's max trades - session stopped")
 
 
 def record_trade_started(session_id):

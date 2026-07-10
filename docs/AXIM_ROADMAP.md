@@ -1762,3 +1762,63 @@ channel. Plus 2 new `database.get_channel` tests and live UI
 verification of the new max-requests-per-session field via Playwright.
 
 Full suite re-run clean: 603 passed, 1 skipped, 14 subtests passed.
+
+## AXIM Core: two money-management "stored but never enforced" gaps fixed
+
+Continued down the audit's money-management findings. Scoped carefully -
+fixed the two that are genuine broken promises (a UI option or a stored,
+API-editable value that provably has zero effect), left the one that's
+already a documented, deliberate simplification alone rather than
+attempting a unilateral redesign.
+
+**1. Profit Vault's `daily_target`/`weekly_target` triggers were
+completely dead.** `core/risk_engine.py` only ever implemented
+`milestone_based` and `every_winning_session` skim functions -
+`web/risk.html`'s trigger dropdown offers `daily_target`/`weekly_target`
+too, but selecting either meant the vault would never skim anything,
+silently, forever. Added `target_vault_skim()`, evaluated against the
+session's own realized P&L (the same session-not-calendar scoping
+simplification this module's docstring already documents and
+Compounding's daily/weekly modes already use - no separate calendar-
+tracking layer needed for consistency with the existing pattern).
+Reuses `milestone_amount` as the goal (no dedicated column exists for a
+separate daily/weekly target). Fires exactly once per session, the
+moment realized P&L first reaches the target - a single goalpost,
+unlike `milestone_based`'s repeating ladder. Wired into
+`on_trade_closed` alongside the existing milestone check. 4 new tests,
+including one proving it fires only once even as profit keeps growing
+well past the target.
+
+**2. `risk_profiles.max_trades`/`profit_target`/`max_session_loss` were
+stored, API-editable, and documented as Money Management settings, but
+nothing ever read them.** Only a session's OWN copies of these same
+three concepts (set on the Start Session form, independent of whatever
+profile is attached) were enforced - a profile's own limits had zero
+effect unless an operator also happened to type matching values into
+that specific session's start form. Added
+`session_manager._check_profile_limits()`, called at the end of
+`check_session_limits` (after the existing session-level checks, which
+still take priority if both are set - proved this ordering explicitly
+with a test). `max_daily_loss` was deliberately left unaddressed - it's
+a true calendar-day, cross-session aggregate (risk_manager.py's global
+`check_max_daily_loss` already covers that at the account level), not a
+same-session concept like the other three; building real per-profile
+calendar-day aggregation is a materially bigger feature, not a same-
+shape bug fix. 5 new tests, including one confirming a profile with no
+limits configured has no effect (no false positives from the new check).
+
+**Left alone, not fixed**: the audit also flagged that Compounding's
+"modes" (`disabled`/`every_win`/`daily`/`weekly`/`target_based`/
+`milestone_based`/`smart`) all run the exact same generic profit-
+milestone-step logic in `_effective_risk_percent` regardless of which
+is selected - `core/risk_engine.py`'s own module docstring already
+documents this plainly ("all modes besides 'disabled' use the same
+profit-milestone-step mechanism... a reasonable placeholder, not a bug,
+but it is a simplification"). Unlike the two fixes above (a genuinely
+dead option, a genuinely unread column), this is an already-acknowledged
+design tradeoff, not a broken promise - giving each mode real,
+differentiated behavior (a true daily reset, a true win-triggered
+recalculation) is a product/architecture decision (what does "daily"
+mean - server midnight? spanning multiple sessions?) this session isn't
+positioned to make unilaterally, same reasoning already applied earlier
+this session to the "risk breakers only see closed trades" finding.
