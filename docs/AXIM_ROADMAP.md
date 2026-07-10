@@ -1215,3 +1215,91 @@ Re-ran the exact same 10-thread race with the lock restored: exactly 1
 `ok`, 9 `409 an account already exists`, `count_users() == 1`. Added
 `tests/test_bootstrap_owner_race.py` (2 tests: the race itself, and that
 a normal single bootstrap still works unchanged).
+
+## Duplicate concurrent trading sessions on the same broker account (fixed)
+
+Dispatched a focused audit (Explore agent) of trading/risk-critical code
+for the same check-then-act race class as the two fixes above, scoped to
+core/session_manager.py, core/trade_coordinator.py, api/main.py's
+control endpoints, core/risk_manager.py, and core/fund_manager.py. Found
+`core/database.py`'s `start_trading_session()`: its "no other active
+session on this broker account" check
+(`get_active_trading_session_for_broker_account`) and the `INSERT` that
+follows are two separate DB connections with no lock or transaction
+spanning both - and the function's own docstring calls this check "the
+real concurrency boundary," i.e. the code believed it was already safe.
+Two near-simultaneous `POST /api/sessions/start` calls (an operator
+double-clicking Start, or two open browser tabs) could each read "no
+active session" before either inserted, leaving two sessions
+independently driving trade execution against one physical Pocket
+Option login - each with its own `trades_count`/`realized_pnl` limits,
+doubling real risk exposure and corrupting the single-account browser
+automation state.
+
+Unlike `bootstrap_owner`'s race (10/10 threads succeeded on the first
+try, because password hashing is slow enough to widen the window on its
+own), this one didn't reproduce under plain unlocked threading - the
+check-then-insert gap here is just two fast SQLite calls, too narrow for
+the GIL to reliably interleave in a quick test. Proved the underlying
+logic was unsafe anyway by forcibly widening the window (a 50ms sleep
+injected right after the check, simulating realistic real-world latency
+- disk I/O, WAL contention, or just normal per-request network/threadpool
+scheduling): with the window forced open and no lock, all 5 concurrent
+threads succeeded, creating 5 duplicate active sessions on one broker
+account. With the fix's `_start_session_lock` in place, the exact same
+forced-interleaving test produces exactly 1 success and 4 clean
+rejections.
+
+Fixed the same way as the other two: a plain in-process `threading.Lock`
+around the check-then-insert sequence inside `start_trading_session`
+itself (not the API route), so every call site is protected, not just
+`api/sessions.py`. Confirmed `fund_manager.can_trade()` (the other gate
+before a session starts) doesn't duplicate this check outside the lock -
+it only verifies fund/broker-account status, so `start_trading_session`
+remains the single authoritative enforcement point. Added a concurrency
+test to `tests/test_database_sessions.py` alongside the existing
+sequential "cannot start second session" test.
+
+## A session's max_trades cap could be exceeded by concurrent confirmed trades (fixed)
+
+The second finding from the same trading-safety audit that produced the
+fix above. `core/trade_coordinator.py` checks a session's `max_trades`
+cap once (`session_manager.check_session_limits`, ~line 126) - but for
+a `require_confirmation` session, the very next stage
+(`wait_for_trade_confirmation`, ~line 243) then blocks waiting on a
+human, for up to `TRADE_CONFIRMATION_TIMEOUT_SECONDS`. Two signals
+arriving close together could each pass the cap check while trades_count
+was still one below the limit, both sit in the confirmation queue, both
+get confirmed, and both proceed to `database.record_session_trade` -
+which was an unconditional `trades_count = trades_count + 1`, with no
+re-check against `max_trades`. Each confirmed trade beyond the cap also
+went on to real worker-pool acquisition and (in a live, non-demo/preview
+run) actual broker execution, not just a wrong counter.
+
+Proved this decisively rather than assuming it: monkeypatched
+`database.record_session_trade` back to its old unconditional-increment
+form and raced 10 threads against a session capped at `max_trades=3` -
+all 10 succeeded, `trades_count` ended at 10, more than 3x the
+configured cap.
+
+Fixed by making the increment itself the enforcement point: `database.
+record_session_trade` is now a single atomic
+`UPDATE ... SET trades_count = trades_count + 1 WHERE id = ? AND
+(max_trades = 0 OR trades_count < max_trades)`, returning whether it
+actually incremented. `session_manager.record_trade_started` now raises
+the same `SessionLimitReached` `check_session_limits` already raises for
+this exact condition if the atomic increment reports the cap was already
+reached by a concurrent trade (and ends the session the same way, same
+`stopped_max_trades` status/reason - safe to call from more than one
+losing racer since `stop_trading_session`'s own `WHERE status = 'active'`
+guard makes it idempotent). `trade_coordinator.py`'s call site now wraps
+this in the same try/except-and-reject pattern already used for every
+other rejection stage in the pipeline, so a trade that loses this race
+is rejected before worker-pool acquisition, not after real execution.
+
+Re-ran the exact same 10-thread race against a `max_trades=3` session
+with the real fix in place: exactly 3 `ok`, 7 clean `SessionLimitReached`
+rejections, `trades_count` stops precisely at 3. Added 3 new tests to
+`tests/test_session_manager.py` (cap enforcement after the slot is
+consumed, unlimited when `max_trades=0`, and the 10-thread concurrency
+proof).

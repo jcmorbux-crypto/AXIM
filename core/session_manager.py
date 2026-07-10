@@ -121,8 +121,22 @@ def check_session_limits(session_id):
 
 
 def record_trade_started(session_id):
-    if session_id is not None:
-        database.record_session_trade(session_id)
+    """Raises SessionLimitReached - same exception check_session_limits()
+    already raises for this exact condition - if a concurrent trade
+    consumed the session's last available slot between that earlier
+    check and this call. See database.record_session_trade's docstring
+    for why the atomic increment itself, not a separate check, is what
+    actually closes that race."""
+    if session_id is None:
+        return
+    if database.record_session_trade(session_id):
+        return
+    session = database.get_trading_session(session_id)
+    if session is not None and session["status"] == "active":
+        end_session(session_id, "stopped_max_trades",
+                    f"{session['trades_count']} trades reached max {session['max_trades']}")
+    raise SessionLimitReached("session_max_trades",
+                               f"session {session_id} reached its max trades - session stopped")
 
 
 async def wait_for_trade_confirmation(trade_id, session_id, asset, direction, expiry, amount):

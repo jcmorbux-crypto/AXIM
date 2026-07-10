@@ -174,6 +174,38 @@ flags that it's still needed.
       process, so this is a complete fix); re-ran the same 10-way race
       with the fix and got exactly 1 owner, 9 clean 409 rejections. 2 new
       regression tests added
+- [x] **Duplicate concurrent trading sessions fixed**: found via a
+      dedicated audit of trading-safety-critical code for the same
+      check-then-act race class as the two fixes above.
+      `start_trading_session()`'s "no active session on this broker
+      account" check and its own docstring called this "the real
+      concurrency boundary," but the check and the INSERT that followed
+      were non-atomic - two near-simultaneous session-starts (a
+      double-click, two browser tabs) could both pass, leaving two
+      sessions independently trading against one physical broker login.
+      Didn't reproduce under plain unlocked threading (too narrow a
+      window for fast SQLite calls), so proved it with a forced
+      interleaving test instead: with the window artificially widened
+      and no lock, 5/5 concurrent requests succeeded, creating 5
+      duplicate sessions; with the fix, the identical test produces
+      exactly 1. Fixed with an in-process lock inside the database
+      function itself, protecting every call site
+- [x] **Session max_trades cap could be exceeded fixed**: the second
+      finding from the same audit. A `require_confirmation` session's
+      `max_trades` cap was checked once, well before the human-
+      confirmation wait - two signals arriving close together could both
+      pass that check, both get confirmed, and both increment an
+      unconditional counter with no re-check, each one also proceeding
+      to real worker-pool acquisition and (in a live run) actual broker
+      execution beyond the configured cap. Proved it first: reverting to
+      the old unconditional increment and racing 10 threads against a
+      3-trade cap produced `trades_count = 10`. Fixed by making the
+      increment itself atomic and conditional
+      (`... WHERE trades_count < max_trades`), returning whether it
+      succeeded; the caller now rejects (same as every other pipeline
+      stage) instead of proceeding when it doesn't. The identical 10-way
+      race with the fix now stops at exactly 3. 3 new regression tests
+      added
 
 ## Known, accepted limitations at this release
 
@@ -193,6 +225,22 @@ they're explicitly signed off on, not silently inherited.)
       the persistent browser profile) were found during the same pass and
       annotated in `.env` rather than removed, since they're a plausible
       placeholder for a future automated-login feature
+- [x] `check_max_daily_loss`/`check_daily_profit_target`/
+      `check_max_consecutive_losses` (`core/risk_manager.py`) only see
+      already-CLOSED trades (`get_realized_pnl_since`/
+      `get_recent_results`) - a genuinely correct implementation of what
+      they document ("realized net P/L"), not a broken promise like the
+      races fixed above. A burst of near-simultaneous signals can all
+      pass using identical stale data, since none of their outcomes are
+      known yet (binary-option expiry is minutes away, not
+      instantaneous) - this is inherent to the domain, not a lock-
+      ordering bug a mutex can close. A real fix would mean changing
+      what these breakers actually measure (e.g. a worst-case check that
+      also counts in-flight trade stakes as if they were losses) - a
+      genuine behavior change to live risk logic, not a bug fix
+      restoring an existing guarantee, so it needs explicit product
+      sign-off rather than being decided unilaterally. Accepted as a
+      known limitation for this release; flagged for a future decision
 
 ## Sign-off
 

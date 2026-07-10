@@ -59,6 +59,50 @@ class SessionManagerTests(unittest.TestCase):
         self.assertEqual(ctx.exception.rule, "session_max_trades")
         self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_max_trades")
 
+    def test_record_trade_started_raises_once_cap_reached(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", max_trades=1)
+        session_manager.record_trade_started(session_id)  # consumes the only slot
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.record_trade_started(session_id)
+        self.assertEqual(ctx.exception.rule, "session_max_trades")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_max_trades")
+        self.assertEqual(database.get_trading_session(session_id)["trades_count"], 1)
+
+    def test_record_trade_started_unlimited_when_max_trades_zero(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", max_trades=0)
+        for _ in range(5):
+            session_manager.record_trade_started(session_id)  # must never raise
+        self.assertEqual(database.get_trading_session(session_id)["trades_count"], 5)
+
+    def test_concurrent_record_trade_started_never_exceeds_max_trades(self):
+        """check_session_limits() is checked once, well before this - and
+        when require_confirmation makes trade_coordinator.py wait on a
+        human in between, that gap can be wide enough for several signals
+        to all pass the earlier check before any of them reaches this
+        call. Proves record_trade_started's atomic increment is the real
+        enforcement point: even with 10 threads racing a session capped
+        at 3 trades, trades_count never exceeds 3."""
+        import threading
+        session_id = database.start_trading_session("Test", [1], "DEMO", max_trades=3)
+        results = []
+
+        def attempt():
+            try:
+                session_manager.record_trade_started(session_id)
+                results.append("ok")
+            except session_manager.SessionLimitReached:
+                results.append("rejected")
+
+        threads = [threading.Thread(target=attempt) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(results.count("ok"), 3)
+        self.assertEqual(results.count("rejected"), 7)
+        self.assertEqual(database.get_trading_session(session_id)["trades_count"], 3)
+
     def test_zero_thresholds_mean_disabled(self):
         session_id = database.start_trading_session("Test", [1], "DEMO", profit_target=0, loss_limit=0, max_trades=0)
         database.update_session_pnl(session_id, 100000)

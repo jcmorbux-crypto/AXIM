@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -8,6 +9,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from timeline import timed
 
 DB_FILE = Path("data/axim.db")
+
+# start_trading_session()'s "no other active session on this broker
+# account" check and the INSERT that follows it are two separate DB
+# connections, not one atomic operation - two near-simultaneous
+# POST /api/sessions/start calls (an operator double-clicking Start, two
+# open browser tabs) could both read "no active session" before either
+# had inserted, starting two sessions that independently drive trade
+# execution against one physical broker login. Same bug class, same fix,
+# as api/auth_routes.py's bootstrap_owner() race - a single in-process
+# lock, since AXIM's API always runs as one uvicorn process.
+_start_session_lock = threading.Lock()
 
 _NEW_COLUMNS = {
     "execution_status": "TEXT",
@@ -2047,28 +2059,29 @@ def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss
     resolves the fund's CURRENT primary account dynamically per signal,
     not this stored value, so a mid-session account reassignment can't
     leave trades silently routed by a stale snapshot."""
-    if broker_account_id is not None:
-        if get_active_trading_session_for_broker_account(broker_account_id) is not None:
-            raise ValueError("this broker account already has an active session - stop it before starting another")
-    elif get_active_trading_session() is not None:
-        raise ValueError("a session is already active - stop it before starting another")
     if not channel_ids:
         raise ValueError("a session must have at least one channel")
-    conn = get_connection()
-    now = datetime.now().isoformat()
-    cursor = conn.execute("""
-        INSERT INTO trading_sessions (
-            profile_id, name, channel_ids_json, account_mode, profit_target, loss_limit,
-            max_trades, require_confirmation, status, trades_count, realized_pnl, started_at,
-            risk_profile_id, fund_id, broker_account_id
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?)
-    """, (profile_id, name, json.dumps(channel_ids), account_mode, profit_target, loss_limit,
-          max_trades, 1 if require_confirmation else 0, now, risk_profile_id, fund_id, broker_account_id))
-    conn.commit()
-    session_id = cursor.lastrowid
-    conn.close()
-    return session_id
+    with _start_session_lock:
+        if broker_account_id is not None:
+            if get_active_trading_session_for_broker_account(broker_account_id) is not None:
+                raise ValueError("this broker account already has an active session - stop it before starting another")
+        elif get_active_trading_session() is not None:
+            raise ValueError("a session is already active - stop it before starting another")
+        conn = get_connection()
+        now = datetime.now().isoformat()
+        cursor = conn.execute("""
+            INSERT INTO trading_sessions (
+                profile_id, name, channel_ids_json, account_mode, profit_target, loss_limit,
+                max_trades, require_confirmation, status, trades_count, realized_pnl, started_at,
+                risk_profile_id, fund_id, broker_account_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?)
+        """, (profile_id, name, json.dumps(channel_ids), account_mode, profit_target, loss_limit,
+              max_trades, 1 if require_confirmation else 0, now, risk_profile_id, fund_id, broker_account_id))
+        conn.commit()
+        session_id = cursor.lastrowid
+        conn.close()
+        return session_id
 
 
 @timed("database")
@@ -2111,11 +2124,30 @@ def stop_trading_session(session_id, status, stop_reason=None):
 def record_session_trade(session_id):
     """Increments trades_count - called once a signal actually reaches
     execution (not on reject/ignore), matching "trades completed" as
-    shown in the Trading Sessions UI."""
+    shown in the Trading Sessions UI.
+
+    This is also the actual enforcement point for the session's
+    max_trades cap, not just bookkeeping. session_manager.
+    check_session_limits() is checked once, well before this - and when
+    a session has require_confirmation set, the caller waits on a human
+    in between, a gap wide enough for two signals to both pass that
+    earlier check. The WHERE clause makes the increment itself an atomic
+    compare-and-swap: only the first of two near-simultaneous callers
+    can succeed once trades_count reaches max_trades, in one SQL
+    statement, with no separate read-then-write race. max_trades = 0
+    means unlimited, matching check_session_limits' own convention.
+    Returns True if the trade may proceed, False if the cap was already
+    reached by a concurrent trade - callers must treat False as a
+    rejection, not merely a display-counter quirk."""
     conn = get_connection()
-    conn.execute("UPDATE trading_sessions SET trades_count = trades_count + 1 WHERE id = ?", (session_id,))
+    cursor = conn.execute(
+        "UPDATE trading_sessions SET trades_count = trades_count + 1 "
+        "WHERE id = ? AND (max_trades = 0 OR trades_count < max_trades)",
+        (session_id,),
+    )
     conn.commit()
     conn.close()
+    return cursor.rowcount > 0
 
 
 @timed("database")
