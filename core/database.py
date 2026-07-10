@@ -48,9 +48,17 @@ _NEW_SESSION_COLUMNS = {
 # Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - links a user to a
 # Stripe customer/subscription once real keys are configured. NULL for
 # every existing user until then; core/billing.py is the only writer.
+#
+# failed_login_count/locked_until: brute-force lockout
+# (api/auth_routes.py's login()) - verify_user_credentials's own
+# docstring already promised "AND the account isn't locked out" before
+# this existed to back it. 0/NULL for every existing user, matching the
+# additive-migration pattern every other column here follows.
 _NEW_USER_COLUMNS = {
     "stripe_customer_id": "TEXT",
     "stripe_subscription_id": "TEXT",
+    "failed_login_count": "INTEGER NOT NULL DEFAULT 0",
+    "locked_until": "TEXT",
 }
 
 # Multi-broker-account architecture (docs/AXIM_APP_PLAN.md) - a Fund-level
@@ -3124,9 +3132,16 @@ def check_and_expire_trial(user):
 
 @timed("database")
 def set_user_password(user_id, new_password):
+    """Also clears any brute-force lockout (failed_login_count/
+    locked_until) - a password change (self-service or admin reset) is a
+    stronger signal than just waiting out LOCKOUT_MINUTES, and there's no
+    reason to leave a legitimately-reset account still locked."""
     import auth
     conn = get_connection()
-    conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (auth.hash_password(new_password), user_id))
+    conn.execute(
+        "UPDATE users SET password_hash = ?, failed_login_count = 0, locked_until = NULL WHERE id = ?",
+        (auth.hash_password(new_password), user_id),
+    )
     conn.commit()
     conn.close()
 
@@ -3137,14 +3152,84 @@ def verify_user_credentials(email, password):
     account isn't locked out, else None. Does not itself check
     access_state beyond that - callers (api/auth.py) decide what each
     access_state is allowed to do (e.g. 'pending_approval' can log in
-    but sees a waiting screen, 'disabled' can't log in at all)."""
+    but sees a waiting screen, 'disabled' can't log in at all).
+
+    Lockout is checked here (not just by the caller separately) so a
+    locked-but-otherwise-correct password still returns None - there is
+    no path where the lockout can be bypassed by calling this directly."""
     import auth
     user = get_user_by_email(email)
     if user is None:
         return None
+    if is_account_locked(email):
+        return None
     if not auth.verify_password(password, user["password_hash"]):
         return None
     return user
+
+
+MAX_FAILED_LOGIN_ATTEMPTS = 5
+LOCKOUT_MINUTES = 15
+
+
+@timed("database")
+def is_account_locked(email):
+    """Returns the ISO lockout-expiry timestamp if this account is
+    currently locked out, else None. Self-healing: an expired lock is
+    cleared here on read rather than needing a separate cron/cleanup
+    job - the next login attempt after the window naturally gets a clean
+    slate. Nonexistent email -> never locked (nothing to lock; also
+    avoids leaking account existence through lockout behavior)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT id, locked_until FROM users WHERE email = ?", (email,)
+    ).fetchone()
+    if row is None or row["locked_until"] is None:
+        conn.close()
+        return None
+    if datetime.now().isoformat() < row["locked_until"]:
+        conn.close()
+        return row["locked_until"]
+    conn.execute(
+        "UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = ?", (row["id"],)
+    )
+    conn.commit()
+    conn.close()
+    return None
+
+
+@timed("database")
+def record_failed_login(email):
+    """Increments the per-account failed-attempt counter and locks the
+    account for LOCKOUT_MINUTES once MAX_FAILED_LOGIN_ATTEMPTS is
+    reached. No-op for a nonexistent email - same reasoning as
+    is_account_locked, there's no real account to protect and doing
+    nothing here doesn't reveal whether the email matched anything (the
+    API layer already returns the identical generic error either way)."""
+    conn = get_connection()
+    row = conn.execute("SELECT id, failed_login_count FROM users WHERE email = ?", (email,)).fetchone()
+    if row is None:
+        conn.close()
+        return
+    new_count = row["failed_login_count"] + 1
+    if new_count >= MAX_FAILED_LOGIN_ATTEMPTS:
+        locked_until = (datetime.now() + timedelta(minutes=LOCKOUT_MINUTES)).isoformat()
+        conn.execute(
+            "UPDATE users SET failed_login_count = ?, locked_until = ? WHERE id = ?",
+            (new_count, locked_until, row["id"]),
+        )
+    else:
+        conn.execute("UPDATE users SET failed_login_count = ? WHERE id = ?", (new_count, row["id"]))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def reset_failed_login(user_id):
+    conn = get_connection()
+    conn.execute("UPDATE users SET failed_login_count = 0, locked_until = NULL WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 
 
 @timed("database")

@@ -557,3 +557,46 @@ hidden through the 4s debounce window (no flicker), then confirmed it
 switches to visible with the correct text once the drop has actually
 persisted past that window. Full regression suite re-run clean after
 this change (no backend changes in this one - frontend-only).
+
+## Login brute-force lockout added (done)
+Last item under the spec's explicit "Secure authentication" requirement:
+`POST /api/auth/login` had zero rate limiting or lockout - unlimited
+password attempts against any account, forever. Notable because
+`database.verify_user_credentials`'s own docstring already claimed
+"Returns the user dict if email+password are correct AND the account
+isn't locked out" - a real gap between documented and actual behavior,
+not a hypothetical one. AXIM has no public internet exposure by default,
+but the login endpoint is still reachable by any device on the Tailscale
+network, and this controls real trading accounts - worth closing for
+real.
+
+Added `failed_login_count`/`locked_until` columns to `users` (additive
+migration, same pattern as every other schema change in this file).
+`database.is_account_locked(email)` / `record_failed_login(email)` /
+`reset_failed_login(user_id)`: 5 failed attempts locks the account for
+15 minutes (`MAX_FAILED_LOGIN_ATTEMPTS`/`LOCKOUT_MINUTES`); lockout is
+enforced both inside `verify_user_credentials` itself (so a correct
+password still fails while locked, from any call site) and checked
+up-front in `login()` for a distinct 429 message. Self-healing - an
+expired lock clears itself on the next check, no cron job needed.
+`set_user_password` (both self-service change and admin reset) also
+clears any lockout, since a legitimate password change is a stronger
+signal than just waiting out the window.
+
+Deliberately scoped to per-account lockout only, not IP-based rate
+limiting - a nonexistent email can't be locked (nothing real to
+protect, and doing nothing there doesn't leak whether an email is
+registered, matching the existing generic error message either way).
+Broader IP-level throttling would be disproportionate for what's
+documented as a single/small-team operator tool sitting behind
+Tailscale, not a public multi-tenant service.
+
+Verified two ways: directly against a real temporary SQLite DB (4
+failures - not yet locked; 5th - locked; correct password rejected
+while locked; simulated the window elapsing - unlocks and accepts the
+correct password again; confirmed the reset path zeroes both columns),
+and live over real HTTP against a real running server - 5 real wrong-
+password POSTs to `/api/auth/login` against a real bootstrapped owner
+account, then confirmed the 6th attempt with the *correct* password
+still got a 429 with the lockout message. Full regression suite re-run
+clean after this change.

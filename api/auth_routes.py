@@ -185,13 +185,29 @@ def login(body: LoginRequest, response: Response, request: Request):
     if body.client_type not in _VALID_CLIENT_TYPES:
         raise HTTPException(status_code=400, detail=f"invalid client_type: {body.client_type!r}")
 
+    # Brute-force lockout (core/database.py: MAX_FAILED_LOGIN_ATTEMPTS,
+    # LOCKOUT_MINUTES) - checked before verify_user_credentials so a
+    # locked account gets a distinct, actionable message instead of the
+    # generic "incorrect email or password" a real credential mismatch
+    # gets. AXIM has no public internet exposure by default, but the
+    # login endpoint is still reachable by any device on the Tailscale
+    # network - this is real protection, not theater.
+    locked_until = database.is_account_locked(body.email)
+    if locked_until:
+        raise HTTPException(
+            status_code=429,
+            detail=f"too many failed login attempts - locked until {locked_until}",
+        )
+
     user = database.verify_user_credentials(body.email, body.password)
     if user is None:
+        database.record_failed_login(body.email)
         raise HTTPException(status_code=401, detail="incorrect email or password")
     user = database.check_and_expire_trial(user)
     if user["access_state"] in _BLOCKED_ACCESS_STATES:
         raise HTTPException(status_code=403, detail=f"account is {user['access_state']}")
 
+    database.reset_failed_login(user["id"])
     database.record_login(user["id"])
     hours = REMEMBER_ME_HOURS if body.remember_me else DEFAULT_SESSION_HOURS
     raw_token = database.create_session(user["id"], expires_hours=hours,
