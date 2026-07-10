@@ -249,6 +249,18 @@
           <button class="primary" onclick="addManualSignal()">Add Signal</button>
           <span id="manual-add-status" class="muted"></span>
         </div>
+        <div class="card solid">
+          <h3>Import from Telegram History</h3>
+          <div class="stat-caption" style="margin-bottom:10px;">Scans real past messages from a channel your account can already see and imports whatever parses as a signal. Results/payouts are never known from the message alone - grade imported signals manually afterward, same as a CSV row with no result column.</div>
+          <div class="field"><label>Channel</label>
+            <select id="tg-history-channel"><option value="">Loading channels...</option></select>
+          </div>
+          <div class="field"><label>Messages to scan (most recent first)</label>
+            <input type="number" id="tg-history-limit" value="200" min="1" max="2000">
+          </div>
+          <button id="tg-history-import-btn" onclick="importTelegramHistory()">Scan and Import</button>
+          <div id="tg-history-status" class="muted" style="margin-top:10px;"></div>
+        </div>
       </div>
 
       <div class="card solid full-width" style="margin-top:16px;">
@@ -321,7 +333,7 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   if (!e.target.dataset.tab) return;
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === e.target));
   document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + e.target.dataset.tab));
-  if (e.target.dataset.tab === "signals") loadImportedSignals();
+  if (e.target.dataset.tab === "signals") { loadImportedSignals(); loadTelegramHistoryChannels(); }
   if (e.target.dataset.tab === "history") loadRunsHistory();
   if (e.target.dataset.tab === "scorecard") loadScorecardSources();
 });
@@ -790,6 +802,40 @@ async function importSignalFile() {
           body: JSON.stringify({ csv_text: await file.text() }),
         });
     statusEl.textContent = `Imported ${result.imported} signal(s).` + (result.errors.length ? ` ${result.errors.length} row(s) had errors.` : "");
+    loadImportedSignals();
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+async function loadTelegramHistoryChannels() {
+  const select = document.getElementById("tg-history-channel");
+  try {
+    const channels = await fetchJSON("/api/channels");
+    if (!channels.length) {
+      select.innerHTML = '<option value="">No channels synced yet - visit Signal Sources first</option>';
+      return;
+    }
+    select.innerHTML = channels.map(c =>
+      `<option value="${c.chat_id}">${escapeHtml(c.title || c.username || c.chat_id)}</option>`
+    ).join("");
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load channels</option>';
+  }
+}
+
+async function importTelegramHistory() {
+  const statusEl = document.getElementById("tg-history-status");
+  const chatId = document.getElementById("tg-history-channel").value;
+  const limit = parseInt(document.getElementById("tg-history-limit").value, 10) || 200;
+  if (!chatId) { statusEl.textContent = "Choose a channel first."; return; }
+  statusEl.textContent = "Scanning real message history - this can take a moment...";
+  try {
+    const result = await fetchJSON("/api/backtest/signals/import-telegram-history", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: parseInt(chatId, 10), limit }),
+    });
+    statusEl.textContent = `Scanned ${result.scanned} message(s), imported ${result.imported} signal(s).`;
     loadImportedSignals();
   } catch (e) {
     statusEl.textContent = "Failed: " + e.message;

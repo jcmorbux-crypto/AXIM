@@ -27,6 +27,7 @@ from pydantic import BaseModel
 import database
 import backtest_engine
 import ai_analysis
+import telegram_channels
 from auth_routes import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
@@ -64,6 +65,12 @@ class ExcelImportRequest(BaseModel):
     # does file uploads) instead of adding python-multipart as a new
     # dependency just for this one endpoint.
     file_base64: str
+    import_batch: Optional[str] = None
+
+
+class TelegramHistoryImportRequest(BaseModel):
+    chat_id: int
+    limit: int = 200
     import_batch: Optional[str] = None
 
 
@@ -153,6 +160,34 @@ def import_excel(body: ExcelImportRequest, user=Depends(require_admin)):
         )
         imported += 1
     return {"imported": imported, "errors": errors, "import_batch": batch}
+
+
+@router.post("/signals/import-telegram-history")
+async def import_telegram_history(body: TelegramHistoryImportRequest, user=Depends(require_admin)):
+    """Scans real historical messages from a channel the account can
+    already see (via /api/channels' synced list) and imports whatever
+    parses as a real signal - core/telegram_channels.fetch_channel_history's
+    own docstring covers exactly what this does and doesn't capture
+    (never a result/payout, since a signal message alone never carries
+    its own outcome). Requires axim_ui_session.session to already be
+    authenticated, same requirement POST /api/channels/sync has."""
+    try:
+        rows, scanned = await telegram_channels.fetch_channel_history(
+            body.chat_id, limit=body.limit,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"could not fetch Telegram history: {e}")
+
+    batch = body.import_batch or f"telegram-{datetime.now().isoformat()}"
+    imported = 0
+    for row in rows:
+        database.create_imported_signal(
+            row["source_label"], row["asset"], row["direction"], row["expiry"], row["received_at"],
+            result=row["result"], payout_percent=row["payout_percent"], notes=row["notes"],
+            import_batch=batch,
+        )
+        imported += 1
+    return {"imported": imported, "scanned": scanned, "import_batch": batch}
 
 
 @router.patch("/signals/{signal_id}/grade")

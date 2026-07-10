@@ -653,7 +653,7 @@ tool screens (a trade blotter is supposed to be dense), not redesigned
 in this pass. If the "calm, hierarchy-driven" treatment should extend
 further, that's a follow-up, not assumed here.
 
-### Backtest Engine / Strategy Lab - DONE (CSV/Excel/manual import; live Telegram-history import deferred)
+### Backtest Engine / Strategy Lab - DONE (CSV/Excel/manual/Telegram-history import; broker candle-data auto-grading still deferred)
 Replays a pool of historical, resolved signals through one or more Risk
 Engine profiles to compare how each would have performed - a genuinely
 new engine, not a UI over existing analytics.
@@ -685,9 +685,19 @@ worse than useless.
   itself is base64-encoded client-side into the same JSON-body pattern
   every other endpoint here already uses, rather than adding
   `python-multipart` as a new dependency just for one upload endpoint.
-  Live Telegram-channel-history scraping is still explicitly deferred -
-  a genuinely separate piece of work (a Telethon `iter_messages`
-  integration), not half-built.
+  Live Telegram-channel-history import is done too:
+  `core/telegram_channels.fetch_channel_history()` reuses the existing
+  dedicated `axim_ui_session` (the same session `POST /api/channels/
+  sync` already uses - read-only with respect to Telegram, never sends/
+  joins/modifies anything) to `iter_messages` over a channel the
+  account can already see, running each one through the exact same
+  `parsers.signal_parser.parse_signal()` the live listener uses for
+  real-time signals. Results/payouts are never known from a message
+  alone, so these come in ungraded, same as a CSV row with no result
+  column. Live-verified against the real, actual production signal
+  source ("Go+ | Trading Bot") - a real 20-message scan found and
+  correctly imported 2 real signals (AUD/JPY SELL, American Express
+  OTC SELL, both with correct real timestamps) - not a synthetic test.
 - **Result matching**: real recorded results (live `signals.result`) or
   manually-graded imported signals. Broker/candle-data integration for
   auto-grading ungraded signals is deferred, not fabricated.
