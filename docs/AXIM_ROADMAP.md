@@ -1525,3 +1525,25 @@ cold-start, then confirmed `Stop-Process -Force` cleanly terminates it
 and restart). Did not register any real Scheduled Task or touch
 `C:\AXIM`'s actual installation/data - confirmed no stray processes or
 listening ports were left behind after testing.
+
+## docs/AXIM_PRODUCTION_READINESS_REPORT.md's Bottom Line was actively misleading (fixed)
+
+Checked this report - dated 2026-07-05, from the backend-only stress-
+testing phase - against current reality, since its §9 "Bottom line"
+makes specific, checkable claims. Found it stale in a way that actively
+misdirects rather than just being out of date: it lists the max-daily-
+loss/drawdown circuit breaker as "flagged missing, not yet built"
+(verified it exists: `core/risk_manager.py`'s `check_max_daily_loss()`),
+and its explicit recommendation is to **hold AXIM Desktop UI development**
+until that breaker and the soak test both land - but the entire
+client/server Remote Client architecture this whole multi-session effort
+built is the UI that recommendation says to hold on. Someone reading
+this report today without cross-checking the roadmap would be told to
+not do work that's not only done, but has already been through multiple
+rounds of security hardening.
+
+Added a status banner at the top (not a full rewrite - the original
+report's measurements and findings remain valid as a dated historical
+record of the 2026-07-05 stress test) correcting the two stale claims
+and pointing to `docs/AXIM_ROADMAP.md`/`docs/AXIM_RELEASE_CHECKLIST.md`
+as the current, actively-maintained sources of truth.

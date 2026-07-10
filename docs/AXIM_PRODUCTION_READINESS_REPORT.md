@@ -6,6 +6,41 @@ Option demo account, plus cumulative evidence from this session's live-fire
 testing (real Telegram signals via the "Go+" source, multiple real recoveries,
 multiple architecture changes each validated live before/after).
 
+> **Status as of 2026-07-10 - read this before §7/§9 below.** Everything in
+> this report below the line is preserved as the original, dated point-in-time
+> record of the 2026-07-05 backend stress test - its measurements and findings
+> are still accurate as historical evidence, but §7's "Recommended next steps"
+> and §9's "Bottom line" describe a Phase 2 that has since been substantially
+> completed, and reference two specific items that are now resolved:
+> - The max-daily-loss/drawdown circuit breaker §9 calls "flagged missing, not
+>   yet built" **exists** (`core/risk_manager.py`'s `check_max_daily_loss()`,
+>   wired into `trade_coordinator.py`'s risk-check sequence, with dedicated
+>   regression tests).
+> - §9's recommendation to **hold AXIM Desktop UI development is obsolete** -
+>   the entire client/server Remote Client architecture (Mission Control,
+>   Funds, Trading Sessions, Strategy Lab, Automation Studio, Signal Sources,
+>   Broker Accounts, Performance, Notifications, User Management, Settings,
+>   Help Center) has since been built, and has itself been through multiple
+>   rounds of live security/safety hardening (see `docs/AXIM_ROADMAP.md` for
+>   the detailed, dated history - a session-long audit found and fixed 10 real
+>   concurrency/security bugs across auth, trading sessions, Automation
+>   Studio, broker-account connections, and deployment process supervision,
+>   each proven broken before the fix and proven fixed after, all covered by
+>   new regression tests).
+> - Process supervision and a backup/retention plan (§9's "operational, not
+>   code" item) are both built, live-verified, and - as of this same pass -
+>   had a real gap fixed (the API process's own Scheduled Task silently
+>   failing to restart after a forced termination, the exact failure mode
+>   already documented for the listener but never carried over to the API).
+>
+> `docs/AXIM_ROADMAP.md` and `docs/AXIM_RELEASE_CHECKLIST.md` are the current,
+> actively-maintained sources of truth for what's done and what's still open
+> (currently: a genuine multi-hour soak test run to completion, still requiring
+> real elapsed wall-clock time against live/demo market hours). This report is
+> not being rewritten to stay current going forward - treat it as the dated
+> backend-stress-test record it is, and check the roadmap/checklist for
+> anything more recent than 2026-07-05.
+
 **Methodology note, stated up front:** every number in this report comes from
 an actual measured run (`tests/production_stress_test.py`,
 `logs/stress_test_results.json`, `core/timeline_report.py` against the real
