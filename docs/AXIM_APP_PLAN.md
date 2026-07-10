@@ -718,11 +718,19 @@ worse than useless.
   drawdown + 20% win-rate composite), rank_safest, rank_highest_growth,
   rank_lowest_drawdown, rank_risk_adjusted - computed once per run
   across all compared strategies.
-- **Charts**: equity curve (multi-line, hand-rolled SVG, no charting
-  library dependency) shipped. Daily P/L, drawdown, strategy-comparison
-  bar, vault-growth, and martingale-exposure charts are NOT built this
-  pass - deferred, the underlying data (sessions/trades) already
-  supports adding them without a schema change.
+- **Charts**: equity curve, drawdown, daily P/L, vault growth,
+  martingale exposure (all multi-line, hand-rolled SVG, no charting
+  library dependency) and a strategy-comparison bar chart (ROI) - all
+  six built from data already returned by the existing trades/sessions
+  endpoints, no schema change needed. Live-verified via Playwright
+  against a real 3-strategy run over the real historical signal pool;
+  found and fixed a real mobile-layout bug in the process - a single
+  wide chart (the comparison bar chart, defaulted to 900px) was forcing
+  every card sharing its CSS Grid column to inherit that width on
+  narrow viewports, since grid tracks don't shrink below their widest
+  child's content size by default (`min-width: 0` on the grid items,
+  plus scaling the comparison chart's width to its actual bar count,
+  fixed it - see `web/strategy_lab.html`'s `.charts-grid` comment).
 - **UI**: `web/strategy_lab.html`, new "Strategy Lab" nav item. Three
   tabs - Run Backtest (config + comparison cards + equity curve +
   session table), Historical Signals (import/manage/grade), Past Runs.
@@ -816,13 +824,43 @@ concurrent trading sessions, Fund-owned Rule Builder - see
   Signal Sources, Risk Engine, Rule Builder, Strategy Lab, Trade Center,
   Broker, Settings all consistent).
 
-**Still genuinely open:**
-- **Demo/live toggle still not wired to actually flip `ACCOUNT`** -
-  same deliberate hold from `docs/AXIM_UI_PLAN.md`, pending an explicit
-  decision on how live-trading activation should work per-user. (Per-Fund
-  Live gating - the Fund's own `live_enabled` AND its broker account's
-  `live_enabled`, both required - is real and enforced; this gap is
-  specifically about the global `.env` `ACCOUNT` setting itself.)
+**Still genuinely open - CORRECTED (previous text here overclaimed
+enforcement; verified against the actual execution-path code, not
+assumed):**
+- **Live trading is architecturally impossible today, full stop** - not
+  just gated off, but structurally absent. `execution/browser_warmup.py`
+  always navigates to a hardcoded `DEMO_URL`
+  (`execution/browser_session.py`) and hard-fails startup unless the
+  loaded page shows `is-chart-demo` - there is no live cabinet URL
+  anywhere in the codebase to send it to, regardless of any setting.
+- **`funds.live_enabled` / `broker_accounts.live_enabled` are decorative,
+  not enforced.** `fund_manager.can_trade()` computes a correct
+  `can_go_live` boolean from both flags, but that value is discarded at
+  both of its real call sites (`api/sessions.py`'s session-start,
+  `core/broker_account_manager.py`'s coordinator resolution) and is
+  otherwise only ever *displayed* on the read-only
+  `GET /pre-start-summary/{fund_id}` endpoint. Nothing in
+  `core/trade_coordinator.py`, `execution/pocket_executor.py`, or
+  `execution/browser_warmup.py` reads either flag. Toggling "Live" on in
+  `web/funds.html`/`web/broker.html` today changes a DB column and
+  nothing else - this previously read "is real and enforced," which was
+  incorrect; corrected here after a direct code trace (not from memory
+  or assumption).
+- The only things that currently gate real execution at all are two
+  **global, per-process** `.env` values, neither of which is Fund- or
+  account-aware: `ACCOUNT` (checked three independent times -
+  `risk_manager.check_demo_only()`, `api/main.py`'s test-trade route,
+  `telegram_listener.py`'s test-trade poll loop) and `ARMED`
+  (`execution/pocket_executor.py`, gates the actual click). Both would
+  need to become per-Fund/per-broker-account concepts - not just
+  differently-named global flags - for the existing "Live" toggles to
+  mean anything real.
+- Building actual live-trading capability (a real cabinet URL, wiring
+  `can_go_live` into the real gate, making `ACCOUNT`/`ARMED` per-Fund)
+  is a deliberate, separate, explicitly-scoped future decision - not
+  something to build incidentally while closing out this gap in the
+  docs. See the conversation this correction came from for the full
+  trace.
 - **Password reset ("forgot password")** is a placeholder link in
   `web/login.html` - real self-service reset (email-based) isn't built;
   today an Owner/Admin resets a user's password from Users / Access.

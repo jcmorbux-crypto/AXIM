@@ -29,9 +29,24 @@
   .compare-card .metric-row .value { font-weight: 600; font-variant-numeric: tabular-nums; }
 
   .signal-table-wrap { max-height: 420px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
-  #chart-container { width: 100%; overflow-x: auto; }
-  #chart-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12.5px; }
-  #chart-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+  .chart-svg-wrap { width: 100%; overflow-x: auto; }
+  .chart-legend { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12.5px; }
+  .chart-legend .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+  .charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
+
+  @media (max-width: 900px) {
+    /* minmax(420px, ...) alone exceeds a phone viewport - stack to one
+       column instead of forcing each chart card to stay 420px wide.
+       min-width:0 on the items matters too: without it, a grid track
+       still won't shrink below its widest child's natural content size
+       (here, the comparison chart's 900px-wide SVG) - every card in the
+       shared column would inherit that width otherwise, even ones whose
+       own content is much narrower. Each card's own .chart-svg-wrap
+       overflow-x:auto (see theme.css's table-scroll pattern) contains
+       whatever doesn't fit once the card is free to shrink. */
+    .charts-grid { grid-template-columns: 1fr; }
+    .charts-grid > div { min-width: 0; }
+  }
 
   /* ---- AI Analysis - the "portfolio analyst" voice gets its own
      color (purple, per docs/AXIM_APP_PLAN.md's color system) so it
@@ -142,8 +157,35 @@
 
         <div class="card solid" style="margin-bottom:20px;">
           <h3>Equity Curve</h3>
-          <div id="chart-legend"></div>
-          <div id="chart-container"></div>
+          <div id="chart-legend-equity" class="chart-legend"></div>
+          <div id="chart-container-equity" class="chart-svg-wrap"></div>
+        </div>
+
+        <div class="charts-grid" style="margin-bottom:20px;">
+          <div class="card solid">
+            <h3>Drawdown</h3>
+            <div id="chart-legend-drawdown" class="chart-legend"></div>
+            <div id="chart-container-drawdown" class="chart-svg-wrap"></div>
+          </div>
+          <div class="card solid">
+            <h3>Daily P/L</h3>
+            <div id="chart-legend-dailypl" class="chart-legend"></div>
+            <div id="chart-container-dailypl" class="chart-svg-wrap"></div>
+          </div>
+          <div class="card solid">
+            <h3>Vault Growth</h3>
+            <div id="chart-legend-vault" class="chart-legend"></div>
+            <div id="chart-container-vault" class="chart-svg-wrap"></div>
+          </div>
+          <div class="card solid">
+            <h3>Martingale Exposure</h3>
+            <div id="chart-legend-martingale" class="chart-legend"></div>
+            <div id="chart-container-martingale" class="chart-svg-wrap"></div>
+          </div>
+          <div class="card solid full-width">
+            <h3>Strategy Comparison - ROI</h3>
+            <div id="chart-container-comparison" class="chart-svg-wrap"></div>
+          </div>
         </div>
 
         <div class="card solid full-width">
@@ -373,24 +415,41 @@ async function renderResults(report) {
 
   loadAiSummary();
 
-  await renderEquityCurve(strategies);
+  const allTradeSeries = await Promise.all(strategies.map(s =>
+    fetchJSON(`/api/backtest/runs/${currentRunId}/strategies/${s.id}/trades`)
+  ));
+  await renderEquityCurve(strategies, allTradeSeries);
+  renderDrawdownChart(strategies, allTradeSeries);
+  renderDailyPlChart(strategies, allTradeSeries);
+  renderMartingaleExposureChart(strategies, allTradeSeries);
+  renderStrategyComparisonChart(strategies);
+  await renderVaultGrowthChart(strategies);
   if (strategies.length) await loadSessions();
 }
 
-async function renderEquityCurve(strategies) {
-  const legend = document.getElementById("chart-legend");
-  legend.innerHTML = strategies.map((s, i) => `<span><span class="swatch" style="background:${STRATEGY_COLORS[i % STRATEGY_COLORS.length]}"></span>${escapeHtml(s.label)}</span>`).join("");
+// ---------- Chart helpers (hand-rolled SVG, no charting library - same
+// approach the original Equity Curve chart used, generalized so the
+// deferred charts (drawdown/daily P/L/vault growth/martingale exposure/
+// strategy comparison) reuse one implementation instead of five copies). ----------
 
-  const allSeries = await Promise.all(strategies.map(s =>
-    fetchJSON(`/api/backtest/runs/${currentRunId}/strategies/${s.id}/trades`)
-  ));
+function renderLegend(containerId, strategies) {
+  document.getElementById(containerId).innerHTML = strategies.map((s, i) =>
+    `<span><span class="swatch" style="background:${STRATEGY_COLORS[i % STRATEGY_COLORS.length]}"></span>${escapeHtml(s.label)}</span>`
+  ).join("");
+}
 
-  const width = 900, height = 280, pad = 36;
-  const maxLen = Math.max(1, ...allSeries.map(t => t.length));
-  const allValues = allSeries.flat().map(t => t.running_balance);
-  if (!allValues.length) { document.getElementById("chart-container").innerHTML = '<div class="empty">No trades to chart.</div>'; return; }
-  const minY = Math.min(...allValues), maxY = Math.max(...allValues);
+// series: [{ values: [number, ...] }, ...] - one entry per strategy, same
+// order/color assignment as STRATEGY_COLORS/the legend. forceZeroFloor
+// keeps 0 in view even if every value is positive (e.g. drawdown/exposure
+// charts where "0" is the meaningful baseline, not just the data minimum).
+function buildMultiLineSVG(series, opts = {}) {
+  const width = opts.width || 420, height = opts.height || 220, pad = 36;
+  const allValues = series.flatMap(s => s.values);
+  if (!allValues.length) return '<div class="empty">No data to chart.</div>';
+  let minY = Math.min(...allValues), maxY = Math.max(...allValues);
+  if (opts.forceZeroFloor) { minY = Math.min(minY, 0); maxY = Math.max(maxY, 0); }
   const yRange = (maxY - minY) || 1;
+  const yFmt = opts.yFmt || (v => v.toFixed(0));
 
   const xFor = (i, len) => pad + (i / Math.max(1, len - 1)) * (width - 2 * pad);
   const yFor = (v) => height - pad - ((v - minY) / yRange) * (height - 2 * pad);
@@ -398,17 +457,135 @@ async function renderEquityCurve(strategies) {
   let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="font-family:inherit;">`;
   svg += `<line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" stroke="var(--border)" />`;
   svg += `<line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" stroke="var(--border)" />`;
-  svg += `<text x="${pad}" y="${pad - 8}" font-size="11" fill="#6b7078">${maxY.toFixed(0)}</text>`;
-  svg += `<text x="${pad}" y="${height - pad + 16}" font-size="11" fill="#6b7078">${minY.toFixed(0)}</text>`;
+  svg += `<text x="${pad}" y="${pad - 8}" font-size="11" fill="#6b7078">${yFmt(maxY)}</text>`;
+  svg += `<text x="${pad}" y="${height - pad + 16}" font-size="11" fill="#6b7078">${yFmt(minY)}</text>`;
 
-  allSeries.forEach((trades, i) => {
-    if (!trades.length) return;
+  series.forEach((s, i) => {
+    if (!s.values.length) return;
     const color = STRATEGY_COLORS[i % STRATEGY_COLORS.length];
-    const points = trades.map((t, idx) => `${xFor(idx, trades.length)},${yFor(t.running_balance)}`).join(" ");
+    const points = s.values.map((v, idx) => `${xFor(idx, s.values.length)},${yFor(v)}`).join(" ");
     svg += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" />`;
   });
   svg += `</svg>`;
-  document.getElementById("chart-container").innerHTML = svg;
+  return svg;
+}
+
+// bars: [{ label, value, color }] - values may be negative (e.g. ROI on a
+// losing strategy), so the baseline sits at the real zero point rather
+// than the bottom of the chart.
+function buildBarChartSVG(bars, opts = {}) {
+  const width = opts.width || 900, height = opts.height || 220, pad = 36;
+  if (!bars.length) return '<div class="empty">No data to chart.</div>';
+  const values = bars.map(b => b.value);
+  const maxV = Math.max(0, ...values), minV = Math.min(0, ...values);
+  const range = (maxV - minV) || 1;
+  const valueFmt = opts.valueFmt || (v => v.toFixed(1));
+  const zeroY = height - pad - ((0 - minV) / range) * (height - 2 * pad);
+  const barGap = 16;
+  const barWidth = Math.max(20, (width - 2 * pad - barGap * (bars.length - 1)) / bars.length);
+
+  let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="font-family:inherit;">`;
+  svg += `<line x1="${pad}" y1="${zeroY}" x2="${width - pad}" y2="${zeroY}" stroke="var(--border)" />`;
+  bars.forEach((b, i) => {
+    const x = pad + i * (barWidth + barGap);
+    const barY = height - pad - ((b.value - minV) / range) * (height - 2 * pad);
+    const top = Math.min(barY, zeroY);
+    const barHeight = Math.max(Math.abs(barY - zeroY), 1);
+    const labelAbove = barY <= zeroY;
+    svg += `<rect x="${x}" y="${top}" width="${barWidth}" height="${barHeight}" fill="${b.color}" rx="3" />`;
+    svg += `<text x="${x + barWidth / 2}" y="${labelAbove ? top - 6 : top + barHeight + 14}" font-size="11" fill="#6b7078" text-anchor="middle">${valueFmt(b.value)}</text>`;
+    svg += `<text x="${x + barWidth / 2}" y="${height - pad + 16}" font-size="10.5" fill="#6b7078" text-anchor="middle">${escapeHtml((b.label || "").slice(0, 16))}</text>`;
+  });
+  svg += `</svg>`;
+  return svg;
+}
+
+async function renderEquityCurve(strategies, allTradeSeries) {
+  renderLegend("chart-legend-equity", strategies);
+  const series = allTradeSeries.map(trades => ({ values: trades.map(t => t.running_balance) }));
+  document.getElementById("chart-container-equity").innerHTML =
+    buildMultiLineSVG(series, { width: 900, height: 280 });
+}
+
+// Peak-to-trough drawdown %, recomputed from the same running_balance
+// series the equity curve already has - no new data needed, matching
+// core/backtest_engine.py's own max_drawdown_percent computation logic
+// (see _compute_metrics) applied at every point instead of just the max.
+function renderDrawdownChart(strategies, allTradeSeries) {
+  renderLegend("chart-legend-drawdown", strategies);
+  const series = allTradeSeries.map(trades => {
+    let peak = -Infinity;
+    const values = trades.map(t => {
+      peak = Math.max(peak, t.running_balance);
+      return peak > 0 ? ((peak - t.running_balance) / peak) * 100 : 0;
+    });
+    return { values };
+  });
+  document.getElementById("chart-container-drawdown").innerHTML =
+    buildMultiLineSVG(series, { forceZeroFloor: true, yFmt: v => v.toFixed(0) + "%" });
+}
+
+// Trades bucketed by calendar day (occurred_at's date), summed P/L per
+// day per strategy - a non-cumulative view, distinct from the equity
+// curve's cumulative balance.
+function renderDailyPlChart(strategies, allTradeSeries) {
+  renderLegend("chart-legend-dailypl", strategies);
+  const allDays = new Set();
+  const perStrategyDaily = allTradeSeries.map(trades => {
+    const byDay = {};
+    trades.forEach(t => {
+      const day = (t.occurred_at || "").slice(0, 10);
+      if (!day) return;
+      byDay[day] = (byDay[day] || 0) + (t.profit_loss || 0);
+      allDays.add(day);
+    });
+    return byDay;
+  });
+  const sortedDays = Array.from(allDays).sort();
+  const series = perStrategyDaily.map(byDay => ({ values: sortedDays.map(d => byDay[d] || 0) }));
+  document.getElementById("chart-container-dailypl").innerHTML = sortedDays.length
+    ? buildMultiLineSVG(series, { forceZeroFloor: true, yFmt: v => fmtMoney(v) })
+    : '<div class="empty">No dated trades to chart.</div>';
+}
+
+// ending_vaulted_amount is already cumulative across a strategy's
+// sessions (core/backtest_engine.py's vault skims never reduce it) - one
+// point per session in session_index order.
+async function renderVaultGrowthChart(strategies) {
+  renderLegend("chart-legend-vault", strategies);
+  const allSessions = await Promise.all(strategies.map(s =>
+    fetchJSON(`/api/backtest/runs/${currentRunId}/strategies/${s.id}/sessions`)
+  ));
+  const series = allSessions.map(sessions => ({
+    values: sessions.map(sess => sess.ending_vaulted_amount || 0),
+  }));
+  const hasData = series.some(s => s.values.length);
+  document.getElementById("chart-container-vault").innerHTML = hasData
+    ? buildMultiLineSVG(series, { forceZeroFloor: true, yFmt: v => fmtMoney(v) })
+    : '<div class="empty">No sessions to chart.</div>';
+}
+
+function renderMartingaleExposureChart(strategies, allTradeSeries) {
+  renderLegend("chart-legend-martingale", strategies);
+  const series = allTradeSeries.map(trades => ({ values: trades.map(t => t.martingale_step || 0) }));
+  document.getElementById("chart-container-martingale").innerHTML =
+    buildMultiLineSVG(series, { forceZeroFloor: true, yFmt: v => v.toFixed(0) });
+}
+
+function renderStrategyComparisonChart(strategies) {
+  const bars = strategies.map((s, i) => ({
+    label: s.label,
+    value: (s.metrics || {}).roi_percent || 0,
+    color: STRATEGY_COLORS[i % STRATEGY_COLORS.length],
+  }));
+  // Scaled to bar count rather than a flat 900px default - a 2-3
+  // strategy comparison doesn't need the same width as the multi-series
+  // line charts, and a fixed 900px was the actual cause of every card
+  // in the shared mobile grid column inheriting that width (see the
+  // .charts-grid comment in <style>).
+  const width = Math.max(420, Math.min(900, bars.length * 140));
+  document.getElementById("chart-container-comparison").innerHTML =
+    buildBarChartSVG(bars, { width, valueFmt: v => (v >= 0 ? "+" : "") + v.toFixed(1) + "%" });
 }
 
 async function loadSessions() {
