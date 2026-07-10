@@ -1400,3 +1400,43 @@ already serializes it - not a real race), `telegram_channels.
 upsert_channel` (a real atomic `INSERT ... ON CONFLICT DO UPDATE`), and
 `check_and_expire_trial` (check-then-act in shape, but the act is
 idempotent with no side-channel, so a double-fire is harmless).
+
+## Manually disconnecting a broker account mid-login could be silently undone (fixed)
+
+Shifted technique after three consecutive audits found progressively
+fewer issues (3, 1, 1 fixable findings) - a sign this specific bug class
+was thinning out. Went broader instead: reviewed the desktop client's
+Rust concurrency handling (clean - the one place it needed a lock, it
+already used one correctly), event-loop-blocking architecture (clean -
+FastAPI's sync routes are already threadpool-isolated by design),
+SQL-injection exposure across every f-string-built query (clean - every
+generic field-updater validates keys against a hardcoded allowlist
+first; the two that don't - `save_backtest_metrics`,
+`finalize_broker_account_connection` below - only ever receive
+internally-computed dicts, never request bodies), debug-mode stack-
+trace leakage (clean - no `debug=True`), and the SSE resync/gap-recovery
+signal end-to-end (clean - every subscribing page implements `onResync`,
+not just `onEvent`).
+
+That last check into `scripts/connect_broker_account.py` (the login-flow
+script spawned by the connect race fix above) surfaced a real, different
+kind of bug: `disconnect_broker_account` only ever updates the DB row -
+it never tracks or kills the connect subprocess, so an operator clicking
+"Disconnect" while a login attempt is still running leaves that script
+(and its browser window) running unaffected in the background. When the
+script later finishes - detects a successful login, or times out - it
+wrote its outcome (`connection_status = "connected"` or `"error"`)
+unconditionally, silently overwriting the operator's own explicit
+disconnect. Proved it directly: disconnect the account, then simulate
+the script's old unconditional final write - result was "connected"
+even though the operator had just disconnected it.
+
+Fixed with `database.finalize_broker_account_connection(account_id,
+connection_status, **extra_fields)` - the same atomic-conditional-write
+shape as `claim_broker_account_connecting`, just guarding the other end
+of the same state machine: it only writes if the account is still in
+the exact `"connecting"` state the script itself started (`WHERE
+connection_status = 'connecting'`), returning whether the write
+happened. The script now logs and discards its result instead of
+overwriting when it didn't. 4 new tests added to
+`tests/test_broker_account_connect_race.py`.

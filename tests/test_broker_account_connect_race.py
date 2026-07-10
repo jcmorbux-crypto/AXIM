@@ -63,5 +63,51 @@ class ClaimBrokerAccountConnectingTests(unittest.TestCase):
         self.assertEqual(database.get_broker_account(self.account_id)["connection_status"], "connecting")
 
 
+class FinalizeBrokerAccountConnectionTests(unittest.TestCase):
+    """scripts/connect_broker_account.py used to write its final outcome
+    ("connected"/"error") unconditionally - an operator clicking
+    Disconnect while a login attempt is still running (nothing kills the
+    script; it keeps polling in the background) would have that explicit
+    disconnect silently overwritten once the script later finished.
+    finalize_broker_account_connection only writes if the account is
+    still in the exact "connecting" state the script itself started."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.account_id = database.create_broker_account("Acct A")
+        database.claim_broker_account_connecting(self.account_id)
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_finalizes_normally_when_still_connecting(self):
+        wrote = database.finalize_broker_account_connection(self.account_id, "connected")
+        self.assertTrue(wrote)
+        self.assertEqual(database.get_broker_account(self.account_id)["connection_status"], "connected")
+
+    def test_does_not_overwrite_a_disconnect_that_happened_mid_login(self):
+        database.update_broker_account(self.account_id, connection_status="disconnected")
+        wrote = database.finalize_broker_account_connection(self.account_id, "connected")
+        self.assertFalse(wrote)
+        self.assertEqual(database.get_broker_account(self.account_id)["connection_status"], "disconnected")
+
+    def test_error_outcome_also_respects_a_mid_login_disconnect(self):
+        database.update_broker_account(self.account_id, connection_status="disconnected")
+        wrote = database.finalize_broker_account_connection(self.account_id, "error")
+        self.assertFalse(wrote)
+        self.assertEqual(database.get_broker_account(self.account_id)["connection_status"], "disconnected")
+
+    def test_extra_fields_are_written_alongside_the_status(self):
+        database.finalize_broker_account_connection(
+            self.account_id, "connected", last_connected_at="2026-01-01T00:00:00")
+        account = database.get_broker_account(self.account_id)
+        self.assertEqual(account["connection_status"], "connected")
+        self.assertEqual(account["last_connected_at"], "2026-01-01T00:00:00")
+
+
 if __name__ == "__main__":
     unittest.main()

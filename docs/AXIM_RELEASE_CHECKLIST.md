@@ -229,6 +229,26 @@ flags that it's still needed.
       `UPDATE ... WHERE connection_status != 'connecting'`) replacing
       the separate check-then-spawn-then-write sequence. 4 new
       regression tests added, including a 10-thread concurrency proof
+- [x] **Mid-login disconnect could be silently undone fixed**:
+      `disconnect_broker_account` never tracked or killed the connect
+      subprocess, so clicking "Disconnect" while a login attempt was
+      still running left that script running unaffected - when it later
+      finished, it wrote its outcome unconditionally, silently
+      overwriting the operator's own explicit disconnect back to
+      "connected". Proved it directly: disconnect, then simulate the old
+      unconditional write - result was "connected" anyway. Fixed with
+      `database.finalize_broker_account_connection`, an atomic
+      conditional write (`WHERE connection_status = 'connecting'`) that
+      only succeeds if nobody disconnected in the meantime. 4 new
+      regression tests added
+- [x] Broader security/architecture sweep after the check-then-act audit
+      technique showed diminishing returns (3 consecutive audits found
+      3, then 1, then 1 fixable issues): desktop client's Rust
+      concurrency handling, FastAPI event-loop-blocking exposure,
+      SQL-injection exposure across every f-string-built query, debug-
+      mode stack-trace leakage, and the SSE resync/gap-recovery signal
+      end-to-end (every subscribing page implements `onResync`) - all
+      confirmed clean, no changes needed
 
 ## Known, accepted limitations at this release
 

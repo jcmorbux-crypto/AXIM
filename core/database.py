@@ -1871,6 +1871,31 @@ def claim_broker_account_connecting(account_id):
 
 
 @timed("database")
+def finalize_broker_account_connection(account_id, connection_status, **extra_fields):
+    """Writes scripts/connect_broker_account.py's final outcome
+    ("connected" or "error") ONLY IF this account is still in the exact
+    "connecting" state THIS script itself put it in - an operator can
+    click Disconnect while a login attempt is still in progress (the
+    script keeps running in the background; nothing kills it), and
+    without this guard, the script finishing later would silently
+    overwrite that explicit disconnect back to "connected"/"error",
+    undoing the operator's own action. Mirrors
+    claim_broker_account_connecting's atomic-conditional-UPDATE shape,
+    just guarding the other end of the same state machine. Returns
+    whether the write actually happened."""
+    fields = {**extra_fields, "connection_status": connection_status, "updated_at": datetime.now().isoformat()}
+    set_clauses = ", ".join(f"{key} = ?" for key in fields)
+    conn = get_connection()
+    cursor = conn.execute(
+        f"UPDATE broker_accounts SET {set_clauses} WHERE id = ? AND connection_status = 'connecting'",
+        list(fields.values()) + [account_id],
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+@timed("database")
 def assign_broker_account_to_fund(fund_id, broker_account_id, is_primary=True):
     """Attaches a broker account to a fund. Only one broker account may be
     primary per fund today (a fund "distributing trades across multiple
