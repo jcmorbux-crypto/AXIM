@@ -121,23 +121,61 @@ flagged with how confident the finding is.
    tested for whether Pocket Option's own input handlers tolerate a
    synthetic multi-field batch write instead of sequential user-like input.*
 
-4. **No WebSocket/network-layer observation at all.** Every confirmation
-   AXIM currently relies on - "trade opened" (`.no-deals` hidden), "trade
-   closed" (`.no-deals` visible again on the Closed tab) - is inferred from
-   DOM state that itself lags whatever real-time channel the page uses to
-   render it. Trading platforms overwhelmingly push price/order-state over
-   WebSocket; the DOM update is a downstream *effect* of that message, not
-   the source event. Playwright can passively observe frames on the already-
-   authenticated page (`page.on("websocket")` / CDP `Network` domain) without
-   touching, modifying, or reverse-engineering any proprietary client code -
-   it's the same authorized browser session simply being asked what it
-   already received. This is very likely the single largest available
-   latency win for *confirmation* specifically, and is explicitly in scope
-   per the user's own boundary ("websocket/API observations available from my
-   own browser session"). Not yet attempted. *Confidence: directionally
-   high that the opportunity exists; unconfirmed until an actual passive
-   capture is taken, since Pocket Option's specific message format is
-   unknown.*
+4. **INVESTIGATED - real signal confirmed, production integration deferred
+   pending a scope decision.** Captured real WebSocket traffic two ways:
+   (a) passive observation of the already-authenticated demo cabinet with no
+   trade placed, and (b) the same capture during one real $1 demo trade
+   (`EUR/USD OTC`, `BUY`, 15s expiry, `ARMED` forced to `"true"` for that one
+   isolated process only, `.env` never touched - the same established
+   pattern as `tests/manual_click_test_warm.py`).
+
+   **Finding:** the trading socket (`wss://demo-api-eu.po.market/socket.io/`)
+   is Socket.IO (a public, well-documented open-source protocol, not
+   proprietary to Pocket Option) and sends named JSON event-type frames
+   alongside a continuous binary price-tick stream. Two of those event names
+   fired at exactly the moments that matter:
+   - `successopenOrder` fired within the same ~100ms window
+     `pocket_executor` itself logged `status=trade_opened` (real timestamps
+     captured: order clicked ~21.7s into the run, `successopenOrder` at
+     21.70s).
+   - `successcloseOrder` fired at 36.92s - the trade's own 15-second expiry
+     from the ~21.7s open point lands almost exactly there. `successupdateBalance`
+     followed immediately after both events (stake deducted on open, payout
+     credited on close - consistent with the real win result AXIM's own DOM
+     read independently confirmed: `$1 stake -> $1.92 returned`).
+
+   **Scope boundary held deliberately**: the actual event *payload* (asset,
+   direction, stake, result) is Socket.IO's binary-attachment convention
+   (`{"_placeholder":true,"num":0}` + a follow-up raw binary frame) - decoding
+   that binary content would mean reverse-engineering a Pocket-Option-specific
+   format, which is out of scope per this project's own established boundary.
+   Only the **event type name** (public Socket.IO framing, not proprietary
+   content) and **timing** were used here - matching "the same authorized
+   browser session simply being asked what it already received," not
+   inspecting anything beyond that.
+
+   **What this would enable, if built**: an *additive, fallback-safe*
+   optimization - watch for the `successcloseOrder` event name as an early
+   wake-up trigger to check the DOM sooner, while keeping the existing,
+   proven DOM read (`wait_for_trade_result`) as the sole source of truth for
+   the actual result. If the WS event never fires (site change, wrong tab,
+   anything), the existing fixed-wait-then-poll path is untouched and still
+   works exactly as today - this could only ever make outcome detection
+   faster or unchanged, never less reliable, if implemented with that
+   fallback discipline.
+
+   **Not built in this pass.** The realistic upside is now more modest than
+   when this item was first written: `settlement_buffer_seconds` tuning (see
+   `docs/AXIM_ROADMAP.md`) already cut outcome-detection overhead from ~8.4s
+   to a ~2.4s average, so a WS-triggered early check would be shaving time off
+   an already-optimized number, not off the original 8s. Properly integrating
+   this into the live confirmation path (execution/pocket_dom.py's
+   `wait_for_trade_result`) touches the trade-outcome-recording pipeline
+   directly and would need its own extensive live-fire verification (multiple
+   real trades, the no-WS-event fallback path, a race where the WS event
+   fires before the DOM has actually updated) before it should be trusted -
+   a genuinely separate, larger piece of work from the investigation itself,
+   not something to build without an explicit go-ahead given what it touches.
 
 5. **RESOLVED** - `execution/browser_worker_pool.py` now has exactly the TTL
    cache this item recommended: `HEALTH_CHECK_TTL_SECONDS` (default 2s,
