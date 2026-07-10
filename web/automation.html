@@ -518,6 +518,12 @@ async function toggleRule(ruleId, enabled) {
     document.getElementById("no-fund-state").style.display = "none";
     await refreshAll();
   }
+  AximShell.subscribeEvents({
+    "automation.updated": {
+      onEvent: () => { if (currentFundId) refreshAll(); },
+      onResync: () => { if (currentFundId) refreshAll(); },
+    },
+  });
 })();
 </script>
 </body>

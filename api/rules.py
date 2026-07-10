@@ -63,6 +63,16 @@ def _get_or_404(rule_id):
     return rule
 
 
+def _emit_rule_updated(fund_id):
+    """See api/funds_routes.py's _emit_fund_updated - same reasoning:
+    this router runs inside the API process, so it can write the
+    server_events outbox directly for web/automation.html's live sync."""
+    try:
+        database.record_server_event("automation.updated", {"fund_id": fund_id})
+    except Exception:
+        pass
+
+
 @router.get("/catalog")
 def get_catalog(user=Depends(get_current_user)):
     """Condition/action types with their label + param schema, so the
@@ -104,6 +114,7 @@ def create_rule(body: RuleCreate, user=Depends(require_admin)):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _emit_rule_updated(body.fund_id)
     return database.get_rule(rule_id)
 
 
@@ -120,7 +131,7 @@ def get_rule_firings(rule_id: int, user=Depends(get_current_user)):
 
 @router.patch("/{rule_id}")
 def update_rule(rule_id: int, body: RuleUpdate, user=Depends(require_admin)):
-    _get_or_404(rule_id)
+    existing = _get_or_404(rule_id)
     _validate_types(body.condition_type, body.action_type)
     if body.fund_id is not None and database.get_fund(body.fund_id) is None:
         raise HTTPException(status_code=404, detail="fund not found")
@@ -129,13 +140,15 @@ def update_rule(rule_id: int, body: RuleUpdate, user=Depends(require_admin)):
         database.update_rule(rule_id, condition_params=body.condition_params, action_params=body.action_params, **updates)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _emit_rule_updated(body.fund_id or existing["fund_id"])
     return database.get_rule(rule_id)
 
 
 @router.delete("/{rule_id}")
 def delete_rule(rule_id: int, user=Depends(require_admin)):
-    _get_or_404(rule_id)
+    rule = _get_or_404(rule_id)
     database.delete_rule(rule_id)
+    _emit_rule_updated(rule["fund_id"])
     return {"status": "deleted"}
 
 
@@ -147,4 +160,5 @@ def evaluate_now(rule_id: int, user=Depends(require_admin)):
     match real behavior."""
     rule = _get_or_404(rule_id)
     fired = rule_engine.evaluate_rule(rule)
+    _emit_rule_updated(rule["fund_id"])
     return {"fired": fired, "rule": database.get_rule(rule_id)}

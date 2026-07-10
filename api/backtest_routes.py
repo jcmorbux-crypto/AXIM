@@ -33,6 +33,18 @@ from auth_routes import get_current_user, require_admin
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
 
 
+def _emit_strategy_updated(run_id):
+    """Same reasoning as api/funds_routes.py's _emit_fund_updated - this
+    router runs inside the API process, so it can write the
+    server_events outbox directly for web/strategy_lab.html's live sync
+    (a new/finished/deleted run appearing for every connected client, not
+    just the one that triggered it)."""
+    try:
+        database.record_server_event("strategy.updated", {"run_id": run_id})
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------
 # Historical signals
 # ---------------------------------------------------------------------
@@ -251,6 +263,7 @@ def create_run(body: RunCreateRequest, user=Depends(require_admin)):
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
 
+    _emit_strategy_updated(run_id)
     return database.get_backtest_report(run_id)
 
 
@@ -332,6 +345,10 @@ def deploy_strategy(run_id: int, strategy_id: int, body: DeployRequest, user=Dep
     profile_name = body.new_profile_name or f"{fund['name']} - {strategy['label']} (deployed)"
     new_profile_id = database.create_risk_profile_from_snapshot(profile_name, strategy["profile_snapshot"])
     database.update_fund(body.fund_id, default_risk_profile_id=new_profile_id)
+    try:
+        database.record_server_event("fund.updated", {"fund_id": body.fund_id})
+    except Exception:
+        pass
 
     return {
         "fund": database.get_fund(body.fund_id),
@@ -343,6 +360,7 @@ def deploy_strategy(run_id: int, strategy_id: int, body: DeployRequest, user=Dep
 @router.delete("/runs/{run_id}")
 def delete_run(run_id: int, user=Depends(require_admin)):
     database.delete_backtest_run(run_id)
+    _emit_strategy_updated(run_id)
     return {"status": "deleted"}
 
 

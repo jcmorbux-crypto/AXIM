@@ -335,6 +335,9 @@ async function toggleLive(id, checked) {
   refreshAccounts();
   setInterval(refreshStatus, 10000);
   setInterval(refreshAccounts, 10000);
+  AximShell.subscribeEvents({
+    "broker_account.updated": { onEvent: refreshAccounts, onResync: refreshAccounts },
+  });
 })();
 </script>
 </body>

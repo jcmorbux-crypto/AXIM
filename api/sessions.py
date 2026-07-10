@@ -53,6 +53,19 @@ class AttachRiskProfile(BaseModel):
     risk_profile_id: Optional[int] = None
 
 
+def _emit_session_updated(session_id):
+    """Same reasoning as api/funds_routes.py's _emit_fund_updated - this
+    router runs inside the API process, so it can write the
+    server_events outbox directly for web/sessions.html's live sync.
+    trade.closed already covers per-trade P/L updates (see session_manager.
+    register); this covers the session lifecycle transitions themselves
+    (start/stop/emergency-stop/risk-profile changes)."""
+    try:
+        database.record_server_event("session.updated", {"session_id": session_id})
+    except Exception:
+        pass
+
+
 def _with_progress(session):
     """Adds the derived fields the Trading Sessions UI needs (section 7:
     "Active session progress ... Remaining target") without storing them -
@@ -220,6 +233,7 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    _emit_session_updated(session_id)
     return _with_progress(database.get_trading_session(session_id))
 
 
@@ -255,6 +269,7 @@ def attach_risk_profile(session_id: int, body: AttachRiskProfile, user=Depends(r
     if body.risk_profile_id is not None and database.get_risk_profile(body.risk_profile_id) is None:
         raise HTTPException(status_code=404, detail="risk profile not found")
     database.set_session_risk_profile(session_id, body.risk_profile_id)
+    _emit_session_updated(session_id)
     return _with_progress(database.get_trading_session(session_id))
 
 
@@ -266,6 +281,7 @@ def stop_session(session_id: int, user=Depends(require_admin)):
     if session["status"] != "active":
         raise HTTPException(status_code=400, detail=f"session is already {session['status']}")
     session_manager.end_session(session_id, "stopped_manual", f"stopped by {user['email']}")
+    _emit_session_updated(session_id)
     return _with_progress(database.get_trading_session(session_id))
 
 
@@ -286,4 +302,5 @@ def emergency_stop_session(session_id: int, user=Depends(get_current_user)):
     database.set_control_state(paused=True, emergency_stop=True)
     for active in database.list_active_trading_sessions():
         session_manager.end_session(active["id"], "stopped_emergency", f"emergency stop by {user['email']}")
+        _emit_session_updated(active["id"])
     return _with_progress(database.get_trading_session(session_id))

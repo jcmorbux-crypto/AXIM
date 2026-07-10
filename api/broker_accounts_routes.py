@@ -53,6 +53,19 @@ def _with_funds(account):
     return {**account, "funds": database.list_broker_account_funds(account["id"])}
 
 
+def _emit_account_updated(account_id):
+    """Same reasoning as api/funds_routes.py's _emit_fund_updated - this
+    router runs inside the API process, so it can write the server_events
+    outbox directly. connect_broker_account.py (a separate subprocess)
+    also emits this event itself once the async login actually
+    resolves, since that transition happens well after this process
+    returns "connecting"."""
+    try:
+        database.record_server_event("broker_account.updated", {"account_id": account_id})
+    except Exception:
+        pass
+
+
 @router.get("")
 def list_broker_accounts(user=Depends(get_current_user)):
     return [_with_funds(a) for a in database.list_broker_accounts()]
@@ -64,6 +77,7 @@ def create_broker_account(body: BrokerAccountCreate, user=Depends(require_admin)
         account_id = database.create_broker_account(body.name, mode=body.mode, user_id=user["id"])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _emit_account_updated(account_id)
     return _with_funds(database.get_broker_account(account_id))
 
 
@@ -82,6 +96,7 @@ def update_broker_account(account_id: int, body: BrokerAccountUpdate, user=Depen
         database.update_broker_account(account_id, **fields)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _emit_account_updated(account_id)
     return _with_funds(database.get_broker_account(account_id))
 
 
@@ -101,6 +116,7 @@ def connect_broker_account(account_id: int, user=Depends(require_admin)):
         creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
     )
     database.update_broker_account(account_id, connection_status="connecting")
+    _emit_account_updated(account_id)
     return _with_funds(database.get_broker_account(account_id))
 
 
@@ -113,6 +129,7 @@ def disconnect_broker_account(account_id: int, user=Depends(require_admin)):
     (see fund_manager.can_trade / the session-start safety gate)."""
     _get_or_404(account_id)
     database.update_broker_account(account_id, connection_status="disconnected")
+    _emit_account_updated(account_id)
     return _with_funds(database.get_broker_account(account_id))
 
 
@@ -127,4 +144,5 @@ def archive_broker_account(account_id: int, user=Depends(require_admin)):
             detail=f"still assigned to: {names} - unassign it from every fund first",
         )
     database.update_broker_account(account_id, status="archived")
+    _emit_account_updated(account_id)
     return _with_funds(database.get_broker_account(account_id))

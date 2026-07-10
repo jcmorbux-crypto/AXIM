@@ -397,11 +397,19 @@ async function createFund() {
   }
 }
 
+async function liveRefresh() {
+  await refreshAll();
+  if (currentFundId) await selectFund(currentFundId);
+}
+
 (async () => {
   const user = await AximShell.init({ active: "funds" });
   if (!user) return;
   await refreshAll();
   if (allFunds.length) await selectFund(allFunds[0].id);
+  AximShell.subscribeEvents({
+    "fund.updated": { onEvent: liveRefresh, onResync: liveRefresh },
+  });
 })();
 </script>
 </body>

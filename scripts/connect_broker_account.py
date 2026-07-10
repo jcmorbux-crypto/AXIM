@@ -93,10 +93,12 @@ async def connect(account_id):
                 account_id, connection_status="connected",
                 last_connected_at=datetime.now().isoformat(),
             )
+            database.record_server_event("broker_account.updated", {"account_id": account_id})
             print(f"Broker account {account_id!r} connected successfully.")
             logger.info("connect_broker_account: account_id=%s connected", account_id)
         else:
             database.update_broker_account(account_id, connection_status="error")
+            database.record_server_event("broker_account.updated", {"account_id": account_id})
             print(f"Broker account {account_id!r} did not reach a logged-in state within "
                   f"{CONNECT_TIMEOUT_SECONDS}s - marked as error. The window is left open; "
                   f"you can keep trying and reconnect from the UI once logged in.")

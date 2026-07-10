@@ -68,6 +68,19 @@ def _get_or_404(fund_id):
     return fund
 
 
+def _emit_fund_updated(fund_id):
+    """Every mutation below runs inside the API process, the same process
+    that serves GET /api/events/stream (api/event_stream_routes.py) - so,
+    unlike core/event_stream.py's listener-process bridge, this can write
+    straight to the server_events outbox with no extra plumbing. Lets
+    every connected Remote Client's Funds page (web/funds.html) stay live
+    instead of only updating on its own next poll/reload."""
+    try:
+        database.record_server_event("fund.updated", {"fund_id": fund_id})
+    except Exception:
+        pass
+
+
 @router.get("")
 def list_funds(status: Optional[str] = None, user=Depends(get_current_user)):
     return fund_manager.list_funds_with_balances(status=status)
@@ -80,6 +93,7 @@ def create_fund(body: FundCreate, user=Depends(require_admin)):
                                         **body.model_dump(exclude={"name", "starting_balance"}))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 
 
@@ -98,6 +112,7 @@ def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
         database.update_fund(fund_id, **body.model_dump(exclude_unset=True))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 
 
@@ -105,6 +120,7 @@ def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
 def archive_fund(fund_id: int, user=Depends(require_admin)):
     _get_or_404(fund_id)
     database.update_fund(fund_id, status="archived")
+    _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 
 
@@ -117,6 +133,7 @@ def pause_fund(fund_id: int, user=Depends(require_admin)):
     where it left off rather than requiring a fresh start."""
     _get_or_404(fund_id)
     database.update_fund(fund_id, status="paused")
+    _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 
 
@@ -124,6 +141,7 @@ def pause_fund(fund_id: int, user=Depends(require_admin)):
 def resume_fund(fund_id: int, user=Depends(require_admin)):
     _get_or_404(fund_id)
     database.update_fund(fund_id, status="active")
+    _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 
 
@@ -131,6 +149,7 @@ def resume_fund(fund_id: int, user=Depends(require_admin)):
 def duplicate_fund(fund_id: int, body: DuplicateFundRequest, user=Depends(require_admin)):
     _get_or_404(fund_id)
     new_id = database.duplicate_fund(fund_id, body.new_name)
+    _emit_fund_updated(new_id)
     return fund_manager.get_fund_report(new_id)
 
 
@@ -138,6 +157,7 @@ def duplicate_fund(fund_id: int, body: DuplicateFundRequest, user=Depends(requir
 def add_source(fund_id: int, body: AddSourceRequest, user=Depends(require_admin)):
     _get_or_404(fund_id)
     database.add_fund_source(fund_id, body.channel_id)
+    _emit_fund_updated(fund_id)
     return {"sources": database.list_fund_source_channel_ids(fund_id)}
 
 
@@ -145,6 +165,7 @@ def add_source(fund_id: int, body: AddSourceRequest, user=Depends(require_admin)
 def remove_source(fund_id: int, channel_id: int, user=Depends(require_admin)):
     _get_or_404(fund_id)
     database.remove_fund_source(fund_id, channel_id)
+    _emit_fund_updated(fund_id)
     return {"sources": database.list_fund_source_channel_ids(fund_id)}
 
 
@@ -154,6 +175,7 @@ def assign_broker_account(fund_id: int, body: AssignBrokerAccountRequest, user=D
     if database.get_broker_account(body.broker_account_id) is None:
         raise HTTPException(status_code=404, detail="broker account not found")
     database.assign_broker_account_to_fund(fund_id, body.broker_account_id, is_primary=body.is_primary)
+    _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 
 
@@ -161,6 +183,7 @@ def assign_broker_account(fund_id: int, body: AssignBrokerAccountRequest, user=D
 def unassign_broker_account(fund_id: int, broker_account_id: int, user=Depends(require_admin)):
     _get_or_404(fund_id)
     database.unassign_broker_account_from_fund(fund_id, broker_account_id)
+    _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 
 

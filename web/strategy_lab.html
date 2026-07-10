@@ -908,6 +908,9 @@ async function viewRun(runId) {
   const user = await AximShell.init({ active: "lab" });
   if (!user) return;
   await loadSetupData();
+  AximShell.subscribeEvents({
+    "strategy.updated": { onEvent: loadRunsHistory, onResync: loadRunsHistory },
+  });
 })();
 </script>
 </body>

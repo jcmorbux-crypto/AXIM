@@ -470,6 +470,10 @@ async function saveCurrentAsProfile() {
   setInterval(refreshProcessStatus, 10000);
   AximShell.subscribeEvents({
     "trade.closed": { onEvent: refreshActiveSession, onResync: refreshActiveSession },
+    "session.updated": {
+      onEvent: () => { refreshActiveSession(); refreshHistory(); },
+      onResync: () => { refreshActiveSession(); refreshHistory(); },
+    },
   });
 })();
 </script>

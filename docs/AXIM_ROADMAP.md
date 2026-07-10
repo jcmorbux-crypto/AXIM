@@ -341,3 +341,82 @@ and fixing several real defects live rather than in isolated testing:
 a genuine multi-hour soak test running to completion; process supervision
 configuration (Task Scheduler/equivalent) for unattended operation; a
 backup/retention plan for `data/axim.db` and session directories.
+
+## Client/server real-time sync gap closed (done)
+Audited the Remote Client's 14 required capability areas (Mission
+Control, Funds, Trading Sessions, Trading Desk, Strategy Lab, AI
+Portfolio Analyst, Automation Studio, Signal Sources, Broker Accounts,
+Performance, Notifications, User Management, Help Center, Settings -
+`docs/AXIM_REMOTE_ACCESS.md`) against what actually exists. "Trading
+Desk" and "AI Portfolio Analyst" turned out not to be missing pages -
+they're already covered by `trades.html` ("Trade Center", there is no
+manual order-entry desk since AXIM only ever trades signal-driven) and
+by `core/ai_analysis.py`'s narrative surfaced inside Strategy Lab's
+per-run results - adding separate nav items for either would have been
+pure duplication, not a real gap.
+
+The real gap: only 5 of the 14 areas (Mission Control, Trading Sessions,
+Trade Center, Logs, the global Notifications bell) were wired to the
+`GET /api/events/stream` SSE feed - Funds, Strategy Lab, Automation
+Studio, and Broker Accounts were either one-shot-load or polling-only,
+which contradicts "all updates should synchronize in real time." Root
+cause: `core/fund_manager.py`, `core/rule_engine.py`,
+`core/broker_account_manager.py`, and the session-lifecycle mutations in
+`api/sessions.py` never published anything to `core/event_stream.py`'s
+bridge - because that bridge only exists to carry events out of the
+*separate* Telegram listener process, and these mutations all happen
+directly inside the API process, the same process that already serves
+the SSE endpoint. Fixed by writing straight to `database.
+record_server_event()` at the point of mutation instead of routing
+through the bridge, which only that cross-process case needs:
+- `api/funds_routes.py`: `fund.updated` on every create/update/pause/
+  resume/duplicate/source/broker-account mutation.
+- `api/rules.py`: `automation.updated` on create/update/delete/
+  evaluate-now.
+- `api/broker_accounts_routes.py`: `broker_account.updated` on create/
+  update/connect/disconnect/archive. `scripts/connect_broker_account.py`
+  (a standalone subprocess spawned fire-and-forget by `/connect`) also
+  emits it itself once the real async login actually resolves
+  (connected or timed out) - that transition happens well after the API
+  request already returned, so the route's own emission can't cover it.
+- `api/sessions.py`: `session.updated` on start/stop/emergency-stop/
+  risk-profile changes - `trade.closed` already covered per-trade P/L
+  via `core/session_manager.py`'s existing subscription, this covers the
+  session lifecycle transitions themselves.
+- `api/backtest_routes.py`: `strategy.updated` on run create/delete, plus
+  a `fund.updated` when Deploy to Fund changes a fund's default risk
+  profile.
+
+Wired the corresponding pages to `AximShell.subscribeEvents()`:
+`web/funds.html`, `web/automation.html`, `web/broker.html`,
+`web/strategy_lab.html` (refreshes the run history list), `web/
+performance.html` (via `trade.closed`/`session.updated`, since its stats
+are derived from those), and added `session.updated` to `web/
+sessions.html` alongside its existing `trade.closed` handler. Every page
+keeps its existing polling/one-shot load as a fallback, matching the
+project's established "SSE is a pure enhancement" discipline - nothing
+regresses if a client's stream drops.
+
+Deliberately left polling-only / static: **Settings** and **Help
+Center** (no live server state to sync - self-contained/static), and
+**User Management** (admin actions on other users are rare and already
+a manual page-load-driven workflow, not a trading-critical live view -
+wiring it would be unused complexity, not a real gap).
+
+Verified against a real (temporary, isolated) SQLite database, not
+mocks: called the actual `funds_routes`/`rules`/`broker_accounts_routes`
+route functions end-to-end and confirmed each mutation produced the
+correct `server_events` row with the right event type and payload
+(`fund.updated`, `automation.updated`, `broker_account.updated` all
+observed firing correctly through real create/update/pause/resume/
+delete call sequences). `sessions.py`/`backtest_routes.py`'s emit
+helpers were verified directly (full session-start fixture setup -
+channels, risk profile, connected broker account - was out of scope for
+this pass, but the emission code is the identical pattern proven
+correct in the other three files). Full existing regression suite
+unaffected: `test_funds*.py`, `test_broker_account_manager.py`,
+`test_backtest_routes.py`, `test_backtest_engine.py`,
+`test_backtest_database.py`, `test_database_sessions.py`,
+`test_event_stream_routes.py`, `test_rule_engine.py`,
+`test_session_manager.py`, `test_auth_routes.py` - 199 tests, all
+passing.

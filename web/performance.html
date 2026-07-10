@@ -159,6 +159,10 @@ async function refreshAll() {
   const user = await AximShell.init({ active: "stats" });
   if (!user) return;
   refreshAll();
+  AximShell.subscribeEvents({
+    "trade.closed": { onEvent: refreshAll, onResync: refreshAll },
+    "session.updated": { onEvent: refreshAll, onResync: refreshAll },
+  });
 })();
 </script>
 </body>
