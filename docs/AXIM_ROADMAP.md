@@ -1570,3 +1570,35 @@ no `test_pocket_dom.py` exists (testing the DOM interaction itself).
 Overclaiming "everything's fine now" would have been its own new stale-
 documentation problem, the same class of issue this fix and the one
 before it exist to close.
+
+## Added the missing pocket_dom.py test coverage its own docs flagged as absent (partial - fixed what's fixable)
+
+Immediately followed up on the gap the live readiness review banner
+just flagged rather than leaving it purely documented. Most of
+`execution/pocket_dom.py` genuinely can't be unit-tested without a real
+browser (real Playwright `page.locator()` DOM interaction) - that part
+of the gap is real and stays open. But the file also has several pure,
+dependency-free functions with zero prior test coverage:
+`expiry_to_seconds`/`_expiry_to_hms`, `_format_amount`,
+`_asset_search_term`, `_wants_otc`, and - most safety-relevant -
+`_closest_closed_item`, the exact disambiguation logic
+`docs/AXIM_PRODUCTION_READINESS_REPORT.md` section 4.5 identifies as a
+real, residual source of trade-outcome-matching ambiguity under
+concurrency.
+
+Added `tests/test_pocket_dom_pure_functions.py` (22 tests). Beyond
+straightforward parsing/formatting cases, specifically tested
+`_closest_closed_item`'s day-boundary handling: a trade expected to
+close at 23:59 with a Closed-list item showing 00:01 the next day is
+genuinely only 2 minutes away, not ~24 hours - a naive same-calendar-day
+`.replace(hour, minute)` would get this wrong without the function's
+existing +/-1-day check, and the new test verifies that check actually
+works, not just that the function runs. Also covered the malformed-
+time-text fallback (doesn't crash, just loses the tiebreak) and
+asset/direction filtering. Full suite re-run clean.
+
+This doesn't close the real remaining gap (no test coverage for the
+actual DOM-interaction functions, which stays accepted/open per the
+banner above - live-fire testing plus operator discipline, not an
+automated regression net) - it closes the *fixable* part of it without
+overclaiming the unfixable-without-a-browser part is now covered too.

@@ -276,6 +276,26 @@ flags that it's still needed.
       Scheduled Task registered, no stray processes left behind) -
       confirmed a genuine 200 OK after cold-start and clean termination
       on `Stop-Process -Force`
+- [x] **Two dated readiness/review docs corrected**: `docs/
+      AXIM_PRODUCTION_READINESS_REPORT.md` and `docs/
+      AXIM_LIVE_READINESS_REVIEW.md` both made specific, decision-
+      influencing claims that are now false - most notably "hold AXIM
+      Desktop UI development" (the UI is built and hardened) and "no
+      real signal from the trusted source has ever been processed" (it
+      has, per the roadmap's "Version 1 production hardening" section).
+      Added status banners correcting only what was actually re-verified
+      - explicitly did not claim every item in either document was
+      resolved, since overclaiming would just be a new stale-
+      documentation problem
+- [x] **`pocket_dom.py` pure-function test coverage added**: the DOM-
+      interaction functions genuinely can't be unit-tested without a
+      real browser (unchanged, accepted limitation), but several pure,
+      dependency-free functions in the same file - including
+      `_closest_closed_item`, the exact trade-outcome disambiguation
+      logic already flagged elsewhere as a real ambiguity source - had
+      zero test coverage. Added `tests/test_pocket_dom_pure_functions.py`
+      (22 tests), including a day-boundary-wraparound case for the
+      closed-item matcher
 
 ## Known, accepted limitations at this release
 
