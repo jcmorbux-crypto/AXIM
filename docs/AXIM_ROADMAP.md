@@ -946,3 +946,109 @@ stream's own existing headers (`cache-control: no-cache`,
 disrupting the stream itself (status 200, connection stayed open,
 `Transfer-Encoding: chunked` intact). Also confirmed on a plain JSON
 endpoint. Full regression suite re-run clean after this change.
+
+## Audit logging for financial/risk-critical actions (done)
+Checked whether the existing `admin_actions` accountability mechanism
+(`api/admin.py`, `database.record_admin_action`) actually covered the
+actions that matter most for a multi-admin commercial product - it
+doesn't. It's scoped specifically to user-management (requires a
+`target_user_id`), and a grep for `logger.info`/`logger.warning` across
+`api/funds_routes.py`, `api/broker_accounts_routes.py`, `api/sessions.py`,
+`api/backtest_routes.py`, and `api/rules.py` returned **zero matches** -
+none of them even had a `logger` instance. Fund creation, either half of
+the Live-trading double-switch (a Fund's own `live_enabled` and a broker
+account's own `live_enabled` - both must agree before a real-money trade
+can place, per `docs/AXIM_APP_PLAN.md`'s Safety design), session starts,
+strategy deployment, and Automation Studio rule create/update/delete all
+left **zero trace** of who did it or when - if something went wrong (a
+Fund unexpectedly went Live, a rule someone didn't intend fired), there
+was no way to answer "who did this."
+
+Added `logger = get_logger("axim.ui", filename="ui.log")` to all five
+files - same name/filename `api/main.py` already uses for its own
+UI-triggered actions, so these interleave into the same, already-existing
+`ui.log` (and the unified `axim.log` every logger propagates to) with no
+new file or Logs-page wiring needed. Logged: fund create/update/archive,
+broker account create/update/connect/disconnect, session start,
+session-scoped emergency-stop, strategy deploy, and rule create/update/
+delete. The two Live-mode toggles specifically log at `WARNING`, not
+`INFO` - same visibility precedent the global Emergency Stop already
+set - since those are the two switches that most directly gate whether
+real money can move. A LIVE-mode session start also logs at `WARNING`;
+a Demo one stays at `INFO`.
+
+Verified live against a real running server, not by reading the code:
+created a real fund, toggled its `live_enabled`, created a real broker
+account, toggled its `live_enabled`, created a real rule - all through
+actual HTTP POST/PATCH requests - then queried the real
+`GET /api/logs` endpoint (the same one the Logs page calls) and
+confirmed all of it actually appears, with the correct level (`WARNING`
+for both `live_enabled` toggles, `INFO` for the creates), the correct
+acting user's email, and the correct field-level detail. Targeted
+regression suite (funds/broker-accounts/backtest/rules/session_manager,
+105 tests) and the full suite both re-run clean after this change.
+
+## Privilege escalation: a plain "admin" could grant itself "owner" (fixed)
+Found while reviewing the audit-logging gap above and asking a follow-up
+question: does the "owner" vs "admin" distinction the rest of the app
+relies on actually hold up? `api/admin.py`'s `create_user`/`edit_user`
+both validate the `role` field only against `VALID_ROLES` (which
+includes `"owner"`) and gate the whole endpoint with `require_admin`
+(owner **or** admin) - `require_owner` exists in `api/auth_routes.py`
+but was used **zero** times anywhere in the API. Nothing stopped a plain
+`"admin"` account from `PATCH`-ing their own user record to
+`role: "owner"`, or creating a brand-new account with `role: "owner"`
+directly, or stripping the real owner's role out from under them.
+
+Verified live against a real running server *before* writing any fix,
+not assumed: bootstrapped a real owner, had them create an ordinary
+`"admin"` user, logged in as that admin, and successfully
+self-promoted to `"owner"` via `PATCH /api/admin/users/{id}` - `200 OK`,
+role actually changed in the database. A real, exploitable bug, not a
+theoretical one.
+
+Fixed with `_forbid_owner_grant_by_non_owner()`, called from both
+`create_user` and `edit_user`: granting the `"owner"` role to anyone
+(including yourself) now requires the acting user to already be an
+`owner` themselves - a plain admin gets a `403`. Also closed the reverse
+case in `edit_user`: a plain admin can no longer change an *existing*
+owner's role to anything else either (stripping ownership without
+consent is the same trust violation as granting it uninvited) - "full,
+permanent control" (the bootstrap flow's own description of what Owner
+means) shouldn't be revocable by a lesser role. Deliberately still
+allows a real owner to grant ownership to a successor - `"owner"` isn't
+made completely immutable, just no longer grantable/revokable by
+anyone else.
+
+Verified both directions live after the fix, over real HTTP against a
+real running server: a plain admin's self-promotion attempt now returns
+`403` and the database role is unchanged; the same admin's attempt to
+demote the real owner also returns `403` with the owner's role
+unchanged; creating a new account with `role: "owner"` directly also
+returns `403`; the real owner successfully granting ownership to the
+admin still returns `200` and actually changes the role (proving the
+fix isn't just blanket-blocking the field); and an ordinary non-owner
+role edit (`user` -> `admin`) by the plain admin still works
+unaffected. Added `tests/test_admin_privilege_escalation.py` (5 tests,
+new file - `api/admin.py` had zero test coverage before this) covering
+all five of those cases permanently, calling the real route functions
+directly. Full regression suite re-run clean after this change.
+
+Same audit also found `VALID_TIERS` allows `access_tier: "owner"` - a
+separate field from `role`, reserved for a future Stripe integration
+per `core/database.py`'s own comment - with the identical
+no-restriction shape, across three separate call sites
+(`create_user`, `edit_user`, and a third dedicated `POST
+/users/{id}/set-tier` endpoint the role audit hadn't touched). Not
+currently read by any real enforcement path (confirmed: `role` is what
+actually gates `require_admin`/`require_owner`, `access_tier` isn't
+checked anywhere for authorization today), so not a live exploit the
+way the role bug was - but it's the exact same unrestricted-'owner'-
+value shape, cheap to close with the identical pattern
+(`_forbid_owner_tier_by_non_owner`), and worth closing now rather than
+risk a future billing integration inheriting the same mistake once this
+field actually starts being trusted. 5 more tests added to the same
+file (10 total) covering all three call sites plus the legitimate-
+owner-can-still-grant-it and ordinary-tier-still-works cases. Full
+regression suite: 521 passed, 1 skipped, 0 failed (role fix) confirmed
+separately, then re-run clean again after the tier fix.

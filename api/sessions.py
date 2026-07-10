@@ -24,8 +24,10 @@ import session_manager
 import fund_manager
 from settings import ACCOUNT, TRADE_CONFIRMATION_TIMEOUT_SECONDS
 from auth_routes import get_current_user, require_admin
+from logger import get_logger
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
+logger = get_logger("axim.ui", filename="ui.log")
 
 
 class ProfileCreate(BaseModel):
@@ -247,6 +249,9 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
         )
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    log_fn = logger.warning if ACCOUNT == "LIVE" else logger.info
+    log_fn("api: session_id=%s started by %s for fund_id=%s (account_mode=%s)",
+           session_id, user["email"], body.fund_id, ACCOUNT)
     _emit_session_updated(session_id)
     return _with_progress(database.get_trading_session(session_id))
 
@@ -314,6 +319,7 @@ def emergency_stop_session(session_id: int, user=Depends(get_current_user)):
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     database.set_control_state(paused=True, emergency_stop=True)
+    logger.warning("api: EMERGENCY STOP triggered via session_id=%s by %s", session_id, user["email"])
     try:
         database.record_server_event("control.updated", database.get_control_state())
     except Exception:

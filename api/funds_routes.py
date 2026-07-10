@@ -18,8 +18,10 @@ from pydantic import BaseModel
 import database
 import fund_manager
 from auth_routes import get_current_user, require_admin
+from logger import get_logger
 
 router = APIRouter(prefix="/api/funds", tags=["funds"])
+logger = get_logger("axim.ui", filename="ui.log")
 
 
 class FundCreate(BaseModel):
@@ -93,6 +95,8 @@ def create_fund(body: FundCreate, user=Depends(require_admin)):
                                         **body.model_dump(exclude={"name", "starting_balance"}))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    logger.info("api: fund_id=%s %r created by %s (starting_balance=%s, live_enabled=%s)",
+                fund_id, body.name, user["email"], body.starting_balance, body.live_enabled)
     _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 
@@ -108,10 +112,22 @@ def get_fund(fund_id: int, user=Depends(get_current_user)):
 @router.patch("/{fund_id}")
 def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
     _get_or_404(fund_id)
+    updates = body.model_dump(exclude_unset=True)
     try:
-        database.update_fund(fund_id, **body.model_dump(exclude_unset=True))
+        database.update_fund(fund_id, **updates)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if "live_enabled" in updates:
+        # A Fund's own Live gate - one of the two switches (with the
+        # broker account's own live_enabled) that must both agree before
+        # any real-money trade can place. Warning level, not info, same
+        # as the global Emergency Stop precedent - this is exactly the
+        # kind of change worth being able to answer "who did this and
+        # when" about later.
+        logger.warning("api: fund_id=%s live_enabled set to %s by %s",
+                        fund_id, updates["live_enabled"], user["email"])
+    else:
+        logger.info("api: fund_id=%s updated by %s: %s", fund_id, user["email"], list(updates.keys()))
     _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 
@@ -120,6 +136,7 @@ def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
 def archive_fund(fund_id: int, user=Depends(require_admin)):
     _get_or_404(fund_id)
     database.update_fund(fund_id, status="archived")
+    logger.info("api: fund_id=%s archived by %s", fund_id, user["email"])
     _emit_fund_updated(fund_id)
     return fund_manager.get_fund_report(fund_id)
 

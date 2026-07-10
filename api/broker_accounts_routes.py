@@ -24,8 +24,10 @@ from pydantic import BaseModel
 
 import database
 from auth_routes import get_current_user, require_admin
+from logger import get_logger
 
 router = APIRouter(prefix="/api/broker-accounts", tags=["broker-accounts"])
+logger = get_logger("axim.ui", filename="ui.log")
 
 CONNECT_SCRIPT = PROJECT_ROOT / "scripts" / "connect_broker_account.py"
 
@@ -77,6 +79,8 @@ def create_broker_account(body: BrokerAccountCreate, user=Depends(require_admin)
         account_id = database.create_broker_account(body.name, mode=body.mode, user_id=user["id"])
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    logger.info("api: broker_account_id=%s %r created by %s (mode=%s)",
+                account_id, body.name, user["email"], body.mode)
     _emit_account_updated(account_id)
     return _with_funds(database.get_broker_account(account_id))
 
@@ -96,6 +100,13 @@ def update_broker_account(account_id: int, body: BrokerAccountUpdate, user=Depen
         database.update_broker_account(account_id, **fields)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    if "live_enabled" in fields:
+        # The other of the two switches (with a Fund's own live_enabled)
+        # that must both agree before any real-money trade can place -
+        # same warning-level precedent as the global Emergency Stop and
+        # a Fund's own live_enabled change.
+        logger.warning("api: broker_account_id=%s live_enabled set to %s by %s",
+                        account_id, bool(fields["live_enabled"]), user["email"])
     _emit_account_updated(account_id)
     return _with_funds(database.get_broker_account(account_id))
 
@@ -116,6 +127,7 @@ def connect_broker_account(account_id: int, user=Depends(require_admin)):
         creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
     )
     database.update_broker_account(account_id, connection_status="connecting")
+    logger.info("api: broker_account_id=%s connect requested by %s", account_id, user["email"])
     _emit_account_updated(account_id)
     return _with_funds(database.get_broker_account(account_id))
 
@@ -129,6 +141,7 @@ def disconnect_broker_account(account_id: int, user=Depends(require_admin)):
     (see fund_manager.can_trade / the session-start safety gate)."""
     _get_or_404(account_id)
     database.update_broker_account(account_id, connection_status="disconnected")
+    logger.info("api: broker_account_id=%s disconnected by %s", account_id, user["email"])
     _emit_account_updated(account_id)
     return _with_funds(database.get_broker_account(account_id))
 

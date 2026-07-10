@@ -29,8 +29,10 @@ import backtest_engine
 import ai_analysis
 import telegram_channels
 from auth_routes import get_current_user, require_admin
+from logger import get_logger
 
 router = APIRouter(prefix="/api/backtest", tags=["backtest"])
+logger = get_logger("axim.ui", filename="ui.log")
 
 
 def _emit_strategy_updated(run_id):
@@ -345,6 +347,8 @@ def deploy_strategy(run_id: int, strategy_id: int, body: DeployRequest, user=Dep
     profile_name = body.new_profile_name or f"{fund['name']} - {strategy['label']} (deployed)"
     new_profile_id = database.create_risk_profile_from_snapshot(profile_name, strategy["profile_snapshot"])
     database.update_fund(body.fund_id, default_risk_profile_id=new_profile_id)
+    logger.info("api: fund_id=%s deployed strategy_id=%s from run_id=%s by %s (new risk_profile_id=%s)",
+                body.fund_id, strategy_id, run_id, user["email"], new_profile_id)
     try:
         database.record_server_event("fund.updated", {"fund_id": body.fund_id})
     except Exception:

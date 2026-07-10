@@ -21,8 +21,10 @@ from pydantic import BaseModel
 import database
 import rule_engine
 from auth_routes import get_current_user, require_admin
+from logger import get_logger
 
 router = APIRouter(prefix="/api/rules", tags=["rules"])
+logger = get_logger("axim.ui", filename="ui.log")
 
 
 class RuleCreate(BaseModel):
@@ -114,6 +116,8 @@ def create_rule(body: RuleCreate, user=Depends(require_admin)):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    logger.info("api: rule_id=%s %r created by %s for fund_id=%s (if %s then %s)",
+                rule_id, body.name, user["email"], body.fund_id, body.condition_type, body.action_type)
     _emit_rule_updated(body.fund_id)
     return database.get_rule(rule_id)
 
@@ -140,6 +144,7 @@ def update_rule(rule_id: int, body: RuleUpdate, user=Depends(require_admin)):
         database.update_rule(rule_id, condition_params=body.condition_params, action_params=body.action_params, **updates)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    logger.info("api: rule_id=%s updated by %s: %s", rule_id, user["email"], list(updates.keys()))
     _emit_rule_updated(body.fund_id or existing["fund_id"])
     return database.get_rule(rule_id)
 
@@ -148,6 +153,7 @@ def update_rule(rule_id: int, body: RuleUpdate, user=Depends(require_admin)):
 def delete_rule(rule_id: int, user=Depends(require_admin)):
     rule = _get_or_404(rule_id)
     database.delete_rule(rule_id)
+    logger.info("api: rule_id=%s %r deleted by %s", rule_id, rule["name"], user["email"])
     _emit_rule_updated(rule["fund_id"])
     return {"status": "deleted"}
 
