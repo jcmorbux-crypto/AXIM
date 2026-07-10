@@ -6,6 +6,7 @@ queue) - fine for the signal-pool sizes this feature targets; a very
 large pool could make that request slow, a known/documented limit
 rather than a silent one.
 """
+import base64
 import csv
 import io
 import sys
@@ -54,6 +55,15 @@ class GradeSignalRequest(BaseModel):
 
 class CsvImportRequest(BaseModel):
     csv_text: str
+    import_batch: Optional[str] = None
+
+
+class ExcelImportRequest(BaseModel):
+    # base64-encoded .xlsx bytes rather than a multipart upload - matches
+    # this app's existing JSON-body-only API surface (no other endpoint
+    # does file uploads) instead of adding python-multipart as a new
+    # dependency just for this one endpoint.
+    file_base64: str
     import_batch: Optional[str] = None
 
 
@@ -115,6 +125,25 @@ def create_manual(body: ManualSignalCreate, user=Depends(require_admin)):
 def import_csv(body: CsvImportRequest, user=Depends(require_admin)):
     rows, errors = backtest_engine.parse_signal_csv(body.csv_text)
     batch = body.import_batch or f"csv-{datetime.now().isoformat()}"
+    imported = 0
+    for row in rows:
+        database.create_imported_signal(
+            row["source_label"], row["asset"], row["direction"], row["expiry"], row["received_at"],
+            result=row["result"], payout_percent=row["payout_percent"], notes=row["notes"],
+            import_batch=batch,
+        )
+        imported += 1
+    return {"imported": imported, "errors": errors, "import_batch": batch}
+
+
+@router.post("/signals/import-excel")
+def import_excel(body: ExcelImportRequest, user=Depends(require_admin)):
+    try:
+        file_bytes = base64.b64decode(body.file_base64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="file_base64 is not valid base64")
+    rows, errors = backtest_engine.parse_signal_excel(file_bytes)
+    batch = body.import_batch or f"excel-{datetime.now().isoformat()}"
     imported = 0
     for row in rows:
         database.create_imported_signal(

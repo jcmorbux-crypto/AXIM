@@ -220,10 +220,10 @@
     <div class="tab-panel" id="tab-signals">
       <div class="grid" style="grid-template-columns: 1fr 1fr;">
         <div class="card solid">
-          <h3>Import from CSV</h3>
-          <div class="stat-caption" style="margin-bottom:10px;">Columns (any order, case-insensitive): channel/source, asset, direction, expiry, timestamp, result (win/loss/draw, optional), payout (optional).</div>
-          <input type="file" id="csv-file" accept=".csv" style="margin-bottom:10px;">
-          <button id="csv-import-btn" onclick="importCsv()">Import</button>
+          <h3>Import from CSV or Excel</h3>
+          <div class="stat-caption" style="margin-bottom:10px;">Columns (any order, case-insensitive): channel/source, asset, direction, expiry, timestamp, result (win/loss/draw, optional), payout (optional). .xlsx reads the first worksheet only.</div>
+          <input type="file" id="csv-file" accept=".csv,.xlsx" style="margin-bottom:10px;">
+          <button id="csv-import-btn" onclick="importSignalFile()">Import</button>
           <div id="csv-import-status" class="muted" style="margin-top:10px;"></div>
         </div>
         <div class="card solid">
@@ -762,16 +762,32 @@ async function loadImportedSignals() {
   `).join("");
 }
 
-async function importCsv() {
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1]); // strip the data: URL prefix
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function importSignalFile() {
   const fileInput = document.getElementById("csv-file");
   const statusEl = document.getElementById("csv-import-status");
-  if (!fileInput.files.length) { statusEl.textContent = "Choose a CSV file first."; return; }
-  const text = await fileInput.files[0].text();
+  if (!fileInput.files.length) { statusEl.textContent = "Choose a CSV or Excel file first."; return; }
+  const file = fileInput.files[0];
+  const isExcel = file.name.toLowerCase().endsWith(".xlsx");
   statusEl.textContent = "Importing...";
   try {
-    const result = await fetchJSON("/api/backtest/signals/import-csv", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ csv_text: text }),
-    });
+    const result = isExcel
+      ? await fetchJSON("/api/backtest/signals/import-excel", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ file_base64: await fileToBase64(file) }),
+        })
+      : await fetchJSON("/api/backtest/signals/import-csv", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ csv_text: await file.text() }),
+        });
     statusEl.textContent = `Imported ${result.imported} signal(s).` + (result.errors.length ? ` ${result.errors.length} row(s) had errors.` : "");
     loadImportedSignals();
   } catch (e) {

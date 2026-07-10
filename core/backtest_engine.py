@@ -33,6 +33,7 @@ Honesty notes:
 import csv
 import io
 import sys
+from datetime import datetime
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -49,14 +50,14 @@ logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 _VALID_SESSION_WINDOWS = {"daily", "all"}
 _VALID_RESULTS = {"win", "loss", "draw"}
 
-# Historical signal import (docs/AXIM_APP_PLAN.md) - CSV only for this
-# pass. Excel (.xlsx) and live Telegram-history scraping are real,
-# genuinely separate pieces of work (a binary-format parser and a
-# Telethon iter_messages integration, respectively) - explicitly
-# deferred rather than half-built; export a CSV from Excel as a
-# workaround today. Column names are matched case-insensitively and
-# accept a couple of common aliases so a reasonably-shaped export just
-# works without the user needing to rename headers by hand.
+# Historical signal import (docs/AXIM_APP_PLAN.md) - CSV and Excel
+# (.xlsx). Live Telegram-history scraping is a genuinely separate piece
+# of work (a Telethon iter_messages integration) - still explicitly
+# deferred. Column names are matched case-insensitively and accept a
+# couple of common aliases so a reasonably-shaped export just works
+# without the user needing to rename headers by hand - shared between
+# both formats, since both ultimately produce the same "header row +
+# data rows" shape.
 _CSV_COLUMN_ALIASES = {
     "source_label": {"source_label", "source", "channel", "signal source"},
     "asset": {"asset", "symbol", "pair"},
@@ -85,6 +86,43 @@ def _resolve_csv_columns(fieldnames):
     return resolved
 
 
+def _parse_signal_row(raw_row, columns):
+    """Format-agnostic: raw_row is a plain {header: value} dict (values
+    already stringified by the caller - CSV's DictReader gives strings
+    natively, Excel cells need str()/'' conversion first, see
+    parse_signal_excel). Returns the normalized row dict ready for
+    database.create_imported_signal(**row); raises ValueError on any
+    validation failure, caught by the caller and turned into an
+    {"line": n, "message": ...} entry."""
+    received_at = (raw_row.get(columns["received_at"]) or "").strip()
+    asset = (raw_row.get(columns["asset"]) or "").strip()
+    direction = (raw_row.get(columns["direction"]) or "").strip().upper()
+    if not received_at or not asset or not direction:
+        raise ValueError("asset/direction/received_at cannot be blank")
+
+    result = None
+    if "result" in columns:
+        raw_result = (raw_row.get(columns["result"]) or "").strip().lower()
+        if raw_result:
+            if raw_result not in _VALID_RESULTS:
+                raise ValueError(f"invalid result {raw_result!r}, must be win/loss/draw")
+            result = raw_result
+
+    payout_percent = None
+    if "payout_percent" in columns:
+        raw_payout = (raw_row.get(columns["payout_percent"]) or "").strip().replace("%", "")
+        if raw_payout:
+            payout_percent = float(raw_payout)
+
+    return {
+        "source_label": (raw_row.get(columns.get("source_label", "")) or "Imported").strip() or "Imported",
+        "asset": asset, "direction": direction,
+        "expiry": (raw_row.get(columns.get("expiry", "")) or "").strip() or None,
+        "received_at": received_at, "result": result, "payout_percent": payout_percent,
+        "notes": (raw_row.get(columns.get("notes", "")) or "").strip() or None,
+    }
+
+
 def parse_signal_csv(csv_text):
     """Pure parsing - returns (rows, errors). Each row in `rows` is a
     dict ready for database.create_imported_signal(**row) (plus grading
@@ -103,33 +141,56 @@ def parse_signal_csv(csv_text):
     rows, errors = [], []
     for line_num, raw_row in enumerate(reader, start=2):  # header is line 1
         try:
-            received_at = raw_row[columns["received_at"]].strip()
-            asset = raw_row[columns["asset"]].strip()
-            direction = raw_row[columns["direction"]].strip().upper()
-            if not received_at or not asset or not direction:
-                raise ValueError("asset/direction/received_at cannot be blank")
+            rows.append(_parse_signal_row(raw_row, columns))
+        except Exception as e:
+            errors.append({"line": line_num, "message": str(e)})
 
-            result = None
-            if "result" in columns:
-                raw_result = (raw_row.get(columns["result"]) or "").strip().lower()
-                if raw_result:
-                    if raw_result not in _VALID_RESULTS:
-                        raise ValueError(f"invalid result {raw_result!r}, must be win/loss/draw")
-                    result = raw_result
+    return rows, errors
 
-            payout_percent = None
-            if "payout_percent" in columns:
-                raw_payout = (raw_row.get(columns["payout_percent"]) or "").strip().replace("%", "")
-                if raw_payout:
-                    payout_percent = float(raw_payout)
 
-            rows.append({
-                "source_label": (raw_row.get(columns.get("source_label", ""), "") or "Imported").strip() or "Imported",
-                "asset": asset, "direction": direction,
-                "expiry": (raw_row.get(columns.get("expiry", ""), "") or "").strip() or None,
-                "received_at": received_at, "result": result, "payout_percent": payout_percent,
-                "notes": (raw_row.get(columns.get("notes", ""), "") or "").strip() or None,
-            })
+def parse_signal_excel(file_bytes):
+    """Same contract as parse_signal_csv (rows, errors) - reads the
+    FIRST worksheet only (multi-sheet workbooks aren't a modeled use
+    case here; export/copy the relevant sheet to its own file if
+    needed). Cell values come back from openpyxl as real Python types
+    (datetime, float, etc, not strings) - normalized to str() before
+    reusing the exact same row-validation logic parse_signal_csv uses,
+    so a date cell and a "2024-01-15" text cell both work the same way
+    a human typing dates into a spreadsheet would expect."""
+    import openpyxl
+
+    try:
+        workbook = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    except Exception as e:
+        return [], [{"line": 0, "message": f"could not read Excel file: {e}"}]
+
+    sheet = workbook.worksheets[0]
+    rows_iter = sheet.iter_rows(values_only=True)
+    try:
+        header_row = next(rows_iter)
+    except StopIteration:
+        return [], [{"line": 0, "message": "empty file or no header row"}]
+
+    fieldnames = [str(h) if h is not None else "" for h in header_row]
+    columns = _resolve_csv_columns(fieldnames)
+    missing_required = [c for c in ("asset", "direction", "received_at") if c not in columns]
+    if missing_required:
+        return [], [{"line": 0, "message": f"missing required column(s): {', '.join(missing_required)}"}]
+
+    def _cell_to_str(value):
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            return value.isoformat()
+        return str(value)
+
+    rows, errors = [], []
+    for line_num, raw_values in enumerate(rows_iter, start=2):  # header is row 1
+        if raw_values is None or all(v is None for v in raw_values):
+            continue  # a genuinely blank row, not a data row with blank required fields
+        raw_row = {fieldnames[i]: _cell_to_str(v) for i, v in enumerate(raw_values) if i < len(fieldnames)}
+        try:
+            rows.append(_parse_signal_row(raw_row, columns))
         except Exception as e:
             errors.append({"line": line_num, "message": str(e)})
 

@@ -653,7 +653,7 @@ tool screens (a trade blotter is supposed to be dense), not redesigned
 in this pass. If the "calm, hierarchy-driven" treatment should extend
 further, that's a follow-up, not assumed here.
 
-### Backtest Engine / Strategy Lab - DONE (CSV/manual import; Excel + live Telegram-history import deferred)
+### Backtest Engine / Strategy Lab - DONE (CSV/Excel/manual import; live Telegram-history import deferred)
 Replays a pool of historical, resolved signals through one or more Risk
 Engine profiles to compare how each would have performed - a genuinely
 new engine, not a UI over existing analytics.
@@ -676,13 +676,18 @@ worse than useless.
   timestamps) rather than duplicating it. Added `imported_signals` for
   CSV/manually-entered history, normalized to the same shape via
   `database.get_historical_signal_pool()`.
-- **Import**: CSV (case-insensitive column matching with common
-  aliases - symbol/pair/asset all resolve, etc.) and manual single-
-  signal entry, both real and tested. Excel (.xlsx) and live Telegram-
-  channel-history scraping are explicitly deferred - genuinely separate
-  pieces of work (a binary format parser; a Telethon `iter_messages`
-  integration), not half-built. Export a CSV from Excel as a workaround
-  today.
+- **Import**: CSV, Excel (.xlsx, via `openpyxl` - first worksheet only,
+  native cell types like datetimes normalized the same way typed CSV
+  text is), and manual single-signal entry, all real and tested. Both
+  file formats share one `_parse_signal_row` validation core
+  (`core/backtest_engine.py`) so column-alias matching and error
+  reporting behave identically regardless of format. The Excel upload
+  itself is base64-encoded client-side into the same JSON-body pattern
+  every other endpoint here already uses, rather than adding
+  `python-multipart` as a new dependency just for one upload endpoint.
+  Live Telegram-channel-history scraping is still explicitly deferred -
+  a genuinely separate piece of work (a Telethon `iter_messages`
+  integration), not half-built.
 - **Result matching**: real recorded results (live `signals.result`) or
   manually-graded imported signals. Broker/candle-data integration for
   auto-grading ungraded signals is deferred, not fabricated.

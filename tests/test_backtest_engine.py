@@ -1,6 +1,8 @@
+import io
 import sys
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -379,6 +381,113 @@ class CsvImportParsingTests(unittest.TestCase):
     def test_column_aliases_case_insensitive(self):
         csv_text = "Symbol,Side,Date\nEUR/USD,BUY,2026-01-01T10:00:00\n"
         rows, errors = backtest_engine.parse_signal_csv(csv_text)
+        self.assertEqual(errors, [])
+        self.assertEqual(rows[0]["asset"], "EUR/USD")
+        self.assertEqual(rows[0]["direction"], "BUY")
+
+
+def _make_xlsx_bytes(header, data_rows):
+    """Builds a real, genuine .xlsx file in memory (not a mock/fake) -
+    same discipline as parsing real CSV text above, just for the binary
+    format. Returns raw bytes, matching what parse_signal_excel actually
+    receives from the base64-decoded upload."""
+    import openpyxl
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(header)
+    for row in data_rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+class ExcelImportParsingTests(unittest.TestCase):
+    """parse_signal_excel - mirrors CsvImportParsingTests exactly (same
+    shared _parse_signal_row underneath), covering what's specific to
+    the Excel path: real .xlsx bytes, native cell types (datetime
+    objects, numbers) instead of pre-stringified CSV text, and blank
+    trailing rows."""
+
+    def test_parses_well_formed_workbook(self):
+        xlsx_bytes = _make_xlsx_bytes(
+            ["channel", "asset", "direction", "expiry", "timestamp", "result", "payout"],
+            [
+                ["Alpha", "EUR/USD OTC", "BUY", "1 Minute", "2026-01-01T10:00:00", "win", 85],
+                ["Alpha", "GBP/USD OTC", "SELL", "1 Minute", "2026-01-01T10:05:00", "loss", None],
+            ],
+        )
+        rows, errors = backtest_engine.parse_signal_excel(xlsx_bytes)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["result"], "win")
+        self.assertEqual(rows[0]["payout_percent"], 85.0)
+        self.assertIsNone(rows[1]["payout_percent"])
+
+    def test_native_datetime_cell_is_normalized(self):
+        """A real spreadsheet date cell (openpyxl gives back a Python
+        datetime, not a string) must work the same as typed text."""
+        xlsx_bytes = _make_xlsx_bytes(
+            ["asset", "direction", "timestamp"],
+            [["EUR/USD", "BUY", datetime(2026, 1, 1, 10, 0, 0)]],
+        )
+        rows, errors = backtest_engine.parse_signal_excel(xlsx_bytes)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["received_at"].startswith("2026-01-01"))
+
+    def test_missing_required_column(self):
+        xlsx_bytes = _make_xlsx_bytes(["channel", "result"], [["Alpha", "win"]])
+        rows, errors = backtest_engine.parse_signal_excel(xlsx_bytes)
+        self.assertEqual(rows, [])
+        self.assertTrue(errors)
+        self.assertIn("missing required column", errors[0]["message"])
+
+    def test_invalid_result_reported_per_line_not_fatal(self):
+        xlsx_bytes = _make_xlsx_bytes(
+            ["asset", "direction", "timestamp", "result"],
+            [
+                ["EUR/USD", "BUY", "2026-01-01T10:00:00", "win"],
+                ["GBP/USD", "SELL", "2026-01-01T10:05:00", "maybe"],
+            ],
+        )
+        rows, errors = backtest_engine.parse_signal_excel(xlsx_bytes)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["line"], 3)
+
+    def test_blank_trailing_row_is_skipped_not_an_error(self):
+        """A common real-world artifact - a spreadsheet with a fully
+        blank row after the data (leftover formatting, an extra
+        newline) - should be silently skipped, not reported as a
+        blank-required-field error the way a genuinely bad data row
+        would be."""
+        xlsx_bytes = _make_xlsx_bytes(
+            ["asset", "direction", "timestamp"],
+            [
+                ["EUR/USD", "BUY", "2026-01-01T10:00:00"],
+                [None, None, None],
+            ],
+        )
+        rows, errors = backtest_engine.parse_signal_excel(xlsx_bytes)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(errors, [])
+
+    def test_empty_workbook(self):
+        xlsx_bytes = _make_xlsx_bytes([], [])
+        rows, errors = backtest_engine.parse_signal_excel(xlsx_bytes)
+        self.assertEqual(rows, [])
+        self.assertTrue(errors)
+
+    def test_not_a_real_xlsx_file_reports_a_clean_error(self):
+        rows, errors = backtest_engine.parse_signal_excel(b"this is not an xlsx file")
+        self.assertEqual(rows, [])
+        self.assertTrue(errors)
+        self.assertIn("could not read Excel file", errors[0]["message"])
+
+    def test_column_aliases_case_insensitive(self):
+        xlsx_bytes = _make_xlsx_bytes(["Symbol", "Side", "Date"], [["EUR/USD", "BUY", "2026-01-01T10:00:00"]])
+        rows, errors = backtest_engine.parse_signal_excel(xlsx_bytes)
         self.assertEqual(errors, [])
         self.assertEqual(rows[0]["asset"], "EUR/USD")
         self.assertEqual(rows[0]["direction"], "BUY")
