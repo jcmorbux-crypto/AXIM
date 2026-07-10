@@ -56,6 +56,14 @@ class ChannelConfigTests(unittest.TestCase):
     def test_find_channel_returns_none_when_no_match(self):
         self.assertIsNone(database.find_channel(chat_id="999", username="nope", title="Nothing"))
 
+    def test_get_channel_by_id(self):
+        found = database.get_channel(self.channel_id)
+        self.assertEqual(found["id"], self.channel_id)
+        self.assertEqual(found["title"], "Bot A")
+
+    def test_get_channel_returns_none_for_unknown_id(self):
+        self.assertIsNone(database.get_channel(999999))
+
 
 class ChannelMessageTests(unittest.TestCase):
     def setUp(self):

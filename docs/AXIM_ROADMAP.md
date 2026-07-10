@@ -1679,3 +1679,86 @@ started a real `active`/`LIVE`-mode session in the DB.
 `end_all_active_sessions`, `test_trade_coordinator.py`'s emergency-stop-
 before-worker-pool and mid-confirmation-wait-race cases). Full suite
 re-run clean.
+
+## AXIM Core: interactive Telegram bot trigger-command workflow built (the single biggest gap from the audit)
+
+The audit's clearest finding: `core/database.py`'s schema already had
+`source_type='bot_command'`, `trigger_command`, `command_wait_for_result`,
+`max_requests_per_session` columns, and `web/telegram.html` already had
+UI to configure most of them - but grepping the whole repo for
+`send_message` found nothing except SMTP email. Zero runtime code ever
+sent a trigger command to a bot or awaited its reply. Today's system was
+100% passive/reactive.
+
+Built `core/telegram_bot_trigger.py` per
+`docs/AXIM_SESSION_ARCHITECTURE.md` section 5's own spec (send command
+-> wait for reply -> parse -> execute -> wait for result if configured
+-> request next -> stop at any session limit):
+
+- `run_session_loop(client, session_id, channel_row, coordinator)` -
+  the per-session request/response/execute cycle, using Telethon's
+  `client.conversation()` (a temporary, conversation-scoped listener -
+  entirely separate from `telegram_listener.py`'s main event handler,
+  so it doesn't interfere with or get interfered with by passive
+  channels). Re-checks `trading_sessions.status` fresh every iteration,
+  so any of the session's existing stop conditions (profit target, loss
+  limit, max trades, manual stop, emergency stop - all already
+  transition status away from "active") end the loop on the very next
+  cycle, without this module needing its own separate stop-condition
+  logic. Routes every parsed reply through
+  `broker_account_manager.route_signal()` - the exact same multi-
+  broker-account-aware entry point passive channels use, so a bot-
+  command session gets identical Fund/broker-account resolution, risk
+  checks (including this session's own new `check_not_stopped()`), and
+  outcome tracking as any other signal.
+- `supervisor_tick(client, coordinator)` - polls active sessions every
+  3s (same interval as the existing test-trade poll loop) and starts
+  exactly one request loop per session that covers a Bot Command
+  Channel, tracked in a `session_id -> Task` dict so a session already
+  being driven never gets a second loop.
+
+**Found and fixed a real double-processing bug while building this**:
+`telegram_listener.py`'s main passive `handler()` doesn't check
+`source_type` at all - it would try to passively parse and execute
+EVERY message from an allowed/session-covered chat, including a bot's
+reply to a trigger command this new module just sent and is actively
+awaiting via its own conversation-scoped listener. Without excluding
+`source_type == "bot_command"` channels from the passive handler, every
+interactive reply would have been processed twice: once as the awaited
+response, once again as if it were an ordinary pushed signal. Added the
+exclusion; the passive handler now returns immediately for any
+bot_command channel, full stop - those channels are never valid passive
+sources by definition.
+
+Also added `database.get_channel(channel_id)` (a plain single-row
+getter that didn't exist - `list_channels()` was the only way to look
+one up, by filtering client-side) and a missing UI control: `max_requests
+_per_session` had a DB column, backend validation, and a value used by
+this new loop, but zero way for an operator to actually set it -
+`web/telegram.html`'s bot-fields block only had the trigger command
+input and the wait-for-result checkbox. Added the missing number input,
+verified live it saves through the existing (unchanged)
+`PATCH /api/channels/{id}/config` endpoint.
+
+**What could and couldn't be verified**: the actual Telegram send/
+receive interaction cannot be live-tested in this environment - no real
+Telegram API credentials are available here, the same class of
+limitation `execution/pocket_dom.py`'s DOM-interaction functions
+already have and document (live-fire tested by an operator against the
+real service, not covered by an automated net that touches the real
+network). Built the module so its Telegram client and coordinator are
+both parameters, not imported globals, specifically to make it testable
+without one - `tests/test_telegram_bot_trigger.py` (12 tests) uses a
+fake client whose `conversation()` returns scripted replies/timeouts,
+covering: trigger-command sent and parsed reply correctly routed
+(verified via a mocked `route_signal`, asserting the exact signal dict
+and `session_id` passed); stops at `max_requests_per_session`; stops
+when session status is no longer active (session ended by any other
+stop condition); an unparseable reply or a reply timeout logs and moves
+on rather than crashing the loop; removes itself from the active-loops
+registry when done; the supervisor never starts a second loop for a
+session already running one; ignores sessions with no bot-command
+channel. Plus 2 new `database.get_channel` tests and live UI
+verification of the new max-requests-per-session field via Playwright.
+
+Full suite re-run clean: 603 passed, 1 skipped, 14 subtests passed.

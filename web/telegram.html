@@ -334,6 +334,12 @@ function botFields(c) {
         <input type="checkbox" style="width:auto;" ${c.command_wait_for_result ? "checked" : ""}
                onchange="setWaitForResult(${c.id}, this.checked)"> Wait for result before next request
       </label>
+      <label style="display:flex; align-items:center; gap:6px; font-size:11px; margin:0;">
+        Max requests per session
+        <input type="number" min="0" placeholder="0 = unlimited" style="width:90px; font-size:11.5px;"
+               value="${c.max_requests_per_session || ""}"
+               onchange="setMaxRequestsPerSession(${c.id}, this.value)">
+      </label>
     </div>
   `;
 }
@@ -376,6 +382,17 @@ async function setTriggerCommand(id, value) {
   try {
     await fetchJSON(`/api/channels/${id}/config`, {
       method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trigger_command: value }),
+    });
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function setMaxRequestsPerSession(id, value) {
+  try {
+    await fetchJSON(`/api/channels/${id}/config`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ max_requests_per_session: parseInt(value, 10) || 0 }),
     });
   } catch (e) {
     alert("Failed: " + e.message);

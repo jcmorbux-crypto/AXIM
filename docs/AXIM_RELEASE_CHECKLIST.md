@@ -324,11 +324,26 @@ flags that it's still needed.
       ladder math ($25 fixed × 3 steps × 2.0x = $175, not a placeholder)
       and that an empty/wrong confirmation phrase correctly blocks
       submission
-- [ ] Interactive Telegram bot trigger-command workflow (send `/signal`-
-      style command, await reply, parse, execute, request next, stop at
-      limits) - DB schema and UI exist, zero runtime code exists. The
-      single biggest true gap versus the AXIM Core requirements; not yet
-      built
+- [x] **Interactive Telegram bot trigger-command workflow built** - the
+      single biggest true gap from the audit. Added
+      `core/telegram_bot_trigger.py` (send command via Telethon's
+      `conversation()` -> await reply -> parse -> route through the same
+      multi-broker-account-aware `route_signal()` passive channels use ->
+      wait for result if configured -> request next -> stop on any
+      existing session limit, re-checked fresh every iteration).
+      Found and fixed a real bug while building this: the passive
+      `handler()` never checked `source_type`, so a bot's reply would
+      have been double-processed (once as the awaited response, once as
+      an ordinary pushed signal) - added the exclusion. Also added the
+      missing `max_requests_per_session` UI control (had a DB column and
+      backend validation but no way to actually set it) and
+      `database.get_channel()`. The real Telegram send/receive
+      interaction can't be live-verified without real API credentials
+      (not available here) - same documented limitation class as
+      `pocket_dom.py`'s DOM functions - so built for testability instead:
+      12 new tests using a fake Telethon client with scripted replies/
+      timeouts, covering the full request/parse/route/stop-condition
+      matrix
 - [ ] Money-management fidelity gaps: Compounding "modes" run identical
       generic logic regardless of selection (daily doesn't reset daily,
       every-win isn't win-triggered); Profit Vault's `daily_target`/
