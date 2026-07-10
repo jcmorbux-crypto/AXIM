@@ -260,6 +260,22 @@ flags that it's still needed.
       larger than the current line count as "rotated," not "no new
       lines." 4 new regression tests added - zero test coverage existed
       on this script before this
+- [x] **API process Scheduled Task had the listener's already-fixed
+      silent-non-restart gap**: `install_scheduled_task.ps1` (the
+      listener's installer) documents a live-fire finding that Windows
+      Task Scheduler's `RestartOnFailure` doesn't trigger on a forcibly-
+      terminated process, and wraps the listener in a supervisor script
+      because of it - but `install_api_scheduled_task.ps1`, for the
+      control-plane process every Remote Client depends on, was never
+      updated to match; it called uvicorn directly and relied solely on
+      the same proven-unreliable Task Scheduler setting. Fixed by adding
+      `scripts/run_api_supervised.ps1` (the same supervisor-loop pattern
+      as the listener's) and switching the Task's action to it. Verified
+      live: syntax-checked, then smoke-tested the actual `Start-Process`
+      mechanics (real venv Python, isolated scratch port, no real
+      Scheduled Task registered, no stray processes left behind) -
+      confirmed a genuine 200 OK after cold-start and clean termination
+      on `Stop-Process -Force`
 
 ## Known, accepted limitations at this release
 

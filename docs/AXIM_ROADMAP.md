@@ -1472,3 +1472,56 @@ file was rotated," not "there are no new lines" - resets to 0 so every
 currently-present line counts as new. Added
 `tests/test_soak_snapshot.py` (4 tests, including the exact rotation
 scenario above) - zero test coverage existed on this script before this.
+
+## The API process's Scheduled Task had the same silent-non-restart gap already found and fixed for the listener (fixed)
+
+Reviewed every PowerShell deployment script this session hadn't touched
+yet (`backup_axim_state.ps1`, `cleanup_axim_chrome.ps1`, the two
+Scheduled Task installers, `uninstall_startup_tasks.ps1`) - most were
+already solid, but `install_api_scheduled_task.ps1` had a real,
+documented-elsewhere-but-not-here gap.
+
+`install_scheduled_task.ps1` (the listener's installer) explicitly
+documents a live-fire finding: Windows Task Scheduler's own
+`RestartOnFailure` setting does NOT trigger when a process is forcibly
+terminated (an OOM-kill, a native crash, `Stop-Process -Force`) - Task
+Scheduler logs that exit as a "successful completion" (event ID 201,
+Information level), not a failure, so the configured restart silently
+never engages for exactly the crash scenarios it exists to cover. That's
+exactly why the listener's Task action is `run_listener_supervised.ps1`
+(an explicit outer while-loop) rather than `python.exe` directly.
+
+`install_api_scheduled_task.ps1` - the Scheduled Task for `api/main.py`,
+i.e. the entire control plane and every Remote Client's only way in -
+was never updated to match. It called `python.exe -m uvicorn ...`
+directly, relying solely on Task Scheduler's `RestartOnFailure`, the
+exact mechanism already proven (for the listener, and Task Scheduler's
+behavior is process-agnostic - there's no reason to think uvicorn would
+be classified any differently) to silently fail to restart after a
+forced termination. Given this session's original mandate opened with
+"a permanent 24/7 AXIM Server," a control-plane process that can die and
+never come back on its own is a real gap against that goal, not a
+cosmetic inconsistency.
+
+Fixed by adding `scripts/run_api_supervised.ps1` - the exact same
+supervisor-loop pattern as `run_listener_supervised.ps1`, adapted to
+launch uvicorn with the bind host/port resolved from `.env`
+(`API_BIND_HOST`/`API_BIND_PORT`, the same keys `config/settings.py`
+reads) - and updating `install_api_scheduled_task.ps1` to register this
+supervisor script as the Task's action instead of `python.exe` directly,
+mirroring `install_scheduled_task.ps1` exactly (including keeping
+Task Scheduler's own `RestartCount`/`RestartInterval` as the documented
+second, independent layer for if the supervisor script itself dies).
+
+Verified live (this can't be pytest-covered - it's a Windows Scheduled
+Task deployment script): syntax-checked both files with
+`PSParser.Tokenize`, then smoke-tested the actual `Start-Process`
+mechanics directly - launched uvicorn via the exact pattern the new
+script uses (real venv Python, this worktree's code via
+`-WorkingDirectory`, an isolated scratch port to avoid touching any real
+AXIM installation) and confirmed a genuine `200 OK` from `/login` after
+cold-start, then confirmed `Stop-Process -Force` cleanly terminates it
+(what the supervisor loop needs to detect via `$proc.ExitCode` to log
+and restart). Did not register any real Scheduled Task or touch
+`C:\AXIM`'s actual installation/data - confirmed no stray processes or
+listening ports were left behind after testing.
