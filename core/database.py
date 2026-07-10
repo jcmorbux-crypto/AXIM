@@ -2867,24 +2867,38 @@ def delete_session_rules(session_id):
 
 
 @timed("database")
-def record_rule_evaluation(rule_id, condition_state, fired):
-    """Always updates last_condition_state (the edge-trigger memory);
-    only bumps trigger_count/last_triggered_at when the action actually
-    fired this evaluation."""
+def record_rule_evaluation(rule_id, condition_now):
+    """Records this evaluation's condition reading AND atomically claims
+    the false->true edge-fire in one SQL statement - the actual
+    enforcement point for "a rule fires once per edge," not just
+    bookkeeping. rule_engine.evaluate_all() evaluates every enabled rule
+    app-wide on every trade close, and different Funds can each have
+    their own concurrently-active session - two trades on two different
+    Funds closing within milliseconds of each other both call
+    evaluate_all(), and each reads the rule's pre-evaluation state via
+    a separate database.list_rules() snapshot taken before either has
+    written anything back. Without the WHERE clause below, both could
+    compute "this is a false->true edge" from the same stale read and
+    both fire the action (e.g. double-vaulting the same profit via
+    _act_move_profit_to_vault). Only the evaluation whose UPDATE actually
+    flips last_condition_state from 0 to 1 (rowcount > 0) owns this
+    firing - a racing evaluator's UPDATE matches zero rows once the
+    winner has already committed, and must not fire. Returns whether
+    THIS call should fire the action."""
     conn = get_connection()
-    if fired:
-        conn.execute(
-            "UPDATE rules SET last_condition_state = ?, trigger_count = trigger_count + 1, "
-            "last_triggered_at = ? WHERE id = ?",
-            (1 if condition_state else 0, datetime.now().isoformat(), rule_id),
+    if condition_now:
+        cursor = conn.execute(
+            "UPDATE rules SET last_condition_state = 1, trigger_count = trigger_count + 1, "
+            "last_triggered_at = ? WHERE id = ? AND last_condition_state = 0",
+            (datetime.now().isoformat(), rule_id),
         )
+        fired = cursor.rowcount > 0
     else:
-        conn.execute(
-            "UPDATE rules SET last_condition_state = ? WHERE id = ?",
-            (1 if condition_state else 0, rule_id),
-        )
+        conn.execute("UPDATE rules SET last_condition_state = 0 WHERE id = ?", (rule_id,))
+        fired = False
     conn.commit()
     conn.close()
+    return fired
 
 
 @timed("database")

@@ -1303,3 +1303,58 @@ rejections, `trades_count` stops precisely at 3. Added 3 new tests to
 `tests/test_session_manager.py` (cap enforcement after the slot is
 consumed, unlimited when `max_trades=0`, and the 10-thread concurrency
 proof).
+
+## Automation Studio rules could double-fire on a race (fixed)
+
+A second focused audit (Explore agent), this time scoped to
+`core/rule_engine.py`, notification creation, and broker-account/fund
+attach-detach routes, for the same race class. Found:
+`rule_engine.evaluate_rule()`'s edge-trigger decision
+(`fired = condition_now and not rule["last_condition_state"]`) compared
+against `rule["last_condition_state"]` - a value already read by
+`database.list_rules()` at the *start* of `evaluate_all()`, a separate,
+earlier DB connection. `evaluate_all()` runs once per Fund's own closed
+trade (`core/session_manager.py`'s event_bus subscription), not globally
+serialized - the module's own docstring is explicit that different Funds
+can each have their own concurrently-active session. Two trades on two
+different Funds closing within milliseconds of each other each trigger
+their own `evaluate_all()` call, each iterating every enabled rule
+app-wide, each with its own stale pre-evaluation snapshot.
+
+Real consequence, not just a wrong counter: `_act_move_profit_to_vault`
+computes `unvaulted = session["realized_pnl"] - session["vaulted_amount"]`
+and calls `database.add_to_vault()` - two racing firings of the same
+rule both compute the same unvaulted amount and both add it, double-
+vaulting the same profit. `_act_emergency_stop`/`_act_notify_owner` would
+equally double-fire (redundant `end_session` calls, duplicate
+notifications).
+
+Proved it before fixing: monkeypatched `database.record_rule_evaluation`
+back to its old shape (read `last_condition_state`, decide `fired`, then
+write) and raced 10 threads evaluating the same rule on the same
+false->true edge - 2 of 10 fired (should be at most 1), `trigger_count`
+ended at 2, the action's log line ("stopped active session 1") appeared
+twice.
+
+Fixed by making the edge-trigger claim itself atomic:
+`database.record_rule_evaluation` is now a single conditional `UPDATE
+rules SET last_condition_state = 1, trigger_count = trigger_count + 1,
+... WHERE id = ? AND last_condition_state = 0` when the condition is
+true (an unconditional reset to 0 when it's false, since nothing depends
+on winning a race for that write) - returning whether THIS call's UPDATE
+actually flipped the state (rowcount > 0), which is what
+`evaluate_rule` now uses to decide whether to fire, instead of comparing
+against the caller's possibly-stale `rule["last_condition_state"]`.
+Re-ran the identical 10-thread race with the fix: exactly 1 fires,
+`trigger_count` stays at 1. The existing sequential test
+(`test_fires_once_then_not_again_while_condition_stays_true`, which
+re-fetches the rule fresh between calls rather than racing) still
+passes unchanged, confirming the fix didn't alter normal single-threaded
+behavior. Added `test_concurrent_evaluations_only_fire_once_on_the_same_edge`
+to `tests/test_rule_engine.py`.
+
+The same audit checked `api/funds_routes.py`'s broker-account
+attach/detach and `api/admin.py`'s `disable_user`/`revoke_session` for
+the same pattern - neither qualified (single-connection sequential
+writes with no Python-level check-then-branch, and/or admin-gated
+idempotent mutations), so no further changes there.

@@ -297,6 +297,37 @@ class EdgeTriggerTests(RuleEngineTestCase):
         self.assertFalse(fired_second)
         self.assertEqual(database.get_rule(rule_id)["trigger_count"], 1)
 
+    def test_concurrent_evaluations_only_fire_once_on_the_same_edge(self):
+        """evaluate_all() is called once per Fund's own closed trade, not
+        globally serialized (different Funds can each have their own
+        concurrently-active session) - two trades on two different Funds
+        closing within milliseconds of each other can each trigger their
+        own evaluate_all() call, each fetching its own rule["last_condition
+        _state"] snapshot before either has written anything back. Proves
+        that only one of several concurrent evaluations of the same
+        false->true edge actually fires the action."""
+        import threading
+        rule_id = database.create_rule(
+            "Stop at $50", "daily_profit_gte", {"threshold": 50}, "stop_active_session", {})
+        database.start_trading_session("Test", [1], "DEMO")
+        _make_closed_trade(result="win", profit_loss=60)
+
+        results = []
+
+        def attempt():
+            fired = rule_engine.evaluate_rule(database.get_rule(rule_id))
+            results.append(fired)
+
+        threads = [threading.Thread(target=attempt) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(results.count(True), 1)
+        self.assertEqual(results.count(False), 9)
+        self.assertEqual(database.get_rule(rule_id)["trigger_count"], 1)
+
     def test_disabled_rule_is_skipped_by_evaluate_all(self):
         database.create_rule("Disabled", "daily_profit_gte", {"threshold": 1}, "stop_active_session", {},
                               enabled=False)

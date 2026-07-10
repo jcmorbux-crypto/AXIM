@@ -206,6 +206,19 @@ flags that it's still needed.
       stage) instead of proceeding when it doesn't. The identical 10-way
       race with the fix now stops at exactly 3. 3 new regression tests
       added
+- [x] **Automation Studio rules could double-fire fixed**: a rule's
+      false->true edge-trigger check compared against a snapshot read at
+      the start of `evaluate_all()` (called once per Fund's own closed
+      trade, not globally serialized) - two trades on two different
+      Funds closing within milliseconds of each other could each read
+      the same stale pre-fire state and both execute the action, e.g.
+      double-vaulting the same profit via `_act_move_profit_to_vault`.
+      Proved it first: reverted to the old read-then-write shape and
+      raced 10 threads on the same edge - 2 fired (should be at most 1).
+      Fixed by making the edge-trigger claim itself an atomic conditional
+      `UPDATE ... WHERE last_condition_state = 0`; the identical race now
+      fires exactly once. 1 new regression test added; the existing
+      sequential edge-trigger test still passes unchanged
 
 ## Known, accepted limitations at this release
 
