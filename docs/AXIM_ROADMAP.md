@@ -1109,3 +1109,50 @@ every cached repeat call). Added `tests/test_process_control_cache.py`
 use-cache-false bypass, and that `start_listener()` genuinely sees fresh
 data rather than trusting a stale cache. Full regression suite re-run
 clean after this change.
+
+## Second full visual QA pass and a mobile re-check found no UI bugs; a click-through of Settings found a real session-hijack gap (fixed)
+
+Continued the gap-hunting loop after the Mission Control fix by reviewing
+the remaining screenshots from that same batch (Risk Engine, Users,
+Performance, Trade Center, Logs, Settings, Signal Inspector, Plan &
+Billing, Trading Sessions, Strategy Lab) plus a fresh batch covering
+every page not yet screenshotted this session (Mission Control, Funds,
+Signal Sources, Automation Studio, Broker, Notifications, the onboarding
+wizard) - all clean, zero console errors. Extended this to a 375px
+mobile-viewport pass across all 18 authenticated pages (zero page-level
+overflow); the Users table's apparent "clipping" in a static mobile
+screenshot was confirmed live to be its designed horizontal
+scroll-within-card behavior (`scrollWidth` 806px > `clientWidth` 289px,
+`overflow-x: auto`), not a bug.
+
+While clicking through Settings' actual tabs (the earlier visual pass
+had only screenshotted the default General tab), found a real gap by
+reading `api/auth_routes.py`'s `change_password` next to
+`reset_password`: the forgot-password flow already revokes every
+session on a password reset ("a reset is a credential-compromise-
+recovery action... every existing session must be invalidated"), but
+the self-service Settings > Security > Change Password route did not -
+a stolen/attacker session survived the legitimate owner changing their
+own password. Zero test coverage existed on `change_password` before
+this (confirmed via search).
+
+Fixed with `database.revoke_other_sessions(user_id, keep_raw_token)` -
+deliberately excludes the session actively making the change (unlike
+`revoke_all_sessions`, used elsewhere for admin-initiated "revoke access
+immediately"), so the user isn't logged out of their own device by the
+same action that's supposed to secure their account.
+`api/auth_routes.py`'s `change_password` now extracts its own raw
+session token (mirroring `get_current_user`'s Bearer-then-cookie
+resolution) and calls it after a successful password change.
+
+Verified live end-to-end with two real browser contexts (one "owner",
+one "attacker" - both logged in as the same account before the fix):
+before restarting the test server with the fix, the attacker's
+`/api/auth/me` still returned 200 after the owner changed their
+password; after, it returned 401 while the owner's own active session
+stayed at 200. Added `tests/test_change_password_session_revocation.py`
+(4 new tests: the database function keeps only the named session and
+never touches another user's sessions; the route revokes the other
+session but keeps the active one; a wrong current-password attempt
+revokes nothing). Full regression suite re-run clean (536 passed, 1
+skipped, 14 subtests passed) after this change.

@@ -233,16 +233,28 @@ def me(user=Depends(get_current_user)):
 
 
 @router.post("/change-password")
-def change_password(body: ChangePasswordRequest, user=Depends(get_current_user)):
+def change_password(body: ChangePasswordRequest, user=Depends(get_current_user),
+                     authorization: Optional[str] = Header(default=None),
+                     axim_session: Optional[str] = Cookie(default=None)):
     """Self-service password change - distinct from
     api/admin.py's reset_password (an Owner/Admin resetting SOMEONE
     ELSE'S password without knowing the old one). This always requires
-    the current password first, even for an Owner changing their own."""
+    the current password first, even for an Owner changing their own.
+
+    Same credential-compromise-recovery reasoning as the forgot-password
+    reset flow (which already revokes every session): a stolen session
+    must not survive its own account's password change. Scoped to the
+    session actively making the change (revoke_other_sessions) rather
+    than revoke_all_sessions, so the user isn't logged out of the device
+    they're using right now."""
     if database.verify_user_credentials(user["email"], body.current_password) is None:
         raise HTTPException(status_code=401, detail="current password is incorrect")
     if len(body.new_password) < 8:
         raise HTTPException(status_code=400, detail="new password must be at least 8 characters")
     database.set_user_password(user["id"], body.new_password)
+    raw_token = _extract_bearer_token(authorization) or axim_session
+    if raw_token:
+        database.revoke_other_sessions(user["id"], raw_token)
     return {"status": "password changed"}
 
 

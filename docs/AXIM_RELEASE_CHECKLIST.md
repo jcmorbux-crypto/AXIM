@@ -144,6 +144,18 @@ flags that it's still needed.
       within their own card as designed rather than being clipped -
       `table.scrollWidth (806px) > table.clientWidth (289px)` with
       `overflow-x: auto`, not a page-level overflow bug
+- [x] **Session-hijack gap fixed**: self-service Settings > Security >
+      Change Password did not revoke other active sessions, unlike the
+      forgot-password reset flow (which already did, for the same
+      credential-compromise-recovery reason) - a stolen session survived
+      a legitimate password change. Fixed with
+      `database.revoke_other_sessions()` (keeps only the session making
+      the change); verified live with two real browser contexts (an
+      "attacker" session's `/api/auth/me` went 200 -> 401 the moment the
+      real owner changed their password, while the owner's own active
+      session stayed valid). `api/auth_routes.py`'s `change_password` had
+      zero test coverage before this; now has 4 dedicated regression
+      tests
 
 ## Known, accepted limitations at this release
 
