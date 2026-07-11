@@ -1,6 +1,21 @@
 // Shared app shell: sidebar nav + auth gate. Every authenticated page
 // (dashboard.html, users.html, etc.) includes theme.css + this file, then
 // calls AximShell.init({ active: 'dashboard' }) once on load.
+
+// Favicon - injected here rather than added to every individual page's
+// <head> (dozens of pages, easy for one to drift/be missed) since every
+// authenticated page already loads this script. The 3 pre-auth pages
+// (login/wizard/reset_password.html) don't load shell.js, so they carry
+// their own <link rel="icon"> tag directly instead.
+(() => {
+  if (document.querySelector('link[rel="icon"]')) return;
+  const link = document.createElement("link");
+  link.rel = "icon";
+  link.type = "image/svg+xml";
+  link.href = "/web/favicon.svg";
+  document.head.appendChild(link);
+})();
+
 const AximShell = (() => {
   const ICONS = {
     dashboard: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="1.5" y="1.5" width="6" height="6" rx="1.2"/><rect x="8.5" y="1.5" width="6" height="4" rx="1.2"/><rect x="8.5" y="7.5" width="6" height="7" rx="1.2"/><rect x="1.5" y="9.5" width="6" height="5" rx="1.2"/></svg>',
@@ -20,6 +35,12 @@ const AximShell = (() => {
     guide: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.3"/><path d="M6.1 6.2c.2-1 1-1.6 1.9-1.6 1 0 1.9.6 1.9 1.7 0 1.4-1.9 1.3-1.9 3"/><circle cx="8" cy="11.2" r="0.15" fill="currentColor" stroke="currentColor" stroke-width="0.9"/></svg>',
     capital: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.8 14.2h12.4"/><rect x="2.5" y="9.5" width="2.6" height="4.7" fill="currentColor" stroke="none"/><rect x="6.7" y="6.5" width="2.6" height="7.7" fill="currentColor" stroke="none"/><rect x="10.9" y="2.8" width="2.6" height="11.4" fill="currentColor" stroke="none"/></svg>',
   };
+
+  // "The AXIS" brand mark (brand/axis-mark.svg is the source of truth -
+  // this is the glyph only, no background rect, since .sidebar-logo
+  // .mark/.auth-logo .mark already paint the rounded-blue-square badge
+  // via CSS). Same 0-100 coordinate space as the master SVG.
+  const LOGO_MARK = '<svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg>';
 
   // Same convention as every page's own escapeHtml() (web/*.html) -
   // encodes quotes too, not just & < >, since escaped text sometimes
@@ -67,7 +88,7 @@ const AximShell = (() => {
     const isAdmin = user.role === "owner" || user.role === "admin";
     const items = NAV_ITEMS.filter(i => !i.adminOnly || isAdmin);
     root.innerHTML = `
-      <div class="sidebar-logo"><span class="mark">A</span> <span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">TradeStation</span></span></div>
+      <div class="sidebar-logo"><span class="mark">${LOGO_MARK}</span> <span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">TradeStation</span></span></div>
       <div class="nav-group">
         ${items.map(i => `
           <a class="nav-item ${i.key === activeKey ? "active" : ""}" href="${i.href}">
