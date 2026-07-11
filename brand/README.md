@@ -52,6 +52,17 @@ per the brief's "no gradients required for recognizability."
   deliberately not retrofitted into the app's existing small inline
   "Loading..." text labels, which are too small/transient to warrant a
   visual anchor without adding noise instead of clarity.
+- Empty states: a muted version of the mark (`.empty-panel` in
+  `web/theme.css`) on genuine "nothing here yet" panels - Mission
+  Control's Recent Activity/Recent Sessions, Trading Sessions' "No
+  active sessions." Deliberately a separate class from the existing
+  `.empty` (reused ~80 places across this app for loading-row
+  placeholders and error messages too, not just true empty states, in
+  both full panels and single table cells - a blanket change there
+  would look broken in a table cell and wrong in tone on an error
+  message). Apply `.empty-panel` the same way elsewhere as more genuine
+  empty states are found, rather than sweeping every `.empty` instance
+  at once.
 
 ## Extending this later
 
