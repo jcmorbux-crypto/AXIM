@@ -22,4 +22,11 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# "bundled" statically links SQLite (no system SQLite dependency/version
+# coupling) - used only to read core/database.py's ui_listener_heartbeat
+# table before spawning local-mode processes, same self-reported
+# "is the listener alive right now" freshness check api/main.py's own
+# pocket_option_status endpoint already trusts.
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = "0.4"
 

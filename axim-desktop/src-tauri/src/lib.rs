@@ -107,30 +107,86 @@ fn local_api_bind(root: &PathBuf) -> (String, u16) {
     (host, port)
 }
 
+// Matches api/main.py's own HEARTBEAT_STALE_THRESHOLD_SECONDS (3x the
+// listener's 30s heartbeat interval) - the same self-reported "is the
+// listener alive right now" freshness check that endpoint already trusts,
+// read directly from data/axim.db here since this runs before (or
+// instead of) spawning anything that could talk to the API.
+const HEARTBEAT_STALE_THRESHOLD_SECONDS: i64 = 45;
+
+// Found live (2026-07-10): a project checkout can have telegram_listener.py
+// running (a Scheduled Task, a soak test, a manually-started terminal)
+// WITHOUT api/main.py also running - they're independent processes, not a
+// package deal, even though local mode has always spawned both together as
+// one unit. Checking only the API port (as an earlier version of this fix
+// did) missed exactly that case: the port looked free, so it spawned a
+// second telegram_listener.py anyway, which then fought the real one over
+// the single persistent Chrome profile lock
+// (`sessions/pocket_browser`) and error-looped every 30-60s until killed
+// by hand. Each process now gets its own liveness check instead.
+fn listener_heartbeat_is_fresh(root: &PathBuf) -> bool {
+    let db_path = root.join("data").join("axim.db");
+    if !db_path.exists() {
+        return false;
+    }
+    let conn = match rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    ) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let updated_at: Result<String, _> = conn.query_row(
+        "SELECT updated_at FROM ui_listener_heartbeat WHERE id = 1",
+        [],
+        |row| row.get(0),
+    );
+    let Ok(updated_at) = updated_at else { return false };
+    let Ok(updated_at) = chrono::NaiveDateTime::parse_from_str(&updated_at, "%Y-%m-%dT%H:%M:%S%.f")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(&updated_at, "%Y-%m-%dT%H:%M:%S"))
+    else {
+        return false;
+    };
+    let age = chrono::Local::now().naive_local() - updated_at;
+    age.num_seconds() >= 0 && age.num_seconds() <= HEARTBEAT_STALE_THRESHOLD_SECONDS
+}
+
 fn spawn_axim_processes(root: &PathBuf, api_host: &str, api_port: u16) -> Vec<Child> {
     let python = root.join("venv").join("Scripts").join("python.exe");
     let mut children = Vec::new();
     let port_str = api_port.to_string();
 
-    match Command::new(&python)
-        .args([
-            "-m", "uvicorn", "api.main:app",
-            "--host", api_host, "--port", port_str.as_str(),
-        ])
-        .current_dir(root)
-        .spawn()
-    {
-        Ok(child) => children.push(child),
-        Err(e) => eprintln!("axim-desktop: failed to start API process: {e}"),
+    if is_port_open(api_host, api_port) {
+        eprintln!(
+            "axim-desktop: {api_host}:{api_port} already has a server running - not starting a second one"
+        );
+    } else {
+        match Command::new(&python)
+            .args([
+                "-m", "uvicorn", "api.main:app",
+                "--host", api_host, "--port", port_str.as_str(),
+            ])
+            .current_dir(root)
+            .spawn()
+        {
+            Ok(child) => children.push(child),
+            Err(e) => eprintln!("axim-desktop: failed to start API process: {e}"),
+        }
     }
 
-    match Command::new(&python)
-        .arg("core/telegram_listener.py")
-        .current_dir(root)
-        .spawn()
-    {
-        Ok(child) => children.push(child),
-        Err(e) => eprintln!("axim-desktop: failed to start listener process: {e}"),
+    if listener_heartbeat_is_fresh(root) {
+        eprintln!(
+            "axim-desktop: a telegram_listener.py is already reporting a fresh heartbeat - not starting a second one"
+        );
+    } else {
+        match Command::new(&python)
+            .arg("core/telegram_listener.py")
+            .current_dir(root)
+            .spawn()
+        {
+            Ok(child) => children.push(child),
+            Err(e) => eprintln!("axim-desktop: failed to start listener process: {e}"),
+        }
     }
 
     children
@@ -158,6 +214,21 @@ fn wait_for_api_ready(host: &str, port: u16, timeout: Duration) {
         thread::sleep(Duration::from_millis(150));
     }
     eprintln!("axim-desktop: {host}:{port} did not become ready within {timeout:?}, loading window anyway");
+}
+
+// Found live (2026-07-10): launching local mode against a project
+// checkout that ALREADY has a listener running (a Scheduled Task, a
+// soak test, or just a manually-started terminal) had no detection for
+// this at all - it always spawned a second uvicorn/telegram_listener.py
+// pair, which then fought the first over the same persistent Chrome
+// profile lock (`sessions/pocket_browser`) and error-looped
+// ("Opening in existing browser session") until manually killed. The
+// existing ManagedChildren guard only prevents THIS app instance from
+// double-spawning across a launcher reload - it has no idea about a
+// process outside this app's own lifetime. A single already-listening
+// check before spawning covers both cases with one primitive.
+fn is_port_open(host: &str, port: u16) -> bool {
+    TcpStream::connect((host, port)).is_ok()
 }
 
 fn config_file_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -235,6 +306,13 @@ fn resolve_and_launch(app: tauri::AppHandle) -> Result<TargetInfo, String> {
     let root = project_root();
     let (api_host, api_port) = local_api_bind(&root);
 
+    // spawn_axim_processes independently checks liveness for the API port
+    // and the listener's own heartbeat before starting each one - either,
+    // both, or neither may already be running (they're independent
+    // processes, not a package deal - see its own comment). Whatever it
+    // decides not to spawn is simply never added to `children`, so this
+    // app's Stop-on-exit cleanup correctly never touches a process it
+    // didn't start.
     let state = app.state::<ManagedChildren>();
     {
         let mut children = state.0.lock().unwrap();

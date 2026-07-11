@@ -114,6 +114,42 @@ account watches actually have an edge net of payout.**
       climbing faster than `signals_total`, `heartbeat_stale=True`, or
       `chrome_count` growing unbounded (a real leak signature) - none of
       those have occurred yet.
+- [x] **Real disruption event this session - found, contained, root-caused,
+      fixed.** Launching the axim-desktop Remote Client in local mode
+      (verifying the "Package the Remote Client" deliverable) spawned a
+      *second* `telegram_listener.py` against this exact live install,
+      since local mode had no detection for an already-running listener.
+      The two fought over the single persistent Chrome profile lock
+      (`sessions/pocket_browser`) - confirmed via `logs/axim.log`:
+      repeated `BrowserType.launch_persistent_context: Opening in
+      existing browser session` errors from the second process every
+      30-60s until it was killed by hand (twice, while root-causing it).
+      **What was NOT affected, directly verified via the live heartbeat
+      table both times**: `listener_pid` stayed `10524` throughout,
+      `generation` never incremented (no crash-triggered rebuild),
+      `worker_count` stayed `6` - the real browser session/worker pool
+      was never actually displaced, only annoyed. Chromium's own
+      singleton-lock correctly refused the second instance every time;
+      that's exactly why no corruption occurred. Real, if minor, side
+      effect: a few extra idle tabs accumulated in the real browser
+      (`chrome_mem_mb` rose from ~870MB to ~1.6GB, `chrome_count`
+      9→25) - within normal headroom, not touched further to avoid
+      risking the real worker pool with a blanket cleanup. Also polluted
+      `errors_total`/`recovery_events_total` in the CSV history around
+      23:15-23:35 with entries from the second process's own repeated
+      failed startup attempts, not the real listener - same "don't take
+      a spike at face value without checking the timestamp" caveat as
+      the test-suite log-pollution note earlier in this doc.
+      **Root cause fixed**: `axim-desktop/src-tauri/src/lib.rs`'s
+      `spawn_axim_processes` now independently checks liveness before
+      starting each process - the API port (already existed) and, new,
+      the listener's own `ui_listener_heartbeat` freshness (same 45s
+      threshold `api/main.py` already trusts) before starting
+      `telegram_listener.py`. Verified correct in both directions
+      against a throwaway install (fresh heartbeat → skips spawning;
+      stale heartbeat → spawns normally) - not re-tested against this
+      real listener a third time, deliberately, to stop risking further
+      disruption. Both installers rebuilt with the fix.
 
 ## Functional / operational (carried forward from the 07-05 checklist, re-verified)
 
