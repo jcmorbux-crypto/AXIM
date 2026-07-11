@@ -1,6 +1,31 @@
-.logo.vanilla:hover {
-  filter: drop-shadow(0 0 2em #ffe21c);
+.splash-mark {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 16px;
+  border-radius: 13px;
+  background: #2452eb;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
+
+.splash-mark svg {
+  width: 62%;
+  height: 62%;
+}
+
+/* Only animates while the launcher is actually trying to connect
+   (main.js toggles this class on/off with showAutoConnect/showForm) -
+   static the rest of the time, e.g. while showing the picker form. */
+.splash-mark.connecting {
+  animation: axim-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes axim-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.08); opacity: 0.75; }
+}
+
 :root {
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   font-size: 16px;
@@ -96,7 +121,7 @@
 
 button.primary {
   align-self: flex-start;
-  background-color: #396cd8;
+  background-color: #2452eb;
   color: #ffffff;
 }
 
@@ -133,10 +158,10 @@ button {
 }
 
 button:hover {
-  border-color: #396cd8;
+  border-color: #2452eb;
 }
 button:active {
-  border-color: #396cd8;
+  border-color: #2452eb;
   background-color: #e8e8e8;
 }
 

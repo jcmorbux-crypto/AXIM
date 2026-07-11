@@ -15,6 +15,7 @@ function showForm(config) {
   document.getElementById("auto-connect").style.display = "none";
   const form = document.getElementById("config-form");
   form.style.display = "";
+  document.getElementById("splash-mark").classList.remove("connecting");
 
   const mode = (config && config.mode) || "local";
   const radios = form.querySelectorAll('input[name="mode"]');
@@ -30,6 +31,7 @@ function showAutoConnect(config) {
   document.getElementById("auto-connect-message").textContent = label;
   document.getElementById("auto-connect").style.display = "";
   document.getElementById("config-form").style.display = "none";
+  document.getElementById("splash-mark").classList.add("connecting");
 }
 
 // Gap found: navigating straight to target.url with no reachability check
