@@ -39,9 +39,24 @@ logger = get_logger("axim.ui", filename="ui.log")
 
 UI_SESSION_NAME = os.getenv("UI_SESSION_NAME", "axim_ui_session")
 
-api_id = int(os.getenv("TELEGRAM_API_ID") or os.getenv("API_ID"))
-api_hash = os.getenv("TELEGRAM_API_HASH") or os.getenv("API_HASH")
-phone = os.getenv("TELEGRAM_PHONE") or os.getenv("PHONE")
+
+def _telegram_credentials():
+    """Read fresh at call time, not at import. Found live (2026-07-11):
+    api/main.py imports this module eagerly at server startup, and a
+    brand-new install's .env legitimately has no real TELEGRAM_API_ID yet
+    (.env.example's placeholder isn't numeric) - Telegram linking is an
+    in-app step done AFTER the server is already running (see
+    docs/AXIM_SETUP_GUIDE.md), so a missing/placeholder credential here
+    must not crash server startup itself. Previously `int(os.getenv(...))`
+    ran at module level and did exactly that."""
+    raw_id = os.getenv("TELEGRAM_API_ID") or os.getenv("API_ID")
+    if not raw_id or not raw_id.isdigit():
+        raise RuntimeError(
+            "Telegram is not linked yet - connect it from the Signal Sources page first"
+        )
+    api_hash = os.getenv("TELEGRAM_API_HASH") or os.getenv("API_HASH")
+    phone = os.getenv("TELEGRAM_PHONE") or os.getenv("PHONE")
+    return int(raw_id), api_hash, phone
 
 
 def _dialog_kind(dialog):
@@ -60,6 +75,7 @@ async def sync_dialogs():
     never touches the `enabled` flag, so this is safe to call as often as
     the UI wants (e.g. a "Refresh" button) without undoing the operator's
     own choices. Returns the count synced."""
+    api_id, api_hash, phone = _telegram_credentials()
     client = TelegramClient(UI_SESSION_NAME, api_id, api_hash)
     await client.start(phone=phone)
     count = 0
@@ -120,6 +136,7 @@ async def fetch_channel_history(chat_id, limit=200, source_label=None):
     import-csv/import-excel row shape so the caller can reuse the same
     database.create_imported_signal loop."""
     limit = min(limit, MAX_HISTORY_SCAN)
+    api_id, api_hash, phone = _telegram_credentials()
     client = TelegramClient(UI_SESSION_NAME, api_id, api_hash)
     await client.start(phone=phone)
     rows = []

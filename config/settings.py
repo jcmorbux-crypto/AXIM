@@ -3,13 +3,6 @@ import os
 
 load_dotenv()
 
-# Telegram
-API_ID = int(os.getenv("TELEGRAM_API_ID") or os.getenv("API_ID"))
-API_HASH = os.getenv("TELEGRAM_API_HASH") or os.getenv("API_HASH")
-PHONE = os.getenv("TELEGRAM_PHONE") or os.getenv("PHONE")
-
-SESSION_NAME = os.getenv("SESSION_NAME", "axim_session")
-
 WATCH_CHANNELS = [
     channel.strip()
     for channel in os.getenv("WATCH_CHANNELS", "").split(",")
