@@ -33,6 +33,15 @@ Naming map (spec name -> what already existed / what's new here):
                           strategy; nothing new here (Phase 3).
 - Apex Ascension (tm), Cashflow (tm), Strike (tm), Sentinel (tm) are
   genuinely new calculations, implemented below.
+
+Phase 2 additions (2026-07-11): Momentum (tm), Fortress (tm), and Empire
+(tm) are also genuinely new calculations, implemented below following
+the same pure-function/fully-tested discipline. Axiom Vault's extended
+trigger types (per_trade, manual) are implemented here too, alongside
+the Phase 1 milestone_vault_skim/every_winning_session_vault_skim they
+join (those two remain in core/risk_engine.py, unmoved, since they were
+already there before this module existed - see per_trade_vault_skim
+below for the new one, plus a note on "manual" in the same section).
 """
 import json
 import math
@@ -276,3 +285,144 @@ def simulate_strategy(strategy_key, settings, num_trades, win_rate, avg_payout_p
         "losses": trades_run - wins,
         "ruined": ruined_at is not None,
     }
+
+
+# ---------------------------------------------------------------------
+# Momentum (tm) - Anti-Martingale / positive progression. Inverse of
+# core/risk_engine.py's _apply_martingale: steps the base amount UP per
+# consecutive WIN (not loss), always resets to the base step on a loss.
+# ---------------------------------------------------------------------
+
+def momentum_deployment(base_amount, settings, step):
+    """Pure. `step` is trading_sessions.current_momentum_step - advanced
+    on a win, reset to 0 on a loss (core/risk_engine.py's
+    on_trade_closed), mirroring exactly how Martingale's step already
+    works, just the opposite trigger."""
+    if not settings["enabled"] or step <= 0:
+        return base_amount
+    effective_step = min(step, settings["max_steps"]) if settings["max_steps"] > 0 else step
+    ladder = json.loads(settings["custom_ladder_json"]) if settings["custom_ladder_json"] else None
+    if ladder:
+        index = min(effective_step, len(ladder) - 1)
+        return ladder[index]
+    return round(base_amount * (settings["multiplier"] ** effective_step), 2)
+
+
+def momentum_locked_profit(settings, running_profit_this_sequence):
+    """Pure. Optional profit-lock the spec calls for: once
+    profit_lock_percent > 0, this returns how much of the sequence's
+    running profit should be considered "locked" (vaulted / not put back
+    at risk on the next step) rather than compounded into the next
+    deployment - a separate concern from momentum_deployment's stake
+    sizing itself, so the caller (risk_engine.py, if this is wired to a
+    vault) decides what "locking" actually does with the number."""
+    if not settings["enabled"] or settings["profit_lock_percent"] <= 0:
+        return 0
+    return round(max(running_profit_this_sequence, 0) * (settings["profit_lock_percent"] / 100.0), 2)
+
+
+# ---------------------------------------------------------------------
+# Fortress (tm) - principal protection. A post-processing layer (like
+# Sentinel/Cashflow), not a sizing mode of its own - caps whatever base
+# sizing already computed at currently-available (unprotected) capital.
+# ---------------------------------------------------------------------
+
+def fortress_adjusted_amount(settings, base_amount, current_bankroll, starting_bankroll):
+    """Pure. protected_principal (settings, currently persisted) is
+    monotonic - once real profit crosses protection_threshold it locks in
+    at starting_bankroll and this function never proposes decreasing it
+    again, even through a later drawdown (matches the spec's "the
+    principal does not return to the battlefield"). Returns (amount,
+    new_protected_principal, should_stop) - the caller persists
+    new_protected_principal only if it changed, same pattern as Apex
+    Ascension's tier-event recording."""
+    if not settings["enabled"]:
+        return base_amount, settings["protected_principal"], False
+
+    protected = settings["protected_principal"]
+    if protected <= 0 and settings["protection_threshold"] > 0:
+        realized_profit = current_bankroll - starting_bankroll
+        if realized_profit >= settings["protection_threshold"]:
+            protected = starting_bankroll
+
+    if protected <= 0:
+        return base_amount, protected, False
+
+    available = current_bankroll - protected
+    if available <= 0:
+        return 0, protected, True
+    return min(base_amount, available), protected, False
+
+
+# ---------------------------------------------------------------------
+# Empire (tm) - ladder challenge. starting_amount -> target_amount across
+# a sequence of capital levels, with configurable checkpoint protection.
+# ---------------------------------------------------------------------
+
+def empire_generate_ladder(starting_amount, target_amount, num_levels):
+    """Pure. Geometric progression so each level is the same PERCENTAGE
+    step up from the last (not a fixed dollar step) - level 0 is exactly
+    starting_amount, the last level is exactly target_amount."""
+    if num_levels <= 1 or starting_amount <= 0:
+        return [starting_amount]
+    ratio = (target_amount / starting_amount) ** (1 / (num_levels - 1))
+    return [round(starting_amount * (ratio ** i), 2) for i in range(num_levels)]
+
+
+def _empire_ladder(settings):
+    if settings.get("levels_json"):
+        return json.loads(settings["levels_json"])
+    return empire_generate_ladder(settings["starting_amount"], settings["target_amount"], settings["num_levels"])
+
+
+def empire_next_stake(settings):
+    """Pure. Returns (stake, status) for the CURRENT level - status is
+    "in_progress", "challenge_complete" (already at/past the final
+    level), or "terminated" (current_level was set to the -1 sentinel by
+    empire_advance's 'terminate' failure_behavior)."""
+    if settings["current_level"] < 0:
+        return 0, "terminated"
+    ladder = _empire_ladder(settings)
+    level = min(settings["current_level"], len(ladder) - 1)
+    status = "challenge_complete" if level >= len(ladder) - 1 else "in_progress"
+    return ladder[level], status
+
+
+def empire_advance(settings, won):
+    """Pure. Returns the new current_level given a win/loss outcome and
+    the configured failure_behavior - called from on_trade_closed,
+    mirroring how Martingale/Momentum step advancement already works.
+    'lose_ladder_only' means the failed step doesn't cost any ladder
+    progress at all (stays at the same level, tries again) - the
+    spec's own distinct option from a full reset or checkpoint return."""
+    ladder = _empire_ladder(settings)
+    max_level = len(ladder) - 1
+    if won:
+        return min(settings["current_level"] + 1, max_level)
+    behavior = settings["failure_behavior"]
+    if behavior == "reset_to_start":
+        return 0
+    if behavior == "return_to_checkpoint":
+        return settings["checkpoint_level"]
+    if behavior == "lose_ladder_only":
+        return settings["current_level"]
+    if behavior == "terminate":
+        return -1
+    return 0
+
+
+# ---------------------------------------------------------------------
+# Axiom Vault (tm) Phase 2 - per_trade trigger type (joins
+# core/risk_engine.py's existing milestone_vault_skim and
+# every_winning_session_vault_skim, which predate this module and stay
+# there, unmoved). "manual" (the spec's other listed trigger type) needs
+# no calculation at all - it's just database.add_to_vault called
+# directly from an operator-triggered API action, already exposed.
+# ---------------------------------------------------------------------
+
+def per_trade_vault_skim(vault, profit_loss):
+    """Pure. Skims immediately on every individual winning trade, unlike
+    the milestone/session-end triggers which only skim at a boundary."""
+    if not vault["enabled"] or vault["trigger_event"] != "per_trade" or profit_loss <= 0:
+        return 0
+    return round(profit_loss * (vault["vault_percent"] / 100.0), 2)

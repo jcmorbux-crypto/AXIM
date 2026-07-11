@@ -43,6 +43,10 @@ _NEW_SESSION_COLUMNS = {
     "fund_id": "INTEGER",
     "broker_account_id": "INTEGER",
     "martingale_disabled": "INTEGER DEFAULT 0",
+    # Momentum (tm) - same per-session step-tracking pattern as
+    # current_martingale_step above, just advancing on a WIN instead of a
+    # loss (see core/risk_engine.py's on_trade_closed).
+    "current_momentum_step": "INTEGER DEFAULT 0",
 }
 
 # Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - links a user to a
@@ -436,6 +440,25 @@ def initialize_database():
     );
     """)
 
+    # Momentum (tm) - Anti-Martingale / positive progression: the inverse
+    # of martingale_settings above (steps UP on a win, ALWAYS resets to
+    # the base step on a loss per spec - see core/risk_engine.py's
+    # on_trade_closed - there is no "disable reset" option, resetting on
+    # loss is the whole mechanic). Same ladder shape (multiplier or
+    # custom_ladder_json) as Martingale, plus a profit-lock percent the
+    # spec calls for that Martingale has no equivalent of.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS momentum_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        max_steps INTEGER DEFAULT 0,
+        multiplier REAL DEFAULT 1.5,
+        custom_ladder_json TEXT,
+        profit_lock_percent REAL DEFAULT 0
+    );
+    """)
+
     conn.execute("""
     CREATE TABLE IF NOT EXISTS compounding_settings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -548,6 +571,42 @@ def initialize_database():
         enabled INTEGER DEFAULT 0,
         max_session_duration_minutes REAL DEFAULT 0,
         max_consecutive_losses INTEGER DEFAULT 0
+    );
+    """)
+
+    # Fortress (tm) Phase 2 - principal protection. protected_principal is
+    # set once realized_pnl crosses protection_threshold (0 = not yet
+    # protected) and, once set, never decreases - matches the spec's "the
+    # principal does not return to the battlefield" even through a
+    # partial drawdown of profits.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS fortress_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        protection_threshold REAL DEFAULT 0,
+        protected_principal REAL DEFAULT 0
+    );
+    """)
+
+    # Empire (tm) Phase 2 - ladder challenge. levels_json holds the
+    # explicit stake-per-level ladder (auto-generated from
+    # starting_amount/target_amount/num_levels if not supplied - see
+    # core/capital_strategies.py's empire_generate_ladder). checkpoint_level
+    # is the highest level a failed step falls back to rather than
+    # restarting from level 0, when failure_behavior='return_to_checkpoint'.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS empire_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        starting_amount REAL DEFAULT 10,
+        target_amount REAL DEFAULT 100,
+        num_levels INTEGER DEFAULT 10,
+        levels_json TEXT,
+        failure_behavior TEXT DEFAULT 'reset_to_start',
+        checkpoint_level INTEGER DEFAULT 0,
+        current_level INTEGER DEFAULT 0
     );
     """)
 
@@ -2280,6 +2339,12 @@ _CASHFLOW_FIELDS = {
     "enabled", "target_amount", "target_period", "partial_target_percent", "partial_reduction_percent",
 }
 _STRIKE_FIELDS = {"enabled", "max_session_duration_minutes", "max_consecutive_losses"}
+_MOMENTUM_FIELDS = {"enabled", "max_steps", "multiplier", "custom_ladder_json", "profit_lock_percent"}
+_FORTRESS_FIELDS = {"enabled", "protection_threshold", "protected_principal"}
+_EMPIRE_FIELDS = {
+    "enabled", "starting_amount", "target_amount", "num_levels", "levels_json",
+    "failure_behavior", "checkpoint_level", "current_level",
+}
 
 
 def _risk_profile_row_to_dict(row):
@@ -2291,6 +2356,9 @@ def _risk_profile_row_to_dict(row):
     d["drawdown_protection"] = get_drawdown_protection_settings(d["id"])
     d["cashflow"] = get_cashflow_settings(d["id"])
     d["strike"] = get_strike_settings(d["id"])
+    d["momentum"] = get_momentum_settings(d["id"])
+    d["fortress"] = get_fortress_settings(d["id"])
+    d["empire"] = get_empire_settings(d["id"])
     return d
 
 
@@ -2313,6 +2381,9 @@ def create_risk_profile(name, is_template=False, description=None, **fields):
     conn.execute("INSERT INTO drawdown_protection_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.execute("INSERT INTO cashflow_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.execute("INSERT INTO strike_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO momentum_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO fortress_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO empire_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.commit()
     conn.close()
     return profile_id
@@ -2363,6 +2434,9 @@ def delete_risk_profile(profile_id):
     conn.execute("DELETE FROM cashflow_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM strike_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM capital_tier_events WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM momentum_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM fortress_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM empire_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM risk_profiles WHERE id = ?", (profile_id,))
     conn.commit()
     conn.close()
@@ -2400,6 +2474,9 @@ def create_risk_profile_from_snapshot(new_name, snapshot):
     update_drawdown_protection_settings(new_id, **{k: snapshot["drawdown_protection"][k] for k in _DRAWDOWN_PROTECTION_FIELDS})
     update_cashflow_settings(new_id, **{k: snapshot["cashflow"][k] for k in _CASHFLOW_FIELDS})
     update_strike_settings(new_id, **{k: snapshot["strike"][k] for k in _STRIKE_FIELDS})
+    update_momentum_settings(new_id, **{k: snapshot["momentum"][k] for k in _MOMENTUM_FIELDS})
+    update_fortress_settings(new_id, **{k: snapshot["fortress"][k] for k in _FORTRESS_FIELDS})
+    update_empire_settings(new_id, **{k: snapshot["empire"][k] for k in _EMPIRE_FIELDS})
     return new_id
 
 
@@ -2421,6 +2498,9 @@ def export_risk_profile(profile_id):
         "drawdown_protection": {k: profile["drawdown_protection"][k] for k in _DRAWDOWN_PROTECTION_FIELDS},
         "cashflow": {k: profile["cashflow"][k] for k in _CASHFLOW_FIELDS},
         "strike": {k: profile["strike"][k] for k in _STRIKE_FIELDS},
+        "momentum": {k: profile["momentum"][k] for k in _MOMENTUM_FIELDS},
+        "fortress": {k: profile["fortress"][k] for k in _FORTRESS_FIELDS},
+        "empire": {k: profile["empire"][k] for k in _EMPIRE_FIELDS},
     }
 
 
@@ -2443,6 +2523,12 @@ def import_risk_profile(data, name=None):
         update_cashflow_settings(new_id, **data["cashflow"])
     if data.get("strike"):
         update_strike_settings(new_id, **data["strike"])
+    if data.get("momentum"):
+        update_momentum_settings(new_id, **data["momentum"])
+    if data.get("fortress"):
+        update_fortress_settings(new_id, **data["fortress"])
+    if data.get("empire"):
+        update_empire_settings(new_id, **data["empire"])
     return new_id
 
 
@@ -2635,6 +2721,94 @@ def update_strike_settings(risk_profile_id, **fields):
     params = list(fields.values()) + [risk_profile_id]
     conn = get_connection()
     conn.execute(f"UPDATE strike_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_momentum_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM momentum_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_momentum_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _MOMENTUM_FIELDS:
+            raise ValueError(f"Unknown Momentum field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE momentum_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def advance_momentum_step(session_id):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE trading_sessions SET current_momentum_step = current_momentum_step + 1 WHERE id = ?",
+        (session_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def reset_momentum_step(session_id):
+    conn = get_connection()
+    conn.execute("UPDATE trading_sessions SET current_momentum_step = 0 WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_fortress_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM fortress_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_fortress_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _FORTRESS_FIELDS:
+            raise ValueError(f"Unknown Fortress field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE fortress_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_empire_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM empire_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_empire_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _EMPIRE_FIELDS:
+            raise ValueError(f"Unknown Empire field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE empire_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
     conn.commit()
     conn.close()
 

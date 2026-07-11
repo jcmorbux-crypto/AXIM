@@ -254,6 +254,182 @@ class StrikeTests(unittest.TestCase):
         self.assertEqual(reason, "profit_target")
 
 
+def _momentum_settings(**overrides):
+    base = {"enabled": 1, "max_steps": 0, "multiplier": 1.5, "custom_ladder_json": None, "profit_lock_percent": 0}
+    base.update(overrides)
+    return base
+
+
+class MomentumTests(unittest.TestCase):
+    def test_disabled_passes_through(self):
+        self.assertEqual(cs.momentum_deployment(10, _momentum_settings(enabled=0), 3), 10)
+
+    def test_step_zero_passes_through(self):
+        self.assertEqual(cs.momentum_deployment(10, _momentum_settings(), 0), 10)
+
+    def test_steps_up_on_each_win(self):
+        self.assertEqual(cs.momentum_deployment(10, _momentum_settings(), 1), 15)
+        self.assertEqual(cs.momentum_deployment(10, _momentum_settings(), 2), 22.5)
+
+    def test_max_steps_caps_the_ladder(self):
+        uncapped = cs.momentum_deployment(10, _momentum_settings(), 5)
+        capped = cs.momentum_deployment(10, _momentum_settings(max_steps=2), 5)
+        self.assertEqual(capped, cs.momentum_deployment(10, _momentum_settings(), 2))
+        self.assertLess(capped, uncapped)
+
+    def test_custom_ladder_overrides_multiplier(self):
+        settings = _momentum_settings(custom_ladder_json="[10, 20, 40]")
+        self.assertEqual(cs.momentum_deployment(10, settings, 1), 20)
+        self.assertEqual(cs.momentum_deployment(10, settings, 2), 40)
+        # Beyond the ladder's length - clamps at the last rung, doesn't error.
+        self.assertEqual(cs.momentum_deployment(10, settings, 10), 40)
+
+    def test_profit_lock_disabled_by_default(self):
+        self.assertEqual(cs.momentum_locked_profit(_momentum_settings(), 50), 0)
+
+    def test_profit_lock_computes_a_percentage_of_running_profit(self):
+        settings = _momentum_settings(profit_lock_percent=20)
+        self.assertEqual(cs.momentum_locked_profit(settings, 50), 10)
+
+    def test_profit_lock_never_negative(self):
+        settings = _momentum_settings(profit_lock_percent=20)
+        self.assertEqual(cs.momentum_locked_profit(settings, -50), 0)
+
+
+def _fortress_settings(**overrides):
+    base = {"enabled": 1, "protection_threshold": 500, "protected_principal": 0}
+    base.update(overrides)
+    return base
+
+
+class FortressTests(unittest.TestCase):
+    def test_disabled_passes_through(self):
+        amount, protected, stop = cs.fortress_adjusted_amount(
+            _fortress_settings(enabled=0), 20, 2000, 1000,
+        )
+        self.assertEqual((amount, protected, stop), (20, 0, False))
+
+    def test_below_threshold_no_protection_yet(self):
+        amount, protected, stop = cs.fortress_adjusted_amount(
+            _fortress_settings(), 20, 1200, 1000,  # only $200 profit, threshold is $500
+        )
+        self.assertEqual((amount, protected, stop), (20, 0, False))
+
+    def test_crossing_threshold_protects_principal(self):
+        amount, protected, stop = cs.fortress_adjusted_amount(
+            _fortress_settings(), 20, 1600, 1000,  # $600 profit crosses $500 threshold
+        )
+        self.assertEqual(protected, 1000)
+        self.assertFalse(stop)
+        # $600 available profit, base amount $20 fits comfortably under it.
+        self.assertEqual(amount, 20)
+
+    def test_caps_amount_at_available_profit_once_protected(self):
+        amount, protected, stop = cs.fortress_adjusted_amount(
+            _fortress_settings(protected_principal=1000), 500, 1050, 1000,  # only $50 profit left
+        )
+        self.assertEqual(amount, 50)
+        self.assertFalse(stop)
+
+    def test_stops_when_profit_fully_depleted(self):
+        amount, protected, stop = cs.fortress_adjusted_amount(
+            _fortress_settings(protected_principal=1000), 20, 1000, 1000,  # exactly at protected principal
+        )
+        self.assertEqual(amount, 0)
+        self.assertTrue(stop)
+
+    def test_protected_principal_never_proposed_lower_once_set(self):
+        # Even a severe drawdown back toward starting_bankroll must not
+        # un-protect principal already locked in from an earlier call.
+        amount, protected, stop = cs.fortress_adjusted_amount(
+            _fortress_settings(protected_principal=1000), 20, 1000.01, 1000,
+        )
+        self.assertEqual(protected, 1000)
+
+
+class EmpireTests(unittest.TestCase):
+    def test_generate_ladder_endpoints_match_exactly(self):
+        ladder = cs.empire_generate_ladder(10, 100, 10)
+        self.assertEqual(ladder[0], 10)
+        self.assertEqual(ladder[-1], 100)
+        self.assertEqual(len(ladder), 10)
+
+    def test_generate_ladder_is_monotonically_increasing(self):
+        ladder = cs.empire_generate_ladder(10, 1000, 8)
+        self.assertEqual(ladder, sorted(ladder))
+
+    def test_single_level_ladder_is_just_the_start(self):
+        self.assertEqual(cs.empire_generate_ladder(10, 100, 1), [10])
+
+    def _settings(self, **overrides):
+        base = {
+            "starting_amount": 10, "target_amount": 100, "num_levels": 5,
+            "levels_json": None, "failure_behavior": "reset_to_start",
+            "checkpoint_level": 0, "current_level": 0,
+        }
+        base.update(overrides)
+        return base
+
+    def test_next_stake_at_level_zero_is_starting_amount(self):
+        stake, status = cs.empire_next_stake(self._settings())
+        self.assertEqual(stake, 10)
+        self.assertEqual(status, "in_progress")
+
+    def test_challenge_complete_at_final_level(self):
+        stake, status = cs.empire_next_stake(self._settings(current_level=4))
+        self.assertEqual(stake, 100)
+        self.assertEqual(status, "challenge_complete")
+
+    def test_terminated_sentinel_level(self):
+        stake, status = cs.empire_next_stake(self._settings(current_level=-1))
+        self.assertEqual((stake, status), (0, "terminated"))
+
+    def test_win_advances_one_level(self):
+        new_level = cs.empire_advance(self._settings(current_level=1), won=True)
+        self.assertEqual(new_level, 2)
+
+    def test_win_at_final_level_stays_capped(self):
+        new_level = cs.empire_advance(self._settings(current_level=4), won=True)
+        self.assertEqual(new_level, 4)
+
+    def test_loss_reset_to_start(self):
+        new_level = cs.empire_advance(self._settings(current_level=3, failure_behavior="reset_to_start"), won=False)
+        self.assertEqual(new_level, 0)
+
+    def test_loss_return_to_checkpoint(self):
+        new_level = cs.empire_advance(
+            self._settings(current_level=3, checkpoint_level=2, failure_behavior="return_to_checkpoint"), won=False,
+        )
+        self.assertEqual(new_level, 2)
+
+    def test_loss_lose_ladder_only_stays_put(self):
+        new_level = cs.empire_advance(self._settings(current_level=3, failure_behavior="lose_ladder_only"), won=False)
+        self.assertEqual(new_level, 3)
+
+    def test_loss_terminate(self):
+        new_level = cs.empire_advance(self._settings(current_level=3, failure_behavior="terminate"), won=False)
+        self.assertEqual(new_level, -1)
+
+
+class PerTradeVaultSkimTests(unittest.TestCase):
+    def _vault(self, **overrides):
+        base = {"enabled": 1, "vault_percent": 10, "trigger_event": "per_trade", "milestone_amount": 0}
+        base.update(overrides)
+        return base
+
+    def test_disabled_skims_nothing(self):
+        self.assertEqual(cs.per_trade_vault_skim(self._vault(enabled=0), 100), 0)
+
+    def test_wrong_trigger_type_skims_nothing(self):
+        self.assertEqual(cs.per_trade_vault_skim(self._vault(trigger_event="milestone_based"), 100), 0)
+
+    def test_losing_trade_skims_nothing(self):
+        self.assertEqual(cs.per_trade_vault_skim(self._vault(), -50), 0)
+
+    def test_winning_trade_skims_the_configured_percent(self):
+        self.assertEqual(cs.per_trade_vault_skim(self._vault(), 100), 10)
+
+
 class SimulateStrategyTests(unittest.TestCase):
     def test_unknown_strategy_raises(self):
         with self.assertRaises(ValueError):

@@ -353,5 +353,175 @@ class CashflowSentinelSizingTests(unittest.TestCase):
         self.assertEqual(ctx.exception.rule, "sentinel_suspended")
 
 
+class MomentumSizingTests(unittest.TestCase):
+    """AXIM Capital Strategies (tm) Phase 2 - Momentum wired into both
+    compute_position_size (sizing) and on_trade_closed (step advance)."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.session_id = database.start_trading_session("Test", [1], "DEMO")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_disabled_by_default_no_behavior_change(self):
+        profile_id = database.create_risk_profile("Plain Fixed", sizing_mode="fixed", fixed_amount=10)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.advance_martingale_step(self.session_id)  # unrelated step shouldn't matter either
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 10.0)
+
+    def test_win_advances_step_and_increases_next_size(self):
+        profile_id = database.create_risk_profile("Momentum Test", sizing_mode="fixed", fixed_amount=10)
+        database.update_momentum_settings(profile_id, enabled=True, multiplier=1.5)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 10.0)  # step 0
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=10)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 15.0)  # step 1
+
+    def test_loss_resets_step_to_zero(self):
+        profile_id = database.create_risk_profile("Momentum Test", sizing_mode="fixed", fixed_amount=10)
+        database.update_momentum_settings(profile_id, enabled=True, multiplier=1.5)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=10)
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=15)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 22.5)  # step 2
+        risk_engine.on_trade_closed(self.session_id, won=False, profit_loss=-22.5)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 10.0)  # back to step 0
+
+
+class FortressSizingTests(unittest.TestCase):
+    """AXIM Capital Strategies (tm) Phase 2 - Fortress wired into
+    compute_position_size, including the persisted protected_principal
+    write-back."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.session_id = database.start_trading_session("Test", [1], "DEMO")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_disabled_by_default_no_behavior_change(self):
+        profile_id = database.create_risk_profile("Plain Fixed", sizing_mode="fixed", fixed_amount=10, bankroll=1000)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 5000)  # would trigger any real threshold
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 10.0)
+
+    def test_crossing_threshold_persists_protected_principal(self):
+        profile_id = database.create_risk_profile("Fortress Test", sizing_mode="fixed", fixed_amount=10, bankroll=1000)
+        database.update_fortress_settings(profile_id, enabled=True, protection_threshold=500)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 600)
+        risk_engine.compute_position_size(self.session_id, 5.0)
+        self.assertEqual(database.get_fortress_settings(profile_id)["protected_principal"], 1000)
+
+    def test_stops_trading_once_profit_is_gone(self):
+        profile_id = database.create_risk_profile("Fortress Test", sizing_mode="fixed", fixed_amount=10, bankroll=1000)
+        database.update_fortress_settings(profile_id, enabled=True, protected_principal=1000)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 0)  # exactly back to protected principal
+        with self.assertRaises(risk_engine.FortressPrincipalProtected) as ctx:
+            risk_engine.compute_position_size(self.session_id, 5.0)
+        self.assertEqual(ctx.exception.rule, "fortress_principal_protected")
+
+
+class EmpireSizingTests(unittest.TestCase):
+    """AXIM Capital Strategies (tm) Phase 2 - Empire as a real sizing_mode,
+    with level advancement wired into on_trade_closed."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.session_id = database.start_trading_session("Test", [1], "DEMO")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_disabled_falls_back_to_fixed_amount(self):
+        profile_id = database.create_risk_profile("Empire Test", sizing_mode="empire", fixed_amount=3)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 3.0)
+
+    def test_enabled_starts_at_level_zero_stake(self):
+        profile_id = database.create_risk_profile("Empire Test", sizing_mode="empire", fixed_amount=3)
+        database.update_empire_settings(
+            profile_id, enabled=True, starting_amount=10, target_amount=100, num_levels=5,
+        )
+        database.set_session_risk_profile(self.session_id, profile_id)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 10.0)
+
+    def test_win_advances_to_the_next_level_stake(self):
+        profile_id = database.create_risk_profile("Empire Test", sizing_mode="empire", fixed_amount=3)
+        database.update_empire_settings(
+            profile_id, enabled=True, starting_amount=10, target_amount=100, num_levels=5,
+        )
+        database.set_session_risk_profile(self.session_id, profile_id)
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=10)
+        from capital_strategies import empire_generate_ladder
+        ladder = empire_generate_ladder(10, 100, 5)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), ladder[1])
+
+    def test_loss_resets_to_start_by_default(self):
+        profile_id = database.create_risk_profile("Empire Test", sizing_mode="empire", fixed_amount=3)
+        database.update_empire_settings(
+            profile_id, enabled=True, starting_amount=10, target_amount=100, num_levels=5,
+        )
+        database.set_session_risk_profile(self.session_id, profile_id)
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=10)
+        risk_engine.on_trade_closed(self.session_id, won=False, profit_loss=-15)
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 10.0)
+
+    def test_reaching_the_final_level_raises_challenge_complete(self):
+        profile_id = database.create_risk_profile("Empire Test", sizing_mode="empire", fixed_amount=3)
+        database.update_empire_settings(
+            profile_id, enabled=True, starting_amount=10, target_amount=100,
+            num_levels=2, current_level=1,  # already at the final level
+        )
+        database.set_session_risk_profile(self.session_id, profile_id)
+        with self.assertRaises(risk_engine.EmpireChallengeOver) as ctx:
+            risk_engine.compute_position_size(self.session_id, 5.0)
+        self.assertEqual(ctx.exception.rule, "empire_challenge_complete")
+
+
+class PerTradeVaultTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.session_id = database.start_trading_session("Test", [1], "DEMO")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_per_trade_trigger_vaults_immediately_on_a_winning_trade(self):
+        profile_id = database.create_risk_profile("Per-Trade Vault", sizing_mode="fixed", fixed_amount=10)
+        database.update_profit_vault_settings(profile_id, enabled=True, vault_percent=20, trigger_event="per_trade")
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 50)
+        risk_engine.on_trade_closed(self.session_id, won=True, profit_loss=50)
+        self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 10.0)
+
+    def test_per_trade_trigger_skips_losing_trades(self):
+        profile_id = database.create_risk_profile("Per-Trade Vault", sizing_mode="fixed", fixed_amount=10)
+        database.update_profit_vault_settings(profile_id, enabled=True, vault_percent=20, trigger_event="per_trade")
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, -20)
+        risk_engine.on_trade_closed(self.session_id, won=False, profit_loss=-20)
+        self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

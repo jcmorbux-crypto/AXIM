@@ -113,6 +113,15 @@ def _base_amount(profile, session):
             )
         return amount
 
+    if mode == "empire":
+        empire = profile["empire"]
+        if not empire["enabled"]:
+            return profile["fixed_amount"]
+        stake, status = capital_strategies.empire_next_stake(empire)
+        if status in ("challenge_complete", "terminated"):
+            raise EmpireChallengeOver(status)
+        return stake
+
     return profile["fixed_amount"]
 
 
@@ -161,9 +170,18 @@ def compute_position_size(session_id, static_default_amount):
     if not session["martingale_disabled"]:
         amount = _apply_martingale(amount, profile["martingale"], session["current_martingale_step"])
 
+    # Momentum (tm) - opposite trigger from Martingale (steps on a WIN
+    # streak, not a loss streak) but the same "modifier on top of the
+    # base stake" role. Stacks with Martingale if an operator somehow
+    # enables both at once (an unusual, not specially blocked
+    # configuration) rather than silently favoring one.
+    momentum = profile["momentum"]
+    if momentum["enabled"]:
+        amount = capital_strategies.momentum_deployment(amount, momentum, session["current_momentum_step"])
+
     # Cashflow (tm) and Sentinel (tm) - opt-in post-processing layers on
-    # top of whatever base sizing/Martingale already computed. Both
-    # default to enabled=0, so this is a strict no-op for every
+    # top of whatever base sizing/Martingale/Momentum already computed.
+    # All default to enabled=0, so this is a strict no-op for every
     # risk_profile that existed before this feature landed.
     cashflow = profile["cashflow"]
     if cashflow["enabled"]:
@@ -182,6 +200,21 @@ def compute_position_size(session_id, static_default_amount):
         )
         if sentinel_status == "suspended":
             raise SentinelSuspended(drawdown_percent, drawdown_protection["suspend_above_percent"])
+
+    # Fortress (tm) - caps amount at currently-available (unprotected)
+    # profit once protection has triggered; persists protected_principal
+    # only when it actually changed (a real write, but a rare one - most
+    # calls just read the already-persisted value back unchanged).
+    fortress = profile["fortress"]
+    if fortress["enabled"]:
+        current_bankroll = profile["bankroll"] + session["realized_pnl"]
+        amount, new_protected, should_stop = capital_strategies.fortress_adjusted_amount(
+            fortress, amount, current_bankroll, profile["bankroll"],
+        )
+        if new_protected != fortress["protected_principal"]:
+            database.update_fortress_settings(profile["id"], protected_principal=new_protected)
+        if should_stop:
+            raise FortressPrincipalProtected(new_protected)
 
     if profile["max_trade_amount"] > 0:
         amount = min(amount, profile["max_trade_amount"])
@@ -208,6 +241,30 @@ class SentinelSuspended(Exception):
     def __init__(self, drawdown_percent, suspend_above_percent):
         self.rule = "sentinel_suspended"
         self.reason = f"Sentinel suspended trading - drawdown {drawdown_percent:.1f}% exceeds {suspend_above_percent}%"
+        super().__init__(self.reason)
+
+
+class FortressPrincipalProtected(Exception):
+    """Same (rule, reason) shape - see CashflowTargetReached above.
+    Raised by compute_position_size when Fortress's active profit is
+    fully depleted and protected principal must not be risked."""
+    def __init__(self, protected_principal):
+        self.rule = "fortress_principal_protected"
+        self.reason = f"Fortress: active profit depleted - ${protected_principal} principal is protected, not trading it"
+        super().__init__(self.reason)
+
+
+class EmpireChallengeOver(Exception):
+    """Same (rule, reason) shape - see CashflowTargetReached above.
+    Raised by _base_amount when an Empire ladder challenge has either
+    been completed (reached the target level) or terminated (a failed
+    step under failure_behavior='terminate')."""
+    def __init__(self, status):
+        self.rule = f"empire_{status}"
+        self.reason = (
+            "Empire challenge complete - target level reached" if status == "challenge_complete"
+            else "Empire challenge terminated by a failed step"
+        )
         super().__init__(self.reason)
 
 
@@ -279,8 +336,37 @@ def on_trade_closed(session_id, won, profit_loss):
         elif not won:
             database.advance_martingale_step(session_id)
 
+    # Momentum (tm) - exact inverse of Martingale's step handling above:
+    # advances on a WIN, always resets on a loss (no reset_after_win-style
+    # toggle - see momentum_settings' own schema comment for why).
+    momentum = profile["momentum"]
+    if momentum["enabled"]:
+        if won:
+            database.advance_momentum_step(session_id)
+        else:
+            database.reset_momentum_step(session_id)
+
+    # Empire (tm) - ladder level advances/falls back based on this same
+    # win/loss outcome, mirroring the Martingale/Momentum step pattern
+    # just with a richer set of failure behaviors than a simple reset.
+    empire = profile["empire"]
+    if empire["enabled"] and empire["current_level"] >= 0:
+        new_level = capital_strategies.empire_advance(empire, won)
+        if new_level != empire["current_level"]:
+            database.update_empire_settings(profile["id"], current_level=new_level)
+
     vault = profile["profit_vault"]
     session = database.get_trading_session(session_id)  # refreshed realized_pnl
+
+    # Axiom Vault (tm) per_trade trigger - skims immediately on this one
+    # trade's own profit, independent of the milestone/session-end
+    # triggers below (mutually exclusive via trigger_event, same as
+    # those two already are with each other).
+    per_trade_skim = capital_strategies.per_trade_vault_skim(vault, profit_loss)
+    if per_trade_skim > 0:
+        database.add_to_vault(session_id, per_trade_skim)
+        logger.info("risk_engine: vaulted $%.2f for session %s on this trade", per_trade_skim, session_id)
+
     skim = milestone_vault_skim(vault, session["realized_pnl"], session["vaulted_amount"])
     if skim > 0:
         database.add_to_vault(session_id, skim)

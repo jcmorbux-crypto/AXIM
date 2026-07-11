@@ -52,6 +52,19 @@ class CatalogTests(unittest.TestCase):
         catalog_supported = {s["key"] for s in all_strategies if s["simulate_supported"]}
         self.assertEqual(catalog_supported, set(engine._SIZE_FUNCS.keys()))
 
+    def test_phase2_strategies_marked_implemented(self):
+        # Momentum/Empire/Fortress are real now (wired into
+        # core/risk_engine.py's compute_position_size/on_trade_closed),
+        # not catalog-only - but none are in the quick single-path
+        # simulator (state-machine strategies, don't fit that helper's
+        # stateless-per-call model) - that's a real, honest gap, not a
+        # bug, and the UI shows the "implemented elsewhere" banner for
+        # exactly this case.
+        for key in ["momentum", "empire", "fortress"]:
+            strategy = catalog.get_strategy(key)
+            self.assertTrue(strategy["implemented"], f"{key} should be marked implemented (Phase 2)")
+            self.assertFalse(strategy["simulate_supported"], f"{key} isn't in the quick simulator yet")
+
     def test_every_strategy_has_required_display_fields(self):
         c = catalog.get_catalog()
         all_strategies = [s for h in c["houses"] for s in h["strategies"]] + c["standalone"]

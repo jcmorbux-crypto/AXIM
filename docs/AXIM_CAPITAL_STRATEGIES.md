@@ -1,10 +1,22 @@
 # AXIM Capital Strategies (tm)
 
-**Status: Phase 1 complete (2026-07-11).** Confirmed product direction -
-see `memory/project_axim_capital_strategies.md` for how this was
-confirmed (arrived via an unusual channel first, verified directly with
-the user before any implementation started, per this project's standing
-practice for consequential instructions).
+**Status: Phase 1 + partial Phase 2 complete (2026-07-11).** Confirmed
+product direction - see `memory/project_axim_capital_strategies.md` for
+how this was confirmed (arrived via an unusual channel first, verified
+directly with the user before any implementation started, per this
+project's standing practice for consequential instructions).
+
+**Phase 2 progress**: Momentum, Fortress, and Empire are real and wired
+into live sizing (`core/risk_engine.py`), same standard as every Phase 1
+strategy - not catalog-only. Axiom Vault gained its `per_trade` trigger
+type. All three new strategies are genuine state machines (a per-session
+step counter, persisted protected-principal, a persisted ladder level)
+that don't fit the existing quick single-path demo simulator's stateless
+model - they're marked `implemented: true` but `simulate_supported:
+false` in the catalog, same honest treatment already used for Sentinel/
+Cashflow/Strike/Dominion/QuantEdge/Phoenix in Phase 1. Still open from
+Phase 2: Leviathan, Blackwater, Sniper (need more design input - see
+"Deliberately not started" below).
 
 ## What this is
 
@@ -61,6 +73,7 @@ before (the new Cashflow/Sentinel/Apex Ascension features all default to
 | Axiom Vault (tm) | existing Profit Vault, relabeled only (Phase 2 adds new trigger types) |
 | Phoenix (tm) | existing Martingale - already step-capped by design, relabeled as an explicit standalone high-risk strategy, never presented as part of a conservative house |
 | Apex Ascension, Cashflow, Strike, Sentinel | genuinely new calculations, Phase 1 |
+| Momentum, Fortress, Empire | genuinely new calculations, Phase 2 |
 
 ## What's real vs. catalog-only right now
 
@@ -70,12 +83,43 @@ complete even before every calculation exists). The "Run Simulation"
 button only appears for strategies with a real quick-simulate wiring
 today: **Foundation, Titan Allocation, Apex Ascension**. Everything else
 marked `implemented: true` in the catalog (Sentinel, Cashflow, Strike,
-Dominion, QuantEdge, Axiom Vault, Phoenix) has real, live calculations
-running through the existing Risk Engine / Funds pages already - just
-not (yet) through this page's simplified single-path demo simulator,
-which the UI states plainly rather than showing a button that would 400.
-Momentum, Empire, Leviathan, Blackwater, Sniper, Fortress, and Oracle are
-genuinely not built yet (Phase 2/3) and the UI says so.
+Dominion, QuantEdge, Axiom Vault, Phoenix, Momentum, Fortress, Empire)
+has real, live calculations running through the existing Risk Engine /
+Funds pages already - just not (yet) through this page's simplified
+single-path demo simulator, which the UI states plainly rather than
+showing a button that would 400 (Momentum/Fortress/Empire specifically
+are real state machines - a per-session step counter, a persisted
+protected-principal value, a persisted ladder level - that don't fit the
+simulator's current stateless-per-call design without a larger rewrite,
+which felt like the wrong place to spend effort vs. Phase 3's real
+Strategy Lab integration). **Leviathan, Blackwater, Sniper, and Oracle**
+are genuinely not built yet - see "Deliberately not started" below for
+why, rather than a rushed, fabricated version of each.
+
+## Deliberately not started (Leviathan, Blackwater, Sniper)
+
+These three need a real design decision or a new data source before
+they can be built honestly, not just more engineering time:
+
+- **Sniper** needs signal-level metadata (confidence, volatility, signal
+  age at receipt) to filter on. `parsers/signal_parser.py`'s current
+  output doesn't carry most of these - they'd need to be added to the
+  signal schema first (or sourced from `core/source_profiler.py`'s
+  research module), not invented at the strategy layer.
+- **Blackwater** needs a "conviction level" classification (Watch /
+  Qualified / Prime / Whale / Blackwater per the spec) computed from
+  something - provider historical win rate, multi-source agreement,
+  etc. - none of which AXIM tracks per-signal today. This is the same
+  underlying gap Oracle (Phase 3's confidence-score engine) needs too;
+  building Blackwater properly probably means building a shared
+  scoring primitive both can use, not two separate ad hoc ones.
+- **Leviathan** is a genuine multi-phase state machine (break-even
+  objectives, "Pay Opportunities," controlled 2X sequences) with more
+  free design parameters than the spec pins down precisely enough to
+  implement without guessing at several judgment calls (how a "Pay
+  Opportunity" is actually detected, phase-advancement thresholds).
+  Worth a short design pass with the user before writing code, not
+  worth fabricating defaults for.
 
 ## Known simplifications (stated plainly, not silently overclaimed)
 
@@ -89,9 +133,9 @@ genuinely not built yet (Phase 2/3) and the UI says so.
   Monte Carlo / historical backtesting is Phase 3's Strategy Lab
   integration, and the UI says so directly under every result.
 
-## Next up (Phase 2 / Phase 3, per the confirmed build priority)
+## Next up
 
-Phase 2: Momentum, Empire, Leviathan, Blackwater, Sniper, Fortress, Axiom
-Vault's new trigger types. Phase 3: QuantEdge/Oracle/Phoenix's full
-re-wiring into the quick simulator, the Strategy Builder, Strategy Lab
-Monte Carlo/historical backtesting, sportsbook support.
+Remaining Phase 2: Leviathan, Blackwater, Sniper (blocked on the design/
+data-source gaps above, not effort). Phase 3: QuantEdge/Oracle/Phoenix's
+full re-wiring into the quick simulator, the Strategy Builder, Strategy
+Lab Monte Carlo/historical backtesting, sportsbook support.

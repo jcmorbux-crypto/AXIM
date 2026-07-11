@@ -22,10 +22,13 @@ from auth_routes import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/risk-profiles", tags=["risk-engine"])
 
-# "apex_ascension" added for AXIM Capital Strategies (tm) - core/
-# capital_strategies.py's own real sizing calculation, alongside the
-# pre-existing fixed/percent/dynamic/kelly modes (unchanged).
-_VALID_SIZING_MODES = {"fixed", "percent", "dynamic", "kelly", "apex_ascension"}
+# "apex_ascension"/"empire" added for AXIM Capital Strategies (tm) - core/
+# capital_strategies.py's own real sizing calculations, alongside the
+# pre-existing fixed/percent/dynamic/kelly modes (unchanged). Momentum/
+# Fortress/Sentinel/Cashflow/Strike are modifiers layered on top of
+# whichever of these base modes is active, not sizing modes of their own,
+# so they don't belong in this set.
+_VALID_SIZING_MODES = {"fixed", "percent", "dynamic", "kelly", "apex_ascension", "empire"}
 
 
 class ProfileCreate(BaseModel):
@@ -138,6 +141,31 @@ class StrikeUpdate(BaseModel):
     enabled: Optional[bool] = None
     max_session_duration_minutes: Optional[float] = None
     max_consecutive_losses: Optional[int] = None
+
+
+class MomentumUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    max_steps: Optional[int] = None
+    multiplier: Optional[float] = None
+    custom_ladder_json: Optional[str] = None
+    profit_lock_percent: Optional[float] = None
+
+
+class FortressUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    protection_threshold: Optional[float] = None
+    protected_principal: Optional[float] = None
+
+
+class EmpireUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    starting_amount: Optional[float] = None
+    target_amount: Optional[float] = None
+    num_levels: Optional[int] = None
+    levels_json: Optional[str] = None
+    failure_behavior: Optional[str] = None
+    checkpoint_level: Optional[int] = None
+    current_level: Optional[int] = None
 
 
 def _get_or_404(profile_id):
@@ -271,6 +299,30 @@ def update_strike(profile_id: int, body: StrikeUpdate, user=Depends(require_admi
     profile = _get_or_404(profile_id)
     _reject_if_template(profile)
     database.update_strike_settings(profile_id, **body.model_dump(exclude_unset=True))
+    return database.get_risk_profile(profile_id)
+
+
+@router.patch("/{profile_id}/momentum")
+def update_momentum(profile_id: int, body: MomentumUpdate, user=Depends(require_admin)):
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    database.update_momentum_settings(profile_id, **body.model_dump(exclude_unset=True))
+    return database.get_risk_profile(profile_id)
+
+
+@router.patch("/{profile_id}/fortress")
+def update_fortress(profile_id: int, body: FortressUpdate, user=Depends(require_admin)):
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    database.update_fortress_settings(profile_id, **body.model_dump(exclude_unset=True))
+    return database.get_risk_profile(profile_id)
+
+
+@router.patch("/{profile_id}/empire")
+def update_empire(profile_id: int, body: EmpireUpdate, user=Depends(require_admin)):
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    database.update_empire_settings(profile_id, **body.model_dump(exclude_unset=True))
     return database.get_risk_profile(profile_id)
 
 

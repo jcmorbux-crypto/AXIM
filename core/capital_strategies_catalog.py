@@ -82,13 +82,14 @@ STRATEGIES = {
         "name": "Momentum", "house": "summit", "formerly": "Anti-Martingale / Positive Progression",
         "philosophy": "Increase deployment only following wins; reset to base (or a lower step) after a loss.",
         "tagline": "Press strength. Retreat from weakness.",
-        "risk_level": "Moderate to Aggressive", "implemented": False, "phase": 2,
+        "risk_level": "Moderate to Aggressive", "implemented": True, "phase": 2,
     },
     "empire": {
         "name": "Empire", "house": "summit", "formerly": "Ladder Challenge",
         "philosophy": "Advance through a sequence of capital levels from a starting amount to a target, with checkpoint protection against a failed step.",
         "tagline": "Build the empire one conquest at a time.",
-        "risk_level": "Aggressive", "implemented": False, "phase": 2,
+        "risk_level": "Aggressive", "implemented": True, "phase": 2,
+        "sizing_mode": "empire",
     },
     "leviathan": {
         "name": "Leviathan", "house": "alpha", "formerly": "Donny Millionaire / PWF-inspired",
@@ -125,7 +126,7 @@ STRATEGIES = {
         "name": "Fortress", "house": "legacy", "formerly": None,
         "philosophy": "Track original principal separately from profits; once protected, new trades fund only from active profits - the principal never returns to the battlefield.",
         "tagline": "The principal does not return to the battlefield.",
-        "risk_level": "Conservative", "implemented": False, "phase": 2,
+        "risk_level": "Conservative", "implemented": True, "phase": 2,
     },
     "axiom_vault": {
         "name": "Axiom Vault", "house": "legacy", "formerly": "Profit Vault",
