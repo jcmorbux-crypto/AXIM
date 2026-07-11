@@ -196,9 +196,13 @@ async function fetchJSON(url, opts) {
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
 
 async function refreshAll() {
-  allProfiles = await fetchJSON("/api/risk-profiles");
-  renderTemplates();
-  renderProfileList();
+  try {
+    allProfiles = await fetchJSON("/api/risk-profiles");
+    renderTemplates();
+    renderProfileList();
+  } catch (e) {
+    document.getElementById("profiles-list").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
 }
 
 function renderTemplates() {
@@ -257,7 +261,13 @@ function newProfile() {
 async function selectProfile(id) {
   currentProfileId = id;
   renderProfileList();
-  const p = await fetchJSON(`/api/risk-profiles/${id}`);
+  let p;
+  try {
+    p = await fetchJSON(`/api/risk-profiles/${id}`);
+  } catch (e) {
+    alert("Failed to load profile: " + e.message);
+    return;
+  }
   document.getElementById("empty-state").style.display = "none";
   document.getElementById("editor-panel").style.display = "block";
   document.getElementById("editor-title").textContent = p.name;
@@ -457,14 +467,18 @@ async function duplicateCurrentProfile() {
 
 async function exportCurrentProfile() {
   if (currentProfileId === null) return;
-  const data = await fetchJSON(`/api/risk-profiles/${currentProfileId}/export`);
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `${data.name.replace(/\s+/g, "_")}.axim-risk-profile.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  try {
+    const data = await fetchJSON(`/api/risk-profiles/${currentProfileId}/export`);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${data.name.replace(/\s+/g, "_")}.axim-risk-profile.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert("Failed to export: " + e.message);
+  }
 }
 
 async function deleteCurrentProfile() {

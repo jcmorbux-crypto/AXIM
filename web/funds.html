@@ -169,19 +169,23 @@ function openModal(id) { document.getElementById(id).style.display = "flex"; }
 function closeModal(id) { document.getElementById(id).style.display = "none"; }
 
 async function refreshAll() {
-  const [funds, channels, riskProfiles, sessionProfiles, brokerAccounts] = await Promise.all([
-    fetchJSON("/api/funds"),
-    fetchJSON("/api/channels"),
-    fetchJSON("/api/risk-profiles"),
-    fetchJSON("/api/sessions/profiles").catch(() => []),
-    fetchJSON("/api/broker-accounts").catch(() => []),
-  ]);
-  allFunds = funds;
-  allChannels = channels;
-  allRiskProfiles = riskProfiles;
-  allSessionProfiles = sessionProfiles;
-  allBrokerAccounts = brokerAccounts;
-  renderFundsList();
+  try {
+    const [funds, channels, riskProfiles, sessionProfiles, brokerAccounts] = await Promise.all([
+      fetchJSON("/api/funds"),
+      fetchJSON("/api/channels"),
+      fetchJSON("/api/risk-profiles"),
+      fetchJSON("/api/sessions/profiles").catch(() => []),
+      fetchJSON("/api/broker-accounts").catch(() => []),
+    ]);
+    allFunds = funds;
+    allChannels = channels;
+    allRiskProfiles = riskProfiles;
+    allSessionProfiles = sessionProfiles;
+    allBrokerAccounts = brokerAccounts;
+    renderFundsList();
+  } catch (e) {
+    document.getElementById("funds-list").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
 }
 
 function renderFundsList() {
@@ -198,7 +202,14 @@ function renderFundsList() {
 async function selectFund(fundId) {
   currentFundId = fundId;
   renderFundsList();
-  const report = await fetchJSON(`/api/funds/${fundId}`);
+  let report;
+  try {
+    report = await fetchJSON(`/api/funds/${fundId}`);
+  } catch (e) {
+    document.getElementById("detail-panel").style.display = "block";
+    document.getElementById("detail-title").textContent = "Failed to load: " + e.message;
+    return;
+  }
   renderDetail(report);
   try {
     const rules = await fetchJSON(`/api/rules?fund_id=${fundId}`);
@@ -332,12 +343,17 @@ async function toggleFundLive(checked) {
 }
 
 async function toggleSource(channelId, enabled) {
-  if (enabled) {
-    await fetchJSON(`/api/funds/${currentFundId}/sources`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channel_id: channelId }),
-    });
-  } else {
-    await fetchJSON(`/api/funds/${currentFundId}/sources/${channelId}`, { method: "DELETE" });
+  try {
+    if (enabled) {
+      await fetchJSON(`/api/funds/${currentFundId}/sources`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ channel_id: channelId }),
+      });
+    } else {
+      await fetchJSON(`/api/funds/${currentFundId}/sources/${channelId}`, { method: "DELETE" });
+    }
+  } catch (e) {
+    alert("Failed: " + e.message);
+    await selectFund(currentFundId);
   }
 }
 
@@ -356,21 +372,29 @@ async function toggleFundPause() {
 async function toggleArchive() {
   const fund = allFunds.find(f => f.id === currentFundId);
   const newStatus = fund.status === "archived" ? "active" : "archived";
-  await fetchJSON(`/api/funds/${currentFundId}`, {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: newStatus }),
-  });
-  await refreshAll();
-  await selectFund(currentFundId);
+  try {
+    await fetchJSON(`/api/funds/${currentFundId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: newStatus }),
+    });
+    await refreshAll();
+    await selectFund(currentFundId);
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
 }
 
 async function duplicateCurrentFund() {
   const newName = prompt("Name for the duplicated fund:");
   if (!newName) return;
-  const result = await fetchJSON(`/api/funds/${currentFundId}/duplicate`, {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: newName }),
-  });
-  await refreshAll();
-  await selectFund(result.fund.id);
+  try {
+    const result = await fetchJSON(`/api/funds/${currentFundId}/duplicate`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: newName }),
+    });
+    await refreshAll();
+    await selectFund(result.fund.id);
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
 }
 
 function openCreateModal() {

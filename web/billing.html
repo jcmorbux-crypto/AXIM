@@ -68,11 +68,18 @@ async function fetchJSON(url, opts) {
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
 
 async function refreshAll() {
-  [billingStatus, plansData] = await Promise.all([
-    fetchJSON("/api/billing/status"),
-    fetchJSON("/api/billing/plans"),
-  ]);
-  render();
+  try {
+    [billingStatus, plansData] = await Promise.all([
+      fetchJSON("/api/billing/status"),
+      fetchJSON("/api/billing/plans"),
+    ]);
+    render();
+  } catch (e) {
+    const banner = document.getElementById("not-configured-banner");
+    banner.className = "banner danger";
+    banner.style.display = "block";
+    banner.textContent = "Failed to load billing status: " + e.message;
+  }
 }
 
 function render() {

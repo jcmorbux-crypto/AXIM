@@ -288,9 +288,14 @@ async function connectAccount(id) {
     let ticks = 0;
     const poll = setInterval(async () => {
       ticks += 1;
-      await refreshAccounts();
-      const account = (await fetchJSON("/api/broker-accounts")).find(a => a.id === id);
-      if (!account || account.connection_status !== "connecting" || ticks > 60) clearInterval(poll);
+      try {
+        await refreshAccounts();
+        const account = (await fetchJSON("/api/broker-accounts")).find(a => a.id === id);
+        if (!account || account.connection_status !== "connecting" || ticks > 60) clearInterval(poll);
+      } catch (e) {
+        console.error("connectAccount poll failed:", e);
+        if (ticks > 60) clearInterval(poll);
+      }
     }, 5000);
   } catch (e) {
     alert("Failed: " + e.message);

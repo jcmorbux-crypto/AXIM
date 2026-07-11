@@ -128,39 +128,51 @@ function statusBadge(status) {
 }
 
 async function loadChannelPicker() {
-  allChannels = await fetchJSON("/api/channels");
-  const enabled = allChannels.filter(c => c.enabled);
-  const list = enabled.length ? enabled : allChannels;
-  document.getElementById("channel-picker").innerHTML = list.map(c => `
-    <div class="channel-picker-item">
-      <input type="checkbox" value="${c.id}" class="session-channel-checkbox" style="width:auto;">
-      <span>${escapeHtml(c.title || c.username || c.id)}</span>
-      <span class="muted" style="font-size:11px;">(${c.source_type})</span>
-    </div>
-  `).join("") || '<div class="empty">No channels yet - add some on the Telegram Sources page.</div>';
+  try {
+    allChannels = await fetchJSON("/api/channels");
+    const enabled = allChannels.filter(c => c.enabled);
+    const list = enabled.length ? enabled : allChannels;
+    document.getElementById("channel-picker").innerHTML = list.map(c => `
+      <div class="channel-picker-item">
+        <input type="checkbox" value="${c.id}" class="session-channel-checkbox" style="width:auto;">
+        <span>${escapeHtml(c.title || c.username || c.id)}</span>
+        <span class="muted" style="font-size:11px;">(${c.source_type})</span>
+      </div>
+    `).join("") || '<div class="empty">No channels yet - add some on the Telegram Sources page.</div>';
+  } catch (e) {
+    document.getElementById("channel-picker").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
 }
 
 async function loadRiskProfiles() {
-  const profiles = (await fetchJSON("/api/risk-profiles?include_templates=false"));
   const select = document.getElementById("new-risk-profile");
-  select.innerHTML = '<option value="">None - use global Money Management defaults</option>' +
-    profiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)} (${p.sizing_mode})</option>`).join("");
+  try {
+    const profiles = (await fetchJSON("/api/risk-profiles?include_templates=false"));
+    select.innerHTML = '<option value="">None - use global Money Management defaults</option>' +
+      profiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)} (${p.sizing_mode})</option>`).join("");
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load risk profiles</option>';
+  }
 }
 
 let allFunds = [];
 let allFundsAnyStatus = [];
 
 async function loadFunds() {
-  [allFunds, allFundsAnyStatus] = await Promise.all([
-    fetchJSON("/api/funds?status=active"),
-    fetchJSON("/api/funds"),
-  ]);
   const select = document.getElementById("new-fund");
-  select.innerHTML = '<option value="">Select a fund...</option>' +
-    allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("") +
-    (allFunds.length ? "" : "");
-  if (!allFunds.length) {
-    select.innerHTML += '<option value="" disabled>No funds yet - create one on the Funds page</option>';
+  try {
+    [allFunds, allFundsAnyStatus] = await Promise.all([
+      fetchJSON("/api/funds?status=active"),
+      fetchJSON("/api/funds"),
+    ]);
+    select.innerHTML = '<option value="">Select a fund...</option>' +
+      allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("") +
+      (allFunds.length ? "" : "");
+    if (!allFunds.length) {
+      select.innerHTML += '<option value="" disabled>No funds yet - create one on the Funds page</option>';
+    }
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load funds</option>';
   }
 }
 
@@ -416,7 +428,13 @@ async function refreshProfiles() {
 }
 
 async function useProfile(profileId) {
-  const profiles = await fetchJSON("/api/sessions/profiles");
+  let profiles;
+  try {
+    profiles = await fetchJSON("/api/sessions/profiles");
+  } catch (e) {
+    alert("Failed to load profile: " + e.message);
+    return;
+  }
   const p = profiles.find(x => x.id === profileId);
   if (!p) return;
   document.getElementById("new-session-name").value = p.name;

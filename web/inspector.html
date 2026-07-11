@@ -99,10 +99,16 @@ function escapeHtml(s) { const d = document.createElement("div"); d.textContent 
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
 
 async function loadChannelPickers() {
-  allChannels = await fetchJSON("/api/channels");
-  const options = allChannels.map(c => `<option value="${c.id}">${escapeHtml(c.title || c.username || c.id)}</option>`).join("");
-  document.getElementById("channel-picker").innerHTML = '<option value="">Select a channel...</option>' + options;
-  document.getElementById("rule-channel-picker").innerHTML = '<option value="">Select a channel...</option>' + options;
+  try {
+    allChannels = await fetchJSON("/api/channels");
+    const options = allChannels.map(c => `<option value="${c.id}">${escapeHtml(c.title || c.username || c.id)}</option>`).join("");
+    document.getElementById("channel-picker").innerHTML = '<option value="">Select a channel...</option>' + options;
+    document.getElementById("rule-channel-picker").innerHTML = '<option value="">Select a channel...</option>' + options;
+  } catch (e) {
+    const failed = `<option value="">Failed to load channels</option>`;
+    document.getElementById("channel-picker").innerHTML = failed;
+    document.getElementById("rule-channel-picker").innerHTML = failed;
+  }
 }
 
 async function loadChannelMessages() {

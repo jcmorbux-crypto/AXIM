@@ -154,8 +154,13 @@ async function fetchJSON(url, opts) {
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML; }
 
 async function loadFundFilter() {
-  allFunds = await fetchJSON("/api/funds");
   const select = document.getElementById("fund-filter");
+  try {
+    allFunds = await fetchJSON("/api/funds");
+  } catch (e) {
+    select.innerHTML = `<option value="">Failed to load funds: ${escapeHtml(e.message)}</option>`;
+    return;
+  }
   select.innerHTML = '<option value="">Select a fund...</option>' +
     allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("");
   const preselect = new URLSearchParams(window.location.search).get("fund");
@@ -176,13 +181,17 @@ async function onFundFilterChange() {
 }
 
 async function refreshAll() {
-  [catalog, allRules, allChannels, allRiskProfiles] = await Promise.all([
-    fetchJSON("/api/rules/catalog"),
-    fetchJSON(`/api/rules?fund_id=${currentFundId}`),
-    fetchJSON("/api/channels"),
-    fetchJSON("/api/risk-profiles"),
-  ]);
-  renderRulesList();
+  try {
+    [catalog, allRules, allChannels, allRiskProfiles] = await Promise.all([
+      fetchJSON("/api/rules/catalog"),
+      fetchJSON(`/api/rules?fund_id=${currentFundId}`),
+      fetchJSON("/api/channels"),
+      fetchJSON("/api/risk-profiles"),
+    ]);
+    renderRulesList();
+  } catch (e) {
+    document.getElementById("rules-list").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
 }
 
 function describeParams(type, catalogEntry, params) {
@@ -495,16 +504,25 @@ async function saveRule() {
 async function deleteCurrentRule() {
   if (!currentRuleId) return;
   if (!confirm("Delete this automation? This cannot be undone.")) return;
-  await fetchJSON(`/api/rules/${currentRuleId}`, { method: "DELETE" });
-  closeEditor();
-  await refreshAll();
+  try {
+    await fetchJSON(`/api/rules/${currentRuleId}`, { method: "DELETE" });
+    closeEditor();
+    await refreshAll();
+  } catch (e) {
+    alert("Failed to delete: " + e.message);
+  }
 }
 
 async function toggleRule(ruleId, enabled) {
-  await fetchJSON(`/api/rules/${ruleId}`, {
-    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
-  });
-  await refreshAll();
+  try {
+    await fetchJSON(`/api/rules/${ruleId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+    });
+    await refreshAll();
+  } catch (e) {
+    alert("Failed: " + e.message);
+    await refreshAll();
+  }
 }
 
 (async () => {

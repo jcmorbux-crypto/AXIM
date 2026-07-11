@@ -166,8 +166,12 @@ document.getElementById("tabs").addEventListener("click", (e) => {
 });
 
 async function loadGeneral() {
-  const v = await fetchJSON("/api/version");
-  document.getElementById("app-version").textContent = "v" + v.version;
+  try {
+    const v = await fetchJSON("/api/version");
+    document.getElementById("app-version").textContent = "v" + v.version;
+  } catch (e) {
+    document.getElementById("app-version").textContent = "unknown";
+  }
   document.getElementById("current-user-email").textContent = currentUser.email;
   document.getElementById("current-user-role").textContent = currentUser.role;
 }
@@ -354,8 +358,12 @@ async function runBackup() {
 }
 
 async function loadDeveloperMode() {
-  const status = await fetchJSON("/api/settings/developer-mode");
-  document.getElementById("dev-mode-toggle").checked = status.enabled;
+  try {
+    const status = await fetchJSON("/api/settings/developer-mode");
+    document.getElementById("dev-mode-toggle").checked = status.enabled;
+  } catch (e) {
+    console.error("loadDeveloperMode failed:", e);
+  }
 }
 
 async function toggleDeveloperMode() {

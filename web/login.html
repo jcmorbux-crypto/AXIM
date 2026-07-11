@@ -167,8 +167,15 @@ async function boot() {
     // not authenticated - fall through to login/bootstrap
   }
 
-  const status = await fetchJSON("/api/auth/bootstrap-status");
-  show(status.needs_bootstrap ? "bootstrap-view" : "login-view");
+  try {
+    const status = await fetchJSON("/api/auth/bootstrap-status");
+    show(status.needs_bootstrap ? "bootstrap-view" : "login-view");
+  } catch (e) {
+    // Never leave the page blank with no way to act - fall back to the
+    // login form, which will itself show a clear error on submit if the
+    // server is genuinely unreachable.
+    show("login-view");
+  }
 }
 
 document.getElementById("bootstrap-form").addEventListener("submit", async (e) => {
