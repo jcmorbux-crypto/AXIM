@@ -117,10 +117,18 @@ account watches actually have an edge net of payout.**
 
 ## Functional / operational (carried forward from the 07-05 checklist, re-verified)
 
-- [x] Full automated regression suite passes: **503 tests, OK
+- [x] Full automated regression suite passes: **520 tests, OK
       (1 skipped)**, re-run this session (`python -m unittest discover -s
       tests -p "test_*.py"`) - up from 420 at the last checklist,
-      reflecting the multi-Fund/auth/Strategy Lab/billing work since.
+      reflecting the multi-Fund/auth/Strategy Lab/billing work since, plus
+      2 new heartbeat-balance tests and a new `tests/test_pocket_dom.py`
+      (15 tests) covering the pure parsing/formatting logic underneath
+      `execution/pocket_dom.py`'s DOM functions (expiry parsing, amount
+      formatting, balance-text parsing) - narrows, but does not close,
+      the "no automated coverage for the DOM interaction layer" gap from
+      the 07-05 review: the actual browser-touching selectors/clicks
+      still have no automated coverage and rely on the manual
+      `tests/manual_click_test*.py` scripts, honestly unchanged.
 - [x] Browser-crash and process-restart recovery both previously
       live-fire tested against the real production code (not
       reimplementations) - see `docs/AXIM_ROADMAP.md`'s "Process-level

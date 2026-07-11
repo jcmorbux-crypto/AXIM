@@ -573,11 +573,21 @@ async def read_balance(page, timeout=DEFAULT_TIMEOUT_MS):
         raw = await locator.get_attribute("data-hd-show")
         if raw is None:
             raw = (await locator.inner_text()).strip()
-        cleaned = raw.replace(",", "").replace("$", "").strip()
-        return float(cleaned) if cleaned else None
+        return _parse_balance_text(raw)
     except _RETRYABLE_ERRORS + (ValueError,) as e:
         logger.warning("read_balance: could not read balance (%s) - non-fatal", e)
         return None
+
+
+def _parse_balance_text(raw):
+    """Pure parsing, split out from read_balance so it's unit-testable
+    without a real page/browser - see tests/test_pocket_dom.py. Strips
+    thousands separators and a leading currency symbol (both present in
+    the real captured markup, e.g. "49,973.92"); raises ValueError on
+    anything that isn't a real number, caught by read_balance's own
+    non-fatal handling same as every other DOM-read failure mode."""
+    cleaned = (raw or "").replace(",", "").replace("$", "").strip()
+    return float(cleaned) if cleaned else None
 
 
 SEL_ASSET_INACTIVE_OVERLAY = ".asset-inactive"
