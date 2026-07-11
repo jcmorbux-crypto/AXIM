@@ -551,9 +551,11 @@ def pocket_option_status(user=Depends(get_current_user)):
     heartbeat (no update in a while) is the signal something's wrong even
     if the OS process is still technically running.
 
-    Live account balance is NOT yet implemented - no DOM selector for it
-    has been built/verified yet (flagged in docs/AXIM_UI_PLAN.md as a
-    follow-up), so this deliberately does not fabricate a number."""
+    Live account balance: self-reported by the listener the same way as
+    the process-health columns (pocket_dom.read_balance against its own
+    warm page, see telegram_listener.py's _heartbeat_loop) - None until
+    the first successful read after a (re)start, or if every read since
+    has failed; never fabricated."""
     heartbeat = database.get_listener_heartbeat()
     process_status = process_control.get_status()
     stale = True
@@ -565,7 +567,7 @@ def pocket_option_status(user=Depends(get_current_user)):
         "account_mode": ACCOUNT,
         "heartbeat": heartbeat,
         "heartbeat_stale": stale,
-        "balance": None,  # not yet implemented - see docstring above
+        "balance": heartbeat.get("balance") if heartbeat else None,
     }
 
 

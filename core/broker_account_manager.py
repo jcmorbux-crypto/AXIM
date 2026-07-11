@@ -19,6 +19,7 @@ accounts are genuinely, independently connected, not sharing anything.
 """
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -33,6 +34,7 @@ sys.path.insert(0, str(CONFIG_DIR))
 import database
 import recovery
 import fund_manager
+import pocket_dom
 from trade_lifecycle import TradeStatus
 from trade_coordinator import TradeCoordinator
 from browser_warmup import BrowserWarmupService
@@ -41,6 +43,10 @@ from settings import MAX_CONCURRENT_WORKERS
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
+
+# Matches telegram_listener.py's HEARTBEAT_INTERVAL_SECONDS - same
+# "informational, not urgent" cadence for the same kind of read.
+BALANCE_REFRESH_INTERVAL_SECONDS = 30
 
 # {broker_account_id: {"warmup": BrowserWarmupService, "pool": BrowserWorkerPool,
 #                       "coordinator": TradeCoordinator}}
@@ -113,10 +119,36 @@ async def _build_account_context(broker_account_id):
     await recovery.run_recovery(warmup, broker_account_id=broker_account_id, skip_abandoned_pass=True)
 
     database.update_broker_account(broker_account_id, connection_status="connected")
-    entry = {"warmup": warmup, "pool": pool, "coordinator": coordinator}
+    balance_task = asyncio.create_task(_balance_refresh_loop(broker_account_id, warmup))
+    entry = {"warmup": warmup, "pool": pool, "coordinator": coordinator, "balance_task": balance_task}
     _registry[broker_account_id] = entry
     logger.info("broker_account_manager: account_id=%s ready", broker_account_id)
     return entry
+
+
+async def _balance_refresh_loop(broker_account_id, warmup):
+    """Periodically reads this account's real balance (pocket_dom.read_balance,
+    against warmup's own dedicated page - same non-contending read as
+    telegram_listener.py's legacy-path heartbeat) into broker_accounts.
+    last_balance/last_balance_checked_at, which web/broker.html and
+    web/funds.html already display - those columns existed unpopulated
+    since the multi-account schema shipped. A failed read (None) is
+    simply skipped, not written - leaves the last known-good value in
+    place rather than flickering it to blank on a transient DOM hiccup."""
+    while True:
+        await asyncio.sleep(BALANCE_REFRESH_INTERVAL_SECONDS)
+        try:
+            page = await warmup.get_page()
+            balance = await pocket_dom.read_balance(page)
+            if balance is not None:
+                database.update_broker_account(
+                    broker_account_id, last_balance=balance,
+                    last_balance_checked_at=datetime.now().isoformat(),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("broker_account_manager: account_id=%s balance refresh failed: %s", broker_account_id, e)
 
 
 async def get_or_build_account_context(broker_account_id):
@@ -235,6 +267,7 @@ async def stop_all():
     just the legacy default one. Best-effort: one account failing to
     close cleanly should not prevent the others from closing."""
     for account_id, entry in list(_registry.items()):
+        entry["balance_task"].cancel()
         try:
             await entry["pool"].stop()
             await entry["warmup"].stop()

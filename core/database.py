@@ -502,6 +502,12 @@ def initialize_database():
         "listener_mem_mb": "REAL",
         "chrome_count": "INTEGER",
         "chrome_mem_mb": "REAL",
+        # Self-reported the same way as the columns above, via
+        # pocket_dom.read_balance() against the listener's own warm page -
+        # closes the gap api/main.py's pocket_option_status endpoint used
+        # to flag as "not yet implemented". None until the first
+        # successful read after a (re)start.
+        "balance": "REAL",
     }
     heartbeat_columns = {row["name"] for row in conn.execute("PRAGMA table_info(ui_listener_heartbeat)")}
     for column, sql_type in _NEW_HEARTBEAT_COLUMNS.items():
@@ -2562,25 +2568,30 @@ def get_lifetime_realized_pnl():
 @timed("database")
 def update_listener_heartbeat(generation, worker_count, demo_mode_verified,
                                listener_pid=None, listener_uptime_min=None, listener_mem_mb=None,
-                               chrome_count=None, chrome_mem_mb=None):
+                               chrome_count=None, chrome_mem_mb=None, balance=None):
+    """balance uses COALESCE(?, balance) rather than a plain overwrite - a
+    single transient DOM-read miss (pocket_dom.read_balance returns None
+    on failure, by design, same as every other non-fatal DOM read in this
+    codebase) should not flicker a last-known-good balance to "unknown"
+    in the UI; it only ever updates on an actual successful read."""
     conn = get_connection()
     now = datetime.now().isoformat()
     conn.execute("""
         UPDATE ui_listener_heartbeat
         SET generation = ?, worker_count = ?, demo_mode_verified = ?, updated_at = ?,
             listener_pid = ?, listener_uptime_min = ?, listener_mem_mb = ?,
-            chrome_count = ?, chrome_mem_mb = ?
+            chrome_count = ?, chrome_mem_mb = ?, balance = COALESCE(?, balance)
         WHERE id = 1
     """, (generation, worker_count, 1 if demo_mode_verified else 0, now,
-          listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb))
+          listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb, balance))
     if conn.total_changes == 0:
         conn.execute("""
             INSERT INTO ui_listener_heartbeat (
                 id, generation, worker_count, demo_mode_verified, updated_at,
-                listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb, balance
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (generation, worker_count, 1 if demo_mode_verified else 0, now,
-              listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb))
+              listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb, balance))
     conn.commit()
     conn.close()
 

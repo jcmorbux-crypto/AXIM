@@ -61,6 +61,15 @@ SEL_CLOSED_LIST_ITEM = f"{SEL_DEALS_LIST} .deals-list__item"
 SEL_PAYOUT_BLOCK = ".block--payout"
 SEL_PAYOUT_PERCENT = f"{SEL_PAYOUT_BLOCK} .value__val-start"
 
+# The header account-balance display. Confirmed against a real captured
+# page (logs/failures/*/page.html): whichever account is currently active
+# (demo/real/MT) renders as a `.js-hd.js-balance-*` span inside this exact
+# block - the class suffix varies by account type (js-balance-demo,
+# js-balance-real, js-balance-real-USD, ...) but the parent block and the
+# `.js-hd` marker do not, so this selector reads whichever one is live
+# without needing to know in advance which mode this session is in.
+SEL_BALANCE = ".balance-info-block__balance .js-hd"
+
 SEL_ACTIVE_DROPDOWN_MODAL = "#modal-root .drop-down-modal-wrap.active"
 
 # Fixed point inside the chart backdrop, deliberately far left of the
@@ -542,6 +551,32 @@ async def read_payout_percent(page, timeout=DEFAULT_TIMEOUT_MS):
         return int(match.group(1)) if match else None
     except _RETRYABLE_ERRORS as e:
         logger.warning("read_payout_percent: could not read payout (%s) - non-fatal", e)
+        return None
+
+
+@timed("browser")
+async def read_balance(page, timeout=DEFAULT_TIMEOUT_MS):
+    """Reads the current account balance from the header balance display
+    (SEL_BALANCE). Purely informational - returns None on failure rather
+    than raising, same convention as read_payout_percent; never called
+    from anywhere on the trade-execution critical path.
+
+    Prefers the `data-hd-show` attribute over the rendered text: Pocket
+    Option's "hide balance" privacy toggle swaps the visible text for
+    asterisks (`data-hd-hide` becomes what's shown) without changing this
+    attribute, so reading the attribute directly stays correct even with
+    that toggle on - confirmed against a real captured page
+    (logs/failures/*/page.html), not guessed."""
+    locator = page.locator(SEL_BALANCE).first
+    try:
+        await expect(locator).to_be_visible(timeout=timeout)
+        raw = await locator.get_attribute("data-hd-show")
+        if raw is None:
+            raw = (await locator.inner_text()).strip()
+        cleaned = raw.replace(",", "").replace("$", "").strip()
+        return float(cleaned) if cleaned else None
+    except _RETRYABLE_ERRORS + (ValueError,) as e:
+        logger.warning("read_balance: could not read balance (%s) - non-fatal", e)
         return None
 
 

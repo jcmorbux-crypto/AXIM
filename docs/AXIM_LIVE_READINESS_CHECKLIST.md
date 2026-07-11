@@ -144,15 +144,25 @@ account watches actually have an edge net of payout.**
 
 ## Known, accepted, non-blocking gaps
 
-- **Live account balance is not surfaced in the UI**
-      (`api/main.py:545-568` returns `"balance": None` deliberately,
-      rather than fabricating a number - no DOM selector for it has been
-      built/verified). Real gap for live monitoring convenience, not a
-      correctness risk. Not implemented this session because the only
-      browser session available was the one driving the soak test above,
-      and guessing an unverified DOM selector for something money-adjacent
-      would violate this project's own "measure, don't guess" discipline
-      - build and verify it live once a browser is free.
+- [x] **Live account balance display - implemented, not yet live-verified.**
+      Was `api/main.py:545-568` returning `"balance": None` deliberately
+      rather than fabricating a number. Closed this session:
+      `pocket_dom.read_balance()` reads `.balance-info-block__balance
+      .js-hd`'s `data-hd-show` attribute (confirmed against a real
+      captured page, `logs/failures/*/page.html` - not guessed), wired
+      into both the legacy heartbeat loop (new `ui_listener_heartbeat.
+      balance` column, `COALESCE`-protected against a transient read miss
+      overwriting a known-good value) and a new per-broker-account
+      refresh loop (`core/broker_account_manager.py`'s
+      `_balance_refresh_loop`, populating the previously-unpopulated
+      `broker_accounts.last_balance`/`last_balance_checked_at` columns
+      the UI already displayed). 505/505 tests pass (2 new). **Not yet
+      exercised against a real running browser** - doing so would have
+      required restarting the listener process driving the soak test
+      above, which would have reset its uptime continuity. Confirm the
+      Balance panel populates a real number the next time the listener
+      restarts (a normal restart for any other reason is enough - no
+      special action needed).
 - **Risk-profile bankroll does not auto-update from real P&L** during
       live operation the way the backtester carries balance forward -
       Percent/Kelly sizing will use a stale bankroll unless the operator

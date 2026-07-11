@@ -139,6 +139,27 @@ class DatabaseUITests(unittest.TestCase):
         self.assertEqual(hb["listener_pid"], 222)
         self.assertEqual(hb["chrome_count"], 10)
 
+    def test_heartbeat_balance_round_trips(self):
+        database.update_listener_heartbeat(
+            generation=1, worker_count=2, demo_mode_verified=True, balance=49973.92,
+        )
+        self.assertEqual(database.get_listener_heartbeat()["balance"], 49973.92)
+
+    def test_heartbeat_balance_survives_a_failed_read(self):
+        """A transient pocket_dom.read_balance() failure passes balance=None
+        (its documented non-fatal failure value, same as every other DOM
+        read in this codebase) - that must NOT overwrite a last-known-good
+        balance with None, or the UI would flicker to "unknown" on every
+        ordinary DOM-read hiccup instead of only on a genuine first-ever
+        read or a real value change."""
+        database.update_listener_heartbeat(
+            generation=1, worker_count=2, demo_mode_verified=True, balance=1000.0,
+        )
+        database.update_listener_heartbeat(
+            generation=1, worker_count=2, demo_mode_verified=True, balance=None,
+        )
+        self.assertEqual(database.get_listener_heartbeat()["balance"], 1000.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -26,6 +26,7 @@ from trade_coordinator import TradeCoordinator
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
 from timeline import TradeTimeline
+import pocket_dom
 from settings import WATCH_CHANNELS, MAX_CONCURRENT_WORKERS, ACCOUNT
 from logger import get_logger
 from event_bus import get_event_bus
@@ -335,6 +336,19 @@ async def _heartbeat_loop():
                 listener_pid, listener_uptime_min, listener_mem_mb, chrome_count, chrome_mem_mb = (
                     await asyncio.to_thread(_query_own_process_health)
                 )
+                # Read-only against warmup_service's own dedicated page -
+                # the same one track_outcome already reads the Closed-trades
+                # list from concurrently with placement workers, so this
+                # doesn't contend with anything on the trade critical path.
+                # None (pocket_dom.read_balance's own non-fatal failure
+                # value) is handled by update_listener_heartbeat's COALESCE,
+                # not overwritten here.
+                balance = None
+                try:
+                    page = await warmup_service.get_page()
+                    balance = await pocket_dom.read_balance(page)
+                except Exception as e:
+                    logger.warning("telegram_listener: heartbeat balance read failed: %s", e)
                 await asyncio.to_thread(
                     database.update_listener_heartbeat,
                     generation=warmup_service.generation,
@@ -345,6 +359,7 @@ async def _heartbeat_loop():
                     listener_mem_mb=listener_mem_mb,
                     chrome_count=chrome_count,
                     chrome_mem_mb=chrome_mem_mb,
+                    balance=balance,
                 )
         except Exception as e:
             logger.error("telegram_listener: heartbeat write failed: %s", e)
