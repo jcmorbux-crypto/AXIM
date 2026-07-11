@@ -287,9 +287,14 @@ account watches actually have an edge net of payout.**
       bind address).
 - [x] Backup/retention plan exists and was previously verified live
       (`scripts/backup_axim_state.ps1`).
-- [x] `INSTALL.md`/`USER_GUIDE.md`/`DEPLOYMENT.md` plus the new
+- [x] `INSTALL.md`/`USER_GUIDE.md`/`DEPLOYMENT.md` plus
       `docs/AXIM_SETUP_GUIDE.md` and
-      `docs/AXIM_DEMO_VALIDATION_CHECKLIST.md` are current.
+      `docs/AXIM_DEMO_VALIDATION_CHECKLIST.md` are current. RC1 adds a
+      condensed root-level onboarding set on top of these
+      (`QUICK_START.md`, `FIRST_TRADE.md`, `DEMO_CHECKLIST.md`,
+      `LIVE_CHECKLIST.md`, `TROUBLESHOOTING.md`) - the fuller `docs/`
+      versions remain the source of truth for exact evidence/log lines,
+      the root versions are the fast-path summaries.
 - [x] `requirements.txt` gap fixed this session: `pydantic` was imported
       throughout `api/` but not pinned (rode in transitively via
       FastAPI) - now pinned to the installed `2.13.4`.

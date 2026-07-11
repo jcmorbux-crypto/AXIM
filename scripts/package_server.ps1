@@ -49,7 +49,9 @@ foreach ($dir in $IncludeDirs) {
 # Root-level files a fresh install needs.
 $IncludeFiles = @(
     "requirements.txt", ".env.example",
-    "INSTALL.md", "USER_GUIDE.md", "DEPLOYMENT.md", "README.md",
+    "INSTALL.md", "QUICK_START.md", "FIRST_TRADE.md", "DEMO_CHECKLIST.md",
+    "LIVE_CHECKLIST.md", "TROUBLESHOOTING.md",
+    "USER_GUIDE.md", "DEPLOYMENT.md", "README.md",
     "docs\AXIM_SETUP_GUIDE.md", "docs\AXIM_DEMO_VALIDATION_CHECKLIST.md",
     "docs\AXIM_LIVE_READINESS_CHECKLIST.md"
 )

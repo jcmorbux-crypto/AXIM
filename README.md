@@ -21,31 +21,35 @@ admin panel, a Strategy Lab for backtesting historical signals, and an
 Automation Studio (visual IF/THEN rule builder) all sit on top of that
 same core pipeline.
 
-## Getting started
+## Getting started (Release Candidate 1)
 
-**`docs/AXIM_SETUP_GUIDE.md`** is the current, authoritative path from a
-fresh machine to a running server - start there. It covers the guided
-first-run wizard (owner account, Telegram/Pocket Option connection, risk
-profile, signal channels, first session), running unattended, and adding
-a Remote Client on a second device.
+Start here, in order:
 
-Before relying on it for anything beyond deliberate demo testing, work
-through:
+1. **`INSTALL.md`** - get the server installed and running.
+2. **`FIRST_TRADE.md`** - the guided Setup Wizard walkthrough, ending
+   with one confirmed real demo trade. (`QUICK_START.md` if you want
+   the condensed, no-explanation version of both.)
+3. **`DEMO_CHECKLIST.md`** - confirm *this specific install* actually
+   works end to end before relying on it for real signal volume.
+4. **`LIVE_CHECKLIST.md`** - the honest, evidence-based gate before
+   ever considering real money. Read this before touching `ACCOUNT` or
+   any broker account's `live_enabled` flag.
+5. **`TROUBLESHOOTING.md`** - if anything above doesn't come up right.
 
-1. `docs/AXIM_DEMO_VALIDATION_CHECKLIST.md` - confirms *this specific
-   install* actually works end to end against the demo account.
-2. `docs/AXIM_LIVE_READINESS_CHECKLIST.md` - the honest, evidence-based
-   gate before ever considering real money. Read this before touching
-   `ACCOUNT` or any broker account's `live_enabled` flag.
+`docs/AXIM_SETUP_GUIDE.md`, `docs/AXIM_DEMO_VALIDATION_CHECKLIST.md`,
+and `docs/AXIM_LIVE_READINESS_CHECKLIST.md` are the fuller versions of
+2-4 above, with exact log lines, code references, and the full
+evidence trail behind every claim - read those when you want the detail
+or something needs debugging, not just the pass/fail summary.
 
 ## Other docs
 
 | Doc | Covers |
 |---|---|
-| `USER_GUIDE.md` | Day-to-day operation (older, single-connection-era detail - `AXIM_SETUP_GUIDE.md` reflects the current flow more accurately) |
-| `INSTALL.md` | Low-level manual install steps (same caveat - superseded by the Setup Guide for the guided flow) |
+| `USER_GUIDE.md` | Day-to-day operation (older, single-connection-era detail - `docs/AXIM_SETUP_GUIDE.md` reflects the current flow more accurately) |
 | `DEPLOYMENT.md` | Running unattended: process supervision, backups, monitoring, resource sizing |
-| `docs/AXIM_REMOTE_ACCESS.md` | Connecting a second device over Tailscale |
+| `docs/AXIM_REMOTE_ACCESS.md` | Connecting a second device (AXIM TradeStation) over Tailscale |
+| `docs/AXIM_CAPITAL_STRATEGIES.md` | The Capital Strategies (tm) catalog - Investment Houses, what's real vs. catalog-only |
 | `docs/AXIM_ROADMAP.md` | Development history - what was built, when, and why |
 
 ## Safety conventions

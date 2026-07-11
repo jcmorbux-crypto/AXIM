@@ -1,132 +1,124 @@
-# AXIM TradeStation Installation
+# Installing AXIM Core (Release Candidate 1)
 
-> **See `docs/AXIM_SETUP_GUIDE.md` first** - it's the current, guided
-> path (Setup Wizard, in-app Telegram/Pocket Option linking, multi-Fund)
-> and reflects how the app actually works today. This doc's low-level
-> manual steps below are still accurate for the underlying mechanics
-> (venv, `playwright install`, running the processes by hand) but
-> predate the Wizard and describe channel/broker setup by hand-editing
-> `.env`, which the app now does for you.
+This gets the AXIM Core Server installed and running on a Windows
+machine. It stops once the server is up and reachable in a browser -
+for actually configuring your first Fund and firing a trade, see
+`FIRST_TRADE.md` next. For the fastest possible path with no
+explanation, see `QUICK_START.md` instead.
 
-## Prerequisites
+## What you need before starting
 
-- Python 3.12+
-- Windows (this build has been developed and tested on Windows; paths and
-  process-management commands throughout the docs assume PowerShell)
-- A Telegram account with API credentials ([my.telegram.org](https://my.telegram.org) → API development tools)
-- A Pocket Option account (demo account is sufficient and is what this
-  project is built and tested against)
+- A Windows machine to act as the **AXIM Server** - the machine that
+  runs the Telegram listener and the real Pocket Option browser
+  session. A "Mini PC" left running is the typical setup; it does not
+  need to be powerful.
+- **Python 3.12+** installed (`python --version` to check).
+- A **Telegram account**, with API credentials from
+  [my.telegram.org](https://my.telegram.org) → API development tools
+  (you'll need the `api_id` and `api_hash` shown there).
+- A **Pocket Option account**. Use the **demo** account unless you have
+  already read `LIVE_CHECKLIST.md` and made a deliberate decision to go
+  live - this is the single most important rule in this whole document.
 
-## 1. Clone and set up a virtual environment
+## 1. Get the files onto the machine
+
+If you received a packaged zip (`AXIM-Core-Server-v*.zip`), unzip it
+anywhere - `C:\AXIM` is the assumed location throughout these docs, but
+any path works. If you're working from a git checkout, you already have
+this.
+
+## 2. Set up Python
 
 ```powershell
 cd C:\AXIM
 python -m venv venv
 .\venv\Scripts\Activate.ps1
-```
-
-## 2. Install dependencies
-
-```powershell
 pip install -r requirements.txt
 playwright install chromium
 ```
 
-`playwright install chromium` downloads the actual browser binary Playwright
-drives - this is a separate step from `pip install`, easy to miss, and AXIM
-will fail at startup without it.
+`playwright install chromium` downloads the actual browser AXIM drives
+to open trades. This is a separate step from `pip install` - easy to
+miss, and AXIM will fail at startup without it.
 
-## 3. Configure `.env`
+## 3. Create `.env`
 
-Copy the existing `.env` structure (see `config/settings.py` for the full
-list of variables it reads) and fill in your own values. At minimum:
+```powershell
+Copy-Item .env.example .env
+```
+
+Open `.env` in a text editor and fill in three values:
 
 ```
 TELEGRAM_API_ID=your_api_id
 TELEGRAM_API_HASH=your_api_hash
 TELEGRAM_PHONE=+1XXXXXXXXXX
-
-PO_EMAIL=your_pocket_option_email
-PO_PASSWORD=your_pocket_option_password
-
-WATCH_CHANNELS=your_signal_source_username_or_title
-
-ACCOUNT=DEMO
-ARMED=false
-PREVIEW_ONLY=true
 ```
 
-**Do not set `ARMED=true` in `.env`.** This is a hard project convention,
-not a suggestion - `ARMED` is the one switch that lets a trade actually be
-clicked (as opposed to prepared-and-logged). Every test in this project that
-needed `ARMED=true` set it via `os.environ["ARMED"] = "true"` inside an
-isolated Python process, never in the checked-in config. See
-`docs/AXIM_LIVE_READINESS_REVIEW.md` for the full reasoning.
+Leave everything else as-is for now, especially:
 
-**Keep `ACCOUNT=DEMO`.** `risk_manager.check_demo_only()` and
-`BrowserWarmupService`'s startup check both independently refuse to proceed
-if the account isn't in demo mode - this is a structural safeguard, not just
-a config flag, and switching it is a decision this document deliberately
-does not walk you through.
+- **`ACCOUNT=DEMO`** - a structural safeguard checked independently in
+  multiple places (`risk_manager.check_demo_only()`, the browser
+  startup check). AXIM refuses to run against a live cabinet while this
+  says `DEMO`, full stop.
+- **`ARMED=false`** - the master kill switch for whether a trade can
+  ever actually be clicked, as opposed to prepared and logged. Leave
+  this `false` until you have read `LIVE_CHECKLIST.md` in full.
 
-## 4. First run
+Your Telegram channels and Pocket Option login are set up **inside the
+app** in the next step, not by hand-editing this file.
+
+## 4. Start the server
 
 ```powershell
-python core/telegram_listener.py
-```
-
-On first run, Telethon will prompt for a login code sent to your Telegram
-account (interactive - run this once in a terminal you can respond in, not
-purely in the background). A session file (`axim_session.session`) is saved
-afterward so subsequent runs don't need this.
-
-You should see, in order:
-```
-AXIM Telegram Listener Starting...
-Watching for chat titles containing: [...]
-AXIM: starting persistent Pocket Option session...
-browser_warmup: demo mode verified (is-chart-demo present)
-...
-AXIM: starting browser worker pool (N worker(s))...
-AXIM: worker pool ready, running startup recovery...
-Connected to Telegram
-```
-
-A visible Chromium window will also open and log into Pocket Option - this
-is expected; AXIM drives a real, visible browser rather than a headless one.
-
-## 5. Verify with the test suite
-
-```powershell
-python -m unittest discover -s tests -p "test_*.py"
-```
-
-This runs the automated (non-browser) regression suite - parser, risk
-rules, trade orchestration, worker pool logic. It does not open a browser
-or touch Pocket Option. Expect all tests to pass (one is intentionally
-skipped if `COOLDOWN_AFTER_LOSS_SECONDS` is configured to 0).
-
-Live-browser tests (`tests/manual_click_test*.py`,
-`tests/latency_benchmark.py`, `tests/production_stress_test.py`, etc.) are
-manual, one-off scripts - run only when you explicitly want to drive the
-real demo account, and never concurrently with a running
-`telegram_listener.py` (they share the same persistent browser profile at
-`sessions/pocket_browser` and cannot run at the same time).
-
-## 6. (Optional) Control UI
-
-A local web UI covers channel management and start/stop/pause without
-editing `.env`. Needs its own, separate Telegram login the first time
-(a second session, so it can list dialogs live even while the listener
-holds its own session open):
-
-```powershell
-python core/telegram_channels.py           # one-time interactive login + first sync
 python -m uvicorn api.main:app --host 127.0.0.1 --port 8090
 ```
 
-Then open `http://127.0.0.1:8090`. See `USER_GUIDE.md`'s "Control UI"
-section for what it can do.
+Leave this running - it's the server process. Open
+**http://127.0.0.1:8090** in a browser on the same machine.
 
-See `USER_GUIDE.md` for day-to-day operation and `DEPLOYMENT.md` for running
-this unattended.
+You should see the AXIM login/bootstrap screen. That confirms the
+install worked.
+
+## 5. Run the test suite (optional but recommended)
+
+```powershell
+python -m pytest tests/ -q
+```
+
+Confirms the code you just installed actually works on this machine
+before you rely on it - non-browser regression suite (parsing, risk
+rules, sizing, orchestration). Should show all passing (one test is
+intentionally skipped depending on configuration).
+
+## Next step
+
+Continue to **`FIRST_TRADE.md`** - it picks up exactly here (the login
+screen open in your browser) and walks through the Setup Wizard:
+creating your account, linking Telegram, connecting Pocket Option,
+and firing one real demo trade.
+
+## Running unattended (survives logoff/reboot)
+
+Not required to get started, but worth doing once you're happy with a
+manual run:
+
+```powershell
+powershell -File scripts\install_scheduled_task.ps1       # the Telegram listener
+powershell -File scripts\install_api_scheduled_task.ps1   # the API/web UI
+```
+
+Both register genuine Windows Scheduled Tasks under your account with
+automatic restart-on-failure - read the script before running it, same
+as any system-level change. Full detail in `DEPLOYMENT.md`.
+
+## Adding a second device (AXIM TradeStation Remote Client)
+
+To monitor/control AXIM from a laptop over a private Tailscale network
+(no public port, no public IP), install `AXIM TradeStation` on that
+second device and choose "Connect to a remote AXIM Server" on first
+launch. See `docs/AXIM_REMOTE_ACCESS.md` for the full Tailscale setup.
+
+## If something goes wrong here
+
+See `TROUBLESHOOTING.md`.
