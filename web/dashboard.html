@@ -144,7 +144,7 @@
         <h3>Recent Activity</h3>
         <div id="activity-source" class="stat-caption" style="margin-bottom:10px;">&nbsp;</div>
         <div id="activity-list">
-          <div class="empty">No signals yet.</div>
+          <div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No signals yet.</div>
         </div>
       </div>
     </div>
@@ -384,7 +384,7 @@ async function refreshForFund(fundId) {
           <div class="${s.realized_pnl >= 0 ? "pos" : "neg"}" style="font-weight:600; font-size:13.5px;">${fmtMoney(s.realized_pnl)}</div>
         </div>
       `).join("")
-    : '<div class="empty">No sessions yet for this fund.</div>';
+    : '<div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No sessions yet for this fund.</div>';
 }
 
 function renderStatusLine(status, po, channels) {
@@ -502,7 +502,7 @@ async function refreshGlobal() {
         `;
       }).join("");
     } else {
-      activityList.innerHTML = '<div class="empty">No signals yet.</div>';
+      activityList.innerHTML = '<div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No signals yet.</div>';
     }
 }
 
