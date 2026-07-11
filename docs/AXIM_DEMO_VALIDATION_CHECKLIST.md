@@ -13,7 +13,7 @@ python -m unittest discover -s tests -p "test_*.py"
 ```
 
 **Pass:** all tests pass (one is intentionally skipped depending on
-`COOLDOWN_AFTER_LOSS_SECONDS`). As of this session: 503 tests, OK
+`COOLDOWN_AFTER_LOSS_SECONDS`). As of this session: 634 tests, OK
 (1 skipped). No browser involved in this step.
 
 ## 2. `ACCOUNT=DEMO` and `ARMED=false` at rest
@@ -110,6 +110,21 @@ Chrome windows). If a graceful shutdown consistently leaves orphans on
 your machine, that's a real regression worth investigating before
 scaling usage.
 
+## 10. Capital Strategies catalog and a real sizing mode both work
+
+Open **Capital Strategies** in the nav → an Investment House → any
+strategy card. Then, separately, create (or edit) a Money Management
+profile under **Risk Engine** using one of the new sizing modes
+(`apex_ascension` or `empire`) and confirm it saves and shows on the
+profile.
+
+**Pass:** the catalog browses without console errors, "Run Simulation"
+works for Foundation/Titan Allocation/Apex Ascension/Empire/QuantEdge,
+and the Risk Engine profile actually persists its `apex_ascension`/
+`empire` sub-config (reload the page, values are still there) - this is
+the same live sizing math a real session would use, not a separate
+demo-only code path.
+
 ## Sign-off
 
 Only move on to volume/live consideration once every item above has
@@ -118,4 +133,4 @@ one - browser DOM behavior and Telegram/Pocket Option account state are
 both real-world dependencies that can shift between machines and over
 time.
 
-- [ ] All 9 items passed on: ______ (date) on this machine's own install.
+- [ ] All 10 items passed on: ______ (date) on this machine's own install.

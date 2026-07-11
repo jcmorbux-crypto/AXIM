@@ -72,9 +72,11 @@ account watches actually have an edge net of payout.**
 - [x] **No longer zero real-source signals** - the 07-05 review's
       critical finding #1 is out of date. `WATCH_CHANNELS` currently
       includes `PocketOption_quant_algorithm_bot,go_plusbot`, and the
-      current soak run (see below) has processed 489 real signals from
+      current soak run (see below) has processed 499 real signals from
       these sources, with 49 wins / 82 losses / 5 draws recorded
-      (win rate among decided trades: **~37%**, excluding draws).
+      (win rate among decided trades: **~37%**, excluding draws - the
+      wins/losses/draws split has held steady as `signals_total` climbed,
+      the newer signals landing in `rejected_total` instead).
 - [ ] **That win rate is not evidence of "no edge" or "an edge" yet,
       stated as honestly as the original review stated the opposite
       gap**: this soak run has `MINIMUM_PAYOUT=0` and other risk rules
@@ -153,18 +155,29 @@ account watches actually have an edge net of payout.**
 
 ## Functional / operational (carried forward from the 07-05 checklist, re-verified)
 
-- [x] Full automated regression suite passes: **520 tests, OK
-      (1 skipped)**, re-run this session (`python -m unittest discover -s
-      tests -p "test_*.py"`) - up from 420 at the last checklist,
-      reflecting the multi-Fund/auth/Strategy Lab/billing work since, plus
-      2 new heartbeat-balance tests and a new `tests/test_pocket_dom.py`
-      (15 tests) covering the pure parsing/formatting logic underneath
-      `execution/pocket_dom.py`'s DOM functions (expiry parsing, amount
-      formatting, balance-text parsing) - narrows, but does not close,
-      the "no automated coverage for the DOM interaction layer" gap from
-      the 07-05 review: the actual browser-touching selectors/clicks
-      still have no automated coverage and rely on the manual
-      `tests/manual_click_test*.py` scripts, honestly unchanged.
+- [x] Full automated regression suite passes: **634 tests, OK
+      (1 skipped)**, re-run this session (`python -m pytest tests/ -q`) -
+      up from 420 at the last checklist, reflecting the multi-Fund/auth/
+      Strategy Lab/billing work, the heartbeat-balance and
+      `tests/test_pocket_dom.py` DOM-parsing tests, and (later in this
+      session) the full AXIM Capital Strategies (tm) addition. Narrows,
+      but does not close, the "no automated coverage for the DOM
+      interaction layer" gap from the 07-05 review: the actual
+      browser-touching selectors/clicks still have no automated coverage
+      and rely on the manual `tests/manual_click_test*.py` scripts,
+      honestly unchanged.
+- [x] **AXIM Capital Strategies (tm) does not weaken any safety-critical
+      gate above - confirmed by reading the call chain, not assumed.**
+      `core/risk_engine.py`'s `compute_position_size` (now with Apex
+      Ascension/Momentum/Cashflow/Sentinel/Fortress/Empire layered in) only
+      ever produces a dollar `amount` or raises a clean rejection
+      (`core/trade_coordinator.py:186-192`); it has no path to `ARMED`,
+      `ACCOUNT`, or a broker account's `live_enabled` flag, all three of
+      which are still enforced entirely downstream and independently
+      (`execution/pocket_executor.py`, `core/risk_manager.py`,
+      `core/broker_account_manager.py`) exactly as before this work
+      started. A new sizing_mode can change how much is staked; it cannot
+      change whether a live click is allowed to happen at all.
 - [x] Browser-crash and process-restart recovery both previously
       live-fire tested against the real production code (not
       reimplementations) - see `docs/AXIM_ROADMAP.md`'s "Process-level
