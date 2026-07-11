@@ -150,6 +150,105 @@ class ComputePositionSizeTests(unittest.TestCase):
         self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 20.0)  # back to base 2%
 
 
+class FundAwareBankrollTests(unittest.TestCase):
+    """Fixes docs/AXIM_LIVE_READINESS_CHECKLIST.md's 'risk-profile bankroll
+    does not auto-update from real P&L' gap - WITHOUT mutating the shared
+    risk_profiles.bankroll column (which can be attached to more than one
+    Fund), by reading fund_manager.get_fund_balances as a live override
+    instead. A session with no fund_id (pre-Fund-architecture sessions,
+    or the existing tests above) is completely untouched - see
+    ComputePositionSizeTests' setUp, which starts sessions with no
+    fund_id and still passes unchanged."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_new_session_picks_up_prior_sessions_real_pnl(self):
+        fund_id = database.create_fund("Fund A", starting_balance=1000)
+        profile_id = database.create_risk_profile(
+            "Percent Test", sizing_mode="percent", bankroll=1, percent_of_bankroll=2.0,  # static value deliberately wrong
+        )
+        first = database.start_trading_session("First", [1], "DEMO", fund_id=fund_id, risk_profile_id=profile_id)
+        database.update_session_pnl(first, 500)  # fund is now worth 1500
+        database.stop_trading_session(first, "stopped_manual")
+
+        second = database.start_trading_session("Second", [1], "DEMO", fund_id=fund_id, risk_profile_id=profile_id)
+        # 2% of the fund's real 1500, NOT 2% of the profile's stale static bankroll=1
+        self.assertEqual(risk_engine.compute_position_size(second, 5.0), 30.0)
+
+    def test_current_sessions_own_pnl_is_not_double_counted(self):
+        fund_id = database.create_fund("Fund B", starting_balance=1000)
+        profile_id = database.create_risk_profile("Dynamic Test", sizing_mode="dynamic",
+                                                    bankroll=1, percent_of_bankroll=2.0)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id, risk_profile_id=profile_id)
+        database.update_session_pnl(session_id, 500)  # THIS session's own pnl - fund trading_balance already includes it
+        # dynamic = 2% of (starting_balance + this session's pnl) = 2% of 1500 = 30, not 2% of 2000
+        self.assertEqual(risk_engine.compute_position_size(session_id, 5.0), 30.0)
+
+    def test_vaulted_amount_excluded_from_next_sessions_bankroll(self):
+        fund_id = database.create_fund("Fund C", starting_balance=1000)
+        profile_id = database.create_risk_profile("Percent Test", sizing_mode="percent",
+                                                    bankroll=1, percent_of_bankroll=2.0)
+        first = database.start_trading_session("First", [1], "DEMO", fund_id=fund_id, risk_profile_id=profile_id)
+        database.update_session_pnl(first, 500)
+        database.add_to_vault(first, 300)  # 300 of the 500 profit is protected, not tradeable
+        database.stop_trading_session(first, "stopped_manual")
+
+        second = database.start_trading_session("Second", [1], "DEMO", fund_id=fund_id, risk_profile_id=profile_id)
+        # trading_balance = 1000 + 500 - 300 = 1200; 2% of 1200 = 24
+        self.assertEqual(risk_engine.compute_position_size(second, 5.0), 24.0)
+
+    def test_two_funds_sharing_one_profile_do_not_bleed_into_each_other(self):
+        fund_a = database.create_fund("Fund A", starting_balance=1000)
+        fund_b = database.create_fund("Fund B", starting_balance=1000)
+        profile_id = database.create_risk_profile("Shared Profile", sizing_mode="percent",
+                                                    bankroll=1, percent_of_bankroll=2.0)
+
+        session_a = database.start_trading_session("A", [1], "DEMO", fund_id=fund_a, risk_profile_id=profile_id)
+        database.update_session_pnl(session_a, 1000)  # Fund A doubled to 2000
+        database.stop_trading_session(session_a, "stopped_manual")
+
+        # Fund B never traded - its own session should size off ITS OWN
+        # 1000, not Fund A's 2000, even though they share a risk_profile.
+        session_b = database.start_trading_session("B", [1], "DEMO", fund_id=fund_b, risk_profile_id=profile_id)
+        self.assertEqual(risk_engine.compute_position_size(session_b, 5.0), 20.0)  # 2% of 1000, not 2% of 2000
+
+    def test_no_fund_id_falls_back_to_static_profile_bankroll(self):
+        # A session with no Fund attached (pre-Fund-architecture, or a
+        # profile-only test session) must behave exactly as before -
+        # same assertion ComputePositionSizeTests already covers, kept
+        # here too as an explicit regression guard for this specific fix.
+        profile_id = database.create_risk_profile("Percent Test", sizing_mode="percent",
+                                                    bankroll=1000, percent_of_bankroll=2.0)
+        session_id = database.start_trading_session("No Fund", [1], "DEMO", risk_profile_id=profile_id)
+        self.assertEqual(risk_engine.compute_position_size(session_id, 5.0), 20.0)
+
+    def test_apex_ascension_uses_fund_aware_bankroll(self):
+        # Confirms the override reaches every sizing mode, not just
+        # percent/dynamic - Apex Ascension's tier lookup also reads
+        # profile["bankroll"] internally.
+        fund_id = database.create_fund("Fund D", starting_balance=1000)
+        profile_id = database.create_risk_profile("Apex Test", sizing_mode="apex_ascension", bankroll=1)
+        database.update_apex_ascension_settings(
+            profile_id, enabled=1, starting_bankroll=1000, starting_unit_value=10,
+            standard_units=5, first_reset_threshold=2500, reset_increment=1000,
+        )
+        first = database.start_trading_session("First", [1], "DEMO", fund_id=fund_id, risk_profile_id=profile_id)
+        database.update_session_pnl(first, 2000)  # fund now worth 3000 -> should be past the first tier
+        database.stop_trading_session(first, "stopped_manual")
+
+        second = database.start_trading_session("Second", [1], "DEMO", fund_id=fund_id, risk_profile_id=profile_id)
+        amount = risk_engine.compute_position_size(second, 5.0)
+        self.assertGreater(amount, 50)  # tier-1 standard deployment (5 units * $10) would be exactly 50
+
+
 class MartingaleProjectionTests(unittest.TestCase):
     def test_project_exposure_with_multiplier(self):
         martingale = {"enabled": True, "max_steps": 4, "multiplier": 2.0,

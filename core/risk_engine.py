@@ -41,6 +41,7 @@ import json
 
 import database
 import capital_strategies
+import fund_manager
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
@@ -172,6 +173,28 @@ def compute_position_size(session_id, static_default_amount):
     if profile is None:
         import risk_manager
         return risk_manager.compute_trade_amount(static_default_amount)
+
+    # Real-money bankroll auto-update (docs/AXIM_LIVE_READINESS_CHECKLIST.md's
+    # "Risk-profile bankroll does not auto-update from real P&L" gap) -
+    # profile["bankroll"] is a static, manually-set field that CAN be
+    # shared across multiple Funds (nothing in the schema prevents
+    # attaching the same risk_profile_id to more than one Fund), so
+    # mutating it directly on every trade would incorrectly bleed one
+    # Fund's real P&L into another Fund's next session. fund_manager's
+    # trading_balance is already correctly Fund-scoped and vault-aware
+    # (core/fund_manager.py's own docstring: "a fund's numbers can never
+    # drift out of sync with its actual trade history") - reused here as
+    # a local override, never written back to the shared profile row.
+    # Subtracting this session's OWN realized_pnl converts trading_balance
+    # (which already includes the still-open current session) back into
+    # "balance as of the start of this session" - the same role
+    # profile["bankroll"] already plays, since every sizing formula below
+    # adds session["realized_pnl"] to it separately; without the
+    # subtraction this session's own P&L would be counted twice.
+    if session["fund_id"] is not None:
+        fund_balances = fund_manager.get_fund_balances(session["fund_id"])
+        if fund_balances is not None:
+            profile["bankroll"] = fund_balances["trading_balance"] - session["realized_pnl"]
 
     amount = _base_amount(profile, session)
     if not session["martingale_disabled"]:

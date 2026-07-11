@@ -348,9 +348,9 @@ findings and reasoning in commit history; summarized here.
 
 ## Known, accepted, non-blocking gaps
 
-- [x] **Live account balance display - implemented, not yet live-verified.**
+- [x] **Live account balance display - implemented and now live-verified.**
       Was `api/main.py:545-568` returning `"balance": None` deliberately
-      rather than fabricating a number. Closed this session:
+      rather than fabricating a number. Closed earlier this session:
       `pocket_dom.read_balance()` reads `.balance-info-block__balance
       .js-hd`'s `data-hd-show` attribute (confirmed against a real
       captured page, `logs/failures/*/page.html` - not guessed), wired
@@ -360,18 +360,33 @@ findings and reasoning in commit history; summarized here.
       refresh loop (`core/broker_account_manager.py`'s
       `_balance_refresh_loop`, populating the previously-unpopulated
       `broker_accounts.last_balance`/`last_balance_checked_at` columns
-      the UI already displayed). 505/505 tests pass (2 new). **Not yet
-      exercised against a real running browser** - doing so would have
-      required restarting the listener process driving the soak test
-      above, which would have reset its uptime continuity. Confirm the
-      Balance panel populates a real number the next time the listener
-      restarts (a normal restart for any other reason is enough - no
-      special action needed).
-- **Risk-profile bankroll does not auto-update from real P&L** during
-      live operation the way the backtester carries balance forward -
-      Percent/Kelly sizing will use a stale bankroll unless the operator
-      updates it manually between sessions. Treat as a manual pre-session
-      step, not (yet) an automated one.
+      the UI already displayed). 505/505 tests pass (2 new). **Now
+      confirmed against the real running browser**: the listener
+      restarted twice later in this same session (recovering from the
+      supervision-gap incident, then verifying the Scheduled Task trigger
+      path) - both times `database.get_listener_heartbeat()` showed a
+      real populated `balance` (e.g. `49974.84`), not `None`. Gap fully
+      closed, not just implemented.
+- [x] **Risk-profile bankroll auto-updates from real P&L - fixed, not a
+      gap anymore.** Was: Percent/Kelly/Dynamic/Apex Ascension sizing used
+      a stale, manually-set `profile["bankroll"]` unless the operator
+      updated it by hand between sessions, unlike the backtester's own
+      realistic carry-forward. Fixed in `core/risk_engine.py`'s
+      `compute_position_size`: for any session attached to a Fund, the
+      real, vault-aware `fund_manager.get_fund_balances(fund_id)
+      ["trading_balance"]` is used as a live override for that one
+      calculation - the shared `risk_profiles.bankroll` column itself is
+      never mutated, specifically because nothing prevents the same
+      profile being attached to more than one Fund, and writing real P&L
+      into a shared row would bleed one Fund's results into another's
+      next session. A session with no `fund_id` (backward compatibility)
+      is completely untouched. 6 new tests (`tests/test_risk_engine.py`'s
+      `FundAwareBankrollTests`): prior-session P&L carries forward, the
+      current session's own P&L is not double-counted, vaulted amounts
+      are correctly excluded, two Funds sharing one profile size
+      independently off their own real balances, a no-Fund session still
+      uses the static bankroll unchanged, and Apex Ascension's tier
+      lookup benefits from the same override. 650/650 tests pass.
 - True-simultaneous burst-traffic DOM contention, the settlement-window
   crash-overlap edge case, and same-minute closed-item matching ambiguity
   are all unchanged, still fail-safe (never a wrong result, only an

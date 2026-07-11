@@ -709,11 +709,14 @@ worse than useless.
   semantics as `core/session_manager.check_session_limits`
   (profit_target/loss_limit/max_trades). Trading balance carries
   forward realistically across sessions for every sizing mode -
-  documented in `core/backtest_engine.py`'s module docstring as
-  intentionally MORE realistic than live AXIM today, since live risk
-  profiles have a static `bankroll` field with no automatic balance
-  tracking yet (a known, pre-existing gap, not something this feature
-  papers over).
+  documented in `core/backtest_engine.py`'s module docstring. Live AXIM
+  now does this too: `core/risk_engine.py`'s `compute_position_size`
+  reads a Fund-attached session's real trading balance
+  (`fund_manager.get_fund_balances`) as a live override, without
+  mutating the shared `risk_profiles.bankroll` column (which can be
+  attached to more than one Fund) - the backtest and live paths are two
+  independent implementations of the same carry-forward idea, kept
+  consistent by design, not one covering a gap in the other.
 - **Martingale/Compounding/Vault simulation**: martingale steps
   unconditionally on loss (mirroring `database.advance_martingale_step`'s
   real semantics exactly, uncapped on the counter, clamped only on the

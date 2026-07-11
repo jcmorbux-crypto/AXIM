@@ -26,14 +26,15 @@ Honesty notes:
 - Trading balance is carried forward realistically across simulated
   sessions (starting_bankroll + cumulative realized P&L - vaulted
   amount) for EVERY profile, regardless of its sizing_mode or
-  compounding setting - this is what a serious backtest should do.
-  Live AXIM does NOT yet do this automatically (a risk profile's
-  `bankroll` field is a static, manually-set value - see
-  core/risk_engine.py's own module docstring and
-  docs/AXIM_APP_PLAN.md's "balance tracking not implemented yet" gap),
-  so a backtest using "percent"/"kelly" sizing is intentionally more
-  realistic here than live AXIM is today, not silently inconsistent
-  with it.
+  compounding setting - this is what a serious backtest should do. Live
+  AXIM now does this too (core/risk_engine.py's compute_position_size
+  reads fund_manager.get_fund_balances as a live override for any
+  Fund-attached session, without mutating the shared risk_profiles.
+  bankroll column - see that function's own comment) - this backtest
+  engine's carry-forward and live sizing's carry-forward are two
+  independently-written but now behaviorally consistent
+  implementations of the same idea, not one covering a gap the other
+  has.
 - Martingale's same_asset_only/same_source_only fields are still not
   enforced here either, for the same reason risk_engine.py doesn't
   enforce them live - no fabricated behavior beyond what's real.
