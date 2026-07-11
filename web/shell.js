@@ -20,6 +20,15 @@ const AximShell = (() => {
     guide: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.3"/><path d="M6.1 6.2c.2-1 1-1.6 1.9-1.6 1 0 1.9.6 1.9 1.7 0 1.4-1.9 1.3-1.9 3"/><circle cx="8" cy="11.2" r="0.15" fill="currentColor" stroke="currentColor" stroke-width="0.9"/></svg>',
   };
 
+  // Same convention as every page's own escapeHtml() (web/*.html) -
+  // encodes quotes too, not just & < >, since escaped text sometimes
+  // ends up inside an attribute value elsewhere in this codebase.
+  function escapeHtml(s) {
+    const d = document.createElement("div");
+    d.textContent = s ?? "";
+    return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
   const NAV_ITEMS = [
     { key: "dashboard", label: "Mission Control", href: "/dashboard", icon: ICONS.dashboard },
     { key: "funds", label: "Funds", href: "/funds", icon: ICONS.funds },
@@ -81,10 +90,10 @@ const AximShell = (() => {
           </div>
         </div>
         <div class="user-chip">
-          <div class="avatar">${initials(user.email)}</div>
+          <div class="avatar">${escapeHtml(initials(user.email))}</div>
           <div style="overflow:hidden;">
-            <div class="email">${user.email}</div>
-            <div class="role">${user.role} &middot; ${user.access_tier}</div>
+            <div class="email">${escapeHtml(user.email)}</div>
+            <div class="role">${escapeHtml(user.role)} &middot; ${escapeHtml(user.access_tier)}</div>
           </div>
         </div>
         <div class="row" style="margin-top:8px;">
@@ -265,7 +274,7 @@ const AximShell = (() => {
       }
       list.innerHTML = rows.map(n => `
         <div class="notif-item ${n.read_at ? "" : "unread"}">
-          <div class="notif-message">${(n.message || "").replace(/</g, "&lt;")}</div>
+          <div class="notif-message">${escapeHtml(n.message)}</div>
           <div class="notif-time">${fmtNotifTime(n.created_at)}</div>
         </div>
       `).join("");

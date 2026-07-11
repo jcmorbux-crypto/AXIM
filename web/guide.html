@@ -229,7 +229,7 @@ function buildToc() {
     return `<a href="#${s.id}" data-target="${s.id}">${escapeHtml(title)}</a>`;
   }).join("");
 }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 
 function onSearch() {
   const query = document.getElementById("guide-search").value.trim().toLowerCase();

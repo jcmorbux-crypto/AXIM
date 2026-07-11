@@ -256,7 +256,7 @@ async function loadFundSelector() {
   selector.value = previous;
   renderFundsOverview();
 }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 
 // Built entirely from allFunds (already fetched for the selector, which
 // includes each Fund's balances via fund_manager.list_funds_with_balances)

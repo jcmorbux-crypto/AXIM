@@ -150,6 +150,59 @@ account watches actually have an edge net of payout.**
       codebase - deleted rather than left as misleading no-op knobs (same
       reasoning as the earlier `MODE` cleanup).
 
+## Security audit (this session)
+
+A focused pass on auth/session security, SQL injection, XSS, secrets at
+rest, and CORS - not previously covered by any earlier review. Full
+findings and reasoning in commit history; summarized here.
+
+- [x] **SQL injection**: none found. Every f-string-built query only
+      interpolates column names, gated by a hardcoded whitelist
+      (`_UPDATABLE_FIELDS` and siblings in `core/database.py`) that raises
+      before the string is built; every value goes through `?`
+      placeholders.
+- [x] **Password hashing**: PBKDF2-HMAC-SHA256, 600k iterations, random
+      salt, constant-time comparison (`core/auth.py`) - solid.
+- [x] **Session tokens / password-reset tokens**: `secrets.token_urlsafe(32)`
+      (256-bit), hash-only storage, reset tokens are single-use, 30-min
+      TTL, prior token invalidated on a new request, full session
+      revocation on reset - solid.
+- [x] **Secrets at rest**: Telegram credentials are Fernet-encrypted
+      (`core/secrets_store.py`) before storage, masked on read-back; no
+      secret found logged anywhere.
+- [x] **CORS**: real allowlist, empty by default, explicit `*` rejection
+      (incompatible with credentialed requests anyway) - not a
+      wildcard-by-default footgun.
+- [x] **Stored XSS via attribute-breakout - found and fixed.** Every
+      page's `escapeHtml()` helper (17 near-identical copies across
+      `web/*.html`, plus a new shared one added to `web/shell.js`) only
+      encoded `& < >`, not `"`/`'`. Several call sites build
+      `onclick="...('${escapeHtml(x)}')"` - a double-quoted HTML
+      attribute containing a single-quoted JS string. A value containing
+      `"` (e.g. a Telegram channel title, which is attacker-influenced -
+      any channel owner can set it) could break out of the `onclick`
+      attribute entirely and inject arbitrary handlers. Fixed by
+      encoding `"`/`'` too, in all 17 copies plus a new one in
+      `web/shell.js` (which had its own separate, more-permissive
+      `<`-only ad hoc escape for notification messages - replaced with
+      the same shared helper). Also fixed `web/shell.js` rendering the
+      logged-in user's own email/role/access_tier unescaped (self-XSS at
+      most, fixed anyway for consistency).
+- [x] **No brute-force protection on login - found and fixed.**
+      `verify_user_credentials`'s own docstring already claimed to check
+      "isn't locked out" with nothing implemented behind it. Added real
+      per-account lockout: `LOGIN_LOCKOUT_THRESHOLD` (10) consecutive
+      failed attempts locks the account for `LOGIN_LOCKOUT_MINUTES` (15);
+      a successful login always resets the counter; the login response is
+      identical (generic 401) whether the account is locked or the
+      password is simply wrong, so lockout state is never leaked.
+      Deliberately per-account, not per-IP/global, matching this app's
+      actual threat model (a private, trusted-network deployment where
+      the real risk is unlimited guessing against one known email, not a
+      distributed attack this app has no visibility into). 3 new tests
+      (`tests/test_database_users.py`).
+- 523/523 tests pass after these fixes (up from 520).
+
 ## Known, accepted, non-blocking gaps
 
 - [x] **Live account balance display - implemented, not yet live-verified.**

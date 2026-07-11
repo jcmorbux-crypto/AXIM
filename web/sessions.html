@@ -112,7 +112,7 @@ async function fetchJSON(url, opts) {
   }
   return res.json();
 }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "-"; }
 function fmtMoney(n) { return (n === null || n === undefined) ? "-" : `${n > 0 ? "+" : ""}$${Number(n).toFixed(2)}`; }
 function plClass(v) { return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral"); }

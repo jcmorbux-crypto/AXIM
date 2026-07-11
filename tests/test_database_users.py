@@ -44,6 +44,45 @@ class UserAccountTests(unittest.TestCase):
         self.assertIsNone(database.verify_user_credentials("a@example.com", "wrongpassword"))
         self.assertIsNone(database.verify_user_credentials("nobody@example.com", "supersecret1"))
 
+    def test_login_lockout_after_threshold_failed_attempts(self):
+        # Security-audit follow-up: verify_user_credentials's own
+        # docstring always claimed to check lockout, with nothing behind
+        # it until this session - regression-test the real behavior.
+        database.create_user("a@example.com", "supersecret1")
+        for _ in range(database.LOGIN_LOCKOUT_THRESHOLD):
+            self.assertIsNone(database.verify_user_credentials("a@example.com", "wrongpassword"))
+        # The account is now locked - even the CORRECT password must be
+        # rejected until the lockout window passes, not just further wrong
+        # guesses.
+        self.assertIsNone(database.verify_user_credentials("a@example.com", "supersecret1"))
+        user = database.get_user_by_email("a@example.com")
+        self.assertIsNotNone(user["locked_until"])
+
+    def test_successful_login_resets_failed_attempt_counter(self):
+        database.create_user("a@example.com", "supersecret1")
+        for _ in range(database.LOGIN_LOCKOUT_THRESHOLD - 1):
+            database.verify_user_credentials("a@example.com", "wrongpassword")
+        self.assertIsNotNone(database.verify_user_credentials("a@example.com", "supersecret1"))
+        user = database.get_user_by_email("a@example.com")
+        self.assertEqual(user["failed_login_attempts"], 0)
+        self.assertIsNone(user["locked_until"])
+
+    def test_lockout_expires_after_the_window(self):
+        from datetime import datetime, timedelta
+        database.create_user("a@example.com", "supersecret1")
+        for _ in range(database.LOGIN_LOCKOUT_THRESHOLD):
+            database.verify_user_credentials("a@example.com", "wrongpassword")
+        self.assertIsNone(database.verify_user_credentials("a@example.com", "supersecret1"))  # still locked
+        # Simulate the lockout window having already passed.
+        conn = database.get_connection()
+        conn.execute(
+            "UPDATE users SET locked_until = ? WHERE email = 'a@example.com'",
+            ((datetime.now() - timedelta(minutes=1)).isoformat(),),
+        )
+        conn.commit()
+        conn.close()
+        self.assertIsNotNone(database.verify_user_credentials("a@example.com", "supersecret1"))
+
     def test_update_user_rejects_unknown_field(self):
         user_id = database.create_user("a@example.com", "supersecret1")
         with self.assertRaises(ValueError):

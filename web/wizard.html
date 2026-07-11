@@ -54,7 +54,7 @@ async function fetchJSON(url, opts) {
   }
   return body;
 }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 
 function renderTrack() {
   document.getElementById("step-track").innerHTML = STEP_NAMES.map((_, i) =>

@@ -48,9 +48,16 @@ _NEW_SESSION_COLUMNS = {
 # Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - links a user to a
 # Stripe customer/subscription once real keys are configured. NULL for
 # every existing user until then; core/billing.py is the only writer.
+#
+# Login lockout (security audit follow-up) - verify_user_credentials's own
+# docstring already claimed to check "isn't locked out" with nothing behind
+# it; these columns make that real. failed_login_attempts resets to 0 on
+# any successful login; locked_until is NULL unless the threshold was hit.
 _NEW_USER_COLUMNS = {
     "stripe_customer_id": "TEXT",
     "stripe_subscription_id": "TEXT",
+    "failed_login_attempts": "INTEGER DEFAULT 0",
+    "locked_until": "TEXT",
 }
 
 # Multi-broker-account architecture (docs/AXIM_APP_PLAN.md) - a Fund-level
@@ -3142,20 +3149,67 @@ def set_user_password(user_id, new_password):
     conn.close()
 
 
+LOGIN_LOCKOUT_THRESHOLD = 10
+LOGIN_LOCKOUT_MINUTES = 15
+
+
 @timed("database")
 def verify_user_credentials(email, password):
     """Returns the user dict if email+password are correct AND the
-    account isn't locked out, else None. Does not itself check
-    access_state beyond that - callers (api/auth.py) decide what each
-    access_state is allowed to do (e.g. 'pending_approval' can log in
-    but sees a waiting screen, 'disabled' can't log in at all)."""
+    account isn't locked out, else None (the caller - api/auth_routes.py's
+    login() - returns the same generic "incorrect email or password" 401
+    either way, so a locked account is never distinguishable from a wrong
+    password by the response itself). Does not itself check access_state
+    beyond that - callers decide what each access_state is allowed to do
+    (e.g. 'pending_approval' can log in but sees a waiting screen,
+    'disabled' can't log in at all).
+
+    Lockout: LOGIN_LOCKOUT_THRESHOLD consecutive failed attempts locks the
+    account for LOGIN_LOCKOUT_MINUTES. A successful login always resets
+    the counter. Deliberately per-account, not per-IP/global - this is a
+    private, trusted-network deployment (docs/AXIM_REMOTE_ACCESS.md), so
+    the real threat model is unlimited guessing against one known email,
+    not a distributed attack this app has no visibility into anyway."""
     import auth
     user = get_user_by_email(email)
     if user is None:
         return None
+
+    now = datetime.now()
+    if user["locked_until"]:
+        locked_until = datetime.fromisoformat(user["locked_until"])
+        if now < locked_until:
+            return None
+        # Lockout window has passed - clear it before evaluating this
+        # attempt, so a correct password on the very next try succeeds
+        # normally instead of needing a second request.
+        _clear_login_lockout(user["id"])
+
     if not auth.verify_password(password, user["password_hash"]):
+        attempts = (user["failed_login_attempts"] or 0) + 1
+        locked_until = None
+        if attempts >= LOGIN_LOCKOUT_THRESHOLD:
+            locked_until = (now + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
+            attempts = 0  # counter restarts fresh once the next lockout window ends
+        conn = get_connection()
+        conn.execute(
+            "UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?",
+            (attempts, locked_until, user["id"]),
+        )
+        conn.commit()
+        conn.close()
         return None
+
+    if user["failed_login_attempts"]:
+        _clear_login_lockout(user["id"])
     return user
+
+
+def _clear_login_lockout(user_id):
+    conn = get_connection()
+    conn.execute("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
 
 
 @timed("database")

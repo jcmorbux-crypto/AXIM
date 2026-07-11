@@ -157,7 +157,7 @@ async function fetchJSON(url, opts) {
   }
   return res.json();
 }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 
 document.getElementById("tabs").addEventListener("click", (e) => {
   if (!e.target.dataset.tab) return;

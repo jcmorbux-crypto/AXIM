@@ -138,7 +138,7 @@ async function fetchJSON(url, opts) {
 
 function openModal(id) { document.getElementById(id).style.display = "flex"; }
 function closeModal(id) { document.getElementById(id).style.display = "none"; }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
 
 async function refreshConnectionStatus() {
