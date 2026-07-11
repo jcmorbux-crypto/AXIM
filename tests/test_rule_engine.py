@@ -171,6 +171,31 @@ class FundScopedResolutionTests(RuleEngineTestCase):
         # session_id's session is no longer active -> resolves to None
         self.assertFalse(rule_engine._cond_session_profit_gte({"threshold": 1}, pinned_rule))
 
+    def test_session_scope_rule_refuses_a_session_belonging_to_a_different_fund(self):
+        # Defense in depth for the gap api/rules.py's update_rule had:
+        # a scope='session' rule's session_id must belong to the SAME
+        # fund_id the rule itself is owned by. Without this check,
+        # _resolve_session_for_rule would let a rule act (stop/
+        # emergency-stop/resize/vault) on a completely different Fund's
+        # session than the one it's scoped to - a real cross-Fund
+        # correctness issue, not a display glitch.
+        fund_a = database.create_fund("Fund A")
+        fund_b = database.create_fund("Fund B")
+        session_b = database.start_trading_session("SB", [1], "DEMO", fund_id=fund_b)
+        database.update_session_pnl(session_b, 1000)  # would trip the threshold if wrongly resolved
+
+        # Malformed/malicious rule state: fund_id says A, but session_id
+        # actually belongs to B (exactly the state the missing
+        # update_rule validation could previously have produced).
+        cross_fund_rule = {"fund_id": fund_a, "scope": "session", "session_id": session_b}
+        self.assertIsNone(rule_engine._resolve_session_for_rule(cross_fund_rule))
+        self.assertFalse(rule_engine._cond_session_profit_gte({"threshold": 1}, cross_fund_rule))
+
+        # The action side too - stopping "session_b via a Fund-A-owned
+        # rule" must be a no-op, not actually stop Fund B's session.
+        rule_engine._act_stop_active_session({}, "cross-fund stop attempt", cross_fund_rule)
+        self.assertEqual(database.get_trading_session(session_b)["status"], "active")
+
     def test_daily_profit_gte_is_scoped_per_fund(self):
         fund_a = database.create_fund("Fund A")
         fund_b = database.create_fund("Fund B")

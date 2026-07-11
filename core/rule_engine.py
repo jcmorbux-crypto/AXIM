@@ -47,10 +47,25 @@ def _resolve_session_for_rule(rule):
     that fund - there may be none, and that's a normal, common state, not
     an error. Rules with no fund_id at all (legacy, pre-dating the
     Fund-owned rules redesign) fall back to the old app-wide newest-
-    active-session lookup."""
+    active-session lookup.
+
+    Defense in depth: a scope='session' rule's session_id must belong to
+    the SAME fund_id the rule itself is owned by, checked again here (not
+    just at create/update time) - api/rules.py's create_rule already
+    enforces this on the way in, but update_rule previously didn't
+    (fixed separately), and this also protects against any row that
+    predates that fix. Without this, a misconfigured or legacy rule
+    could resolve to and act on - stop, emergency-stop, resize, vault -
+    a completely different Fund's session than the one the rule is
+    scoped to, which is a real cross-Fund correctness issue given what
+    these actions do, not just a display glitch."""
     if rule.get("scope") == "session" and rule.get("session_id") is not None:
         session = database.get_trading_session(rule["session_id"])
-        return session if session and session["status"] == "active" else None
+        if session is None or session["status"] != "active":
+            return None
+        if rule.get("fund_id") is not None and session["fund_id"] != rule["fund_id"]:
+            return None
+        return session
     if rule.get("fund_id") is not None:
         return database.get_active_trading_session_for_fund(rule["fund_id"])
     return database.get_active_trading_session()

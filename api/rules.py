@@ -120,10 +120,34 @@ def get_rule_firings(rule_id: int, user=Depends(get_current_user)):
 
 @router.patch("/{rule_id}")
 def update_rule(rule_id: int, body: RuleUpdate, user=Depends(require_admin)):
-    _get_or_404(rule_id)
+    rule = _get_or_404(rule_id)
     _validate_types(body.condition_type, body.action_type)
     if body.fund_id is not None and database.get_fund(body.fund_id) is None:
         raise HTTPException(status_code=404, detail="fund not found")
+
+    # Same cross-check create_rule already does, applied to the EFFECTIVE
+    # post-update fund_id/scope/session_id (a partial PATCH might only
+    # touch one of the three) - found missing here during a review of
+    # every ID-typed field across the API for the same pattern. Without
+    # this, a rule's session_id could end up pointing at a session
+    # belonging to a DIFFERENT fund than the rule itself, and
+    # core/rule_engine.py's _resolve_session_for_rule would then let a
+    # scope='session' rule's actions (stop/emergency-stop/resize/vault)
+    # fire against that unrelated Fund's session - a real cross-Fund
+    # correctness issue, not just a display glitch. _resolve_session_for_rule
+    # also independently re-checks this at evaluation time now (defense
+    # in depth), but rejecting the bad data here too means it's never
+    # created in the first place.
+    effective_fund_id = body.fund_id if body.fund_id is not None else rule["fund_id"]
+    effective_scope = body.scope if body.scope is not None else rule["scope"]
+    effective_session_id = body.session_id if body.session_id is not None else rule["session_id"]
+    if effective_scope == "session":
+        if effective_session_id is None:
+            raise HTTPException(status_code=400, detail="a session-scoped rule needs a session_id")
+        session = database.get_trading_session(effective_session_id)
+        if session is None or session["fund_id"] != effective_fund_id:
+            raise HTTPException(status_code=400, detail="session_id must belong to this fund")
+
     updates = body.model_dump(exclude_unset=True, exclude={"condition_params", "action_params"})
     try:
         database.update_rule(rule_id, condition_params=body.condition_params, action_params=body.action_params, **updates)
