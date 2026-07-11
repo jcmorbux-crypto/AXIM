@@ -53,6 +53,10 @@ class AttachRiskProfile(BaseModel):
     risk_profile_id: Optional[int] = None
 
 
+class VaultTransfer(BaseModel):
+    amount: float
+
+
 def _with_progress(session):
     """Adds the derived fields the Trading Sessions UI needs (section 7:
     "Active session progress ... Remaining target") without storing them -
@@ -255,6 +259,25 @@ def attach_risk_profile(session_id: int, body: AttachRiskProfile, user=Depends(r
     if body.risk_profile_id is not None and database.get_risk_profile(body.risk_profile_id) is None:
         raise HTTPException(status_code=404, detail="risk profile not found")
     database.set_session_risk_profile(session_id, body.risk_profile_id)
+    return _with_progress(database.get_trading_session(session_id))
+
+
+@router.post("/{session_id}/vault-transfer")
+def vault_transfer(session_id: int, body: VaultTransfer, user=Depends(require_admin)):
+    """Axiom Vault's (tm) 'manual' trigger type (docs/AXIM_CAPITAL_
+    STRATEGIES.md) - unlike milestone_based/every_winning_session/
+    per_trade, which core/risk_engine.py's on_trade_closed applies
+    automatically, 'manual' is an on-demand operator action with no
+    calculation of its own: move a chosen amount into the vault right
+    now. Reuses database.add_to_vault directly, the exact same call the
+    automated triggers already make, so vaulted_amount stays one single
+    source of truth regardless of how it got there."""
+    session = database.get_trading_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be positive")
+    database.add_to_vault(session_id, body.amount)
     return _with_progress(database.get_trading_session(session_id))
 
 

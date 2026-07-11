@@ -133,6 +133,16 @@ class TradingSessionTests(unittest.TestCase):
         database.update_session_pnl(session_id, None)
         self.assertEqual(database.get_trading_session(session_id)["realized_pnl"], 0)
 
+    def test_add_to_vault_accumulates(self):
+        # Single source of truth for every Axiom Vault (tm) trigger type -
+        # automated (milestone/per_trade/every_winning_session, all in
+        # core/risk_engine.py) and the manual one (api/sessions.py's
+        # POST /{session_id}/vault-transfer) all call this same function.
+        session_id = database.start_trading_session("Test", [1], "DEMO")
+        database.add_to_vault(session_id, 25)
+        database.add_to_vault(session_id, 10.5)
+        self.assertAlmostEqual(database.get_trading_session(session_id)["vaulted_amount"], 35.5)
+
     def test_stop_session_clears_active(self):
         session_id = database.start_trading_session("Test", [1], "DEMO")
         database.stop_trading_session(session_id, "stopped_manual", "user requested")

@@ -50,20 +50,25 @@ class CatalogTests(unittest.TestCase):
         c = catalog.get_catalog()
         all_strategies = [s for h in c["houses"] for s in h["strategies"]] + c["standalone"]
         catalog_supported = {s["key"] for s in all_strategies if s["simulate_supported"]}
-        self.assertEqual(catalog_supported, set(engine._SIZE_FUNCS.keys()))
+        self.assertEqual(catalog_supported, engine.SIMULATABLE_STRATEGIES)
 
     def test_phase2_strategies_marked_implemented(self):
         # Momentum/Empire/Fortress are real now (wired into
         # core/risk_engine.py's compute_position_size/on_trade_closed),
-        # not catalog-only - but none are in the quick single-path
-        # simulator (state-machine strategies, don't fit that helper's
-        # stateless-per-call model) - that's a real, honest gap, not a
-        # bug, and the UI shows the "implemented elsewhere" banner for
-        # exactly this case.
-        for key in ["momentum", "empire", "fortress"]:
+        # not catalog-only. Empire is fully self-contained (its own
+        # ladder, no external base_amount needed) so it DOES fit the
+        # quick simulator; Momentum/Fortress are post-processing layers
+        # that need a base_amount from a different sizing mode's
+        # settings, which the single-strategy demo has no honest source
+        # for - that's a real, documented gap, not a bug, and the UI
+        # shows the "implemented elsewhere" banner for exactly this case.
+        for key in ["momentum", "fortress"]:
             strategy = catalog.get_strategy(key)
             self.assertTrue(strategy["implemented"], f"{key} should be marked implemented (Phase 2)")
             self.assertFalse(strategy["simulate_supported"], f"{key} isn't in the quick simulator yet")
+        empire = catalog.get_strategy("empire")
+        self.assertTrue(empire["implemented"])
+        self.assertTrue(empire["simulate_supported"], "empire is self-contained and should be quick-simulatable")
 
     def test_every_strategy_has_required_display_fields(self):
         c = catalog.get_catalog()

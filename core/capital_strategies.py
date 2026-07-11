@@ -226,11 +226,39 @@ def strike_should_terminate(profile, strike_settings, session_state):
 # the underlying sizing_mode value - e.g. "foundation" here, not "fixed",
 # since that's what api/capital_strategies_routes.py's simulate endpoint
 # receives from the UI's strategy-detail page.
+def _kelly_stake(bankroll, settings):
+    """Same formula as core/risk_engine.py's compute_position_size 'kelly'
+    branch (kept in lockstep, not re-derived) - f* = p - (1-p)/b, floored
+    at 0, scaled by a fractional multiplier, falling back to a flat
+    fixed_amount when there's no estimated edge or no bankroll left."""
+    p = settings.get("kelly_win_rate_estimate")
+    b = settings.get("kelly_payout_estimate")
+    if p is None or b is None or b <= 0:
+        return settings.get("fixed_amount", 0)
+    f_star = max(p - (1 - p) / b, 0) * settings.get("kelly_fraction_multiplier", 1)
+    return bankroll * f_star if bankroll > 0 else settings.get("fixed_amount", 0)
+
+
 _SIZE_FUNCS = {
     "foundation": lambda bankroll, settings: settings["fixed_amount"],
     "titan_allocation": lambda bankroll, settings: max(bankroll, 0) * (settings["percent_of_bankroll"] / 100.0),
     "apex_ascension": lambda bankroll, settings: apex_ascension_deployment(settings, bankroll)[0],
+    "quantedge": _kelly_stake,
 }
+
+# Empire is a genuine state machine (a ladder level, not a function of
+# bankroll) but unlike Momentum/Fortress/Phoenix its settings are fully
+# self-contained (starting_amount/target_amount/levels_json/current_level
+# all live on empire_settings itself) - no external base_amount from
+# another sizing mode is required, so it CAN be quick-simulated honestly.
+# Momentum/Fortress/Phoenix stay out of _SIZE_FUNCS deliberately: each is
+# a post-processing layer that needs a base_amount from a DIFFERENT
+# sizing mode's settings, which this single-strategy simulator has no
+# honest source for without fabricating a convention the spec never
+# defined (see docs/AXIM_CAPITAL_STRATEGIES.md).
+_STATEFUL_STRATEGIES = {"empire"}
+
+SIMULATABLE_STRATEGIES = set(_SIZE_FUNCS) | _STATEFUL_STRATEGIES
 
 
 def simulate_strategy(strategy_key, settings, num_trades, win_rate, avg_payout_percent,
@@ -238,11 +266,12 @@ def simulate_strategy(strategy_key, settings, num_trades, win_rate, avg_payout_p
     """One deterministic (seedable) simulated run - single-path, not a
     Monte Carlo distribution (that's the Phase 3 Strategy Lab's job).
     Reuses the SAME sizing functions the live engine calls (apex_ascension_
-    deployment, etc.) rather than a separately-maintained approximation,
-    so a demo run and real behavior can never silently diverge. Returns a
-    dict summary rather than the full trade-by-trade log, since this is a
-    quick "does this look reasonable" preview, not an audit record."""
-    if strategy_key not in _SIZE_FUNCS:
+    deployment, empire_next_stake/empire_advance, etc.) rather than a
+    separately-maintained approximation, so a demo run and real behavior
+    can never silently diverge. Returns a dict summary rather than the
+    full trade-by-trade log, since this is a quick "does this look
+    reasonable" preview, not an audit record."""
+    if strategy_key not in SIMULATABLE_STRATEGIES:
         raise ValueError(f"no basic simulation available for strategy {strategy_key!r} yet")
     if not 0 <= win_rate <= 1:
         raise ValueError("win_rate must be between 0 and 1")
@@ -255,26 +284,45 @@ def simulate_strategy(strategy_key, settings, num_trades, win_rate, avg_payout_p
     max_drawdown_percent = 0.0
     wins = 0
     ruined_at = None
+    stopped_early_at = None
+    # Empire mutates current_level as it runs - a local copy so the
+    # caller's settings dict (and any real DB-backed profile it came
+    # from) is never touched by a demo run.
+    state = dict(settings) if strategy_key in _STATEFUL_STRATEGIES else None
 
     for i in range(num_trades):
         if bankroll <= 0:
             ruined_at = i
             break
-        stake = _SIZE_FUNCS[strategy_key](bankroll, settings)
+        if strategy_key == "empire":
+            stake, status = empire_next_stake(state)
+            if status in ("challenge_complete", "terminated"):
+                stopped_early_at = i
+                break
+        else:
+            stake = _SIZE_FUNCS[strategy_key](bankroll, settings)
         stake = max(min(stake, bankroll), 0)
         if stake == 0:
             continue
-        if rng.random() < win_rate:
+        won = rng.random() < win_rate
+        if won:
             bankroll += stake * (avg_payout_percent / 100.0)
             wins += 1
         else:
             bankroll -= stake
+        if strategy_key == "empire":
+            state["current_level"] = empire_advance(state, won)
         peak = max(peak, bankroll)
         if peak > 0:
             drawdown = (peak - bankroll) / peak * 100
             max_drawdown_percent = max(max_drawdown_percent, drawdown)
 
-    trades_run = ruined_at if ruined_at is not None else num_trades
+    trades_run = num_trades
+    if ruined_at is not None:
+        trades_run = ruined_at
+    elif stopped_early_at is not None:
+        trades_run = stopped_early_at
+
     return {
         "starting_bankroll": round(starting_bankroll if starting_bankroll is not None else settings.get("starting_bankroll", 1000), 2),
         "ending_bankroll": round(bankroll, 2),
@@ -293,11 +341,16 @@ def simulate_strategy(strategy_key, settings, num_trades, win_rate, avg_payout_p
 # consecutive WIN (not loss), always resets to the base step on a loss.
 # ---------------------------------------------------------------------
 
-def momentum_deployment(base_amount, settings, step):
-    """Pure. `step` is trading_sessions.current_momentum_step - advanced
-    on a win, reset to 0 on a loss (core/risk_engine.py's
-    on_trade_closed), mirroring exactly how Martingale's step already
-    works, just the opposite trigger."""
+def _ladder_step(base_amount, settings, step):
+    """Pure. Shared step-ladder math - a custom explicit-dollar ladder
+    takes priority over the multiplier if both are set, clamped at
+    max_steps (stops escalating further, doesn't error). Identical
+    formula to core/risk_engine.py's _apply_martingale (Phoenix (tm)) -
+    Momentum (tm) is the exact same ladder mechanic, just triggered by a
+    win streak instead of a loss streak, which is why this is factored
+    out rather than duplicated. max_total_exposure capping (Martingale's
+    own extra field Momentum's schema doesn't have) is deliberately left
+    to the caller, not this shared core."""
     if not settings["enabled"] or step <= 0:
         return base_amount
     effective_step = min(step, settings["max_steps"]) if settings["max_steps"] > 0 else step
@@ -306,6 +359,28 @@ def momentum_deployment(base_amount, settings, step):
         index = min(effective_step, len(ladder) - 1)
         return ladder[index]
     return round(base_amount * (settings["multiplier"] ** effective_step), 2)
+
+
+def momentum_deployment(base_amount, settings, step):
+    """Pure. `step` is trading_sessions.current_momentum_step - advanced
+    on a win, reset to 0 on a loss (core/risk_engine.py's
+    on_trade_closed), mirroring exactly how Martingale's step already
+    works, just the opposite trigger."""
+    return _ladder_step(base_amount, settings, step)
+
+
+def phoenix_deployment(base_amount, settings, step):
+    """Pure. Same ladder math as momentum_deployment - see _ladder_step -
+    used only by simulate_strategy below, since Phoenix's REAL live
+    sizing already runs through core/risk_engine.py's _apply_martingale
+    (unchanged, unmoved) - this exists so the quick demo simulator can
+    show Phoenix without a second, separately-maintained implementation
+    of the same formula. Also applies max_total_exposure, which
+    _apply_martingale has and Momentum's schema does not."""
+    stepped = _ladder_step(base_amount, settings, step)
+    if settings.get("max_total_exposure", 0) > 0:
+        stepped = min(stepped, settings["max_total_exposure"])
+    return stepped
 
 
 def momentum_locked_profit(settings, running_profit_this_sequence):

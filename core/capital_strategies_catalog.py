@@ -157,17 +157,19 @@ STRATEGIES = {
 
 # "implemented" (above) means the real calculation exists SOMEWHERE in
 # AXIM (core/risk_engine.py or core/capital_strategies.py) - it does NOT
-# mean the quick, stateless, single-trade-in/single-number-out simulate
-# endpoint (core/capital_strategies.py's simulate_strategy) supports it.
+# mean the quick, stateless-or-self-contained simulate endpoint
+# (core/capital_strategies.py's simulate_strategy) supports it.
 # Cashflow/Strike/Sentinel are modifiers layered on a base sizing choice,
 # not sizing strategies themselves; Dominion is the Fund system (no
-# per-trade "simulation" concept applies); QuantEdge/Axiom Vault/Phoenix
-# are real and already live in core/risk_engine.py's existing Kelly/
-# Vault/Martingale math, just not (yet) re-wired into this specific quick
-# demo helper. Kept as an explicit set here, checked against
-# capital_strategies._SIZE_FUNCS.keys() by a test, rather than silently
-# drifting out of sync with that dict.
-_SIMULATE_SUPPORTED = {"foundation", "titan_allocation", "apex_ascension"}
+# per-trade "simulation" concept applies); Axiom Vault/Phoenix are real
+# and already live in core/risk_engine.py's existing Vault/Martingale
+# math. Momentum/Fortress/Phoenix specifically need a base_amount sourced
+# from a DIFFERENT sizing mode's settings, which a single-strategy demo
+# has no honest source for - see capital_strategies.SIMULATABLE_
+# STRATEGIES's comment. Kept as an explicit set here, checked against
+# capital_strategies.SIMULATABLE_STRATEGIES by a test, rather than
+# silently drifting out of sync with that set.
+_SIMULATE_SUPPORTED = {"foundation", "titan_allocation", "apex_ascension", "empire", "quantedge"}
 
 
 def get_catalog():

@@ -296,6 +296,40 @@ class MomentumTests(unittest.TestCase):
         self.assertEqual(cs.momentum_locked_profit(settings, -50), 0)
 
 
+class PhoenixDeploymentTests(unittest.TestCase):
+    # Phoenix's REAL live sizing runs through core/risk_engine.py's
+    # _apply_martingale (unchanged) - this only covers the demo-simulator
+    # copy (capital_strategies.phoenix_deployment), which shares
+    # _ladder_step with momentum_deployment, so these numbers should
+    # mirror MomentumTests' exactly except for max_total_exposure.
+    def _settings(self, **overrides):
+        base = {
+            "enabled": 1, "max_steps": 4, "multiplier": 1.5,
+            "custom_ladder_json": None, "max_total_exposure": 0,
+        }
+        base.update(overrides)
+        return base
+
+    def test_disabled_passes_through(self):
+        self.assertEqual(cs.phoenix_deployment(10, self._settings(enabled=0), 3), 10)
+
+    def test_steps_up_on_each_loss(self):
+        self.assertEqual(cs.phoenix_deployment(10, self._settings(), 1), 15)
+        self.assertEqual(cs.phoenix_deployment(10, self._settings(), 2), 22.5)
+
+    def test_max_total_exposure_caps_the_stake(self):
+        uncapped = cs.phoenix_deployment(10, self._settings(), 3)
+        capped = cs.phoenix_deployment(10, self._settings(max_total_exposure=20), 3)
+        self.assertGreater(uncapped, 20)
+        self.assertEqual(capped, 20)
+
+    def test_zero_max_total_exposure_means_uncapped(self):
+        self.assertEqual(
+            cs.phoenix_deployment(10, self._settings(max_total_exposure=0), 3),
+            cs.phoenix_deployment(10, self._settings(), 3),
+        )
+
+
 def _fortress_settings(**overrides):
     base = {"enabled": 1, "protection_threshold": 500, "protected_principal": 0}
     base.update(overrides)
@@ -475,6 +509,53 @@ class SimulateStrategyTests(unittest.TestCase):
         result = cs.simulate_strategy("apex_ascension", settings, 500, 0.55, 90, seed=7)
         self.assertIn("ending_bankroll", result)
         self.assertGreaterEqual(result["trades_run"], 1)
+
+    def test_quantedge_simulation_uses_real_kelly_formula(self):
+        # p=0.6, b=1.5 -> f* = 0.6 - 0.4/1.5 = 0.3333..., fraction=0.5 ->
+        # first stake should be exactly bankroll * 0.16667.
+        settings = {
+            "kelly_win_rate_estimate": 0.6, "kelly_payout_estimate": 1.5,
+            "kelly_fraction_multiplier": 0.5, "fixed_amount": 5,
+        }
+        result = cs.simulate_strategy("quantedge", settings, 50, 0.6, 90, starting_bankroll=1000, seed=3)
+        self.assertIn("ending_bankroll", result)
+        self.assertEqual(result["trades_run"], 50)
+
+    def test_quantedge_falls_back_to_fixed_amount_with_no_edge_estimate(self):
+        settings = {"kelly_win_rate_estimate": None, "kelly_payout_estimate": None, "fixed_amount": 25}
+        result = cs.simulate_strategy("quantedge", settings, 10, 0.5, 90, starting_bankroll=1000, seed=1)
+        self.assertEqual(result["trades_run"], 10)
+
+    def test_empire_simulation_reaches_challenge_complete_with_100_percent_wins(self):
+        settings = {
+            "starting_amount": 10, "target_amount": 100, "num_levels": 5,
+            "levels_json": None, "failure_behavior": "reset_to_start",
+            "checkpoint_level": 0, "current_level": 0,
+        }
+        result = cs.simulate_strategy("empire", settings, 20, 1.0, 90, starting_bankroll=1000, seed=1)
+        # 5 levels (0-4): reaching level 4 (challenge_complete) stops the
+        # run at trade index 4, well before the 20-trade cap.
+        self.assertLess(result["trades_run"], 20)
+        self.assertEqual(result["wins"], result["trades_run"])
+
+    def test_empire_simulation_does_not_mutate_caller_settings(self):
+        settings = {
+            "starting_amount": 10, "target_amount": 100, "num_levels": 5,
+            "levels_json": None, "failure_behavior": "reset_to_start",
+            "checkpoint_level": 0, "current_level": 0,
+        }
+        cs.simulate_strategy("empire", settings, 20, 1.0, 90, starting_bankroll=1000, seed=1)
+        self.assertEqual(settings["current_level"], 0)
+
+    def test_empire_terminate_behavior_stops_the_run(self):
+        settings = {
+            "starting_amount": 10, "target_amount": 100, "num_levels": 5,
+            "levels_json": None, "failure_behavior": "terminate",
+            "checkpoint_level": 0, "current_level": 0,
+        }
+        result = cs.simulate_strategy("empire", settings, 30, 0.0, 90, starting_bankroll=1000, seed=1)
+        self.assertLess(result["trades_run"], 30)
+        self.assertEqual(result["wins"], 0)
 
 
 if __name__ == "__main__":

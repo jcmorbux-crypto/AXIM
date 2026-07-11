@@ -9,14 +9,23 @@ project's standing practice for consequential instructions).
 **Phase 2 progress**: Momentum, Fortress, and Empire are real and wired
 into live sizing (`core/risk_engine.py`), same standard as every Phase 1
 strategy - not catalog-only. Axiom Vault gained its `per_trade` trigger
-type. All three new strategies are genuine state machines (a per-session
-step counter, persisted protected-principal, a persisted ladder level)
-that don't fit the existing quick single-path demo simulator's stateless
-model - they're marked `implemented: true` but `simulate_supported:
-false` in the catalog, same honest treatment already used for Sentinel/
-Cashflow/Strike/Dominion/QuantEdge/Phoenix in Phase 1. Still open from
-Phase 2: Leviathan, Blackwater, Sniper (need more design input - see
-"Deliberately not started" below).
+type, plus an on-demand `manual` transfer (`POST /api/sessions/
+{session_id}/vault-transfer`) - no calculation, just an explicit call to
+`database.add_to_vault`, the same function every automated trigger already
+uses. Momentum and Fortress are genuine state machines whose math needs a
+base_amount sourced from a DIFFERENT sizing mode's settings, so they don't
+fit the quick single-path demo simulator honestly - they're marked
+`implemented: true` but `simulate_supported: false`, same honest treatment
+already used for Sentinel/Cashflow/Strike/Dominion/Phoenix. **Empire is
+different**: its settings are fully self-contained (its own ladder, no
+external base_amount), so it now runs through `simulate_strategy` for
+real, reusing the exact same `empire_next_stake`/`empire_advance` the live
+engine calls - a run stops the moment the ladder hits `challenge_complete`
+or `terminated`, same as it would live. **QuantEdge (Kelly)** is also now
+quick-simulatable - stateless, so it slotted into `_SIZE_FUNCS` directly,
+using the identical f\* formula as `core/risk_engine.py`'s `kelly` branch.
+Still open from Phase 2: Leviathan, Blackwater, Sniper (need more design
+input - see "Deliberately not started" below).
 
 ## What this is
 
@@ -80,21 +89,21 @@ before (the new Cashflow/Sentinel/Apex Ascension features all default to
 The catalog UI shows all 17 strategies with full philosophy/tagline/risk
 content regardless of phase (the spec requires the catalog to be
 complete even before every calculation exists). The "Run Simulation"
-button only appears for strategies with a real quick-simulate wiring
-today: **Foundation, Titan Allocation, Apex Ascension**. Everything else
-marked `implemented: true` in the catalog (Sentinel, Cashflow, Strike,
-Dominion, QuantEdge, Axiom Vault, Phoenix, Momentum, Fortress, Empire)
-has real, live calculations running through the existing Risk Engine /
-Funds pages already - just not (yet) through this page's simplified
-single-path demo simulator, which the UI states plainly rather than
-showing a button that would 400 (Momentum/Fortress/Empire specifically
-are real state machines - a per-session step counter, a persisted
-protected-principal value, a persisted ladder level - that don't fit the
-simulator's current stateless-per-call design without a larger rewrite,
-which felt like the wrong place to spend effort vs. Phase 3's real
-Strategy Lab integration). **Leviathan, Blackwater, Sniper, and Oracle**
-are genuinely not built yet - see "Deliberately not started" below for
-why, rather than a rushed, fabricated version of each.
+button appears for strategies with a real quick-simulate wiring today:
+**Foundation, Titan Allocation, Apex Ascension, Empire, QuantEdge**.
+Everything else marked `implemented: true` in the catalog (Sentinel,
+Cashflow, Strike, Dominion, Axiom Vault, Phoenix, Momentum, Fortress) has
+real, live calculations running through the existing Risk Engine / Funds
+pages already - just not (yet) through this page's simplified demo
+simulator, which the UI states plainly rather than showing a button that
+would 400. Momentum and Fortress specifically are post-processing layers
+that need a base_amount sourced from a DIFFERENT sizing mode's settings -
+this single-strategy simulator has no honest source for that without
+fabricating a convention the spec never defined, so they stay out
+deliberately (Phase 3's real Strategy Lab integration is the right place
+to solve this, not a guessed default here). **Leviathan, Blackwater,
+Sniper, and Oracle** are genuinely not built yet - see "Deliberately not
+started" below for why, rather than a rushed, fabricated version of each.
 
 ## Deliberately not started (Leviathan, Blackwater, Sniper)
 
@@ -136,6 +145,8 @@ they can be built honestly, not just more engineering time:
 ## Next up
 
 Remaining Phase 2: Leviathan, Blackwater, Sniper (blocked on the design/
-data-source gaps above, not effort). Phase 3: QuantEdge/Oracle/Phoenix's
-full re-wiring into the quick simulator, the Strategy Builder, Strategy
-Lab Monte Carlo/historical backtesting, sportsbook support.
+data-source gaps above, not effort). Phase 3: Oracle, Phoenix/Momentum/
+Fortress's full re-wiring into the quick simulator (needs the Strategy
+Lab's richer multi-mode-aware simulation, not this single-strategy
+helper), the Strategy Builder, Strategy Lab Monte Carlo/historical
+backtesting, sportsbook support.
