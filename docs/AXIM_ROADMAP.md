@@ -2011,3 +2011,54 @@ visible on the Logs page, not just written to disk.
 4 new regression tests using `assertLogs` confirm both failure paths and
 the invalid-rule path log a warning, and that a clean parse logs nothing.
 Full suite: 620 passed (up from 616), 1 skipped.
+
+## AXIM Core: closed the last open Mission Control per-Fund completeness gap
+
+The last unaddressed line in `docs/AXIM_RELEASE_CHECKLIST.md`'s AXIM Core
+section: the per-Fund Mission Control view showed lifetime P/L labeled as
+the headline number (inconsistent with the global "All Funds" view, which
+correctly shows today's), "Trades today" was actually bound to a lifetime
+trade count, the risk line only ever showed the Profit Vault balance (the
+Fund's own `loss_limit`/`profit_target` had no live status, only a static
+number three clicks into diagnostics), and "last signal"/"last trade" -
+two separate fields the directive explicitly requires - were collapsed
+into a sessions list that showed neither.
+
+Confirmed `trade_statistics.daily_stats()` already accepted a `fund_id`
+kwarg (added for some other caller, unused by `fund_manager.py`), so most
+of "today's P/L" was one call away rather than new aggregation logic.
+Added to `core/fund_manager.py`: `get_fund_risk_status(fund, performance)`
+(mirrors `check_fund_limits`'s own LIFETIME semantics deliberately - a
+loss-limit status that used a different time window than the actual
+breach check it's warning about would be actively misleading, not just
+incomplete) and `get_fund_last_signal_and_trade(fund_id)` (scans the most
+recent signals for this fund via `database.get_recent_signals`'s new
+`fund_id` filter - added alongside this - for the first row overall vs.
+the first row with a closed result). `get_fund_report` now returns
+`performance_today`, `risk_status`, `last_signal`, and `last_trade`
+alongside the existing lifetime `performance`.
+
+`web/dashboard.html`'s `refreshForFund` rewired to use these: hero label
+now reads "{Fund} - Today's Performance" with today's P/L as the headline
+(lifetime P/L moved into the diagnostics detail panel, not discarded);
+risk line shows a color-coded live status (green "within limits", yellow
+"approaching loss limit", red "breached", gold "profit target reached");
+two new stat chips show Last Signal and Last Trade with time-ago labels,
+hidden when nothing has happened yet and explicitly hidden again in the
+global "All Funds" view (which has no per-fund equivalent) so switching
+away from a per-Fund view never leaves stale content visible.
+
+13 new regression tests (`RiskStatusTests`, `LastSignalAndTradeTests` in
+`tests/test_fund_manager.py`) cover every risk_status level and both the
+"signal without a trade yet" and "signal that became the last trade"
+cases, including cross-Fund isolation. Full suite: 629 passed (up from
+620), 1 skipped. Live-verified via Playwright: a Fund with loss_limit=100
+and realized -85 correctly showed "Approaching loss limit ($85.00 of
+$100.00)", today's P/L as the hero number, and both Last Signal/Last
+Trade populated.
+
+This closes every item that was open in `docs/AXIM_RELEASE_CHECKLIST.md`'s
+"AXIM Core directive" section except demo end-to-end validation (task
+#15), which requires the operator's own live Telegram + Pocket Option
+credentials and was never something this session could complete
+autonomously - see that task's description for detail.

@@ -1157,25 +1157,32 @@ def get_realized_pnl_since(since_iso):
 
 
 @timed("database")
-def get_recent_signals(limit=25):
+def get_recent_signals(limit=25, fund_id=None):
     """Most recent signals regardless of status - the dashboard's activity
     table. Unlike get_trades_between, not scoped to a time window or
     closed-only, so an in-flight or rejected/ignored signal shows up
     immediately rather than only once it resolves. Joins in the Fund/
     broker account names (not just their IDs, which signals.fund_id and
     signals.broker_account_id already stored but Trade Center never
-    surfaced) so a multi-Fund operator can tell trades apart at a glance."""
+    surfaced) so a multi-Fund operator can tell trades apart at a glance.
+    fund_id optionally scopes to one Fund - used by fund_manager.py's
+    last-signal/last-trade fields on the per-Fund Mission Control view."""
     conn = get_connection()
-    rows = conn.execute(
+    query = (
         "SELECT s.id, s.asset, s.direction, s.timeframe, s.channel, s.execution_status, s.result, "
         "s.profit_loss, s.payout, s.received_at, s.opened_at, s.closed_at, s.trade_amount, "
         "s.session_id, s.fund_id, s.broker_account_id, f.name AS fund_name, ba.name AS broker_account_name "
         "FROM signals s "
         "LEFT JOIN funds f ON f.id = s.fund_id "
         "LEFT JOIN broker_accounts ba ON ba.id = s.broker_account_id "
-        "ORDER BY s.id DESC LIMIT ?",
-        (limit,),
-    ).fetchall()
+    )
+    params = []
+    if fund_id is not None:
+        query += "WHERE s.fund_id = ? "
+        params.append(fund_id)
+    query += "ORDER BY s.id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(row) for row in rows]
 

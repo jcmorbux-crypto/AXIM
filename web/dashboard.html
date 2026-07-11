@@ -128,6 +128,8 @@
         <div class="stat"><span class="label">Win rate</span><span class="value" id="win-rate">-</span></div>
         <div class="stat"><span class="label">Trades today</span><span class="value" id="trades-today">-</span></div>
         <div class="stat"><span class="label" id="session-pl-label">Active session P/L</span><span class="value" id="session-pl">-</span></div>
+        <div class="stat" id="last-signal-stat" style="display:none;"><span class="label">Last signal</span><span class="value" id="last-signal-value" style="font-size:13.5px;">-</span></div>
+        <div class="stat" id="last-trade-stat" style="display:none;"><span class="label">Last trade</span><span class="value" id="last-trade-value" style="font-size:13.5px;">-</span></div>
         <div class="spacer"></div>
         <button class="subtle" id="stop-session-cta" onclick="confirmStopActiveSession()" style="display:none;">Stop Session</button>
         <button class="primary" id="start-session-cta" onclick="window.location.href='/sessions'">Start Session</button>
@@ -363,14 +365,15 @@ async function refreshForFund(fundId) {
   renderBrokerChip(report.broker_account);
 
   const perf = report.performance;
+  const today = report.performance_today;
   const dailyPlEl = document.getElementById("daily-pl");
-  document.getElementById("hero-label-text").textContent = `${report.fund.name} - Lifetime Performance`;
-  dailyPlEl.textContent = fmtMoney(perf.profit_loss);
-  dailyPlEl.className = "fund-hero-value count-up " + plClass(perf.profit_loss);
+  document.getElementById("hero-label-text").textContent = `${report.fund.name} - Today's Performance`;
+  dailyPlEl.textContent = fmtMoney(today.profit_loss);
+  dailyPlEl.className = "fund-hero-value count-up " + plClass(today.profit_loss);
   document.getElementById("daily-pl-caption").textContent =
-    perf.total_closed > 0 ? `${perf.wins} win${perf.wins === 1 ? "" : "s"}, ${perf.losses} loss${perf.losses === 1 ? "" : "es"} all-time` : "No trades closed yet.";
-  document.getElementById("win-rate").textContent = perf.win_rate !== null ? (perf.win_rate * 100).toFixed(1) + "%" : "-";
-  document.getElementById("trades-today").textContent = perf.total_closed;
+    today.total_closed > 0 ? `${today.wins} win${today.wins === 1 ? "" : "s"}, ${today.losses} loss${today.losses === 1 ? "" : "es"} today` : "No trades closed yet today.";
+  document.getElementById("win-rate").textContent = today.win_rate !== null ? (today.win_rate * 100).toFixed(1) + "%" : "-";
+  document.getElementById("trades-today").textContent = today.total_closed;
   document.getElementById("session-pl-label").textContent = "Trading balance";
   const sessionPlEl = document.getElementById("session-pl");
   sessionPlEl.textContent = fmtMoney(report.balances.trading_balance);
@@ -378,17 +381,38 @@ async function refreshForFund(fundId) {
 
   renderGoalProgress(perf.profit_loss, report.fund.profit_target);
 
+  const dotClass = { ok: "on", warning: "warn", breached: "danger", target_reached: "on", none: "off" }[report.risk_status.level] || "off";
   const riskLine = document.getElementById("risk-line");
-  riskLine.innerHTML = report.balances.protected_balance > 0
-    ? `<span class="badge gold">Protected: ${fmtMoney(report.balances.protected_balance)}</span>`
-    : '<span class="dot on"></span> No funds in the vault yet';
+  riskLine.innerHTML = `<span class="dot ${dotClass}"></span> ${escapeHtml(report.risk_status.message)}`;
   document.getElementById("risk-details").innerHTML = `
+    <div>Lifetime P/L: ${fmtMoney(perf.profit_loss)}</div>
     <div>Total account value: ${fmtMoney(report.balances.total_account_value)}</div>
+    <div>Protected (vault): ${fmtMoney(report.balances.protected_balance)}</div>
     <div>Starting balance: ${fmtMoney(report.fund.starting_balance)}</div>
     <div>Profit target: ${report.fund.profit_target > 0 ? fmtMoney(report.fund.profit_target) : "not set"}</div>
     <div>Loss limit: ${report.fund.loss_limit > 0 ? fmtMoney(report.fund.loss_limit) : "not set"}</div>
   `;
   document.getElementById("risk-diagnostics").style.display = "block";
+
+  // "Last signal" and "last trade" are deliberately separate - a signal
+  // can be rejected/ignored without ever becoming a trade, and collapsing
+  // them into one figure would hide that distinction from the operator.
+  const lastSignalStat = document.getElementById("last-signal-stat");
+  const lastTradeStat = document.getElementById("last-trade-stat");
+  if (report.last_signal) {
+    lastSignalStat.style.display = "";
+    document.getElementById("last-signal-value").textContent =
+      `${report.last_signal.asset || "-"} ${report.last_signal.direction || ""} - ${timeAgo(report.last_signal.received_at)}`;
+  } else {
+    lastSignalStat.style.display = "none";
+  }
+  if (report.last_trade) {
+    lastTradeStat.style.display = "";
+    document.getElementById("last-trade-value").textContent =
+      `${report.last_trade.asset || "-"} ${report.last_trade.result || ""} - ${timeAgo(report.last_trade.closed_at)}`;
+  } else {
+    lastTradeStat.style.display = "none";
+  }
 
   document.getElementById("activity-source").textContent = `Fund: ${report.fund.name} - ${report.sources.length} source(s) assigned`;
   const activityList = document.getElementById("activity-list");
@@ -459,6 +483,8 @@ async function refreshGlobal() {
       fetchJSON("/api/sessions/active-list"),
     ]);
     document.getElementById("hero-label-text").textContent = "Today's Performance";
+    document.getElementById("last-signal-stat").style.display = "none";
+    document.getElementById("last-trade-stat").style.display = "none";
     document.getElementById("session-pl-label").textContent =
       activeSessions.length > 1 ? "Active sessions P/L (combined)" : "Active session P/L";
     document.getElementById("goal-progress-wrap").style.display = "none";

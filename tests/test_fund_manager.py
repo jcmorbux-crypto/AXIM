@@ -120,11 +120,103 @@ class FundReportTests(FundManagerTestCase):
         self.assertEqual(report["fund"]["name"], "F")
         self.assertIn("balances", report)
         self.assertIn("performance", report)
+        self.assertIn("performance_today", report)
+        self.assertIn("risk_status", report)
+        self.assertIn("last_signal", report)
+        self.assertIn("last_trade", report)
         self.assertEqual(report["sources"], [1])
         self.assertEqual(len(report["recent_sessions"]), 1)
 
     def test_missing_fund_returns_none(self):
         self.assertIsNone(fund_manager.get_fund_report(999999))
+
+
+class RiskStatusTests(FundManagerTestCase):
+    """Mission Control's per-Fund risk line previously only ever showed
+    the Profit Vault balance - the Fund's own loss_limit/profit_target had
+    no live status at all, only a static number buried in diagnostics."""
+
+    def test_no_limits_set(self):
+        fund_id = database.create_fund("F", loss_limit=0, profit_target=0)
+        report = fund_manager.get_fund_report(fund_id)
+        self.assertEqual(report["risk_status"]["level"], "none")
+
+    def test_within_limits(self):
+        fund_id = database.create_fund("F", loss_limit=100, profit_target=100)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        _make_closed_trade(session_id, result="loss", profit_loss=-10)
+        report = fund_manager.get_fund_report(fund_id)
+        self.assertEqual(report["risk_status"]["level"], "ok")
+
+    def test_approaching_loss_limit_at_80_percent(self):
+        fund_id = database.create_fund("F", loss_limit=100)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        _make_closed_trade(session_id, result="loss", profit_loss=-80)
+        report = fund_manager.get_fund_report(fund_id)
+        self.assertEqual(report["risk_status"]["level"], "warning")
+
+    def test_loss_limit_breached(self):
+        fund_id = database.create_fund("F", loss_limit=100)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        _make_closed_trade(session_id, result="loss", profit_loss=-120)
+        report = fund_manager.get_fund_report(fund_id)
+        self.assertEqual(report["risk_status"]["level"], "breached")
+
+    def test_profit_target_reached(self):
+        fund_id = database.create_fund("F", profit_target=50)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        _make_closed_trade(session_id, result="win", profit_loss=60)
+        report = fund_manager.get_fund_report(fund_id)
+        self.assertEqual(report["risk_status"]["level"], "target_reached")
+
+
+class LastSignalAndTradeTests(FundManagerTestCase):
+    """"Last signal" and "last trade" are two SEPARATE required Mission
+    Control fields - a rejected/ignored signal never becomes a trade, so
+    collapsing them loses real information."""
+
+    def test_both_none_when_nothing_happened_yet(self):
+        fund_id = database.create_fund("F")
+        report = fund_manager.get_fund_report(fund_id)
+        self.assertIsNone(report["last_signal"])
+        self.assertIsNone(report["last_trade"])
+
+    def test_last_signal_set_even_when_not_yet_a_trade(self):
+        fund_id = database.create_fund("F")
+        database.record_signal_received(
+            {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"},
+            fund_id=fund_id,
+        )
+        report = fund_manager.get_fund_report(fund_id)
+        self.assertIsNotNone(report["last_signal"])
+        self.assertIsNone(report["last_trade"])
+
+    def test_last_trade_is_the_most_recent_closed_result(self):
+        fund_id = database.create_fund("F")
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        database.record_signal_received(
+            {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "first"},
+            fund_id=fund_id, session_id=session_id,
+        )
+        trade_id = database.record_signal_received(
+            {"asset": "GBP/USD OTC", "direction": "SELL", "expiry": "1 Minute", "raw_message": "second"},
+            fund_id=fund_id, session_id=session_id,
+        )
+        database.update_trade_status(trade_id, "result_win", result="win", profit_loss=5)
+
+        report = fund_manager.get_fund_report(fund_id)
+        self.assertEqual(report["last_signal"]["asset"], "GBP/USD OTC")
+        self.assertEqual(report["last_trade"]["id"], trade_id)
+
+    def test_signals_from_other_fund_excluded(self):
+        fund_a = database.create_fund("A")
+        fund_b = database.create_fund("B")
+        database.record_signal_received(
+            {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"},
+            fund_id=fund_a,
+        )
+        report_b = fund_manager.get_fund_report(fund_b)
+        self.assertIsNone(report_b["last_signal"])
 
 
 class ListFundsWithBalancesTests(FundManagerTestCase):

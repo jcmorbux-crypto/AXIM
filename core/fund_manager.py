@@ -20,6 +20,12 @@ sys.path.insert(0, str(CORE_DIR))
 import database
 import trade_statistics
 
+# Same 80%-of-limit threshold the global Mission Control view already uses
+# (web/dashboard.html's refreshGlobal) for "approaching your daily loss
+# limit" - reused here so a per-Fund operator gets the same early warning
+# language rather than a differently-tuned one.
+_APPROACHING_LIMIT_FRACTION = 0.8
+
 # Aggregate queries need every session/run a fund has ever had, not just
 # the most recent page - list_fund_sessions/list_fund_backtest_runs
 # default to a UI-sized limit, so aggregation callers pass this instead.
@@ -71,18 +77,65 @@ def get_fund_performance(fund_id):
     return trade_statistics._summarize(trades)
 
 
+def get_fund_risk_status(fund, performance):
+    """Plain-language loss-limit/profit-target proximity for Mission
+    Control's per-Fund risk line - previously the risk line only ever
+    showed the Profit Vault balance, with the Fund's own loss_limit only
+    visible as a static number three clicks into the diagnostics detail,
+    no different from "not set" until you'd already breached it. Mirrors
+    check_fund_limits's own LIFETIME semantics (fund.loss_limit/
+    profit_target are a lifetime circuit breaker, not a daily one - see
+    that function's docstring), so this reports proximity to the exact
+    same breach check_fund_limits will eventually enforce, not a
+    differently-scoped number that could disagree with it."""
+    realized_pnl = performance["profit_loss"]
+    loss_limit = fund["loss_limit"] or 0
+    profit_target = fund["profit_target"] or 0
+
+    if loss_limit > 0 and realized_pnl <= -loss_limit:
+        return {"level": "breached", "message": f"Loss limit reached (${-realized_pnl:.2f} of ${loss_limit:.2f})"}
+    if loss_limit > 0 and realized_pnl <= -_APPROACHING_LIMIT_FRACTION * loss_limit:
+        return {"level": "warning", "message": f"Approaching loss limit (${-realized_pnl:.2f} of ${loss_limit:.2f})"}
+    if profit_target > 0 and realized_pnl >= profit_target:
+        return {"level": "target_reached", "message": f"Profit target reached (${realized_pnl:.2f} of ${profit_target:.2f})"}
+    if loss_limit <= 0 and profit_target <= 0:
+        return {"level": "none", "message": "No profit target or loss limit set for this Fund"}
+    return {"level": "ok", "message": "Within this Fund's risk limits"}
+
+
+def get_fund_last_signal_and_trade(fund_id, scan_limit=50):
+    """Mission Control's directive lists "last signal" and "last trade" as
+    two SEPARATE required fields - a signal can arrive and be rejected/
+    ignored without ever becoming a trade, so collapsing them into one
+    "recent activity" figure loses real information (e.g. a channel gone
+    quiet vs. every recent signal being rejected are different problems
+    an operator needs to tell apart). Scans the most recent scan_limit
+    signals for this Fund (not a second unbounded query) since a closed
+    trade is usually within the last handful of signals; returns None for
+    either half if nothing qualifies yet."""
+    recent = database.get_recent_signals(limit=scan_limit, fund_id=fund_id)
+    last_signal = recent[0] if recent else None
+    last_trade = next((s for s in recent if s["result"] in ("win", "loss", "draw")), None)
+    return {"last_signal": last_signal, "last_trade": last_trade}
+
+
 def get_fund_report(fund_id):
     """Everything the Funds page needs for one fund in a single call:
-    the fund row, computed balances, performance, attached broker
-    account, and recent session/backtest history (capped at a UI-
-    reasonable page size, unlike the _ALL-scoped aggregation above)."""
+    the fund row, computed balances, lifetime AND today's performance,
+    risk status, last signal/trade, attached broker account, and recent
+    session/backtest history (capped at a UI-reasonable page size, unlike
+    the _ALL-scoped aggregation above)."""
     fund = database.get_fund(fund_id)
     if fund is None:
         return None
+    performance = get_fund_performance(fund_id)
     return {
         "fund": fund,
         "balances": get_fund_balances(fund_id),
-        "performance": get_fund_performance(fund_id),
+        "performance": performance,
+        "performance_today": trade_statistics.daily_stats(fund_id=fund_id),
+        "risk_status": get_fund_risk_status(fund, performance),
+        **get_fund_last_signal_and_trade(fund_id),
         "sources": database.list_fund_source_channel_ids(fund_id),
         "broker_account": database.get_fund_primary_broker_account(fund_id),
         "recent_sessions": database.list_fund_sessions(fund_id, limit=20),

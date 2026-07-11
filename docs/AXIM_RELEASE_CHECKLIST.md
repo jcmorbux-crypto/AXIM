@@ -390,9 +390,16 @@ flags that it's still needed.
       into the Logs page's module filter. Covered by 4 new tests
       (`assertLogs` on both failure paths + the invalid-rule path, plus
       confirming a clean parse logs nothing).
-- [ ] Remaining Mission Control completeness gaps: per-Fund view still
-      shows lifetime P/L instead of today's, no clear loss-limit status
-      line, no last-signal-vs-last-trade distinction - not yet addressed
+- [x] **Mission Control per-Fund view completeness gaps closed** - the
+      hero number now shows today's P/L (was lifetime, mislabeling
+      "Trades today" with a lifetime count in the process); the risk
+      line now shows a live loss-limit/profit-target status
+      ("Approaching loss limit ($85.00 of $100.00)", etc. - same lifetime
+      semantics as `fund_manager.check_fund_limits`, not a differently-
+      scoped number); "Last signal" and "Last trade" are now shown as two
+      separate stats (a rejected/ignored signal never becomes a trade).
+      Live-verified via Playwright against a Fund at 85% of its loss
+      limit.
 - [x] **`INSTALL.md` rewritten** - the entry-point doc `README.md`
       itself links to was stale in the same "pre-web-UI" way
       `USER_GUIDE.md` was before an earlier session's fix, but was never
