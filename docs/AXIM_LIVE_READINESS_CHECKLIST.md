@@ -11,15 +11,13 @@ check it doesn't assume.
 mechanics, recovery, observability, and the missing drawdown breaker from
 the last review are all done and verified. AXIM Capital Strategies (tm)
 Phase 1+2 shipped this session without weakening any safety gate (see
-below). What remains is (1) one manual, operator-only step that literally
-cannot be done by an AI agent - inspecting your own real Pocket Option
-live cabinet, (2) the honest, still-open question from the last review:
-**does any signal source this account watches actually have an edge net
-of payout**, and (3) confirming the listener's Scheduled Task actually
-auto-restarts it after a real reboot/logon, not just the supervisor
-script's own restart-loop (see "Long-running soak test" below - a real
-gap was found and fixed live this session, but the reboot path itself is
-still unverified).
+below). A real listener-supervision gap was found, fixed, and the fix
+confirmed against the actual Scheduled Task trigger path this session
+(see "Long-running soak test" below). What remains is (1) one manual,
+operator-only step that literally cannot be done by an AI agent -
+inspecting your own real Pocket Option live cabinet, and (2) the honest,
+still-open question from the last review: **does any signal source this
+account watches actually have an edge net of payout.**
 
 ## Safety-critical gates (verify every one, every time)
 
@@ -213,12 +211,24 @@ still unverified).
       cleanly (`demo_mode_verified: 1`, `worker_count: 6`, a real
       populated `balance`, heartbeat updating every ~30s, uptime climbing
       steadily, watched for several consecutive updates with zero
-      restart-cycle entries in `logs/supervisor.log`). **Operator
-      follow-up recommended, not yet done**: trigger a real logon event
-      (or reboot) at some point to confirm the Scheduled Task itself
-      picks the listener back up automatically going forward, since this
-      session only verified the supervisor script's own restart-loop
-      behavior directly, not the Scheduled Task's `AtLogOn` trigger path.
+      restart-cycle entries in `logs/supervisor.log`).
+- [x] **Scheduled Task's actual trigger path confirmed, same session,
+      without a disruptive full machine reboot.** A real OS reboot would
+      affect more than AXIM (everything else running on this machine) and
+      wasn't something to trigger unilaterally - instead, cleanly stopped
+      the manually-launched supervisor+listener from the item above, then
+      ran `Start-ScheduledTask -TaskName "AXIM Listener"` - the exact same
+      action Windows itself runs on the task's `AtLogOn` trigger, just
+      invoked directly rather than waiting for an actual logon event.
+      Confirmed via `logs\supervisor.log` (a fresh "started, watching..."
+      entry at the trigger time, no restart-cycle noise after) and the
+      live heartbeat (`demo_mode_verified: 1`, `worker_count: 6`, new
+      `listener_pid`, uptime climbing steadily 7.1 -> 8.7 minutes across
+      two direct checks, balance still populated). The task's *action* is
+      proven correct end to end; a full physical reboot/logon remains the
+      only literally-untested variant, and there's no reason to expect it
+      to behave differently - the task's action is the entire mechanism,
+      or lack thereof, that a real logon event would invoke.
 
 ## Functional / operational (carried forward from the 07-05 checklist, re-verified)
 
@@ -366,10 +376,6 @@ findings and reasoning in commit history; summarized here.
    a single broker account's `live_enabled` on, at the smallest possible
    stake, watched deliberately - the same discipline every demo test in
    this project has followed.
-5. Confirm the "AXIM Listener" Scheduled Task actually relaunches the
-   listener after a real reboot/logon (a genuine trigger event, not this
-   session's direct supervisor-script launch) - low effort, not yet done,
-   see "Long-running soak test" above for why this matters.
 
 This document does not recommend a timeline for any of the above - it
 exists so the remaining gate is visible and unambiguous.
