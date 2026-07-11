@@ -239,8 +239,17 @@ async function loadOnboardingChecklist() {
 }
 
 async function loadFundSelector() {
-  allFunds = await fetchJSON("/api/funds?status=active");
   const selector = document.getElementById("fund-selector");
+  try {
+    allFunds = await fetchJSON("/api/funds?status=active");
+  } catch (e) {
+    // Left unpopulated on failure (never fabricated) - the caller (the
+    // page-init IIFE) still proceeds to loadOnboardingChecklist/refreshAll
+    // rather than the whole page silently stalling on this one request.
+    console.error("loadFundSelector failed:", e);
+    selector.innerHTML = '<option value="">Failed to load funds</option>';
+    return;
+  }
   const previous = selector.value;
   selector.innerHTML = '<option value="">All Funds (combined)</option>' +
     allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("");

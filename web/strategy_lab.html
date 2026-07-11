@@ -341,18 +341,22 @@ document.getElementById("tabs").addEventListener("click", (e) => {
 // ---------- Setup ----------
 
 async function loadSetupData() {
-  const [profiles, sources] = await Promise.all([
-    fetchJSON("/api/risk-profiles"),
-    fetchJSON("/api/backtest/sources"),
-  ]);
-  allProfiles = profiles;
+  try {
+    const [profiles, sources] = await Promise.all([
+      fetchJSON("/api/risk-profiles"),
+      fetchJSON("/api/backtest/sources"),
+    ]);
+    allProfiles = profiles;
 
-  document.getElementById("strategy-checklist").innerHTML = profiles.map(p => `
-    <label><input type="checkbox" value="${p.id}" ${p.is_template ? "" : "checked"}> ${escapeHtml(p.name)}${p.is_template ? " <span class=\"faint\">(template)</span>" : ""}</label>
-  `).join("") || '<div class="empty">No risk profiles yet - create one in Risk Engine first.</div>';
+    document.getElementById("strategy-checklist").innerHTML = profiles.map(p => `
+      <label><input type="checkbox" value="${p.id}" ${p.is_template ? "" : "checked"}> ${escapeHtml(p.name)}${p.is_template ? " <span class=\"faint\">(template)</span>" : ""}</label>
+    `).join("") || '<div class="empty">No risk profiles yet - create one in Risk Engine first.</div>';
 
-  const channelSelect = document.getElementById("r-channel");
-  channelSelect.innerHTML = '<option value="">All channels</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+    const channelSelect = document.getElementById("r-channel");
+    channelSelect.innerHTML = '<option value="">All channels</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+  } catch (e) {
+    document.getElementById("strategy-checklist").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
 }
 
 async function runBacktest() {
@@ -604,8 +608,14 @@ function renderStrategyComparisonChart(strategies) {
 async function loadSessions() {
   const strategyId = document.getElementById("session-strategy-select").value;
   if (!strategyId) return;
-  const sessions = await fetchJSON(`/api/backtest/runs/${currentRunId}/strategies/${strategyId}/sessions`);
   const body = document.getElementById("session-table-body");
+  let sessions;
+  try {
+    sessions = await fetchJSON(`/api/backtest/runs/${currentRunId}/strategies/${strategyId}/sessions`);
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="6" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    return;
+  }
   if (!sessions.length) { body.innerHTML = '<tr><td colspan="6" class="empty">No sessions.</td></tr>'; return; }
   body.innerHTML = sessions.map(s => `
     <tr>
@@ -679,11 +689,15 @@ async function openDeployModal(strategyId, label) {
   document.getElementById("deploy-strategy-label").textContent = `Strategy: ${label}`;
   document.getElementById("deploy-profile-name").value = "";
   document.getElementById("deploy-status").textContent = "";
-  const funds = await fetchJSON("/api/funds?status=active");
   const select = document.getElementById("deploy-fund-select");
-  select.innerHTML = funds.length
-    ? funds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("")
-    : '<option value="">No active funds - create one first</option>';
+  try {
+    const funds = await fetchJSON("/api/funds?status=active");
+    select.innerHTML = funds.length
+      ? funds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("")
+      : '<option value="">No active funds - create one first</option>';
+  } catch (e) {
+    select.innerHTML = `<option value="">Failed to load funds: ${escapeHtml(e.message)}</option>`;
+  }
   openModal("deploy-modal");
 }
 
@@ -710,9 +724,13 @@ async function confirmDeploy() {
 async function loadScorecardSources() {
   const select = document.getElementById("sc-source");
   if (select.options.length > 1) return;  // already loaded
-  const sources = await fetchJSON("/api/backtest/sources");
-  select.innerHTML = '<option value="">Choose a source...</option>' +
-    sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+  try {
+    const sources = await fetchJSON("/api/backtest/sources");
+    select.innerHTML = '<option value="">Choose a source...</option>' +
+      sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+  } catch (e) {
+    select.innerHTML = `<option value="">Failed to load sources</option>`;
+  }
 }
 
 async function generateScorecard() {
@@ -759,8 +777,14 @@ function renderScorecard(card) {
 // ---------- Historical signals ----------
 
 async function loadImportedSignals() {
-  const signals = await fetchJSON("/api/backtest/signals/imported");
   const body = document.getElementById("imported-signals-body");
+  let signals;
+  try {
+    signals = await fetchJSON("/api/backtest/signals/imported");
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="7" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    return;
+  }
   if (!signals.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No imported signals yet.</td></tr>'; return; }
   body.innerHTML = signals.map(s => `
     <tr>
@@ -875,15 +899,25 @@ async function addManualSignal() {
 
 async function deleteSignal(id) {
   if (!confirm("Delete this imported signal?")) return;
-  await fetchJSON(`/api/backtest/signals/${id}`, { method: "DELETE" });
-  loadImportedSignals();
+  try {
+    await fetchJSON(`/api/backtest/signals/${id}`, { method: "DELETE" });
+    loadImportedSignals();
+  } catch (e) {
+    alert("Failed to delete: " + e.message);
+  }
 }
 
 // ---------- Past runs ----------
 
 async function loadRunsHistory() {
-  const runs = await fetchJSON("/api/backtest/runs");
   const body = document.getElementById("runs-history-body");
+  let runs;
+  try {
+    runs = await fetchJSON("/api/backtest/runs");
+  } catch (e) {
+    body.innerHTML = `<tr><td colspan="5" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    return;
+  }
   if (!runs.length) { body.innerHTML = '<tr><td colspan="5" class="empty">No backtests yet.</td></tr>'; return; }
   body.innerHTML = runs.map(r => `
     <tr>
@@ -898,7 +932,13 @@ async function loadRunsHistory() {
 
 async function viewRun(runId) {
   currentRunId = runId;
-  const report = await fetchJSON(`/api/backtest/runs/${runId}`);
+  let report;
+  try {
+    report = await fetchJSON(`/api/backtest/runs/${runId}`);
+  } catch (e) {
+    alert("Failed to load this run: " + e.message);
+    return;
+  }
   currentReport = report;
   document.querySelector('.tab-btn[data-tab="run"]').click();
   await renderResults(report);
