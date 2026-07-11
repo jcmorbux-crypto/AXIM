@@ -68,6 +68,15 @@ _NEW_FUND_COLUMNS = {
     "live_enabled": "INTEGER DEFAULT 0",
 }
 
+# AXIM Capital Strategies (tm) - links a risk_profile instance to its
+# named Capital Strategy identity (e.g. "foundation", "apex_ascension") -
+# see core/capital_strategies.py and core/capital_strategies_catalog.py.
+# NULL for every pre-existing profile - a profile with no strategy_key is
+# just a plain custom profile, exactly as before this feature existed.
+_NEW_RISK_PROFILE_COLUMNS = {
+    "strategy_key": "TEXT",
+}
+
 
 def get_connection():
     """WAL mode + a busy_timeout are required now that two OS processes
@@ -113,6 +122,11 @@ def _migrate_schema(conn):
     for column, sql_type in _NEW_FUND_COLUMNS.items():
         if column not in fund_columns:
             conn.execute(f"ALTER TABLE funds ADD COLUMN {column} {sql_type}")
+
+    risk_profile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(risk_profiles)")}
+    for column, sql_type in _NEW_RISK_PROFILE_COLUMNS.items():
+        if column not in risk_profile_columns:
+            conn.execute(f"ALTER TABLE risk_profiles ADD COLUMN {column} {sql_type}")
 
 
 def initialize_database():
@@ -443,6 +457,97 @@ def initialize_database():
         vault_percent REAL DEFAULT 0,
         trigger_event TEXT DEFAULT 'every_winning_session',
         milestone_amount REAL DEFAULT 0
+    );
+    """)
+
+    # AXIM Capital Strategies (tm) sub-tables - same one-risk_profile-has-
+    # many-config-tables pattern as martingale_settings/compounding_settings/
+    # profit_vault_settings above, not a parallel system (core/
+    # capital_strategies.py's own module docstring covers the mapping from
+    # spec names to these tables/existing sizing_mode values in full).
+
+    # Apex Ascension (tm) - tiered unit-value milestone staircase. The tier
+    # itself is DERIVED, not stored (a pure function of current bankroll vs.
+    # starting bankroll - see apex_ascension_tier()) - what's genuinely
+    # stateful and needs persisting is only what the spec explicitly calls
+    # for beyond that pure calculation: downgrade protection (the floor
+    # below which a drawdown can't demote the tier) and the audit trail
+    # (capital_tier_events below).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS apex_ascension_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        starting_bankroll REAL DEFAULT 1000,
+        starting_unit_value REAL DEFAULT 10,
+        standard_units REAL DEFAULT 5,
+        first_reset_threshold REAL DEFAULT 2500,
+        reset_increment REAL DEFAULT 1000,
+        reset_unit_step REAL DEFAULT 10,
+        downgrade_protection INTEGER DEFAULT 1,
+        highest_tier_reached INTEGER DEFAULT 0
+    );
+    """)
+
+    # Audit trail for AXIM Capital Strategies (tm) tier/milestone changes -
+    # currently only Apex Ascension writes to this, but the schema is
+    # intentionally strategy-agnostic (strategy_key column) so Empire's
+    # ladder-level checkpoints (Phase 2) can reuse it rather than needing
+    # its own copy.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS capital_tier_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER NOT NULL,
+        fund_id INTEGER,
+        strategy_key TEXT NOT NULL,
+        tier_index INTEGER NOT NULL,
+        unit_value REAL,
+        bankroll_at_time REAL,
+        created_at TEXT
+    );
+    """)
+
+    # Sentinel (tm) - graduated drawdown-based deployment reduction, layered
+    # on top of whatever base sizing mode/strategy is active (not a sizing
+    # mode itself). bands_json holds the approved default ladder unless
+    # overridden: see capital_strategies.DEFAULT_SENTINEL_BANDS.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS drawdown_protection_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        bands_json TEXT,
+        suspend_above_percent REAL DEFAULT 20,
+        scope TEXT DEFAULT 'account'
+    );
+    """)
+
+    # Cashflow (tm) - a daily/weekly/monthly/session income target, with a
+    # partial-target size reduction the existing trading_sessions.
+    # profit_target stop-at-target mechanic doesn't have.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS cashflow_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        target_amount REAL DEFAULT 0,
+        target_period TEXT DEFAULT 'session',
+        partial_target_percent REAL DEFAULT 75,
+        partial_reduction_percent REAL DEFAULT 50
+    );
+    """)
+
+    # Strike (tm) - names and completes the existing session-termination
+    # conditions (profit_target/max_session_loss/max_trades already live on
+    # risk_profiles, max consecutive losses already exists as a global risk
+    # rule) with the one genuinely missing condition, a session duration cap.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS strike_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        max_session_duration_minutes REAL DEFAULT 0,
+        max_consecutive_losses INTEGER DEFAULT 0
     );
     """)
 
@@ -2153,7 +2258,7 @@ _RISK_PROFILE_FIELDS = {
     "name", "description", "bankroll", "sizing_mode", "fixed_amount", "percent_of_bankroll",
     "kelly_win_rate_estimate", "kelly_payout_estimate", "kelly_fraction_multiplier",
     "max_trade_amount", "max_daily_loss", "max_session_loss", "profit_target", "max_trades",
-    "live_allowed",
+    "live_allowed", "strategy_key",
 }
 _MARTINGALE_FIELDS = {
     "enabled", "max_steps", "multiplier", "custom_ladder_json", "reset_after_win",
@@ -2165,6 +2270,16 @@ _COMPOUNDING_FIELDS = {
     "max_risk_percent", "min_risk_percent",
 }
 _VAULT_FIELDS = {"enabled", "vault_percent", "trigger_event", "milestone_amount"}
+_APEX_ASCENSION_FIELDS = {
+    "enabled", "starting_bankroll", "starting_unit_value", "standard_units",
+    "first_reset_threshold", "reset_increment", "reset_unit_step",
+    "downgrade_protection", "highest_tier_reached",
+}
+_DRAWDOWN_PROTECTION_FIELDS = {"enabled", "bands_json", "suspend_above_percent", "scope"}
+_CASHFLOW_FIELDS = {
+    "enabled", "target_amount", "target_period", "partial_target_percent", "partial_reduction_percent",
+}
+_STRIKE_FIELDS = {"enabled", "max_session_duration_minutes", "max_consecutive_losses"}
 
 
 def _risk_profile_row_to_dict(row):
@@ -2172,6 +2287,10 @@ def _risk_profile_row_to_dict(row):
     d["martingale"] = get_martingale_settings(d["id"])
     d["compounding"] = get_compounding_settings(d["id"])
     d["profit_vault"] = get_profit_vault_settings(d["id"])
+    d["apex_ascension"] = get_apex_ascension_settings(d["id"])
+    d["drawdown_protection"] = get_drawdown_protection_settings(d["id"])
+    d["cashflow"] = get_cashflow_settings(d["id"])
+    d["strike"] = get_strike_settings(d["id"])
     return d
 
 
@@ -2190,6 +2309,10 @@ def create_risk_profile(name, is_template=False, description=None, **fields):
     conn.execute("INSERT INTO martingale_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.execute("INSERT INTO compounding_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.execute("INSERT INTO profit_vault_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO apex_ascension_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO drawdown_protection_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO cashflow_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO strike_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.commit()
     conn.close()
     return profile_id
@@ -2235,6 +2358,11 @@ def delete_risk_profile(profile_id):
     conn.execute("DELETE FROM martingale_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM compounding_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM profit_vault_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM apex_ascension_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM drawdown_protection_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM cashflow_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM strike_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM capital_tier_events WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM risk_profiles WHERE id = ?", (profile_id,))
     conn.commit()
     conn.close()
@@ -2268,6 +2396,10 @@ def create_risk_profile_from_snapshot(new_name, snapshot):
     update_martingale_settings(new_id, **{k: snapshot["martingale"][k] for k in _MARTINGALE_FIELDS})
     update_compounding_settings(new_id, **{k: snapshot["compounding"][k] for k in _COMPOUNDING_FIELDS})
     update_profit_vault_settings(new_id, **{k: snapshot["profit_vault"][k] for k in _VAULT_FIELDS})
+    update_apex_ascension_settings(new_id, **{k: snapshot["apex_ascension"][k] for k in _APEX_ASCENSION_FIELDS})
+    update_drawdown_protection_settings(new_id, **{k: snapshot["drawdown_protection"][k] for k in _DRAWDOWN_PROTECTION_FIELDS})
+    update_cashflow_settings(new_id, **{k: snapshot["cashflow"][k] for k in _CASHFLOW_FIELDS})
+    update_strike_settings(new_id, **{k: snapshot["strike"][k] for k in _STRIKE_FIELDS})
     return new_id
 
 
@@ -2285,6 +2417,10 @@ def export_risk_profile(profile_id):
         "martingale": {k: profile["martingale"][k] for k in _MARTINGALE_FIELDS},
         "compounding": {k: profile["compounding"][k] for k in _COMPOUNDING_FIELDS},
         "profit_vault": {k: profile["profit_vault"][k] for k in _VAULT_FIELDS},
+        "apex_ascension": {k: profile["apex_ascension"][k] for k in _APEX_ASCENSION_FIELDS},
+        "drawdown_protection": {k: profile["drawdown_protection"][k] for k in _DRAWDOWN_PROTECTION_FIELDS},
+        "cashflow": {k: profile["cashflow"][k] for k in _CASHFLOW_FIELDS},
+        "strike": {k: profile["strike"][k] for k in _STRIKE_FIELDS},
     }
 
 
@@ -2299,6 +2435,14 @@ def import_risk_profile(data, name=None):
         update_compounding_settings(new_id, **data["compounding"])
     if data.get("profit_vault"):
         update_profit_vault_settings(new_id, **data["profit_vault"])
+    if data.get("apex_ascension"):
+        update_apex_ascension_settings(new_id, **data["apex_ascension"])
+    if data.get("drawdown_protection"):
+        update_drawdown_protection_settings(new_id, **data["drawdown_protection"])
+    if data.get("cashflow"):
+        update_cashflow_settings(new_id, **data["cashflow"])
+    if data.get("strike"):
+        update_strike_settings(new_id, **data["strike"])
     return new_id
 
 
@@ -2367,6 +2511,130 @@ def update_profit_vault_settings(risk_profile_id, **fields):
     params = list(fields.values()) + [risk_profile_id]
     conn = get_connection()
     conn.execute(f"UPDATE profit_vault_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_apex_ascension_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM apex_ascension_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_apex_ascension_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _APEX_ASCENSION_FIELDS:
+            raise ValueError(f"Unknown Apex Ascension field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE apex_ascension_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def record_tier_event(risk_profile_id, strategy_key, tier_index, unit_value, bankroll_at_time, fund_id=None):
+    """Audit-trail row for a Capital Strategy's tier/milestone advance -
+    currently only called when Apex Ascension's derived tier genuinely
+    increases past highest_tier_reached (see core/capital_strategies.py),
+    never for every trade. Also updates highest_tier_reached itself, in
+    the same transaction, so the two can't drift out of sync."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO capital_tier_events (risk_profile_id, fund_id, strategy_key, tier_index, "
+        "unit_value, bankroll_at_time, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (risk_profile_id, fund_id, strategy_key, tier_index, unit_value, bankroll_at_time, datetime.now().isoformat()),
+    )
+    if strategy_key == "apex_ascension":
+        conn.execute(
+            "UPDATE apex_ascension_settings SET highest_tier_reached = ? WHERE risk_profile_id = ? AND highest_tier_reached < ?",
+            (tier_index, risk_profile_id, tier_index),
+        )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_tier_events(risk_profile_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM capital_tier_events WHERE risk_profile_id = ? ORDER BY created_at", (risk_profile_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def get_drawdown_protection_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM drawdown_protection_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_drawdown_protection_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _DRAWDOWN_PROTECTION_FIELDS:
+            raise ValueError(f"Unknown drawdown protection field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE drawdown_protection_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_cashflow_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM cashflow_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_cashflow_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _CASHFLOW_FIELDS:
+            raise ValueError(f"Unknown Cashflow field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE cashflow_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_strike_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM strike_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_strike_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _STRIKE_FIELDS:
+            raise ValueError(f"Unknown Strike field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE strike_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
     conn.commit()
     conn.close()
 

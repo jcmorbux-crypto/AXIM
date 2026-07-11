@@ -72,6 +72,7 @@ import funds_routes as funds_module
 import broker_accounts_routes as broker_accounts_module
 import notifications as notifications_module
 import event_stream_routes as event_stream_module
+import capital_strategies_routes as capital_strategies_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -147,6 +148,7 @@ app.include_router(funds_module.router)
 app.include_router(broker_accounts_module.router)
 app.include_router(notifications_module.router)
 app.include_router(event_stream_module.router)
+app.include_router(capital_strategies_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -260,6 +262,11 @@ def sessions_page():
 @app.get("/risk")
 def risk_page():
     return _serve("risk.html")
+
+
+@app.get("/capital-strategies")
+def capital_strategies_page():
+    return _serve("capital_strategies.html")
 
 
 @app.get("/trades")

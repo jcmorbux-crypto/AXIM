@@ -19,6 +19,18 @@ Scoping notes, stated plainly rather than silently overclaimed:
   derived from a live-updating empirical win rate - a profile with only
   a handful of trades has too little data for empirical estimation to be
   meaningful; the user is expected to set a deliberate, honest estimate.
+
+AXIM Capital Strategies (tm) - Apex Ascension is wired in as a genuinely
+new sizing_mode branch below (additive, existing modes unchanged). Sentinel
+and Cashflow are wired in as OPT-IN post-processing layers, both defaulting
+to enabled=0 in the DB - every risk_profile that existed before this
+feature landed has enabled=0 on both, so this is a strict no-op for them;
+only a profile an operator has deliberately turned one on for is affected.
+Sentinel's drawdown_percent and Cashflow's period_realized_pnl both reuse
+this module's existing session-scoped-P&L simplification (same pattern
+already documented above for Compounding/Vault) rather than adding new
+peak-tracking state - a real simplification, stated plainly, not
+fabricated behavior.
 """
 import sys
 from pathlib import Path
@@ -28,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import json
 
 import database
+import capital_strategies
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
@@ -87,6 +100,19 @@ def _base_amount(profile, session):
         current_bankroll = bankroll + current_pnl
         return current_bankroll * f_star if current_bankroll > 0 else profile["fixed_amount"]
 
+    if mode == "apex_ascension":
+        apex = profile["apex_ascension"]
+        if not apex["enabled"]:
+            return profile["fixed_amount"]
+        current_bankroll = bankroll + current_pnl
+        amount, effective_tier = capital_strategies.apex_ascension_deployment(apex, current_bankroll)
+        if effective_tier["tier_index"] > apex["highest_tier_reached"]:
+            database.record_tier_event(
+                profile["id"], "apex_ascension", effective_tier["tier_index"],
+                effective_tier["unit_value"], current_bankroll, fund_id=session.get("fund_id"),
+            )
+        return amount
+
     return profile["fixed_amount"]
 
 
@@ -135,10 +161,54 @@ def compute_position_size(session_id, static_default_amount):
     if not session["martingale_disabled"]:
         amount = _apply_martingale(amount, profile["martingale"], session["current_martingale_step"])
 
+    # Cashflow (tm) and Sentinel (tm) - opt-in post-processing layers on
+    # top of whatever base sizing/Martingale already computed. Both
+    # default to enabled=0, so this is a strict no-op for every
+    # risk_profile that existed before this feature landed.
+    cashflow = profile["cashflow"]
+    if cashflow["enabled"]:
+        amount, target_reached = capital_strategies.cashflow_adjusted_amount(
+            cashflow, amount, session["realized_pnl"],
+        )
+        if target_reached:
+            raise CashflowTargetReached(cashflow["target_amount"])
+
+    drawdown_protection = profile["drawdown_protection"]
+    if drawdown_protection["enabled"] and profile["bankroll"] > 0:
+        drawdown_percent = max(0, -session["realized_pnl"] / profile["bankroll"] * 100) if session["realized_pnl"] < 0 else 0
+        minimum_amount = profile["fixed_amount"]
+        amount, sentinel_status = capital_strategies.sentinel_adjusted_amount(
+            drawdown_protection, amount, drawdown_percent, minimum_amount,
+        )
+        if sentinel_status == "suspended":
+            raise SentinelSuspended(drawdown_percent, drawdown_protection["suspend_above_percent"])
+
     if profile["max_trade_amount"] > 0:
         amount = min(amount, profile["max_trade_amount"])
 
     return round(amount, 2)
+
+
+class CashflowTargetReached(Exception):
+    """Same (rule, reason) shape as risk_manager.RiskViolation /
+    session_manager.SessionLimitReached, so core/trade_coordinator.py's
+    existing _reject() helper handles this without a separate code path -
+    raised by compute_position_size when Cashflow's income target has
+    been hit."""
+    def __init__(self, target_amount):
+        self.rule = "cashflow_target_reached"
+        self.reason = f"Cashflow target of ${target_amount} reached - no new trades this period"
+        super().__init__(self.reason)
+
+
+class SentinelSuspended(Exception):
+    """Same (rule, reason) shape - see CashflowTargetReached above.
+    Raised by compute_position_size when Sentinel's drawdown has crossed
+    suspend_above_percent."""
+    def __init__(self, drawdown_percent, suspend_above_percent):
+        self.rule = "sentinel_suspended"
+        self.reason = f"Sentinel suspended trading - drawdown {drawdown_percent:.1f}% exceeds {suspend_above_percent}%"
+        super().__init__(self.reason)
 
 
 def project_martingale_exposure(martingale, base_amount):

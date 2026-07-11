@@ -175,8 +175,17 @@ class TradeCoordinator:
             # exact same risk_manager.compute_trade_amount (fixed amount
             # or percent-of-bankroll from the UI) when this session has no
             # risk_profile_id attached - a profile-less session's sizing
-            # is completely unchanged by the Risk Engine.
-            amount = await asyncio.to_thread(risk_engine.compute_position_size, session_id, TRADE_AMOUNT)
+            # is completely unchanged by the Risk Engine. Cashflow/Sentinel
+            # (AXIM Capital Strategies (tm), both opt-in, default disabled)
+            # can reject a signal outright (target reached / drawdown
+            # suspended) - same (rule, reason) shape as every other
+            # rejection this stage already handles via _reject().
+            stage_t0 = time.monotonic()
+            try:
+                amount = await asyncio.to_thread(risk_engine.compute_position_size, session_id, TRADE_AMOUNT)
+            except (risk_engine.CashflowTargetReached, risk_engine.SentinelSuspended) as violation:
+                timeline.persist(database)
+                return self._reject(trade_id, violation, time.monotonic() - stage_t0)
 
             try:
                 outcome, payload = await asyncio.to_thread(

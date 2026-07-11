@@ -22,7 +22,10 @@ from auth_routes import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/risk-profiles", tags=["risk-engine"])
 
-_VALID_SIZING_MODES = {"fixed", "percent", "dynamic", "kelly"}
+# "apex_ascension" added for AXIM Capital Strategies (tm) - core/
+# capital_strategies.py's own real sizing calculation, alongside the
+# pre-existing fixed/percent/dynamic/kelly modes (unchanged).
+_VALID_SIZING_MODES = {"fixed", "percent", "dynamic", "kelly", "apex_ascension"}
 
 
 class ProfileCreate(BaseModel):
@@ -41,6 +44,7 @@ class ProfileCreate(BaseModel):
     profit_target: float = 0
     max_trades: int = 0
     live_allowed: bool = False
+    strategy_key: Optional[str] = None
 
 
 class ProfileUpdate(BaseModel):
@@ -59,6 +63,7 @@ class ProfileUpdate(BaseModel):
     profit_target: Optional[float] = None
     max_trades: Optional[int] = None
     live_allowed: Optional[bool] = None
+    strategy_key: Optional[str] = None
 
 
 class DuplicateRequest(BaseModel):
@@ -101,6 +106,38 @@ class VaultUpdate(BaseModel):
     vault_percent: Optional[float] = None
     trigger_event: Optional[str] = None
     milestone_amount: Optional[float] = None
+
+
+class ApexAscensionUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    starting_bankroll: Optional[float] = None
+    starting_unit_value: Optional[float] = None
+    standard_units: Optional[float] = None
+    first_reset_threshold: Optional[float] = None
+    reset_increment: Optional[float] = None
+    reset_unit_step: Optional[float] = None
+    downgrade_protection: Optional[bool] = None
+
+
+class DrawdownProtectionUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    bands_json: Optional[str] = None
+    suspend_above_percent: Optional[float] = None
+    scope: Optional[str] = None
+
+
+class CashflowUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    target_amount: Optional[float] = None
+    target_period: Optional[str] = None
+    partial_target_percent: Optional[float] = None
+    partial_reduction_percent: Optional[float] = None
+
+
+class StrikeUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    max_session_duration_minutes: Optional[float] = None
+    max_consecutive_losses: Optional[int] = None
 
 
 def _get_or_404(profile_id):
@@ -196,6 +233,44 @@ def update_vault(profile_id: int, body: VaultUpdate, user=Depends(require_admin)
     profile = _get_or_404(profile_id)
     _reject_if_template(profile)
     database.update_profit_vault_settings(profile_id, **body.model_dump(exclude_unset=True))
+    return database.get_risk_profile(profile_id)
+
+
+@router.patch("/{profile_id}/apex-ascension")
+def update_apex_ascension(profile_id: int, body: ApexAscensionUpdate, user=Depends(require_admin)):
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    database.update_apex_ascension_settings(profile_id, **body.model_dump(exclude_unset=True))
+    return database.get_risk_profile(profile_id)
+
+
+@router.get("/{profile_id}/tier-history")
+def tier_history(profile_id: int, user=Depends(get_current_user)):
+    _get_or_404(profile_id)
+    return database.list_tier_events(profile_id)
+
+
+@router.patch("/{profile_id}/drawdown-protection")
+def update_drawdown_protection(profile_id: int, body: DrawdownProtectionUpdate, user=Depends(require_admin)):
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    database.update_drawdown_protection_settings(profile_id, **body.model_dump(exclude_unset=True))
+    return database.get_risk_profile(profile_id)
+
+
+@router.patch("/{profile_id}/cashflow")
+def update_cashflow(profile_id: int, body: CashflowUpdate, user=Depends(require_admin)):
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    database.update_cashflow_settings(profile_id, **body.model_dump(exclude_unset=True))
+    return database.get_risk_profile(profile_id)
+
+
+@router.patch("/{profile_id}/strike")
+def update_strike(profile_id: int, body: StrikeUpdate, user=Depends(require_admin)):
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    database.update_strike_settings(profile_id, **body.model_dump(exclude_unset=True))
     return database.get_risk_profile(profile_id)
 
 

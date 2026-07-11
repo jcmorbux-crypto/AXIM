@@ -214,5 +214,144 @@ class VaultTriggerTests(unittest.TestCase):
         self.assertEqual(database.get_trading_session(self.session_id)["vaulted_amount"], 10.0)
 
 
+class ApexAscensionSizingTests(unittest.TestCase):
+    """AXIM Capital Strategies (tm) - Apex Ascension wired into
+    compute_position_size as a real sizing_mode, not just the standalone
+    demo simulator."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.session_id = database.start_trading_session("Test", [1], "DEMO")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_disabled_falls_back_to_fixed_amount(self):
+        profile_id = database.create_risk_profile(
+            "Apex Test", sizing_mode="apex_ascension", bankroll=1000, fixed_amount=3,
+        )
+        database.set_session_risk_profile(self.session_id, profile_id)
+        # apex_ascension_settings.enabled defaults to 0 - matches every
+        # other Capital Strategies sub-table's default-off convention.
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 3.0)
+
+    def test_enabled_uses_real_tier_deployment_at_starting_bankroll(self):
+        profile_id = database.create_risk_profile(
+            "Apex Test", sizing_mode="apex_ascension", bankroll=1000, fixed_amount=3,
+        )
+        database.update_apex_ascension_settings(profile_id, enabled=True, starting_bankroll=1000)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        # $1,000 bankroll, no session P&L yet -> tier 0, $10 unit x 5 = $50
+        # standard deployment, exactly the spec's own worked example.
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 50.0)
+
+    def test_enabled_recalculates_against_current_bankroll(self):
+        profile_id = database.create_risk_profile(
+            "Apex Test", sizing_mode="apex_ascension", bankroll=1000, fixed_amount=3,
+        )
+        database.update_apex_ascension_settings(profile_id, enabled=True, starting_bankroll=1000)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 1500)  # bankroll now 2500 -> tier 1
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 100.0)
+
+    def test_reaching_a_new_tier_records_an_audit_event(self):
+        profile_id = database.create_risk_profile(
+            "Apex Test", sizing_mode="apex_ascension", bankroll=1000, fixed_amount=3,
+        )
+        database.update_apex_ascension_settings(profile_id, enabled=True, starting_bankroll=1000)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 1500)  # crosses into tier 1
+        risk_engine.compute_position_size(self.session_id, 5.0)
+        events = database.list_tier_events(profile_id)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["tier_index"], 1)
+        self.assertEqual(database.get_apex_ascension_settings(profile_id)["highest_tier_reached"], 1)
+
+    def test_repeated_calls_at_the_same_tier_do_not_duplicate_events(self):
+        profile_id = database.create_risk_profile(
+            "Apex Test", sizing_mode="apex_ascension", bankroll=1000, fixed_amount=3,
+        )
+        database.update_apex_ascension_settings(profile_id, enabled=True, starting_bankroll=1000)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 1500)
+        risk_engine.compute_position_size(self.session_id, 5.0)
+        risk_engine.compute_position_size(self.session_id, 5.0)
+        risk_engine.compute_position_size(self.session_id, 5.0)
+        self.assertEqual(len(database.list_tier_events(profile_id)), 1)
+
+
+class CashflowSentinelSizingTests(unittest.TestCase):
+    """AXIM Capital Strategies (tm) - Cashflow/Sentinel opt-in
+    post-processing layers, both default-disabled."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.session_id = database.start_trading_session("Test", [1], "DEMO")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_cashflow_disabled_by_default_no_behavior_change(self):
+        profile_id = database.create_risk_profile("Plain Fixed", sizing_mode="fixed", fixed_amount=10)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 1000)  # would exceed any real target
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 10.0)
+
+    def test_cashflow_target_reached_raises_and_is_rejected_cleanly(self):
+        profile_id = database.create_risk_profile("Cashflow Test", sizing_mode="fixed", fixed_amount=10)
+        database.update_cashflow_settings(profile_id, enabled=True, target_amount=50)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 60)
+        with self.assertRaises(risk_engine.CashflowTargetReached) as ctx:
+            risk_engine.compute_position_size(self.session_id, 5.0)
+        self.assertEqual(ctx.exception.rule, "cashflow_target_reached")
+
+    def test_cashflow_partial_target_reduces_size(self):
+        profile_id = database.create_risk_profile("Cashflow Test", sizing_mode="fixed", fixed_amount=10)
+        database.update_cashflow_settings(
+            profile_id, enabled=True, target_amount=100,
+            partial_target_percent=75, partial_reduction_percent=50,
+        )
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 80)  # past 75% of target
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 5.0)
+
+    def test_sentinel_disabled_by_default_no_behavior_change(self):
+        profile_id = database.create_risk_profile(
+            "Plain Fixed", sizing_mode="fixed", fixed_amount=10, bankroll=1000,
+        )
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, -500)  # deep drawdown
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 10.0)
+
+    def test_sentinel_reduces_size_in_a_drawdown_band(self):
+        profile_id = database.create_risk_profile(
+            "Sentinel Test", sizing_mode="fixed", fixed_amount=10, bankroll=1000,
+        )
+        database.update_drawdown_protection_settings(profile_id, enabled=True)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, -70)  # -7% drawdown -> 5-10% band, reduce 25%
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 7.5)
+
+    def test_sentinel_suspends_above_threshold_and_is_rejected_cleanly(self):
+        profile_id = database.create_risk_profile(
+            "Sentinel Test", sizing_mode="fixed", fixed_amount=10, bankroll=1000,
+        )
+        database.update_drawdown_protection_settings(profile_id, enabled=True, suspend_above_percent=20)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, -250)  # -25% drawdown
+        with self.assertRaises(risk_engine.SentinelSuspended) as ctx:
+            risk_engine.compute_position_size(self.session_id, 5.0)
+        self.assertEqual(ctx.exception.rule, "sentinel_suspended")
+
+
 if __name__ == "__main__":
     unittest.main()

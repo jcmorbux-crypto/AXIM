@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Capital Strategies - AXIM TradeStation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<style>
+  .house-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; margin-bottom: 22px; }
+  .house-card {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 18px; cursor: pointer; transition: border-color 0.15s var(--ease), transform 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  }
+  .house-card:hover { border-color: var(--blue); transform: translateY(-2px); box-shadow: var(--shadow); }
+  .house-card h3 { margin: 0 0 4px 0; font-size: 16px; font-weight: 650; }
+  .house-card .tagline { color: var(--blue); font-size: 12.5px; font-weight: 600; margin-bottom: 8px; }
+  .house-card p { margin: 0; font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+  .house-card .count { margin-top: 10px; font-size: 11.5px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.04em; }
+  .phoenix-card {
+    background: linear-gradient(135deg, var(--danger-soft, #fdecec), var(--bg)); border: 1.5px solid var(--danger, #d9534f);
+    border-radius: var(--radius-sm); padding: 18px; cursor: pointer;
+  }
+  .phoenix-card h3 { margin: 0 0 4px 0; font-size: 16px; font-weight: 650; color: var(--danger, #d9534f); }
+  .phoenix-card .risk-badge { display: inline-block; margin-top: 8px; }
+
+  .strategy-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .strategy-card {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 14px; cursor: pointer; transition: border-color 0.15s var(--ease), transform 0.15s var(--ease);
+  }
+  .strategy-card:hover { border-color: var(--blue); transform: translateY(-2px); }
+  .strategy-card h4 { margin: 0 0 4px 0; font-size: 13.5px; font-weight: 650; }
+  .strategy-card .formerly { font-size: 11px; color: var(--text-dim); font-style: italic; margin-bottom: 6px; }
+  .strategy-card p { margin: 0 0 8px 0; font-size: 12px; color: var(--text-dim); line-height: 1.4; }
+  .strategy-card .not-implemented { font-size: 11px; color: var(--text-dim); }
+
+  .breadcrumb { font-size: 12.5px; color: var(--text-dim); margin-bottom: 14px; }
+  .breadcrumb a { color: var(--blue); cursor: pointer; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+
+  .detail-header { margin-bottom: 18px; }
+  .detail-header h2 { margin: 0 0 4px 0; }
+  .detail-header .formerly { font-size: 12.5px; color: var(--text-dim); font-style: italic; }
+  .detail-tagline { font-size: 15px; font-weight: 600; color: var(--blue); margin: 10px 0; }
+  .detail-philosophy { font-size: 13.5px; line-height: 1.6; color: var(--text); margin-bottom: 14px; }
+  .risk-badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 650;
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .tier-table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12.5px; }
+  .tier-table th, .tier-table td { text-align: right; padding: 6px 10px; border-bottom: 1px solid var(--border); }
+  .tier-table th:first-child, .tier-table td:first-child { text-align: left; }
+  .field { margin-bottom: 12px; }
+  .field label { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 4px; color: var(--text-dim); }
+  .field input, .field select { width: 100%; }
+  .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .sim-result { margin-top: 14px; padding: 14px; background: var(--surface); border-radius: var(--radius-sm); }
+  .sim-result .stat-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px; }
+  .not-yet-banner { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px; color: var(--text-dim); font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div id="view-houses">
+      <div class="page-header">
+        <div>
+          <h1>Capital Strategies <a href="/guide#sec-capital-strategies" class="help-link" title="Help: Capital Strategies">?</a></h1>
+          <div class="subtitle">Investment Houses, strategy mandates, and capital allocation - AXIM's institutional-grade sizing desk.</div>
+        </div>
+      </div>
+      <div class="house-grid" id="house-grid"></div>
+      <div class="section-title">High-Risk Strategy</div>
+      <div id="phoenix-card-container"></div>
+    </div>
+
+    <div id="view-house" style="display:none;">
+      <div class="breadcrumb"><a onclick="showHouses()">Capital Strategies</a> / <span id="house-breadcrumb-name"></span></div>
+      <div class="page-header">
+        <div>
+          <h1 id="house-name"></h1>
+          <div class="subtitle" id="house-purpose"></div>
+        </div>
+      </div>
+      <div class="strategy-grid" id="house-strategy-grid"></div>
+    </div>
+
+    <div id="view-strategy" style="display:none;">
+      <div class="breadcrumb">
+        <a onclick="showHouses()">Capital Strategies</a>
+        <span id="strategy-breadcrumb-house-wrap"> / <a onclick="backToHouse()" id="strategy-breadcrumb-house"></a></span>
+        / <span id="strategy-breadcrumb-name"></span>
+      </div>
+      <div class="card">
+        <div class="detail-header">
+          <h2 id="s-name"></h2>
+          <div class="formerly" id="s-formerly"></div>
+        </div>
+        <span class="risk-badge" id="s-risk"></span>
+        <div class="detail-tagline" id="s-tagline"></div>
+        <div class="detail-philosophy" id="s-philosophy"></div>
+        <div id="s-apex-table" style="display:none;"></div>
+      </div>
+
+      <div id="s-not-implemented" style="display:none; margin-top:16px;">
+        <div class="not-yet-banner">This strategy's calculation engine isn't built yet (later phase) - catalog details above are complete and accurate, but there's nothing to configure or simulate here yet.</div>
+      </div>
+
+      <div id="s-implemented-elsewhere" style="display:none; margin-top:16px;">
+        <div class="not-yet-banner">This strategy's real calculations already run live in AXIM, just not through this page's quick single-path demo simulator yet. Configure it from <a href="/risk">Risk Engine</a> (Martingale/Vault/Kelly) or <a href="/funds">Funds</a> (Dominion), where it's fully functional today.</div>
+      </div>
+
+      <div id="s-configure" class="card" style="display:none; margin-top:16px;">
+        <h3>Run a demo simulation</h3>
+        <div class="config-grid">
+          <div class="field"><label>Starting bankroll ($)</label><input type="number" id="sim-bankroll" value="1000"></div>
+          <div class="field"><label>Number of trades</label><input type="number" id="sim-trades" value="200"></div>
+          <div class="field"><label>Assumed win rate (%)</label><input type="number" id="sim-winrate" value="55"></div>
+          <div class="field"><label>Assumed payout (%)</label><input type="number" id="sim-payout" value="90"></div>
+        </div>
+        <div id="s-strategy-fields"></div>
+        <button class="primary" onclick="runSimulation()">Run Simulation</button>
+        <span id="sim-status" class="muted"></span>
+        <div id="sim-result" class="sim-result" style="display:none;"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+let catalog = null;
+let currentHouseKey = null;
+let currentStrategyKey = null;
+
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
+function showView(id) {
+  ["view-houses", "view-house", "view-strategy"].forEach(v => {
+    document.getElementById(v).style.display = v === id ? "block" : "none";
+  });
+}
+
+function renderHouses() {
+  const grid = document.getElementById("house-grid");
+  grid.innerHTML = catalog.houses.map(h => `
+    <div class="house-card" onclick="showHouse('${h.key}')">
+      <h3>${escapeHtml(h.name)}</h3>
+      <div class="tagline">${escapeHtml(h.tagline)}</div>
+      <p>${escapeHtml(h.purpose)}</p>
+      <div class="count">${h.strategies.length} strateg${h.strategies.length === 1 ? "y" : "ies"}</div>
+    </div>
+  `).join("");
+
+  const phoenix = catalog.standalone[0];
+  if (phoenix) {
+    document.getElementById("phoenix-card-container").innerHTML = `
+      <div class="phoenix-card" onclick="showStrategy('${phoenix.key}', null)">
+        <h3>${escapeHtml(phoenix.name)} <span class="muted" style="font-weight:400;">(formerly ${escapeHtml(phoenix.formerly || "")})</span></h3>
+        <div>${escapeHtml(phoenix.philosophy)}</div>
+        <span class="risk-badge phoenix-risk">${escapeHtml(phoenix.risk_level)}</span>
+      </div>
+    `;
+  }
+}
+
+function showHouses() {
+  showView("view-houses");
+}
+
+function showHouse(houseKey) {
+  currentHouseKey = houseKey;
+  const house = catalog.houses.find(h => h.key === houseKey);
+  document.getElementById("house-breadcrumb-name").textContent = house.name;
+  document.getElementById("house-name").textContent = house.name;
+  document.getElementById("house-purpose").textContent = house.purpose;
+  document.getElementById("house-strategy-grid").innerHTML = house.strategies.map(s => `
+    <div class="strategy-card" onclick="showStrategy('${s.key}', '${houseKey}')">
+      <h4>${escapeHtml(s.name)}</h4>
+      ${s.formerly ? `<div class="formerly">formerly ${escapeHtml(s.formerly)}</div>` : ""}
+      <p>${escapeHtml(s.tagline)}</p>
+      <span class="risk-badge">${escapeHtml(s.risk_level)}</span>
+      ${!s.implemented ? '<div class="not-implemented">Catalog only - Phase ' + s.phase + '</div>' : ""}
+    </div>
+  `).join("");
+  showView("view-house");
+}
+
+function backToHouse() {
+  if (currentHouseKey) { showHouse(currentHouseKey); } else { showHouses(); }
+}
+
+const APEX_EXAMPLE_TABLE = [
+  [1000, 10, 50], [2500, 20, 100], [3500, 30, 150], [4500, 40, 200], [5500, 50, 250], [6500, 60, 300],
+];
+
+async function showStrategy(key, houseKey) {
+  currentStrategyKey = key;
+  currentHouseKey = houseKey;
+  let strategy;
+  try {
+    strategy = await fetchJSON(`/api/capital-strategies/${key}`);
+  } catch (e) {
+    alert("Failed to load strategy: " + e.message);
+    return;
+  }
+
+  if (houseKey) {
+    const house = catalog.houses.find(h => h.key === houseKey);
+    document.getElementById("strategy-breadcrumb-house").textContent = house.name;
+    document.getElementById("strategy-breadcrumb-house-wrap").style.display = "";
+  } else {
+    document.getElementById("strategy-breadcrumb-house-wrap").style.display = "none";
+  }
+  document.getElementById("strategy-breadcrumb-name").textContent = strategy.name;
+  document.getElementById("s-name").textContent = strategy.name;
+  document.getElementById("s-formerly").textContent = strategy.formerly ? `formerly ${strategy.formerly}` : "";
+  document.getElementById("s-risk").textContent = strategy.risk_level;
+  document.getElementById("s-tagline").textContent = strategy.tagline;
+  document.getElementById("s-philosophy").textContent = strategy.philosophy;
+
+  const apexTable = document.getElementById("s-apex-table");
+  if (key === "apex_ascension") {
+    apexTable.style.display = "block";
+    apexTable.innerHTML = `
+      <div class="section-title">Approved default tier table</div>
+      <table class="tier-table">
+        <tr><th>Bankroll</th><th>Unit Value</th><th>Standard 5U Deployment</th></tr>
+        ${APEX_EXAMPLE_TABLE.map(([b, u, d]) => `<tr><td>$${b.toLocaleString()}</td><td>$${u}</td><td>$${d}</td></tr>`).join("")}
+      </table>
+    `;
+  } else {
+    apexTable.style.display = "none";
+  }
+
+  document.getElementById("s-not-implemented").style.display = !strategy.implemented ? "block" : "none";
+  document.getElementById("s-implemented-elsewhere").style.display = strategy.implemented && !strategy.simulate_supported ? "block" : "none";
+  document.getElementById("s-configure").style.display = strategy.simulate_supported ? "block" : "none";
+  document.getElementById("sim-result").style.display = "none";
+  document.getElementById("sim-status").textContent = "";
+
+  renderStrategyFields(key);
+  showView("view-strategy");
+}
+
+function renderStrategyFields(key) {
+  const container = document.getElementById("s-strategy-fields");
+  if (key === "apex_ascension") {
+    container.innerHTML = `
+      <div class="config-grid">
+        <div class="field"><label>Starting unit value ($)</label><input type="number" id="apex-unit" value="10"></div>
+        <div class="field"><label>Standard units</label><input type="number" id="apex-units" value="5"></div>
+        <div class="field"><label>First reset threshold ($)</label><input type="number" id="apex-threshold" value="2500"></div>
+        <div class="field"><label>Reset increment ($)</label><input type="number" id="apex-increment" value="1000"></div>
+      </div>
+    `;
+  } else if (key === "foundation") {
+    container.innerHTML = `<div class="field"><label>Fixed amount per trade ($)</label><input type="number" id="foundation-amount" value="10"></div>`;
+  } else if (key === "titan_allocation") {
+    container.innerHTML = `<div class="field"><label>Percent of bankroll (%)</label><input type="number" id="titan-percent" value="2"></div>`;
+  } else {
+    container.innerHTML = `<div class="muted" style="font-size:12.5px;">No configurable simulation fields for this strategy yet.</div>`;
+  }
+}
+
+function collectStrategySettings(key, bankroll) {
+  if (key === "apex_ascension") {
+    return {
+      starting_bankroll: bankroll,
+      starting_unit_value: parseFloat(document.getElementById("apex-unit").value) || 10,
+      standard_units: parseFloat(document.getElementById("apex-units").value) || 5,
+      first_reset_threshold: parseFloat(document.getElementById("apex-threshold").value) || 2500,
+      reset_increment: parseFloat(document.getElementById("apex-increment").value) || 1000,
+      reset_unit_step: 10,
+      downgrade_protection: 1,
+      highest_tier_reached: 0,
+    };
+  }
+  if (key === "foundation") {
+    return { fixed_amount: parseFloat(document.getElementById("foundation-amount").value) || 10 };
+  }
+  if (key === "titan_allocation") {
+    return { percent_of_bankroll: parseFloat(document.getElementById("titan-percent").value) || 2 };
+  }
+  return {};
+}
+
+async function runSimulation() {
+  const statusEl = document.getElementById("sim-status");
+  const resultEl = document.getElementById("sim-result");
+  const bankroll = parseFloat(document.getElementById("sim-bankroll").value) || 1000;
+  const numTrades = parseInt(document.getElementById("sim-trades").value, 10) || 100;
+  const winRate = (parseFloat(document.getElementById("sim-winrate").value) || 50) / 100;
+  const payout = parseFloat(document.getElementById("sim-payout").value) || 90;
+
+  statusEl.textContent = "Running...";
+  resultEl.style.display = "none";
+  try {
+    const settings = collectStrategySettings(currentStrategyKey, bankroll);
+    const result = await fetchJSON(`/api/capital-strategies/${currentStrategyKey}/simulate`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        settings, num_trades: numTrades, win_rate: winRate, avg_payout_percent: payout,
+        starting_bankroll: bankroll,
+      }),
+    });
+    statusEl.textContent = "";
+    resultEl.style.display = "block";
+    const pl = result.ending_bankroll - result.starting_bankroll;
+    resultEl.innerHTML = `
+      <div class="stat-row"><span>Starting bankroll</span><strong>$${result.starting_bankroll.toLocaleString()}</strong></div>
+      <div class="stat-row"><span>Ending bankroll</span><strong class="${pl >= 0 ? 'pos' : 'neg'}">$${result.ending_bankroll.toLocaleString()}</strong></div>
+      <div class="stat-row"><span>Peak bankroll</span><strong>$${result.peak_bankroll.toLocaleString()}</strong></div>
+      <div class="stat-row"><span>Max drawdown</span><strong class="neg">${result.max_drawdown_percent}%</strong></div>
+      <div class="stat-row"><span>Trades run / wins / losses</span><strong>${result.trades_run} / ${result.wins} / ${result.losses}</strong></div>
+      ${result.ruined ? '<div class="stat-row"><strong class="neg">Bankroll was fully depleted before all trades ran.</strong></div>' : ""}
+      <div class="muted" style="margin-top:8px; font-size:11.5px;">One simulated path, not a probability distribution - see Strategy Lab for Monte Carlo / historical backtesting.</div>
+    `;
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "capital" });
+  if (!user) return;
+  try {
+    catalog = await fetchJSON("/api/capital-strategies/catalog");
+    renderHouses();
+  } catch (e) {
+    document.getElementById("house-grid").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+})();
+</script>
+</body>
+</html>
