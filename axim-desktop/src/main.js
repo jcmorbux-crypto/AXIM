@@ -32,10 +32,37 @@ function showAutoConnect(config) {
   document.getElementById("config-form").style.display = "none";
 }
 
+// Gap found: navigating straight to target.url with no reachability check
+// meant a wrong/unreachable remote address (Tailscale down, typo'd
+// hostname, server not running) dropped the user into WebView2's own
+// native browser error page - completely outside AXIM's UI, with no
+// "Change server settings" link to get back to the picker. This probes
+// first so that failure surfaces as a normal, recoverable error on the
+// launcher screen instead. `no-cors` mode is enough - the response body
+// is opaque either way (we only care that ANY response came back, not
+// what it says), and fetch only rejects on a genuine network-level
+// failure (DNS, connection refused, timeout), which is exactly the
+// failure mode this exists to catch. Local mode's own resolve_and_launch
+// already waits up to 30s for the API port on the Rust side, but that
+// wait can still time out and return anyway (its own comment: "loading
+// window anyway") - this check catches that case too, not just remote.
+async function probeReachable(url, timeoutMs) {
+  try {
+    await fetch(url, { mode: "no-cors", signal: AbortSignal.timeout(timeoutMs) });
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
 async function launch() {
   document.getElementById("config-error").style.display = "none";
   try {
     const target = await invoke("resolve_and_launch");
+    const reachable = await probeReachable(target.url, 6000);
+    if (!reachable) {
+      throw new Error(`could not reach ${target.url} - check the address, that the AXIM Server is running, and (for a remote server) that Tailscale is connected`);
+    }
     window.location.href = target.url;
   } catch (err) {
     const errorEl = document.getElementById("config-error");

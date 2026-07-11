@@ -63,3 +63,10 @@ npm run tauri build
 
 Produces a Windows installer (`.msi`/`.exe`, via NSIS/WiX depending on
 what's configured) under `src-tauri/target/release/bundle/`.
+
+`frontendDist` in `src-tauri/tauri.conf.json` points at `../src` - Tauri
+bundles those files into the compiled installer at build time, they are
+NOT loaded from disk at runtime. Any change to `src/*.js`/`*.html`/`*.css`
+needs a fresh `npm run tauri build` before it reaches a real installer -
+editing `main.js` alone and reusing an already-built `.exe`/`.msi` has no
+effect.
