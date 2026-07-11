@@ -1,5 +1,13 @@
 # AXIM TradeStation Installation
 
+> **See `docs/AXIM_SETUP_GUIDE.md` first** - it's the current, guided
+> path (Setup Wizard, in-app Telegram/Pocket Option linking, multi-Fund)
+> and reflects how the app actually works today. This doc's low-level
+> manual steps below are still accurate for the underlying mechanics
+> (venv, `playwright install`, running the processes by hand) but
+> predate the Wizard and describe channel/broker setup by hand-editing
+> `.env`, which the app now does for you.
+
 ## Prerequisites
 
 - Python 3.12+

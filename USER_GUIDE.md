@@ -1,5 +1,12 @@
 # AXIM TradeStation User Guide
 
+> **See `docs/AXIM_SETUP_GUIDE.md` for current first-run setup** (the
+> guided Setup Wizard, in-app Telegram/Pocket Option linking, multi-Fund
+> flow). This guide's lower-level detail below - starting the listener
+> by hand, editing `.env` directly, the single-connection Control UI -
+> predates that and still describes real mechanics, just not always the
+> path the app now guides you through by default.
+
 ## What AXIM does
 
 AXIM watches a Telegram chat for trading signals, parses them, runs them
