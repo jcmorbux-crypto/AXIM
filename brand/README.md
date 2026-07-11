@@ -44,9 +44,14 @@ per the brief's "no gradients required for recognizability."
   taskbar icon - generated via `axim-desktop/src-tauri/icons/`.
 - Web app: favicon, sidebar logo mark (replacing the old plain "A"
   lettermark), login/bootstrap/password-reset screen branding.
-- Loading/connecting state: a subtle animated version of the mark
-  (see `web/shell.js`'s loading indicator and the desktop launcher's
-  auto-connect screen).
+- Loading/connecting state: the desktop launcher (`axim-desktop/src/
+  index.html`/`main.js`) shows the mark pulsing specifically while
+  actually trying to connect, static otherwise. The web app has the
+  same pulse as a reusable component (`web/theme.css`'s
+  `.axim-loading-mark`) for full-panel/full-page loading moments -
+  deliberately not retrofitted into the app's existing small inline
+  "Loading..." text labels, which are too small/transient to warrant a
+  visual anchor without adding noise instead of clarity.
 
 ## Extending this later
 
