@@ -1822,3 +1822,42 @@ recalculation) is a product/architecture decision (what does "daily"
 mean - server midnight? spanning multiple sessions?) this session isn't
 positioned to make unilaterally, same reasoning already applied earlier
 this session to the "risk breakers only see closed trades" finding.
+
+## AXIM Core: two Mission Control gaps closed (Demo/Live indicator, Stop Session)
+
+Continued the audit's Mission Control findings. `web/dashboard.html`'s
+per-Fund view was missing two of the required controls/fields:
+
+- **No Demo/Live indicator anywhere.** An operator looking at Mission
+  Control had no way to tell, at a glance, whether the connected account
+  was DEMO or LIVE - a safety-relevant omission for the page that's
+  supposed to be the primary monitoring surface. Added a badge next to
+  the status pill (`renderStatusLine`, already fetching
+  `/api/pocket-option/status`'s `account_mode` for other purposes) -
+  shown in both the combined "All Funds" view and every per-Fund view,
+  since the account mode is a real-account-level property, not a
+  per-Fund setting.
+- **No Stop Session control on Mission Control at all** - only Start,
+  Pause, and Emergency Stop existed, even though the spec explicitly
+  lists Stop Session as one of the four required controls. Added a
+  "Stop Session" button next to "View Active Session", wired to the
+  existing (unchanged) `POST /api/sessions/{id}/stop`. Deliberately
+  hidden in the combined "All Funds" view when more than one session is
+  active at once (different Funds can each run their own) - a single
+  button there would be ambiguous about which session it actually stops;
+  it only shows when there's exactly one active session, or from a
+  per-Fund view (always at most one already).
+
+Verified live via Playwright against a real bootstrapped Fund/session:
+DEMO badge renders correctly in both views; clicking Stop Session and
+dismissing the confirmation leaves the session `active`; accepting it
+correctly transitions the session to `stopped_manual`. Pure frontend
+change (no Python touched), calling only existing, already-tested
+backend endpoints - no new regression tests needed beyond the live
+verification.
+
+Still open from the Mission Control/Trade Center/Logs findings: Today's
+P/L showing lifetime instead in the per-Fund view, a clearer loss-limit
+status line, last-signal-vs-last-trade distinction, Trade Center's
+missing Fund/broker-account columns, and Logs' lack of a dedicated
+parser-events logger.

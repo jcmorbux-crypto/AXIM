@@ -366,10 +366,22 @@ flags that it's still needed.
       already documents this as a deliberate scoping simplification, not
       a broken promise; giving each mode real differentiated behavior is
       a product/architecture decision, not a same-shape bug fix
-- [ ] Mission Control/Trade Center/Logs completeness gaps (per-Fund
-      dashboard view missing several required live-monitoring fields,
-      Trade Center missing Fund/broker-account columns, parser has no
-      dedicated logger) - not yet addressed
+- [x] **Mission Control Demo/Live indicator added**: no way to tell at a
+      glance whether the connected account was DEMO or LIVE - added a
+      badge next to the status pill, shown in both the combined and
+      per-Fund views
+- [x] **Mission Control Stop Session control added**: only Start,
+      Pause, and Emergency Stop existed, even though the spec requires
+      Stop Session too. Added, wired to the existing
+      `POST /api/sessions/{id}/stop`; deliberately hidden in the
+      combined "All Funds" view when more than one session is active at
+      once (ambiguous which one it would stop). Verified live: dismiss
+      leaves the session active, accept correctly stops it
+- [ ] Remaining Mission Control/Trade Center/Logs completeness gaps:
+      per-Fund view still shows lifetime P/L instead of today's, no
+      clear loss-limit status line, no last-signal-vs-last-trade
+      distinction; Trade Center missing Fund/broker-account columns;
+      parser has no dedicated logger - not yet addressed
 
 ## Known, accepted limitations at this release
 

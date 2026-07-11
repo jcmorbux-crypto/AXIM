@@ -113,7 +113,7 @@
           <div class="fund-hero-caption" id="daily-pl-caption">&nbsp;</div>
         </div>
         <div style="text-align:right;">
-          <div class="status-pill"><span id="status-dot" class="dot off"></span><span id="status-headline">Loading...</span></div>
+          <div class="status-pill"><span id="status-dot" class="dot off"></span><span id="status-headline">Loading...</span><span id="account-mode-badge" style="margin-left:8px; display:none;"></span></div>
           <div class="muted" style="font-size:12px; margin-top:4px; max-width:220px;" id="status-detail">&nbsp;</div>
           <div id="broker-account-chip" style="margin-top:8px;"></div>
         </div>
@@ -129,6 +129,7 @@
         <div class="stat"><span class="label">Trades today</span><span class="value" id="trades-today">-</span></div>
         <div class="stat"><span class="label" id="session-pl-label">Active session P/L</span><span class="value" id="session-pl">-</span></div>
         <div class="spacer"></div>
+        <button class="subtle" id="stop-session-cta" onclick="confirmStopActiveSession()" style="display:none;">Stop Session</button>
         <button class="primary" id="start-session-cta" onclick="window.location.href='/sessions'">Start Session</button>
       </div>
     </div>
@@ -158,6 +159,7 @@
 let currentUser = null;
 let allFunds = [];
 let selectedFundId = "";
+let currentActiveSession = null;
 
 function displayName(email) {
   const local = (email || "").split("@")[0] || "there";
@@ -317,14 +319,34 @@ function renderGoalProgress(current, target) {
       : `${fmtMoney(Math.max(current, 0))} of ${fmtMoney(target)} goal (${pct.toFixed(0)}%)`;
 }
 
-function renderStartCta(activeSession) {
+function renderStartCta(activeSession, ambiguous) {
+  // ambiguous=true means more than one session is active at once (the
+  // combined "All Funds" view can have one per Fund) - showing a single
+  // "Stop Session" button there would be unclear about which session it
+  // actually stops, so it only appears when there's exactly one, or when
+  // called from a per-Fund view (which is always at most one already).
+  currentActiveSession = activeSession || null;
   const btn = document.getElementById("start-session-cta");
+  const stopBtn = document.getElementById("stop-session-cta");
   if (activeSession) {
     btn.textContent = "View Active Session";
     btn.onclick = () => window.location.href = "/sessions";
+    stopBtn.style.display = ambiguous ? "none" : "";
   } else {
     btn.textContent = "Start Session";
     btn.onclick = () => window.location.href = "/sessions";
+    stopBtn.style.display = "none";
+  }
+}
+
+async function confirmStopActiveSession() {
+  if (!currentActiveSession) return;
+  if (!confirm(`Stop "${currentActiveSession.name || "this session"}"? It will finish any trade already in progress, then stop requesting/accepting new signals.`)) return;
+  try {
+    await fetchJSON(`/api/sessions/${currentActiveSession.id}/stop`, { method: "POST" });
+    refreshAll();
+  } catch (e) {
+    alert("Failed to stop session: " + e.message);
   }
 }
 
@@ -412,6 +434,19 @@ function renderStatusLine(status, po, channels) {
   if (status.control.test_mode) {
     detail.textContent += " Test mode is on - trades stop just short of execution.";
   }
+
+  // Demo/Live is a required, always-visible disclosure - a Fund's own
+  // Live-eligibility (funds.html, sessions.html) matters, but what an
+  // operator glancing at Mission Control most needs to know is what the
+  // real connected account is doing right now, not a per-Fund setting.
+  const modeBadge = document.getElementById("account-mode-badge");
+  if (po.account_mode === "LIVE" || po.account_mode === "DEMO") {
+    modeBadge.textContent = po.account_mode;
+    modeBadge.className = "badge " + (po.account_mode === "LIVE" ? "danger" : "info");
+    modeBadge.style.display = "";
+  } else {
+    modeBadge.style.display = "none";
+  }
 }
 
 async function refreshGlobal() {
@@ -430,7 +465,7 @@ async function refreshGlobal() {
     document.getElementById("broker-account-chip").innerHTML = "";
 
     renderStatusLine(status, po, channels);
-    renderStartCta(activeSessions.length ? activeSessions[0] : null);
+    renderStartCta(activeSessions.length ? activeSessions[0] : null, activeSessions.length > 1);
 
     // ---- Hero: Today's Performance ----
     const daily = dash.statistics.daily;
