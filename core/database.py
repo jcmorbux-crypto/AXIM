@@ -1484,6 +1484,14 @@ def list_channels():
 
 
 @timed("database")
+def get_channel(channel_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM ui_channels WHERE id = ?", (channel_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
 def set_channel_enabled(channel_id, enabled):
     conn = get_connection()
     conn.execute("UPDATE ui_channels SET enabled = ? WHERE id = ?", (1 if enabled else 0, channel_id))
@@ -2105,6 +2113,14 @@ def create_session_profile(name, channel_ids, profit_target=0, loss_limit=0, max
     profile_id = cursor.lastrowid
     conn.close()
     return profile_id
+
+
+@timed("database")
+def get_session_profile(profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM session_profiles WHERE id = ?", (profile_id,)).fetchone()
+    conn.close()
+    return _session_row_to_dict(row) if row else None
 
 
 @timed("database")

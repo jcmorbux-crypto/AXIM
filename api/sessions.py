@@ -198,6 +198,8 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
     (neither explicit nor fund default) - every session requires one."""
     if not body.channel_ids:
         raise HTTPException(status_code=400, detail="a session must include at least one channel")
+    if body.profile_id is not None and database.get_session_profile(body.profile_id) is None:
+        raise HTTPException(status_code=404, detail="session profile not found")
     fund = database.get_fund(body.fund_id)
     if fund is None:
         raise HTTPException(status_code=404, detail="fund not found")
@@ -212,6 +214,8 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
             status_code=400,
             detail="select a Money Management profile before starting a session (either on this session or as the fund's default)",
         )
+    if database.get_risk_profile(risk_profile_id) is None:
+        raise HTTPException(status_code=404, detail="risk profile not found")
 
     broker_account = database.get_fund_primary_broker_account(body.fund_id)
     try:

@@ -28,6 +28,13 @@ class ChannelConfigTests(unittest.TestCase):
         self.assertEqual(channel["source_type"], "passive")
         self.assertEqual(channel["priority"], 0)
 
+    def test_get_channel_returns_it_by_id(self):
+        channel = database.get_channel(self.channel_id)
+        self.assertEqual(channel["title"], "Bot A")
+
+    def test_get_channel_unknown_id_returns_none(self):
+        self.assertIsNone(database.get_channel(99999))
+
     def test_set_channel_config_updates_fields(self):
         database.set_channel_config(self.channel_id, source_type="bot_command", trigger_command="/signal", priority=5)
         channel = database.list_channels()[0]

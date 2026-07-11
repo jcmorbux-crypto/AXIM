@@ -32,6 +32,15 @@ class SessionProfileTests(unittest.TestCase):
         database.delete_session_profile(profile_id)
         self.assertEqual(database.list_session_profiles(), [])
 
+    def test_get_profile_returns_it_by_id(self):
+        profile_id = database.create_session_profile("Conservative", [1, 2], profit_target=50)
+        profile = database.get_session_profile(profile_id)
+        self.assertEqual(profile["name"], "Conservative")
+        self.assertEqual(profile["channel_ids"], [1, 2])
+
+    def test_get_profile_unknown_id_returns_none(self):
+        self.assertIsNone(database.get_session_profile(99999))
+
 
 class TradingSessionTests(unittest.TestCase):
     def setUp(self):

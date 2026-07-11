@@ -96,6 +96,8 @@ def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
     _get_or_404(fund_id)
     if body.default_risk_profile_id is not None and database.get_risk_profile(body.default_risk_profile_id) is None:
         raise HTTPException(status_code=404, detail="risk profile not found")
+    if body.default_session_profile_id is not None and database.get_session_profile(body.default_session_profile_id) is None:
+        raise HTTPException(status_code=404, detail="session profile not found")
     try:
         database.update_fund(fund_id, **body.model_dump(exclude_unset=True))
     except ValueError as e:
@@ -139,6 +141,8 @@ def duplicate_fund(fund_id: int, body: DuplicateFundRequest, user=Depends(requir
 @router.post("/{fund_id}/sources")
 def add_source(fund_id: int, body: AddSourceRequest, user=Depends(require_admin)):
     _get_or_404(fund_id)
+    if database.get_channel(body.channel_id) is None:
+        raise HTTPException(status_code=404, detail="channel not found")
     database.add_fund_source(fund_id, body.channel_id)
     return {"sources": database.list_fund_source_channel_ids(fund_id)}
 
