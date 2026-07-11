@@ -96,6 +96,28 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
 
     ownership_transferred = False
     try:
+        # Validated first, before touching the DOM at all: a signal whose
+        # expiry never matched a recognizable pattern (parsers/signal_parser.py
+        # falls back to the literal string "Unknown" rather than guessing)
+        # used to reach select_expiry() and raise there as an unhandled
+        # ValueError, deep in the DOM interaction sequence - never causing a
+        # wrong click (select_expiry runs before click_direction), but
+        # wasting an acquired worker and logging as a raw crash instead of
+        # a clean, expected rejection. Same rejection shape as
+        # AssetUntradeableError below, just caught one step earlier.
+        try:
+            pocket_dom.expiry_to_seconds(expiry)
+        except ValueError as e:
+            lifecycle_logger.warning(
+                "trade_id=%s worker_id=%s rejected: unparseable_expiry (%s)", trade_id, worker.worker_id, e,
+            )
+            database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:unparseable_expiry")
+            timeline.persist(database)
+            return {
+                "status": "rejected", "trade_id": trade_id,
+                "rule": "unparseable_expiry", "reason": str(e),
+            }
+
         await pocket_dom.select_asset(page, asset)
         timeline.mark("asset_selected")
 
