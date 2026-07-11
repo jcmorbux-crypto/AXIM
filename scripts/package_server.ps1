@@ -67,7 +67,24 @@ foreach ($dir in @("data", "logs", "sessions", "backups")) {
 }
 
 if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
-Compress-Archive -Path "$StageDir\*" -DestinationPath $ZipPath -CompressionLevel Optimal
+
+# Compress-Archive can transiently fail with "file in use" right after a
+# robocopy of many small files (observed live: real-time AV scanning the
+# freshly-written tests\*.py files a beat before compression reaches
+# them, a different file each time) - retry a few times with a short
+# backoff rather than failing the whole package over a race that clears
+# itself within a second or two.
+$maxAttempts = 5
+for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+    try {
+        Compress-Archive -Path "$StageDir\*" -DestinationPath $ZipPath -CompressionLevel Optimal -ErrorAction Stop
+        break
+    } catch {
+        if ($attempt -eq $maxAttempts) { throw }
+        Write-Host "Compress-Archive attempt $attempt/$maxAttempts failed ($($_.Exception.Message)) - retrying..."
+        Start-Sleep -Seconds 2
+    }
+}
 Remove-Item -Recurse -Force $StageDir
 
 Write-Host "Packaged: $ZipPath"
