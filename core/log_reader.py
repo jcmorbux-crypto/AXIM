@@ -21,7 +21,10 @@ LOG_DIR = PROJECT_ROOT / "logs"
 # across core/. Reading all of them (not just lifecycle.log/ui.log) is
 # what makes the spec's "Broker responses" category real rather than
 # missing pocket_dom.log's own entries.
-LOG_FILES = ["lifecycle.log", "ui.log", "axim.log", "dashboard.log", "pocket_dom.log", "source_observer.log"]
+LOG_FILES = [
+    "lifecycle.log", "ui.log", "axim.log", "dashboard.log", "pocket_dom.log",
+    "source_observer.log", "parser.log",
+]
 
 _LINE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) (\w+) \[([\w.]+)\] (.*)$", re.DOTALL)
 

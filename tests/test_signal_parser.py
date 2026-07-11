@@ -54,6 +54,26 @@ class SignalParserTests(unittest.TestCase):
     def test_no_direction_returns_none(self):
         self.assertIsNone(parse_signal("EUR/USD OTC M5"))
 
+    def test_no_asset_logs_a_parse_failure(self):
+        # AXIM Core directive requires parse failures to be logged (the
+        # parser previously had no logger at all - docs/AXIM_RELEASE_CHECKLIST.md).
+        with self.assertLogs("axim.parser", level="WARNING") as cm:
+            parse_signal("just some random text with no asset")
+        self.assertIn("no recognizable asset", cm.output[0])
+
+    def test_no_direction_logs_a_parse_failure(self):
+        with self.assertLogs("axim.parser", level="WARNING") as cm:
+            parse_signal("EUR/USD OTC M5")
+        self.assertIn("no direction", cm.output[0])
+
+    def test_successful_parse_does_not_log_a_warning(self):
+        with self.assertRaises(AssertionError):
+            # assertLogs itself raises AssertionError if nothing was logged
+            # at all - the intended outcome here (a clean parse shouldn't
+            # emit a parse-failure warning).
+            with self.assertLogs("axim.parser", level="WARNING"):
+                parse_signal("EUR/USD OTC BUY M5")
+
     def test_signal_word_does_not_false_positive_without_a_label(self):
         # Regression: "Signal" is 6 letters and was previously matched as
         # a fake concatenated pair "SIG/NAL" when there was no real asset
@@ -162,6 +182,13 @@ class ApplySignalRulesTests(unittest.TestCase):
         rules = [{"find_pattern": "(unclosed", "replace_with": "x"}]
         # Should not raise, and the message passes through unmodified.
         self.assertEqual(apply_signal_rules("hello", rules), "hello")
+
+    def test_invalid_regex_rule_logs_a_warning(self):
+        rules = [{"id": 7, "find_pattern": "(unclosed", "replace_with": "x"}]
+        with self.assertLogs("axim.parser", level="WARNING") as cm:
+            apply_signal_rules("hello", rules)
+        self.assertIn("invalid regex", cm.output[0])
+        self.assertIn("id=7", cm.output[0])
 
 
 if __name__ == "__main__":

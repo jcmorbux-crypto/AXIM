@@ -1977,3 +1977,37 @@ double-hashing the password by calling `auth.hash_password()` before
 passing it to `database.create_user()`, which already hashes internally;
 fixed by passing the plain password directly, the same mistake worth
 remembering for future bootstrap scripts in this project.)
+
+## AXIM Core: gave the parser a dedicated logger - parse failures were previously invisible
+
+`docs/AXIM_RELEASE_CHECKLIST.md` had "parser has no dedicated logger"
+flagged as an open gap since the earlier audit. Confirmed by reading
+`parsers/signal_parser.py` directly: zero logging calls anywhere in the
+module, and `core/telegram_listener.py`'s call site (`signal =
+parse_signal(message_text)`) does nothing when it returns `None` except
+silently drop the message - the only visibility into a parse failure was
+an ad-hoc `[TELEGRAM_DEBUG]` print statement gated behind a debug flag,
+not persisted, not filterable, not part of the Logs page at all. Every
+other subsystem (lifecycle, ui, dashboard, pocket_dom, source_observer)
+already had its own `core/logger.py`-backed logger and log file; the
+parser was the one real gap in "Logs: Telegram/parser/broker/session/
+execution/results/errors/recovery events."
+
+Fixed: `parsers/signal_parser.py` now sets up its own logger
+(`axim.parser`, writing to `logs/parser.log`) via `core/logger.py`'s
+`get_logger`, using the same self-sufficient sys.path pattern
+`core/log_reader.py` already uses to reach `database` - this keeps
+`signal_parser.py` independent of whatever the caller has already put on
+`sys.path` (matters because `tests/test_signal_parser.py` only adds
+`parsers/` to `sys.path`, not `core/`, and still needs to keep working
+unchanged). `parse_signal` now logs a warning at both of its real failure
+points (no recognizable asset; asset found but no direction), and
+`apply_signal_rules` now logs a warning (with the rule id) when a saved
+signal rule's regex is invalid and gets skipped, instead of failing
+silently. `core/log_reader.py`'s `LOG_FILES` and `web/logs.html`'s module
+filter dropdown both gained `parser.log` / "parser" so these are actually
+visible on the Logs page, not just written to disk.
+
+4 new regression tests using `assertLogs` confirm both failure paths and
+the invalid-rule path log a warning, and that a clean parse logs nothing.
+Full suite: 620 passed (up from 616), 1 skipped.

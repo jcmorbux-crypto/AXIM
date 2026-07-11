@@ -383,10 +383,16 @@ flags that it's still needed.
       now join in the names, `web/trades.html` shows them in the table
       and the detail modal. Live-verified via Playwright: linked trade
       shows "Test Fund"/"Test Broker Account", unlinked trade shows "-".
-- [ ] Remaining Mission Control/Logs completeness gaps: per-Fund view
-      still shows lifetime P/L instead of today's, no clear loss-limit
-      status line, no last-signal-vs-last-trade distinction; parser has
-      no dedicated logger - not yet addressed
+- [x] **Parser now has a dedicated logger** - `parsers/signal_parser.py`
+      had zero logging of any kind; parse failures (no recognizable
+      asset, asset found but no direction) and skipped invalid-regex
+      signal rules now log to `logs/parser.log` via `axim.parser`, wired
+      into the Logs page's module filter. Covered by 4 new tests
+      (`assertLogs` on both failure paths + the invalid-rule path, plus
+      confirming a clean parse logs nothing).
+- [ ] Remaining Mission Control completeness gaps: per-Fund view still
+      shows lifetime P/L instead of today's, no clear loss-limit status
+      line, no last-signal-vs-last-trade distinction - not yet addressed
 - [x] **`INSTALL.md` rewritten** - the entry-point doc `README.md`
       itself links to was stale in the same "pre-web-UI" way
       `USER_GUIDE.md` was before an earlier session's fix, but was never

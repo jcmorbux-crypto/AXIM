@@ -1,4 +1,15 @@
 import re
+import sys
+from pathlib import Path
+
+# Self-sufficient path setup (same pattern core/log_reader.py uses to reach
+# `database`) so this module doesn't depend on the caller having already
+# put core/ on sys.path - telegram_listener.py does, but a standalone
+# script or test importing just `parsers.signal_parser` might not.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
+from logger import get_logger
+
+_logger = get_logger("axim.parser", filename="parser.log")
 
 # ISO 4217 3-letter currency codes. Used to validate both halves of a
 # concatenated asset pair (e.g. "NZDJPY") before accepting it as an asset -
@@ -118,6 +129,7 @@ def parse_signal(message):
 
             signal["asset"] = asset
         else:
+            _logger.warning("parse failed: no recognizable asset in message: %r", message[:200])
             return None
 
     # Direction formats:
@@ -133,6 +145,10 @@ def parse_signal(message):
     elif re.search(r"\bSELL\b", text):
         signal["direction"] = "SELL"
     else:
+        _logger.warning(
+            "parse failed: asset %r found but no direction (BUY/SELL/UP/DOWN/CALL/PUT) in message: %r",
+            signal.get("asset"), message[:200],
+        )
         return None
 
     # Expiry formats:
@@ -180,6 +196,10 @@ def apply_signal_rules(message, rules):
     for rule in rules:
         try:
             message = re.sub(rule["find_pattern"], rule["replace_with"], message)
-        except re.error:
+        except re.error as e:
+            _logger.warning(
+                "signal rule id=%s skipped - invalid regex %r: %s",
+                rule.get("id"), rule.get("find_pattern"), e,
+            )
             continue
     return message
