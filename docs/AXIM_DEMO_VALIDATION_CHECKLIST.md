@@ -125,6 +125,21 @@ and the Risk Engine profile actually persists its `apex_ascension`/
 the same live sizing math a real session would use, not a separate
 demo-only code path.
 
+## 11. Multiple Funds, each with their own broker account and search-driven channel picks
+
+Create a second Fund. On the **Telegram** page, use the search box to find
+and follow a channel by typing part of its name or @username (search is
+instant, client-side, over your already-synced chats). On the **Funds**
+page, connect each Fund to a *different* Pocket Option broker account
+(Broker Accounts → Add → Connect, once per account).
+
+**Pass:** each Fund shows its own, distinct connected broker account (not
+sharing one), the channel search filters correctly as you type (by title
+or username, case-insensitive) and "+ Add" moves a chat from search
+results into your followed sources list, and a session started under one
+Fund is completely unaffected by a stop/loss-limit/target event on
+another Fund's session - each Fund's trading is fully independent.
+
 ## Sign-off
 
 Only move on to volume/live consideration once every item above has
@@ -133,4 +148,4 @@ one - browser DOM behavior and Telegram/Pocket Option account state are
 both real-world dependencies that can shift between machines and over
 time.
 
-- [ ] All 10 items passed on: ______ (date) on this machine's own install.
+- [ ] All 11 items passed on: ______ (date) on this machine's own install.

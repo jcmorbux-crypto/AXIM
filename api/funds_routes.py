@@ -94,6 +94,8 @@ def get_fund(fund_id: int, user=Depends(get_current_user)):
 @router.patch("/{fund_id}")
 def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
     _get_or_404(fund_id)
+    if body.default_risk_profile_id is not None and database.get_risk_profile(body.default_risk_profile_id) is None:
+        raise HTTPException(status_code=404, detail="risk profile not found")
     try:
         database.update_fund(fund_id, **body.model_dump(exclude_unset=True))
     except ValueError as e:

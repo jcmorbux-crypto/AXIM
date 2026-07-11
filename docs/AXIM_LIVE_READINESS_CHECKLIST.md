@@ -1,18 +1,25 @@
 # AXIM Live Readiness Checklist
 
-**As of 2026-07-10.** Supersedes `docs/AXIM_LIVE_READINESS_REVIEW.md`
-(2026-07-05, now stale) and consolidates `docs/AXIM_RELEASE_CHECKLIST.md`.
-Read this before ever setting a broker account's `live_enabled` flag or
-`ACCOUNT` to anything other than `DEMO`. Every line cites where the
-evidence actually lives - check it doesn't assume.
+**As of 2026-07-11 (AXIM Core RC1).** Supersedes
+`docs/AXIM_LIVE_READINESS_REVIEW.md` (2026-07-05, now stale) and
+consolidates `docs/AXIM_RELEASE_CHECKLIST.md`. Read this before ever
+setting a broker account's `live_enabled` flag or `ACCOUNT` to anything
+other than `DEMO`. Every line cites where the evidence actually lives -
+check it doesn't assume.
 
 **Bottom line: closer than the 07-05 review, still not a go.** Execution
 mechanics, recovery, observability, and the missing drawdown breaker from
-the last review are all done and verified. What remains is (1) one
-manual, operator-only step that literally cannot be done by an AI agent -
-inspecting your own real Pocket Option live cabinet - and (2) the honest,
-still-open question from the last review: **does any signal source this
-account watches actually have an edge net of payout.**
+the last review are all done and verified. AXIM Capital Strategies (tm)
+Phase 1+2 shipped this session without weakening any safety gate (see
+below). What remains is (1) one manual, operator-only step that literally
+cannot be done by an AI agent - inspecting your own real Pocket Option
+live cabinet, (2) the honest, still-open question from the last review:
+**does any signal source this account watches actually have an edge net
+of payout**, and (3) confirming the listener's Scheduled Task actually
+auto-restarts it after a real reboot/logon, not just the supervisor
+script's own restart-loop (see "Long-running soak test" below - a real
+gap was found and fixed live this session, but the reboot path itself is
+still unverified).
 
 ## Safety-critical gates (verify every one, every time)
 
@@ -152,6 +159,66 @@ account watches actually have an edge net of payout.**
       stale heartbeat → spawns normally) - not re-tested against this
       real listener a third time, deliberately, to stop risking further
       disruption. Both installers rebuilt with the fix.
+- [x] **Verified live this session, on this exact machine, against the
+      real listener**: launched the built installer binary directly.
+      The heartbeat-freshness guard worked correctly - no duplicate
+      `telegram_listener.py` spawned (real listener's `generation`
+      stayed `1`, `listener_pid` stayed `10524` throughout, confirmed via
+      `database.get_listener_heartbeat()` before/after). **Real, narrower
+      gap found**: the guard only covers the listener spawn, not the API
+      server spawn - a duplicate `uvicorn api.main:app` process did start
+      briefly. Immediately stopped, zero effect on the real server (a
+      second process binding the same port either fails or serves
+      redundantly - either way the real one, PID 7700/whichever is
+      actually fronting traffic, was never replaced). Low priority: this
+      machine is the server, not a remote-mode client, so a normal
+      laptop deployment (remote mode, spawns nothing locally) never hits
+      this path at all. Also found and removed one unrelated orphaned
+      `telegram_listener.py` (PID 7472, parent process already exited,
+      running since before this session-continuation started, never
+      holding the real browser-profile lock per its own generation
+      count staying flat) - harmless, now cleaned up. This machine's
+      stray `remote_client_config.json` (persisted "local mode" from
+      earlier testing) was also cleared so the installer shows the
+      mode picker on next launch instead of auto-spawning again.
+- [x] **Second, more serious incident this session - the listener actually
+      stopped, and nothing brought it back.** PID `10524` (the soak
+      test's real listener, ~34 hours uptime at the time) was confirmed
+      healthy via a fresh heartbeat at 10:27:32, then went completely
+      silent - `heartbeat_stale=True` for three consecutive 15-minute
+      snapshots, and the OS process itself was gone (`Get-CimInstance
+      Win32_Process` found nothing). Root cause of the crash itself is
+      **not established** - no traceback or exit message near that time
+      in `logs/axim.log` (its last entries were unrelated test-suite
+      output from an earlier `pytest` run sharing the same log file, a
+      pre-existing pollution quirk, not evidence either way). Explicitly
+      ruled out: this session's own process cleanup around the same
+      window (killing an orphaned duplicate listener and a duplicate API
+      server) - confirmed safe via a heartbeat check showing `10524`
+      still alive and writing fresh heartbeats *after* those specific
+      kills, well before it actually went dark.
+      **Real gap found**: `10524` had been running for ~34 hours with
+      **no process supervision at all** - `scripts/run_listener_
+      supervised.ps1` exists and the "AXIM Listener" Scheduled Task was
+      already installed, but the task's only trigger is `AtLogOn` and it
+      hadn't fired since 7/8 (days earlier); whoever/whatever started
+      `10524` did so directly (bypassing the supervisor), so when it
+      died, nothing was watching to restart it. This is exactly the
+      failure mode `run_listener_supervised.ps1`'s own docstring
+      describes - just never actually in the loop for this particular
+      run.
+      **Fixed by restarting through the supervisor** (`scripts\run_
+      listener_supervised.ps1`, launched directly rather than waiting for
+      a logon event) instead of a bare process - confirmed reconnected
+      cleanly (`demo_mode_verified: 1`, `worker_count: 6`, a real
+      populated `balance`, heartbeat updating every ~30s, uptime climbing
+      steadily, watched for several consecutive updates with zero
+      restart-cycle entries in `logs/supervisor.log`). **Operator
+      follow-up recommended, not yet done**: trigger a real logon event
+      (or reboot) at some point to confirm the Scheduled Task itself
+      picks the listener back up automatically going forward, since this
+      session only verified the supervisor script's own restart-loop
+      behavior directly, not the Scheduled Task's `AtLogOn` trigger path.
 
 ## Functional / operational (carried forward from the 07-05 checklist, re-verified)
 
@@ -299,6 +366,10 @@ findings and reasoning in commit history; summarized here.
    a single broker account's `live_enabled` on, at the smallest possible
    stake, watched deliberately - the same discipline every demo test in
    this project has followed.
+5. Confirm the "AXIM Listener" Scheduled Task actually relaunches the
+   listener after a real reboot/logon (a genuine trigger event, not this
+   session's direct supervisor-script launch) - low effort, not yet done,
+   see "Long-running soak test" above for why this matters.
 
 This document does not recommend a timeline for any of the above - it
 exists so the remaining gate is visible and unambiguous.
