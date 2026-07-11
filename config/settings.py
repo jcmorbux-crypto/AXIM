@@ -44,14 +44,12 @@ PREVIEW_ONLY = os.getenv("PREVIEW_ONLY", "true").lower() == "true"
 TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", os.getenv("DEFAULT_TRADE_AMOUNT", 10)))
 MINIMUM_PAYOUT = int(os.getenv("MINIMUM_PAYOUT", 90))
 MAX_SIGNAL_AGE = int(os.getenv("MAX_SIGNAL_AGE", 10))
-TRADE_DELAY = int(os.getenv("TRADE_DELAY", 0))
 
 # Database
 DATABASE_FILE = "data/axim.db"
 
 # Logging
 SAVE_SCREENSHOTS = os.getenv("SAVE_SCREENSHOTS", "true").lower() == "true"
-SAVE_HTML = os.getenv("SAVE_HTML", "false").lower() == "true"
 
 # Risk management
 MAX_TRADE_AMOUNT = float(os.getenv("MAX_TRADE_AMOUNT", 50))

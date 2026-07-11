@@ -26,6 +26,10 @@ data/
 # Backups (scripts/backup_axim_state.ps1 output - contains live credentials/session state)
 backups/
 
+# Packaged server/desktop client builds (scripts/package_server.ps1, axim-desktop's tauri build)
+dist/
+axim-desktop/src-tauri/target/
+
 # OS
 Thumbs.db
 .DS_Store
