@@ -441,11 +441,16 @@ exercise `evaluate_rule`/`evaluate_all` against a real schema, and doing
 so live would require an actual Telegram signal and Pocket Option trade
 cycle, out of scope for this pass.
 
-Known gap: rules have no explicit `scope` (global vs. one specific
-session/profile) - conditions like `session_profit_gte` always read
-whatever session is currently active, which is correct given the
-existing single-active-session-at-a-time rule, but would need real
-scoping if that constraint is ever relaxed.
+Stale gap note, now fixed: rules originally had no explicit `scope`,
+correct only under the single-active-session-at-a-time assumption that
+predated multi-Fund. That constraint has since been relaxed (concurrent
+active sessions, one per Fund, are now normal) and real scoping now
+exists - `core/rule_engine.py`'s `_resolve_session_for_rule` supports
+`scope='fund'` (follows whichever session is active for that specific
+Fund, the common case, default), `scope='session'` (pinned to one
+specific session while it's still active), and a legacy no-`fund_id`
+fallback for rules pre-dating the Fund-owned redesign. Both scopes
+tested in `tests/test_rule_engine.py`.
 
 ### Phase 6 - Packaging, Stripe
 
@@ -896,9 +901,16 @@ execution-path code, then genuinely wired):**
   unset (requiring real live-account access nobody working on this
   codebase has had) and the global `ACCOUNT`/`ARMED` gates both still
   block it.
-- **Password reset ("forgot password")** is a placeholder link in
-  `web/login.html` - real self-service reset (email-based) isn't built;
-  today an Owner/Admin resets a user's password from Users / Access.
+- Stale gap note, now fixed: **password reset ("forgot password")** is a
+  real, wired self-service flow, not a placeholder link -
+  `api/auth_routes.py`'s `/forgot-password`/`/reset-password/validate`/
+  `/reset-password`, `core/email_sender.py` (real SMTP send via stdlib
+  `smtplib`, gated on `SMTP_HOST` being configured - "not configured"
+  degrades gracefully rather than erroring, same pattern as the Stripe
+  billing scaffold), single-use 30-minute tokens, prior token invalidated
+  on a new request, full session revocation on reset. An Owner/Admin
+  resetting a user's password from Users / Access still works too, as an
+  alternative, not a replacement.
 - **Secrets**: verified `api/main.py`/`api/auth_routes.py`/`api/admin.py`
   never import or return `TELEGRAM_API_ID`/`API_HASH`/`PHONE`/
   `PO_EMAIL`/`PO_PASSWORD`. Password hashes never leave `core/database.py`
