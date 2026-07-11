@@ -46,7 +46,22 @@ async function launch() {
 }
 
 async function init() {
-  const config = await invoke("get_remote_config");
+  let config;
+  try {
+    config = await invoke("get_remote_config");
+  } catch (err) {
+    // Both #auto-connect and #config-form start display:none in
+    // index.html - if this throws before either gets shown, the window
+    // is otherwise just a blank title with no error and no way to
+    // proceed. Fall back to the picker form (a safe, always-actionable
+    // default) with an error message, same pattern as web/login.html's
+    // boot() falling back to the login view.
+    showForm({});
+    const errorEl = document.getElementById("config-error");
+    errorEl.textContent = `Failed to load configuration: ${err}`;
+    errorEl.style.display = "";
+    return;
+  }
   const forceConfigure = new URLSearchParams(window.location.search).has("configure");
 
   if (!config.configured || forceConfigure) {
