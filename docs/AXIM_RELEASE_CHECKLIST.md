@@ -397,6 +397,19 @@ flags that it's still needed.
       template duplication, the two-gate Live-mode switch, the Live-
       confirmation modal, Emergency Stop's access, both processes'
       Scheduled Task supervision) cross-checked against current code
+- [x] **AXIM Core Server + Remote Client packaging audited** - found
+      already largely satisfied by existing infrastructure (`axim-desktop`
+      Tauri app with local/remote mode picker, the two Scheduled Task
+      installer scripts) rather than needing new work. Found and fixed one
+      real gap: closing the desktop app's window force-killed both spawned
+      processes without running the orphaned-Chrome cleanup step
+      `USER_GUIDE.md` says a force-kill requires - now automated in
+      `src-tauri/src/lib.rs`'s window-close handler. **NOT build-verified**
+      - no Rust/Cargo toolchain in this environment; run `npm run tauri
+      build` on a machine with the Rust + MSVC toolchain before relying on
+      this change. Standalone bundled-installer packaging (no separate
+      venv/checkout step) remains a known, accepted, not-yet-attempted gap
+      - see `axim-desktop/README.md`'s "Known limitation".
 
 ## Known, accepted limitations at this release
 

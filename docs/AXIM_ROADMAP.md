@@ -1894,3 +1894,50 @@ user access, both processes' Scheduled Task supervision) against the
 actual current code rather than assuming prior descriptions were still
 accurate - several of those claims are true specifically because of
 fixes made earlier in this same session.
+
+## AXIM Core: closed off a real orphaned-Chrome gap in axim-desktop's window-close handler
+
+Task #16 (package AXIM Core Server + Remote Client) turned out to already
+be largely satisfied by existing infrastructure rather than needing new
+work from scratch: `axim-desktop` (Tauri) already provides exactly the
+"simple installer/launch script" the AXIM Core directive asks for - one
+window with a local/remote mode picker, persisted to
+`remote_client_config.json`, that either spawns the API + listener
+locally and opens a window pointed at them, or points the same window at
+a remote AXIM Server over Tailscale with nothing spawned locally. The two
+Scheduled Task installer scripts (`install_scheduled_task.ps1`,
+`install_api_scheduled_task.ps1`) already cover the "runs unattended /
+survives reboot" case for the Server. None of that needed to be built new.
+
+Auditing it against this session's own documented shutdown requirement
+(`USER_GUIDE.md`'s "Stopping AXIM correctly": force-killing
+`core/telegram_listener.py` instead of a clean Ctrl+C skips its browser
+cleanup and leaves orphaned Chrome tabs behind, which measurably degrades
+the next startup - see `AXIM_PRODUCTION_READINESS_REPORT.md` section
+4.4) found a real, concrete gap: `src-tauri/src/lib.rs`'s window-close
+handler (`kill_all`) called `child.kill()` on both spawned processes -
+an unconditional force-kill, with no way to deliver a specific child
+process a Ctrl+C-equivalent signal on Windows - and did nothing further.
+`scripts/cleanup_axim_chrome.ps1 -Kill` exists specifically to clean up
+after exactly this scenario, but nothing called it automatically; the
+desktop window is the actual "simple launch" surface this whole directive
+is about; a user closing that window (the normal way to stop AXIM in
+local mode) would never see the terminal-only advice in `USER_GUIDE.md`
+telling them to run the cleanup script themselves. Fixed by having
+`kill_all` invoke `cleanup_axim_chrome.ps1 -Kill` (already idempotent and
+scoped to only AXIM's own `--user-data-dir` Chrome processes - verified
+by re-reading the script, not assumed) immediately after force-killing
+the two child processes, and only when local-mode processes were actually
+spawned (skips cleanly in remote mode, where `children` is empty).
+
+**Honest limitation on this fix**: this environment has no Rust/Cargo
+toolchain available (`rustc`/`cargo` both absent), so this change could
+not be compiled or run here, unlike every other fix this session, which
+was verified either by the test suite or live Playwright. The change
+follows the exact `Command::new(...).arg(...).current_dir(root).spawn()`
+idiom already used twice earlier in the same file for spawning the
+Python child processes, and `cleanup_axim_chrome.ps1`'s own behavior was
+independently verified by reading it directly - but the Rust code itself
+has not been build-verified. **Run `npm run tauri build` (or `cargo
+check` from `src-tauri/`) once on a machine with the Rust + MSVC
+toolchain installed before relying on this.**

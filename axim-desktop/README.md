@@ -14,9 +14,12 @@ chosen on first launch (see `docs/AXIM_REMOTE_ACCESS.md`):
   (host/port read from the project's `.env`, defaulting to
   `127.0.0.1:8090` - same values `config/settings.py` uses), polls until
   the API actually accepts connections, then opens a native window
-  pointed at it. Closing the window kills both processes - see
-  `src-tauri/src/lib.rs`. **Not** a standalone installer with a bundled
-  Python runtime - see "Known limitation" below.
+  pointed at it. Closing the window force-kills both processes (there is
+  no reliable way to deliver a specific child process a Ctrl+C-equivalent
+  on Windows), then automatically runs `scripts\cleanup_axim_chrome.ps1
+  -Kill` to close out any Chrome tabs the listener didn't get a chance to
+  close itself - see `src-tauri/src/lib.rs`. **Not** a standalone
+  installer with a bundled Python runtime - see "Known limitation" below.
 
 - **Remote mode** - points the window at a remote AXIM Server's address
   (typically a Tailscale hostname) instead, and spawns nothing locally.

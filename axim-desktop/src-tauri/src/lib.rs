@@ -136,11 +136,36 @@ fn spawn_axim_processes(root: &PathBuf, api_host: &str, api_port: u16) -> Vec<Ch
     children
 }
 
-fn kill_all(children: &mut Vec<Child>) {
+// Force-killing core/telegram_listener.py (which is what closing this
+// window does to a locally-spawned listener - there is no reliable way
+// to deliver a specific child process a Ctrl+C-equivalent on Windows)
+// skips its own clean-shutdown path that closes every browser tab it
+// opened, exactly the scenario USER_GUIDE.md's "Stopping AXIM correctly"
+// warns about and tells an operator to run cleanup_axim_chrome.ps1 -Kill
+// for manually. Since this window is the actual "simple launch" surface
+// for AXIM Core (not a terminal an operator is watching), that manual
+// step would silently never happen - so run the same script automatically
+// whenever local-mode processes were actually spawned and are being torn
+// down. No-op (and safe to call) when nothing was spawned, e.g. remote
+// mode, since `children` is empty there.
+fn kill_all(root: &PathBuf, children: &mut Vec<Child>) {
+    if children.is_empty() {
+        return;
+    }
     for child in children.iter_mut() {
         let _ = child.kill();
         let _ = child.wait();
     }
+    let cleanup_script = root.join("scripts").join("cleanup_axim_chrome.ps1");
+    let _ = Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&cleanup_script)
+        .arg("-Kill")
+        .current_dir(root)
+        .spawn();
 }
 
 // A fixed sleep isn't reliable here - uvicorn's cold-start time varies with
@@ -262,7 +287,7 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 if let Some(state) = window.app_handle().try_state::<ManagedChildren>() {
                     let mut children = state.0.lock().unwrap();
-                    kill_all(&mut children);
+                    kill_all(&project_root(), &mut children);
                 }
             }
         })
