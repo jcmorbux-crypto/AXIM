@@ -40,11 +40,11 @@
       <table>
         <thead>
           <tr>
-            <th>Time</th><th>Source</th><th>Asset</th><th>Dir</th><th>Amount</th>
+            <th>Time</th><th>Fund</th><th>Broker Account</th><th>Source</th><th>Asset</th><th>Dir</th><th>Amount</th>
             <th>Expiry</th><th>Status</th><th>Result</th><th>P/L</th><th>Session</th>
           </tr>
         </thead>
-        <tbody id="trades-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
+        <tbody id="trades-body"><tr><td colspan="12" class="empty">Loading...</td></tr></tbody>
       </table>
     </div>
   </main>
@@ -131,12 +131,14 @@ async function refreshTrades() {
   try {
     const trades = await fetchJSON("/api/trades?limit=50");
     if (!trades.length) {
-      tbody.innerHTML = '<tr><td colspan="10" class="empty">No trades yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="12" class="empty">No trades yet.</td></tr>';
       return;
     }
     tbody.innerHTML = trades.map(t => `
       <tr class="trade-row" role="button" tabindex="0" onclick="openDetail(${t.id})">
         <td class="muted">${fmtTime(t.received_at)}</td>
+        <td>${escapeHtml(t.fund_name || "-")}</td>
+        <td>${escapeHtml(t.broker_account_name || "-")}</td>
         <td class="title-cell">${escapeHtml(t.channel || "-")}</td>
         <td>${escapeHtml(t.asset || "-")}</td>
         <td>${escapeHtml(t.direction || "-")}</td>
@@ -149,7 +151,7 @@ async function refreshTrades() {
       </tr>
     `).join("");
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="10" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="12" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -168,6 +170,8 @@ async function openDetail(tradeId) {
       <div class="stat-row"><span class="stat-label">Direction</span><span class="stat-value">${escapeHtml(t.direction || "-")}</span></div>
       <div class="stat-row"><span class="stat-label">Expiry</span><span class="stat-value">${escapeHtml(t.timeframe || "-")}</span></div>
       <div class="stat-row"><span class="stat-label">Source</span><span class="stat-value">${escapeHtml(t.channel || "-")}</span></div>
+      <div class="stat-row"><span class="stat-label">Fund</span><span class="stat-value">${escapeHtml((t.fund && t.fund.name) || "-")}</span></div>
+      <div class="stat-row"><span class="stat-label">Broker account</span><span class="stat-value">${escapeHtml((t.broker_account && t.broker_account.name) || "-")}</span></div>
     `;
 
     let moneyHtml = `<div class="stat-row"><span class="stat-label">Amount used</span><span class="stat-value">${t.trade_amount !== null ? "$" + t.trade_amount : "-"}</span></div>`;

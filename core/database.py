@@ -1161,12 +1161,19 @@ def get_recent_signals(limit=25):
     """Most recent signals regardless of status - the dashboard's activity
     table. Unlike get_trades_between, not scoped to a time window or
     closed-only, so an in-flight or rejected/ignored signal shows up
-    immediately rather than only once it resolves."""
+    immediately rather than only once it resolves. Joins in the Fund/
+    broker account names (not just their IDs, which signals.fund_id and
+    signals.broker_account_id already stored but Trade Center never
+    surfaced) so a multi-Fund operator can tell trades apart at a glance."""
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, asset, direction, timeframe, channel, execution_status, result, "
-        "profit_loss, payout, received_at, opened_at, closed_at, trade_amount, session_id FROM signals "
-        "ORDER BY id DESC LIMIT ?",
+        "SELECT s.id, s.asset, s.direction, s.timeframe, s.channel, s.execution_status, s.result, "
+        "s.profit_loss, s.payout, s.received_at, s.opened_at, s.closed_at, s.trade_amount, "
+        "s.session_id, s.fund_id, s.broker_account_id, f.name AS fund_name, ba.name AS broker_account_name "
+        "FROM signals s "
+        "LEFT JOIN funds f ON f.id = s.fund_id "
+        "LEFT JOIN broker_accounts ba ON ba.id = s.broker_account_id "
+        "ORDER BY s.id DESC LIMIT ?",
         (limit,),
     ).fetchall()
     conn.close()
@@ -1198,6 +1205,10 @@ def get_signal_detail(trade_id):
         detail["session"] = get_trading_session(detail["session_id"])
     else:
         detail["session"] = None
+    detail["fund"] = get_fund(detail["fund_id"]) if detail["fund_id"] is not None else None
+    detail["broker_account"] = (
+        get_broker_account(detail["broker_account_id"]) if detail["broker_account_id"] is not None else None
+    )
     return detail
 
 

@@ -377,11 +377,16 @@ flags that it's still needed.
       combined "All Funds" view when more than one session is active at
       once (ambiguous which one it would stop). Verified live: dismiss
       leaves the session active, accept correctly stops it
-- [ ] Remaining Mission Control/Trade Center/Logs completeness gaps:
-      per-Fund view still shows lifetime P/L instead of today's, no
-      clear loss-limit status line, no last-signal-vs-last-trade
-      distinction; Trade Center missing Fund/broker-account columns;
-      parser has no dedicated logger - not yet addressed
+- [x] **Trade Center now shows Fund/broker account columns** - the data
+      (`signals.fund_id`/`broker_account_id`) was always recorded but
+      never selected/rendered; `get_recent_signals`/`get_signal_detail`
+      now join in the names, `web/trades.html` shows them in the table
+      and the detail modal. Live-verified via Playwright: linked trade
+      shows "Test Fund"/"Test Broker Account", unlinked trade shows "-".
+- [ ] Remaining Mission Control/Logs completeness gaps: per-Fund view
+      still shows lifetime P/L instead of today's, no clear loss-limit
+      status line, no last-signal-vs-last-trade distinction; parser has
+      no dedicated logger - not yet addressed
 - [x] **`INSTALL.md` rewritten** - the entry-point doc `README.md`
       itself links to was stale in the same "pre-web-UI" way
       `USER_GUIDE.md` was before an earlier session's fix, but was never

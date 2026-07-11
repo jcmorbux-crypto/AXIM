@@ -1941,3 +1941,39 @@ independently verified by reading it directly - but the Rust code itself
 has not been build-verified. **Run `npm run tauri build` (or `cargo
 check` from `src-tauri/`) once on a machine with the Rust + MSVC
 toolchain installed before relying on this.**
+
+## AXIM Core: Trade Center gained the Fund/broker account columns the directive requires
+
+The AXIM Core directive explicitly lists Fund and broker account among
+Trade Center's required columns ("time, Fund, broker account, source,
+asset, direction, amount, expiry, result, P/L, Martingale step,
+screenshot, error details"), and `docs/AXIM_RELEASE_CHECKLIST.md` already
+had this flagged as a known open gap. Confirmed it was real, not just
+under-documented: `signals.fund_id` and `signals.broker_account_id` were
+already populated on every trade (`record_signal_received` has taken
+both since multi-Fund support was added), but `database.get_recent_signals`
+never selected them and `web/trades.html`'s table had no columns for
+them at all - the data existed and was simply never surfaced.
+
+Fixed in `core/database.py`: `get_recent_signals` now LEFT JOINs `funds`
+and `broker_accounts` to include `fund_name`/`broker_account_name`
+alongside the existing raw IDs (both `NULL`/`None` when a trade isn't
+assigned to either, which is valid - not every signal belongs to a
+session). `get_signal_detail` now also attaches the full `fund`/
+`broker_account` objects (via the existing `get_fund`/`get_broker_account`
+getters), mirroring how it already attaches `session`. `web/trades.html`
+gained Fund and Broker Account columns in the main table and two rows in
+the detail modal's Parsed Data section.
+
+Four new regression tests in `tests/test_trade_center_fund_broker_columns.py`
+cover both functions with and without a Fund/broker account assigned.
+Full suite: 616 passed (up from 612), 1 skipped. Live-verified via
+Playwright against an isolated bootstrap DB with one Fund+broker-account-
+linked closed trade and one unlinked trade: the table correctly showed
+"Test Fund" / "Test Broker Account" for the linked row and "-" for the
+unlinked row, and the detail modal showed the same. (The bootstrap script
+initially failed login with "incorrect email or password" - traced to
+double-hashing the password by calling `auth.hash_password()` before
+passing it to `database.create_user()`, which already hashes internally;
+fixed by passing the plain password directly, the same mistake worth
+remembering for future bootstrap scripts in this project.)
