@@ -1861,3 +1861,36 @@ P/L showing lifetime instead in the per-Fund view, a clearer loss-limit
 status line, last-signal-vs-last-trade distinction, Trade Center's
 missing Fund/broker-account columns, and Logs' lack of a dedicated
 parser-events logger.
+
+## AXIM Core: rewrote INSTALL.md (the entry-point doc README.md itself links to) - another stale pre-web-UI document
+
+A different kind of gap than the ones above: `USER_GUIDE.md` was already
+fixed in an earlier session ("it described AXIM as a bare CLI tool, with
+zero mention of the web app"), but `INSTALL.md` - the actual first thing
+`README.md` points a new reader to - was never touched at the same time.
+It still framed the entire client/server web UI as "(Optional) Control
+UI," led with manual `.env` editing (`WATCH_CHANNELS`, and dead
+`PO_EMAIL`/`PO_PASSWORD` vars this session already found and removed
+elsewhere) as the primary setup path, and told readers to run
+`python core/telegram_channels.py` for "a one-time interactive login" -
+confirmed via `api/telegram_admin.py`'s `send_code`/`verify_code` routes
+that this manual step is now fully superseded by the web UI's own
+Connect Telegram flow. Anyone following the old document today would
+set up AXIM the hard, superseded way and never discover Funds, Trading
+Sessions, Money Management, or the Setup Wizard existed at all.
+
+Rewrote it as the AXIM Core directive's own required deliverables in
+one place - setup guide, first-run checklist, demo validation procedure,
+live readiness checklist - rather than creating a separate, parallel
+document that would just be one more thing to keep in sync. Verified
+the new first-run checklist against the wizard's actual 8 steps read
+directly from `web/wizard.html` (caught and fixed one real mismatch in
+a first draft: step 6 combines Fund + first Trading Session creation
+into one step, not two separate ones as initially written) rather than
+describing it from memory. Cross-checked every other specific claim
+(Risk Engine template duplication, the two-gate Live-mode switch, the
+Live-confirmation modal's disclosures, Emergency Stop's any-logged-in-
+user access, both processes' Scheduled Task supervision) against the
+actual current code rather than assuming prior descriptions were still
+accurate - several of those claims are true specifically because of
+fixes made earlier in this same session.

@@ -382,6 +382,21 @@ flags that it's still needed.
       clear loss-limit status line, no last-signal-vs-last-trade
       distinction; Trade Center missing Fund/broker-account columns;
       parser has no dedicated logger - not yet addressed
+- [x] **`INSTALL.md` rewritten** - the entry-point doc `README.md`
+      itself links to was stale in the same "pre-web-UI" way
+      `USER_GUIDE.md` was before an earlier session's fix, but was never
+      caught at the same time: framed the whole client/server web UI as
+      "(Optional)", led with manual `.env` editing as the primary setup
+      path, and told readers to run a manual Telegram-login script
+      confirmed now fully superseded by the web UI's own Connect
+      Telegram flow. Rewritten to cover the AXIM Core directive's
+      required deliverables directly - setup guide, first-run checklist
+      (verified against the wizard's actual 8 steps in `web/wizard.html`,
+      not written from memory), demo validation procedure, live
+      readiness checklist - with every specific claim (Risk Engine
+      template duplication, the two-gate Live-mode switch, the Live-
+      confirmation modal, Emergency Stop's access, both processes'
+      Scheduled Task supervision) cross-checked against current code
 
 ## Known, accepted limitations at this release
 
