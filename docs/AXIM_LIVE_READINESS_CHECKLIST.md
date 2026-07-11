@@ -178,16 +178,21 @@ account watches actually have an edge net of payout.**
       The heartbeat-freshness guard worked correctly - no duplicate
       `telegram_listener.py` spawned (real listener's `generation`
       stayed `1`, `listener_pid` stayed `10524` throughout, confirmed via
-      `database.get_listener_heartbeat()` before/after). **Real, narrower
-      gap found**: the guard only covers the listener spawn, not the API
-      server spawn - a duplicate `uvicorn api.main:app` process did start
-      briefly. Immediately stopped, zero effect on the real server (a
-      second process binding the same port either fails or serves
-      redundantly - either way the real one, PID 7700/whichever is
-      actually fronting traffic, was never replaced). Low priority: this
-      machine is the server, not a remote-mode client, so a normal
-      laptop deployment (remote mode, spawns nothing locally) never hits
-      this path at all. Also found and removed one unrelated orphaned
+      `database.get_listener_heartbeat()` before/after). A fresh
+      `uvicorn api.main:app` did start on port 8090 - initially logged
+      here as a "narrower gap" in the API-spawn guard, but re-investigated
+      and corrected: `spawn_axim_processes`'s `is_port_open` check on
+      8090 (the real default, `API_BIND_HOST`/`API_BIND_PORT` are unset
+      in this machine's `.env`) is a real, working guard, not a gap -
+      nothing was actually listening on 8090 at the time (PID 7700, the
+      process assumed to be "the real server" in the original note, was
+      confirmed via `Get-NetTCPConnection` to be bound to port 8104, an
+      unrelated leftover scratch verification server from earlier in this
+      session, not a production API process). Spawning a fresh instance
+      on the genuinely-free port 8090 was the guard working exactly as
+      designed, not a collision - stopping it afterward was extra
+      caution applied to a non-issue. Also found and removed one
+      unrelated orphaned
       `telegram_listener.py` (PID 7472, parent process already exited,
       running since before this session-continuation started, never
       holding the real browser-profile lock per its own generation
