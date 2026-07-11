@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "config"))
 import database
 import backtest_engine
 import risk_engine
+import capital_strategies
 
 
 def _signal(ts, result, source_type="imported", signal_id=1, asset="EUR/USD OTC", direction="BUY", payout_percent=85):
@@ -222,6 +223,130 @@ class RiskEngineParityTests(unittest.TestCase):
         result = backtest_engine.simulate_strategy(pool, profile, 1000)
         # 3rd trade is placed AT step 2 (0-indexed steps advance after each loss)
         self.assertEqual(result["trades"][2]["trade_amount"], round(direct_step2, 2))
+
+
+class CapitalStrategiesSimulationTests(unittest.TestCase):
+    """AXIM Capital Strategies (tm) layers (Momentum/Cashflow/Sentinel/
+    Fortress/Empire) reused inside the backtest engine - same pure
+    functions live sizing calls, per core/backtest_engine.py's own
+    docstring commitment. A profile_snapshot missing these keys entirely
+    (pre-existing snapshots saved before this feature existed) must keep
+    working exactly as before - covered by every test above this class
+    still passing with the bare _fixed_profile() fixture."""
+
+    def _momentum_profile(self, max_steps=5, multiplier=1.5):
+        profile = _fixed_profile(fixed_amount=10)
+        profile["momentum"] = {
+            "enabled": True, "max_steps": max_steps, "multiplier": multiplier,
+            "custom_ladder_json": None, "profit_lock_percent": 0,
+        }
+        return profile
+
+    def test_momentum_steps_up_after_win(self):
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-01T10:05:00", "win")]
+        result = backtest_engine.simulate_strategy(pool, self._momentum_profile(), 1000)
+        self.assertEqual(result["trades"][0]["trade_amount"], 10)    # step 0
+        self.assertEqual(result["trades"][1]["trade_amount"], 15)    # step 1: 10 * 1.5^1
+
+    def test_momentum_resets_after_loss(self):
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-01T10:05:00", "loss"),
+                _signal("2026-01-01T10:10:00", "win")]
+        result = backtest_engine.simulate_strategy(pool, self._momentum_profile(), 1000)
+        self.assertEqual(result["trades"][2]["trade_amount"], 10)  # back to step 0 after the loss
+
+    def test_momentum_absent_from_profile_snapshot_is_a_pure_noop(self):
+        # A profile_snapshot saved before Momentum existed has no
+        # "momentum" key at all - must not KeyError, must behave exactly
+        # like Momentum disabled.
+        profile = _fixed_profile(fixed_amount=10)
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-01T10:05:00", "win")]
+        result = backtest_engine.simulate_strategy(pool, profile, 1000)
+        self.assertEqual(result["trades"][1]["trade_amount"], 10)
+
+    def _cashflow_profile(self, target_amount=15):
+        profile = _fixed_profile(fixed_amount=10)
+        profile["cashflow"] = {
+            "enabled": True, "target_amount": target_amount, "target_period": "session",
+            "partial_target_percent": 75, "partial_reduction_percent": 50,
+        }
+        return profile
+
+    def test_cashflow_target_stops_the_session(self):
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "win") for i in range(5)]  # 8.5 each
+        result = backtest_engine.simulate_strategy(pool, self._cashflow_profile(target_amount=15), 1000)
+        session = result["sessions"][0]
+        self.assertEqual(session["status"], "stopped_cashflow_target_reached")
+        self.assertLess(session["trades_count"], 5)
+
+    def _sentinel_profile(self, suspend_above_percent=20):
+        profile = _fixed_profile(fixed_amount=10)
+        profile["bankroll"] = 100
+        profile["drawdown_protection"] = {
+            "enabled": True, "bands_json": None, "suspend_above_percent": suspend_above_percent, "scope": "account",
+        }
+        return profile
+
+    def test_sentinel_suspends_after_deep_drawdown(self):
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "loss") for i in range(5)]
+        result = backtest_engine.simulate_strategy(pool, self._sentinel_profile(suspend_above_percent=15), 100)
+        session = result["sessions"][0]
+        self.assertEqual(session["status"], "stopped_sentinel_suspended")
+        self.assertLess(session["trades_count"], 5)
+
+    def _fortress_profile(self, fixed_amount=20, protection_threshold=15):
+        profile = _fixed_profile(fixed_amount=fixed_amount)
+        profile["fortress"] = {"enabled": True, "protection_threshold": protection_threshold, "protected_principal": 0}
+        return profile
+
+    def test_fortress_caps_stake_at_available_capital_once_protected(self):
+        # $20/trade, 85% payout. Trade 0: $17 profit -> realized_pnl=17,
+        # already over the $15 threshold, but the CHECK happens before
+        # trade 0 opens (realized_pnl=0 then) so trade 0 is unaffected.
+        # Trade 1: protection triggers (17 >= 15) with protected_principal
+        # locked at starting_bankroll=1000; available = 1017-1000 = 17,
+        # capping the nominal $20 stake down to exactly $17 - a real,
+        # deterministic cap, not silently ignored (which is what happened
+        # before this wiring existed - Fortress was invisible to backtests).
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "win") for i in range(2)]
+        result = backtest_engine.simulate_strategy(pool, self._fortress_profile(), 1000)
+        trades = result["trades"]
+        self.assertEqual(len(trades), 2)
+        self.assertEqual(trades[0]["trade_amount"], 20)   # not yet protected
+        self.assertEqual(trades[1]["trade_amount"], 17)   # capped to available capital
+
+    def _empire_profile(self, num_levels=3, failure_behavior="reset_to_start"):
+        profile = _fixed_profile(fixed_amount=10)
+        profile["sizing_mode"] = "empire"
+        profile["empire"] = {
+            "enabled": True, "starting_amount": 10, "target_amount": 40, "num_levels": num_levels,
+            "levels_json": None, "failure_behavior": failure_behavior, "checkpoint_level": 0, "current_level": 0,
+        }
+        return profile
+
+    def test_empire_stake_follows_the_ladder_on_wins(self):
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-01T10:05:00", "win")]
+        result = backtest_engine.simulate_strategy(pool, self._empire_profile(), 1000)
+        ladder = capital_strategies.empire_generate_ladder(10, 40, 3)
+        self.assertEqual(result["trades"][0]["trade_amount"], ladder[0])
+        self.assertEqual(result["trades"][1]["trade_amount"], ladder[1])
+
+    def test_empire_challenge_complete_stops_the_session_not_a_crash(self):
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "win") for i in range(5)]
+        result = backtest_engine.simulate_strategy(pool, self._empire_profile(num_levels=2), 1000)
+        session = result["sessions"][0]
+        self.assertEqual(session["status"], "stopped_empire_challenge_complete")
+        self.assertLess(session["trades_count"], 5)
+
+    def test_empire_level_persists_across_sessions_not_session_scoped(self):
+        # Unlike Martingale/Momentum, Empire's current_level is
+        # profile-scoped in live AXIM (empire_settings, not
+        # trading_sessions) - a win in session 1 should carry the ladder
+        # level into session 2, not reset at the session boundary.
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-02T10:00:00", "win")]
+        result = backtest_engine.simulate_strategy(pool, self._empire_profile(num_levels=5), 1000, session_window="daily")
+        ladder = capital_strategies.empire_generate_ladder(10, 40, 5)
+        self.assertEqual(result["sessions"][0]["trades"][0]["trade_amount"], ladder[0])
+        self.assertEqual(result["sessions"][1]["trades"][0]["trade_amount"], ladder[1])
 
 
 class MetricsTests(unittest.TestCase):
@@ -516,6 +641,38 @@ class RunBacktestIntegrationTests(DbBackedTestCase):
         self.assertIsNotNone(metrics)
         self.assertIsNotNone(metrics["final_bankroll"])
         self.assertEqual(metrics["rank_overall"], 1)  # only strategy in the run
+
+    def test_apex_ascension_backtest_never_writes_real_tier_events(self):
+        # The bug this guards against: risk_engine._base_amount's
+        # apex_ascension branch calls database.record_tier_event as a
+        # live side effect. A backtest replays a PROFILE SNAPSHOT, not
+        # the live profile - it must never leave real rows in
+        # capital_tier_events just because a simulated tier was crossed.
+        for i in range(10):
+            sig_id = database.create_imported_signal(
+                "TestChannel", "EUR/USD OTC", "BUY", "1 Minute", f"2026-01-0{i+1}T10:00:00")
+            database.grade_imported_signal(sig_id, "win", payout_percent=85)
+
+        profile_id = database.create_risk_profile("Apex Test", sizing_mode="apex_ascension", fixed_amount=10)
+        database.update_apex_ascension_settings(
+            profile_id, enabled=1, starting_bankroll=100, starting_unit_value=10,
+            standard_units=5, first_reset_threshold=20, reset_increment=20,
+        )
+        run_id = database.create_backtest_run(
+            "Apex Purity Test", {"source": "imported"}, 100, default_payout_percent=85, session_window="all")
+        profile = database.get_risk_profile(profile_id)
+        database.create_backtest_strategy(run_id, profile_id, profile["name"], profile)
+
+        backtest_engine.run_backtest(run_id)
+
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "completed")
+        # 10 wins at 85% payout on a low first_reset_threshold guarantees
+        # at least one simulated tier crossing occurred during the run -
+        # this test is only meaningful if that's actually true.
+        report = database.get_backtest_report(run_id)
+        self.assertEqual(report["strategies"][0]["metrics"]["win_rate"], 1.0)
+        self.assertEqual(database.list_tier_events(profile_id), [])
 
     def test_run_fails_cleanly_with_no_matching_signals(self):
         run_id = database.create_backtest_run("Empty Run", {"source": "imported"}, 1000)

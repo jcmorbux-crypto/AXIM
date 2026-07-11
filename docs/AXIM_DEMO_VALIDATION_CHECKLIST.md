@@ -13,7 +13,7 @@ python -m unittest discover -s tests -p "test_*.py"
 ```
 
 **Pass:** all tests pass (one is intentionally skipped depending on
-`COOLDOWN_AFTER_LOSS_SECONDS`). As of this session: 634 tests, OK
+`COOLDOWN_AFTER_LOSS_SECONDS`). As of this session: 644 tests, OK
 (1 skipped). No browser involved in this step.
 
 ## 2. `ACCOUNT=DEMO` and `ARMED=false` at rest

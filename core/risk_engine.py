@@ -72,8 +72,15 @@ def _effective_risk_percent(base_percent, compounding, current_pnl, bankroll):
     return effective
 
 
-def _base_amount(profile, session):
-    """Sizing before Martingale stepping - fixed/percent/dynamic/Kelly."""
+def _base_amount(profile, session, record_events=True):
+    """Sizing before Martingale stepping - fixed/percent/dynamic/Kelly.
+
+    record_events=False (used by core/backtest_engine.py) suppresses the
+    apex_ascension tier-crossing DB write below - a backtest replays a
+    signal pool through a PROFILE SNAPSHOT, not the live profile, and
+    must never leave real rows in capital_tier_events. Every other
+    caller (core/trade_coordinator.py's live path, indirectly) leaves
+    this True, so live behavior is completely unchanged."""
     mode = profile["sizing_mode"]
     bankroll = profile["bankroll"]
     current_pnl = session["realized_pnl"]
@@ -106,7 +113,7 @@ def _base_amount(profile, session):
             return profile["fixed_amount"]
         current_bankroll = bankroll + current_pnl
         amount, effective_tier = capital_strategies.apex_ascension_deployment(apex, current_bankroll)
-        if effective_tier["tier_index"] > apex["highest_tier_reached"]:
+        if record_events and effective_tier["tier_index"] > apex["highest_tier_reached"]:
             database.record_tier_event(
                 profile["id"], "apex_ascension", effective_tier["tier_index"],
                 effective_tier["unit_value"], current_bankroll, fund_id=session.get("fund_id"),

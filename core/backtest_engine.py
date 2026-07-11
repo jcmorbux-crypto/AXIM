@@ -2,14 +2,25 @@
 pool of historical, already-resolved signals through one or more Risk
 Engine profiles to see how each would have performed.
 
-Deliberately reuses core/risk_engine.py's PURE sizing/martingale/vault
-functions (_base_amount, _apply_martingale, milestone_vault_skim,
-every_winning_session_vault_skim) rather than re-implementing the same
-math a second time - a backtest whose sizing logic silently drifts from
-what AXIM actually does live would be worse than useless. Only the
-parts that are genuinely different between live trading and a backtest
-(no live DB session row, a whole pool of signals instead of one at a
-time, cross-session bankroll bookkeeping) live here.
+Deliberately reuses core/risk_engine.py's and core/capital_strategies.py's
+PURE sizing/martingale/vault/Capital-Strategies functions (_base_amount,
+_apply_martingale, milestone_vault_skim, every_winning_session_vault_skim,
+momentum_deployment, cashflow_adjusted_amount, sentinel_adjusted_amount,
+fortress_adjusted_amount, empire_advance, per_trade_vault_skim) rather
+than re-implementing the same math a second time - a backtest whose
+sizing logic silently drifts from what AXIM actually does live would be
+worse than useless. Every AXIM Capital Strategies (tm) layer a profile
+can have enabled (Momentum/Cashflow/Sentinel/Fortress/Empire, on top of
+sizing_mode='apex_ascension') is now applied here exactly as
+compute_position_size/on_trade_closed apply it live - a profile with
+these features enabled backtests as it would actually trade, not as if
+they silently didn't exist. `_base_amount` is called with
+record_events=False here specifically, so a simulated apex_ascension
+tier crossing never writes a real capital_tier_events row (a backtest
+replays a profile SNAPSHOT, not the live profile). Only the parts that
+are genuinely different between live trading and a backtest (no live DB
+session row, a whole pool of signals instead of one at a time,
+cross-session bankroll bookkeeping) live here.
 
 Honesty notes:
 - Trading balance is carried forward realistically across simulated
@@ -43,6 +54,7 @@ from collections import defaultdict
 
 import database
 import risk_engine
+import capital_strategies
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
@@ -215,12 +227,34 @@ def _group_signals_into_sessions(signal_pool, session_window):
     return [groups[key] for key in sorted(groups.keys())]
 
 
+_DISABLED = {"enabled": False}
+
+
 def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_window="daily",
                        default_payout_percent=85, profit_target=0, loss_limit=0, max_trades=0):
-    """Pure - no DB I/O, fully unit-testable. Returns
-    {"sessions": [...], "trades": [...]} where each dict matches the
-    shape database.create_backtest_session/create_backtest_trade expect
-    (minus the ids assigned on insert).
+    """Pure - no DB I/O, fully unit-testable (record_events=False on every
+    risk_engine._base_amount call below keeps it that way even for
+    apex_ascension, which would otherwise write a live capital_tier_events
+    row). Returns {"sessions": [...], "trades": [...]} where each dict
+    matches the shape database.create_backtest_session/create_backtest_trade
+    expect (minus the ids assigned on insert).
+
+    Applies every AXIM Capital Strategies (tm) layer compute_position_size/
+    on_trade_closed apply live (Momentum, Cashflow, Sentinel, Fortress,
+    Empire), reusing the exact same pure functions - a profile with these
+    features enabled now backtests the same way it would actually trade,
+    not silently as if they didn't exist. `.get(..., _DISABLED)` throughout
+    means a profile_snapshot saved before these features existed (missing
+    the new sub-config keys entirely) still simulates exactly as before -
+    treated as not-enabled, the same default every new sub-table itself
+    uses.
+
+    Empire's current_level and Fortress's protected_principal are
+    PROFILE-scoped state (they persist across sessions in live AXIM, tied
+    to the risk_profile, not the trading_session) - tracked here outside
+    the per-session loop for the same reason. Momentum's step is
+    SESSION-scoped (trading_sessions.current_momentum_step), same as
+    Martingale's, so it resets at the top of every simulated session.
 
     profit_target/loss_limit/max_trades are the SESSION-level stop
     conditions - same semantics as core/session_manager.check_session_limits
@@ -229,6 +263,8 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
 
     cumulative_realized_pnl = 0.0
     cumulative_vaulted = 0.0
+    empire_current_level = profile_snapshot.get("empire", _DISABLED).get("current_level", 0)
+    fortress_protected_principal = profile_snapshot.get("fortress", _DISABLED).get("protected_principal", 0)
     sessions = []
     trades = []
 
@@ -236,8 +272,16 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
         trading_balance = max(0.0, starting_bankroll + cumulative_realized_pnl - cumulative_vaulted)
         profile = dict(profile_snapshot)
         profile["bankroll"] = trading_balance
+        empire = {**profile.get("empire", _DISABLED), "current_level": empire_current_level}
+        fortress = {**profile.get("fortress", _DISABLED), "protected_principal": fortress_protected_principal}
+        profile["empire"] = empire
+        profile["fortress"] = fortress
+        momentum = profile.get("momentum", _DISABLED)
+        cashflow = profile.get("cashflow", _DISABLED)
+        sentinel = profile.get("drawdown_protection", _DISABLED)
+        vault = profile.get("profit_vault", _DISABLED)
 
-        session_state = {"realized_pnl": 0.0, "current_martingale_step": 0}
+        session_state = {"realized_pnl": 0.0, "current_martingale_step": 0, "current_momentum_step": 0}
         session_vaulted = 0.0
         session_trades = []
         status = "completed"
@@ -245,15 +289,56 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
         ended_at = started_at
 
         for seq, signal in enumerate(signals_in_session):
-            amount = risk_engine._base_amount(profile, session_state)
+            try:
+                amount = risk_engine._base_amount(profile, session_state, record_events=False)
+            except risk_engine.EmpireChallengeOver as e:
+                status = f"stopped_{e.rule}"
+                break
             amount = risk_engine._apply_martingale(amount, profile["martingale"], session_state["current_martingale_step"])
+
+            if momentum["enabled"]:
+                amount = capital_strategies.momentum_deployment(amount, momentum, session_state["current_momentum_step"])
+
+            stop_status = None
+            if cashflow["enabled"]:
+                amount, target_reached = capital_strategies.cashflow_adjusted_amount(
+                    cashflow, amount, session_state["realized_pnl"],
+                )
+                if target_reached:
+                    stop_status = "stopped_cashflow_target_reached"
+
+            if stop_status is None and sentinel["enabled"] and profile["bankroll"] > 0:
+                realized = session_state["realized_pnl"]
+                drawdown_percent = max(0, -realized / profile["bankroll"] * 100) if realized < 0 else 0
+                amount, sentinel_status = capital_strategies.sentinel_adjusted_amount(
+                    sentinel, amount, drawdown_percent, profile["fixed_amount"],
+                )
+                if sentinel_status == "suspended":
+                    stop_status = "stopped_sentinel_suspended"
+
+            if fortress["enabled"]:
+                current_bankroll = profile["bankroll"] + session_state["realized_pnl"]
+                amount, new_protected, should_stop = capital_strategies.fortress_adjusted_amount(
+                    fortress, amount, current_bankroll, profile["bankroll"],
+                )
+                if new_protected != fortress_protected_principal:
+                    fortress_protected_principal = new_protected
+                    fortress["protected_principal"] = new_protected
+                if stop_status is None and should_stop:
+                    stop_status = "stopped_fortress_principal_protected"
+
+            if stop_status:
+                status = stop_status
+                break
+
             if profile.get("max_trade_amount", 0) > 0:
                 amount = min(amount, profile["max_trade_amount"])
             amount = round(max(amount, 0), 2)
 
             result = signal["result"]
+            won = result == "win"
             payout_percent = signal.get("payout_percent") or default_payout_percent
-            if result == "win":
+            if won:
                 profit_loss = round(amount * (payout_percent / 100.0), 2)
             elif result == "loss":
                 profit_loss = -amount
@@ -263,14 +348,35 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
             session_state["realized_pnl"] += profit_loss
             ended_at = signal["timestamp"]
 
+            # Martingale/Momentum step advancement and Empire's ladder
+            # both key off `won` (result == "win"), exactly matching
+            # core/risk_engine.py's on_trade_closed - a draw behaves like
+            # a loss for stepping purposes (not won), same as live.
             martingale = profile["martingale"]
             if martingale["enabled"]:
-                if result == "win" and martingale["reset_after_win"]:
+                if won and martingale["reset_after_win"]:
                     session_state["current_martingale_step"] = 0
-                elif result == "loss":
+                elif not won:
                     session_state["current_martingale_step"] += 1
 
-            skim = risk_engine.milestone_vault_skim(profile["profit_vault"], session_state["realized_pnl"], session_vaulted)
+            if momentum["enabled"]:
+                if won:
+                    session_state["current_momentum_step"] += 1
+                else:
+                    session_state["current_momentum_step"] = 0
+
+            if empire["enabled"] and empire["current_level"] >= 0:
+                new_level = capital_strategies.empire_advance(empire, won)
+                if new_level != empire["current_level"]:
+                    empire["current_level"] = new_level
+                    empire_current_level = new_level
+
+            per_trade_skim = capital_strategies.per_trade_vault_skim(vault, profit_loss)
+            if per_trade_skim > 0:
+                session_vaulted += per_trade_skim
+                cumulative_vaulted += per_trade_skim
+
+            skim = risk_engine.milestone_vault_skim(vault, session_state["realized_pnl"], session_vaulted)
             if skim > 0:
                 session_vaulted += skim
                 cumulative_vaulted += skim
@@ -294,7 +400,7 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
                 status = "stopped_max_trades"
                 break
 
-        end_skim = risk_engine.every_winning_session_vault_skim(profile["profit_vault"], session_state["realized_pnl"])
+        end_skim = risk_engine.every_winning_session_vault_skim(vault, session_state["realized_pnl"])
         if end_skim > 0:
             session_vaulted += end_skim
             cumulative_vaulted += end_skim

@@ -155,12 +155,13 @@ account watches actually have an edge net of payout.**
 
 ## Functional / operational (carried forward from the 07-05 checklist, re-verified)
 
-- [x] Full automated regression suite passes: **634 tests, OK
+- [x] Full automated regression suite passes: **644 tests, OK
       (1 skipped)**, re-run this session (`python -m pytest tests/ -q`) -
       up from 420 at the last checklist, reflecting the multi-Fund/auth/
       Strategy Lab/billing work, the heartbeat-balance and
       `tests/test_pocket_dom.py` DOM-parsing tests, and (later in this
-      session) the full AXIM Capital Strategies (tm) addition. Narrows,
+      session) the full AXIM Capital Strategies (tm) addition plus wiring
+      it into the existing historical Backtest Engine. Narrows,
       but does not close, the "no automated coverage for the DOM
       interaction layer" gap from the 07-05 review: the actual
       browser-touching selectors/clicks still have no automated coverage

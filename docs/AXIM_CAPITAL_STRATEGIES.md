@@ -139,14 +139,49 @@ they can be built honestly, not just more engineering time:
   - a real simplification, not a bug.
 - The demo simulator (`capital_strategies.simulate_strategy`) runs one
   seedable deterministic path, not a probability distribution - genuine
-  Monte Carlo / historical backtesting is Phase 3's Strategy Lab
-  integration, and the UI says so directly under every result.
+  Monte Carlo is still Phase 3's Strategy Lab work (see below). Historical
+  backtesting is a separate, already-existing feature
+  (`core/backtest_engine.py`, predates this session) and is current -
+  see "Backtest Engine now Capital-Strategies-aware" below.
+
+## Backtest Engine now Capital-Strategies-aware (found and fixed this session)
+
+`core/backtest_engine.py` (AXIM's existing historical-signal-replay
+Strategy Lab, unrelated in origin to this session's Capital Strategies
+work) reuses `risk_engine._base_amount`/`_apply_martingale` directly, but
+before this fix its `simulate_strategy` loop never applied Momentum,
+Cashflow, Sentinel, Fortress, or Empire's ladder advancement at all -
+running a backtest on a profile with any of these enabled would silently
+ignore them, understating real risk/behavior rather than erroring. Worse,
+`_base_amount`'s `apex_ascension` branch calls `database.record_tier_event`
+as a live side effect - every backtested tier crossing was writing a real
+row into `capital_tier_events`, polluting that profile's actual audit
+trail with simulated data. Both fixed:
+- `_base_amount` gained a `record_events=False` parameter (default `True`,
+  so live behavior is unchanged) - `core/backtest_engine.py` passes
+  `False`, so a backtest never writes real DB rows regardless of what a
+  simulated apex_ascension tier crossing does.
+- `simulate_strategy`'s loop now applies every layer
+  `compute_position_size`/`on_trade_closed` apply live, reusing the same
+  pure functions, with Empire's ladder level and Fortress's protected
+  principal correctly tracked as PROFILE-scoped state (persists across
+  simulated sessions, matching how `empire_settings`/`fortress_settings`
+  work live) rather than incorrectly reset every session like Martingale/
+  Momentum's session-scoped steps are. A `profile_snapshot` saved before
+  these features existed (missing the new sub-config keys) still
+  simulates exactly as before - treated as not-enabled, not a crash.
+- 10 new tests in `tests/test_backtest_engine.py`
+  (`CapitalStrategiesSimulationTests` + a DB-backed purity test in
+  `RunBacktestIntegrationTests`), including one that specifically asserts
+  zero rows land in `capital_tier_events` after a backtest that crosses
+  an Apex Ascension tier.
 
 ## Next up
 
 Remaining Phase 2: Leviathan, Blackwater, Sniper (blocked on the design/
 data-source gaps above, not effort). Phase 3: Oracle, Phoenix/Momentum/
-Fortress's full re-wiring into the quick simulator (needs the Strategy
-Lab's richer multi-mode-aware simulation, not this single-strategy
-helper), the Strategy Builder, Strategy Lab Monte Carlo/historical
-backtesting, sportsbook support.
+Fortress's full re-wiring into the quick single-strategy demo simulator
+(needs the Strategy Lab's richer multi-mode-aware simulation, not that
+single-strategy helper - historical replay through the real Backtest
+Engine already works for them today, see above), the Strategy Builder,
+Strategy Lab Monte Carlo simulation, sportsbook support.
