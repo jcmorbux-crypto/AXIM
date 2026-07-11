@@ -91,10 +91,26 @@ account watches actually have an edge net of payout.**
       other real thresholds from `.env.example` would reject a
       meaningfully different, smaller set of these signals, so this
       37% figure is not a preview of enforced-production performance.
-      **Before any live trial: re-run a watched observation window with
-      real, non-relaxed risk thresholds and read the resulting win rate
-      net of actual payout - that number, not this one, is what should
-      inform a go/no-go.**
+- [ ] **Fresh observation window started 2026-07-11 11:55 with real,
+      non-relaxed thresholds - in progress, not yet enough data to read.**
+      Switched live via `database.set_setting` (`ui_settings` takes effect
+      on the very next signal, no listener restart) rather than editing
+      `.env` and restarting the already-running listener: `minimum_payout`
+      0→90, `max_trades_per_hour` 1000→10, `max_consecutive_losses`
+      1000→3, `cooldown_after_loss_seconds` 0→60 - the exact
+      `.env.example` production defaults. Boundary point for reading
+      results honestly: `signals_total=499` in `logs/soak_test_log.csv`
+      at 11:45:54, immediately before the switch - only signals processed
+      **after** that count/timestamp reflect the real thresholds; the 499
+      before it are the old relaxed-era data above, not to be mixed in.
+      Real per-signal volume on this channel set has been slow (multiple
+      15-minute snapshots in a row with no new signals) - this needs
+      real wall-clock time to accumulate a meaningful sample, not
+      something to rush or fabricate. Check `logs/soak_test_log.csv`'s
+      `signals_total`/`wins`/`losses`/`rejected_total` columns against
+      this boundary for the current read; update this checklist item
+      with the resulting win rate once there's enough decided trades to
+      say something honest (a handful of trades isn't enough either way).
 
 ## Long-running soak test
 
