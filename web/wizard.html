@@ -68,6 +68,11 @@ const CONNECTION_BADGE = { connected: "on", connecting: "warn", disconnected: "o
 async function renderBrokerAccountStep() {
   const content = document.getElementById("step-content");
   const accounts = await fetchJSON("/api/broker-accounts");  // failures handled by renderStep's own try/catch, which always calls this
+  // Same stale-render guard as renderStepContent's other branches - this
+  // function is also called directly from createWizardBrokerAccount/
+  // connectWizardBrokerAccount as a same-step refresh, but the user can
+  // still navigate away (Continue/Back) while this fetch is in flight.
+  if (currentStep !== 2) return;
   if (accounts.length && wizardState.brokerAccountId === null) {
     // A fresh listener/telegram connect earlier in the wizard, or a
     // second run, may already have an account - default to it rather
@@ -163,8 +168,20 @@ async function renderStep() {
 }
 
 async function renderStepContent(content, nextBtn) {
+  // Snapshot which step this call is rendering FOR. Every branch below
+  // does an await (an API call) before its own content.innerHTML write -
+  // if the user clicks Continue again before that resolves, currentStep
+  // moves on and a SECOND renderStepContent call starts. Without this
+  // guard, whichever call's fetch resolves LAST wins and overwrites the
+  // DOM with its own (possibly now-stale) content, regardless of which
+  // step is actually current - confirmed reproducible by clicking through
+  // steps faster than each step's own fetch could resolve. Mirrors the
+  // same "currentStep !== N -> abandon" guard connectWizardBrokerAccount's
+  // poll loop already uses for the identical class of problem.
+  const stepAtStart = currentStep;
   if (currentStep === 0) {
     const status = await fetchJSON("/api/auth/bootstrap-status");
+    if (currentStep !== stepAtStart) return;
     if (!status.needs_bootstrap) {
       content.innerHTML = `<h2>Owner account</h2><div class="wizard-subtitle">Already created - continuing.</div>`;
       setTimeout(goNext, 400);
@@ -182,6 +199,7 @@ async function renderStepContent(content, nextBtn) {
 
   else if (currentStep === 1) {
     const status = await fetchJSON("/api/telegram/connection-status");
+    if (currentStep !== stepAtStart) return;
     if (status.authorized) {
       content.innerHTML = `
         <h2>Connect Telegram</h2>
@@ -203,6 +221,7 @@ async function renderStepContent(content, nextBtn) {
 
   else if (currentStep === 3) {
     const templates = (await fetchJSON("/api/risk-profiles")).filter(p => p.is_template);
+    if (currentStep !== stepAtStart) return;
     content.innerHTML = `
       <h2>Choose a starting Risk Profile</h2>
       <div class="wizard-subtitle">Controls trade sizing, Martingale, Compounding, and Profit Vault. You can change this anytime in Money Management Studio.</div>
@@ -221,6 +240,7 @@ async function renderStepContent(content, nextBtn) {
 
   else if (currentStep === 4) {
     const channels = await fetchJSON("/api/channels");
+    if (currentStep !== stepAtStart) return;
     content.innerHTML = `
       <h2>Select signal channels</h2>
       <div class="wizard-subtitle">Choose which Telegram channels AXIM should follow.</div>
@@ -253,6 +273,7 @@ async function renderStepContent(content, nextBtn) {
 
   else if (currentStep === 6) {
     const status = await fetchJSON("/api/pocket-option/status");
+    if (currentStep !== stepAtStart) return;
     if (status.account_mode !== "DEMO") {
       content.innerHTML = `<h2>Demo test</h2><div class="wizard-subtitle">Skipped - this account is in LIVE mode, so a test trade isn't offered here for safety.</div>`;
     } else {
