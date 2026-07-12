@@ -178,6 +178,33 @@ async def _balance_refresh_loop(broker_account_id, warmup):
             logger.warning("broker_account_manager: account_id=%s balance refresh failed: %s", broker_account_id, e)
 
 
+def adopt_existing_connection(broker_account_id, warmup, pool, coordinator):
+    """Registers an already-running warmup/pool/coordinator (built by
+    core/telegram_listener.py's own _startup(), which still eagerly
+    builds the legacy default connection against sessions/pocket_browser
+    for the heartbeat loop and the session_id=None fallback path - see
+    that module) as this broker account's context, instead of
+    _build_account_context launching a second BrowserWarmupService
+    against the same user_data_dir. Two contexts pointed at the same
+    persistent Chrome profile directory would collide on Playwright's
+    own singleton profile lock (confirmed real in this project's history
+    - see docs/AXIM_LIVE_READINESS_CHECKLIST.md's "second telegram_listener.py"
+    incident). Used exactly once at startup, for whichever broker account
+    (if any) has user_data_dir == the legacy default path - see
+    telegram_listener._startup().
+
+    Does not call recovery.run_recovery itself - the caller's own
+    _startup() already ran it once against this exact warmup/pool for
+    the legacy path; running it again here would reprocess the same
+    abandoned/in-flight trades a second time."""
+    database.update_broker_account(broker_account_id, connection_status="connected")
+    balance_task = asyncio.create_task(_balance_refresh_loop(broker_account_id, warmup))
+    _registry[broker_account_id] = {
+        "warmup": warmup, "pool": pool, "coordinator": coordinator, "balance_task": balance_task,
+    }
+    logger.info("broker_account_manager: account_id=%s adopted existing (legacy default) connection", broker_account_id)
+
+
 async def get_or_build_account_context(broker_account_id):
     """Returns the {"warmup", "pool", "coordinator"} entry for this
     account, building it (a real browser launch, ~10s+ - see

@@ -392,7 +392,10 @@ async def _test_trade_poll_loop():
                 elif coordinator is None:
                     database.fail_test_trade("listener not fully started yet")
                 else:
-                    result = await coordinator.handle_signal(dict(_TEST_TRADE_SIGNAL), source="manual-test-trade")
+                    result = await broker_account_manager.route_signal(
+                        dict(_TEST_TRADE_SIGNAL), coordinator, source="manual-test-trade",
+                        session_id=pending.get("session_id"),
+                    )
                     database.complete_test_trade(result)
         except Exception as e:
             logger.error("telegram_listener: test trade poll failed: %s", e)
@@ -419,6 +422,22 @@ async def _startup():
     coordinator = TradeCoordinator(worker_pool, warmup_service, asset_cache=warmup_service.asset_cache)
     print("AXIM: worker pool ready, running startup recovery...")
     await recovery.run_recovery(warmup_service)
+
+    # A broker account whose user_data_dir is this same legacy default
+    # profile (sessions/pocket_browser) is adopted onto the connection
+    # just built above, rather than broker_account_manager launching a
+    # second BrowserWarmupService against the same directory the first
+    # time a Fund-scoped session needs it - see adopt_existing_connection's
+    # own docstring for why that would collide. This is how the
+    # single-shared-connection legacy path and the Fund/broker-account
+    # architecture became the same physical browser session rather than
+    # two competing ones.
+    for account in database.list_broker_accounts():
+        if account["user_data_dir"] == "sessions/pocket_browser":
+            broker_account_manager.adopt_existing_connection(
+                account["id"], warmup_service, worker_pool, coordinator,
+            )
+
     session_manager.register(get_event_bus())
     event_stream.register(get_event_bus())
     asyncio.create_task(_heartbeat_loop())

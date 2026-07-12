@@ -579,19 +579,28 @@ def pocket_option_status(user=Depends(get_current_user)):
 
 
 @app.post("/api/broker/test-trade")
-def request_test_trade(user=Depends(require_admin)):
+def request_test_trade(session_id: Optional[int] = None, user=Depends(require_admin)):
     """Queues a real test trade for core/telegram_listener.py's own poll
     loop to execute through the SAME live coordinator/worker_pool - this
     API process never calls the trading engine directly. Hard-blocked
     here AND independently in the listener's poll loop if ACCOUNT isn't
-    DEMO (belt and suspenders on anything that can place a real trade)."""
+    DEMO (belt and suspenders on anything that can place a real trade).
+
+    session_id is optional - omitted (as web/broker.html's existing Test
+    Trade button always does today), it runs through the legacy default
+    coordinator exactly as before. Passed, it runs through that specific
+    session's Fund/broker account instead (core/broker_account_manager.py's
+    route_signal) - lets a Fund's own connection be test-fired without
+    waiting for real Telegram traffic."""
     if ACCOUNT.upper() != "DEMO":
         raise HTTPException(status_code=403, detail=f"refused: ACCOUNT is {ACCOUNT!r}, not DEMO")
+    if session_id is not None and database.get_trading_session(session_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
     try:
-        database.request_test_trade(user["email"])
+        database.request_test_trade(user["email"], session_id=session_id)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    logger.info("api: test trade requested by %s", user["email"])
+    logger.info("api: test trade requested by %s (session_id=%s)", user["email"], session_id)
     return database.get_pending_test_trade()
 
 

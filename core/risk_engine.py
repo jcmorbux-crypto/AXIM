@@ -205,7 +205,12 @@ def compute_position_size(session_id, static_default_amount):
     # base stake" role. Stacks with Martingale if an operator somehow
     # enables both at once (an unusual, not specially blocked
     # configuration) rather than silently favoring one.
-    momentum = profile["momentum"]
+    # `or {"enabled": 0}`: defense-in-depth alongside the row-backfill
+    # migration in core/database.py's initialize_database() - a profile
+    # somehow still missing this settings row is treated as this
+    # strategy simply being off, not a crash, matching every one of
+    # these being an opt-in, default-disabled layer.
+    momentum = profile["momentum"] or {"enabled": 0}
     if momentum["enabled"]:
         amount = capital_strategies.momentum_deployment(amount, momentum, session["current_momentum_step"])
 
@@ -369,7 +374,12 @@ def on_trade_closed(session_id, won, profit_loss):
     # Momentum (tm) - exact inverse of Martingale's step handling above:
     # advances on a WIN, always resets on a loss (no reset_after_win-style
     # toggle - see momentum_settings' own schema comment for why).
-    momentum = profile["momentum"]
+    # `or {"enabled": 0}`: defense-in-depth alongside the row-backfill
+    # migration in core/database.py's initialize_database() - a profile
+    # somehow still missing this settings row is treated as this
+    # strategy simply being off, not a crash, matching every one of
+    # these being an opt-in, default-disabled layer.
+    momentum = profile["momentum"] or {"enabled": 0}
     if momentum["enabled"]:
         if won:
             database.advance_momentum_step(session_id)

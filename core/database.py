@@ -610,6 +610,33 @@ def initialize_database():
     );
     """)
 
+    # Backfill: every risk_profile is supposed to own exactly one row in
+    # each of the 10 tables above (create_risk_profile inserts all 10
+    # together) - but any profile created before a given table existed
+    # (e.g. momentum_settings/cashflow_settings/strike_settings/
+    # fortress_settings/empire_settings all landed well after Phase 4's
+    # original martingale/compounding/vault trio) never got that row
+    # backfilled. core/risk_engine.py's compute_position_size assumes
+    # every profile["momentum"]/["cashflow"]/etc. is a dict, never None -
+    # a real crash ('NoneType' object is not subscriptable), confirmed in
+    # production the first time a pre-Capital-Strategies profile was ever
+    # actually used by a session with a real fund_id (every earlier real
+    # trade had session_id=None, bypassing this function entirely - see
+    # core/broker_account_manager.py's migration notes). Same "backfill
+    # what a live profile is missing" reasoning as the _NEW_COLUMNS-style
+    # ALTER TABLE migrations elsewhere in this function, just at the row
+    # level instead of the column level.
+    for settings_table in (
+        "martingale_settings", "compounding_settings", "profit_vault_settings",
+        "apex_ascension_settings", "drawdown_protection_settings", "cashflow_settings",
+        "strike_settings", "momentum_settings", "fortress_settings", "empire_settings",
+    ):
+        conn.execute(f"""
+            INSERT INTO {settings_table} (risk_profile_id)
+            SELECT id FROM risk_profiles
+            WHERE id NOT IN (SELECT risk_profile_id FROM {settings_table})
+        """)
+
     conn.execute("""
     CREATE TABLE IF NOT EXISTS ui_control_state (
         id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -698,10 +725,19 @@ def initialize_database():
         requested_by TEXT,
         requested_at TEXT,
         result_json TEXT,
-        completed_at TEXT
+        completed_at TEXT,
+        session_id INTEGER
     );
     """)
     conn.execute("INSERT OR IGNORE INTO pending_test_trade (id, status) VALUES (1, 'none')")
+    # Additive for installs from before session_id existed here - lets a
+    # Test Trade optionally be run through a specific active session (and
+    # therefore its Fund/broker account), instead of always the legacy
+    # default coordinator - see core/telegram_listener.py's
+    # _test_trade_poll_loop.
+    test_trade_columns = {row["name"] for row in conn.execute("PRAGMA table_info(pending_test_trade)")}
+    if "session_id" not in test_trade_columns:
+        conn.execute("ALTER TABLE pending_test_trade ADD COLUMN session_id INTEGER")
 
     # Live-mode trade confirmation gate (docs/AXIM_APP_PLAN.md) - when a
     # session has require_confirmation set AND its account_mode is LIVE,
@@ -3194,10 +3230,14 @@ def get_listener_heartbeat():
 
 
 @timed("database")
-def request_test_trade(requested_by):
+def request_test_trade(requested_by, session_id=None):
     """Raises ValueError if one is already pending - only one test trade
     in flight at a time, same single-worker-pool reasoning as trading
-    sessions."""
+    sessions. session_id is optional: None runs through the legacy
+    default coordinator (original behavior, unchanged); set, it runs
+    through that session's Fund/broker account via
+    broker_account_manager.route_signal - see
+    core/telegram_listener.py's _test_trade_poll_loop."""
     conn = get_connection()
     current = conn.execute("SELECT status FROM pending_test_trade WHERE id = 1").fetchone()
     if current and current["status"] == "pending":
@@ -3205,8 +3245,8 @@ def request_test_trade(requested_by):
         raise ValueError("a test trade is already pending")
     conn.execute(
         "UPDATE pending_test_trade SET status = 'pending', requested_by = ?, requested_at = ?, "
-        "result_json = NULL, completed_at = NULL WHERE id = 1",
-        (requested_by, datetime.now().isoformat()),
+        "result_json = NULL, completed_at = NULL, session_id = ? WHERE id = 1",
+        (requested_by, datetime.now().isoformat(), session_id),
     )
     conn.commit()
     conn.close()

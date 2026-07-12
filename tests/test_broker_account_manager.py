@@ -435,5 +435,71 @@ class BalanceRefreshLoopEvictionTests(unittest.TestCase):
         warmup.stop.assert_awaited_once()
 
 
+class AdoptExistingConnectionTests(unittest.TestCase):
+    """core/telegram_listener.py's _startup() always eagerly builds one
+    legacy warmup/pool/coordinator against sessions/pocket_browser (the
+    heartbeat loop and the session_id=None fallback path both depend on
+    this). adopt_existing_connection lets a broker account that shares
+    that exact profile directory reuse those already-built objects
+    instead of get_or_build_account_context launching a second
+    BrowserWarmupService against the same locked profile - confirmed
+    real in production (docs/AXIM_LIVE_READINESS_CHECKLIST.md's "second
+    telegram_listener.py" incident)."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+        self._original_interval = broker_account_manager.BALANCE_REFRESH_INTERVAL_SECONDS
+        broker_account_manager.BALANCE_REFRESH_INTERVAL_SECONDS = 3600  # never fires during the test
+
+    def tearDown(self):
+        broker_account_manager.BALANCE_REFRESH_INTERVAL_SECONDS = self._original_interval
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+
+    def test_registers_the_exact_objects_passed_in_without_building_anything_new(self):
+        account_id = database.create_broker_account("Legacy-adopted", mode="demo")
+        warmup, pool, coordinator = AsyncMock(), AsyncMock(), FakeCoordinator()
+
+        async def _scenario():
+            broker_account_manager.adopt_existing_connection(account_id, warmup, pool, coordinator)
+            await asyncio.sleep(0)  # let the balance-refresh task get scheduled
+            entry = broker_account_manager._registry[account_id]
+            self.assertIs(entry["warmup"], warmup)
+            self.assertIs(entry["pool"], pool)
+            self.assertIs(entry["coordinator"], coordinator)
+            entry["balance_task"].cancel()
+
+        _run(_scenario())
+        self.assertEqual(database.get_broker_account(account_id)["connection_status"], "connected")
+        warmup.start.assert_not_called()  # adopted, not (re)built
+
+    def test_resolve_coordinator_for_session_then_returns_the_adopted_coordinator_directly(self):
+        fund_id = database.create_fund("F1", starting_balance=100)
+        account_id = database.create_broker_account("Legacy-adopted", mode="demo")
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+        warmup, pool, coordinator = AsyncMock(), AsyncMock(), FakeCoordinator()
+
+        async def _scenario():
+            broker_account_manager.adopt_existing_connection(account_id, warmup, pool, coordinator)
+            resolved_coordinator, resolved_fund_id, resolved_account_id = (
+                await broker_account_manager.resolve_coordinator_for_session(session_id)
+            )
+            self.assertIs(resolved_coordinator, coordinator)
+            self.assertEqual(resolved_fund_id, fund_id)
+            self.assertEqual(resolved_account_id, account_id)
+            broker_account_manager._registry[account_id]["balance_task"].cancel()
+
+        _run(_scenario())
+        warmup.start.assert_not_called()  # never built a second context
+
+
 if __name__ == "__main__":
     unittest.main()

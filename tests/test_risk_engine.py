@@ -150,6 +150,58 @@ class ComputePositionSizeTests(unittest.TestCase):
         self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 20.0)  # back to base 2%
 
 
+class MissingSettingsRowBackfillTests(unittest.TestCase):
+    """A real production crash: risk_profile_id=29 predated the
+    momentum_settings table (added well after the original martingale/
+    compounding/vault trio), so get_risk_profile's momentum key came
+    back None and compute_position_size's `momentum["enabled"]` raised
+    TypeError - never caught before because every real trade until this
+    project's first Fund-routed session had session_id=None, bypassing
+    this function via its own early-return. initialize_database()'s
+    backfill migration (core/database.py) is the real fix - simulates
+    the "old profile, table added later" scenario directly by deleting
+    a settings row after creation, then re-running the migration."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.session_id = database.start_trading_session("Test", [1], "DEMO")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_profile_missing_a_settings_row_does_not_crash_after_migration_reruns(self):
+        profile_id = database.create_risk_profile("Old Profile", sizing_mode="fixed", fixed_amount=3.0)
+        database.set_session_risk_profile(self.session_id, profile_id)
+
+        conn = database.get_connection()
+        conn.execute("DELETE FROM momentum_settings WHERE risk_profile_id = ?", (profile_id,))
+        conn.commit()
+        conn.close()
+        self.assertIsNone(database.get_risk_profile(profile_id)["momentum"])
+
+        database.initialize_database()  # the backfill migration, re-run (as it is on every real startup)
+
+        self.assertIsNotNone(database.get_risk_profile(profile_id)["momentum"])
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 3.0)
+
+    def test_profile_missing_a_settings_row_does_not_crash_even_without_the_migration(self):
+        # Belt-and-suspenders check on risk_engine.py's own `or {"enabled": 0}`
+        # guards, independent of whether the migration has run yet.
+        profile_id = database.create_risk_profile("Old Profile", sizing_mode="fixed", fixed_amount=3.0)
+        database.set_session_risk_profile(self.session_id, profile_id)
+
+        conn = database.get_connection()
+        conn.execute("DELETE FROM momentum_settings WHERE risk_profile_id = ?", (profile_id,))
+        conn.commit()
+        conn.close()
+
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 3.0)
+
+
 class FundAwareBankrollTests(unittest.TestCase):
     """Fixes docs/AXIM_LIVE_READINESS_CHECKLIST.md's 'risk-profile bankroll
     does not auto-update from real P&L' gap - WITHOUT mutating the shared
