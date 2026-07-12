@@ -1,4 +1,4 @@
-# AXIM TradeStation User Guide
+# AXIM Trader User Guide
 
 > **See `docs/AXIM_SETUP_GUIDE.md` for current first-run setup** (the
 > guided Setup Wizard, in-app Telegram/Pocket Option linking, multi-Fund

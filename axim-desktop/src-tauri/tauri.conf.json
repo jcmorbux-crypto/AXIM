@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "AXIM TradeStation",
+  "productName": "AXIM Trader",
   "version": "0.1.0",
   "identifier": "com.axim.desktop",
   "build": {
@@ -10,7 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "AXIM TradeStation",
+        "title": "AXIM Trader",
         "url": "index.html",
         "width": 1360,
         "height": 900,

@@ -8,8 +8,8 @@
 All three in `dist/`:
 
 - `AXIM-Core-Server-v1.0.0-20260711-142743.zip` — the server, for the machine that runs the Telegram listener and Pocket Option browser session.
-- `AXIM TradeStation_0.1.0_x64-setup.exe` — the Remote Client installer (NSIS), for a second device (laptop) to control the server over Tailscale.
-- `AXIM TradeStation_0.1.0_x64_en-US.msi` — the same Remote Client, MSI format, for environments that prefer/require MSI.
+- `AXIM Trader_0.1.0_x64-setup.exe` — the Remote Client installer (NSIS), for a second device (laptop) to control the server over Tailscale.
+- `AXIM Trader_0.1.0_x64_en-US.msi` — the same Remote Client, MSI format, for environments that prefer/require MSI.
 
 Both freshly built from current source and smoke-tested this cycle (see "Test summary").
 
@@ -31,7 +31,7 @@ Both freshly built from current source and smoke-tested this cycle (see "Test su
 - Listener process supervision: a real incident this cycle (the soak-test listener died with no supervisor watching it) led to fixing and *directly verifying* the Scheduled-Task auto-restart path, not just assuming it works.
 - Cross-Fund rule isolation: found and fixed a real gap where the Automation Studio's rule editor could leave a rule's `session_id` pointing at a different Fund's session than its own `fund_id` — Stop Session/Emergency Stop/resize-risk/vault-move actions now correctly refuse to act on a mismatched Fund's session (fixed both at the API validation layer and with an independent re-check at evaluation time).
 
-**AXIM TradeStation (Remote Client):** local mode (spawns the server processes itself) and remote mode (connects to a server elsewhere over Tailscale, spawns nothing locally). This cycle added a reachability probe before navigating — a bad/unreachable remote address now shows a recoverable in-app error instead of dropping into WebView2's native browser error page. Verified end-to-end in a real browser against the actual served files, plus a direct run of the rebuilt installer binary.
+**AXIM Trader (Remote Client):** local mode (spawns the server processes itself) and remote mode (connects to a server elsewhere over Tailscale, spawns nothing locally). This cycle added a reachability probe before navigating — a bad/unreachable remote address now shows a recoverable in-app error instead of dropping into WebView2's native browser error page. Verified end-to-end in a real browser against the actual served files, plus a direct run of the rebuilt installer binary.
 
 ## Test summary
 
@@ -41,7 +41,7 @@ Beyond unit tests, every core workflow this cycle was **live-verified against re
 
 ## Known limitations (do not block RC1)
 
-- **AXIM TradeStation local mode** requires an existing AXIM project checkout with its own `venv/` on that machine — not a bundled, self-contained installer. Remote mode has no such requirement. Documented in `TROUBLESHOOTING.md`.
+- **AXIM Trader local mode** requires an existing AXIM project checkout with its own `venv/` on that machine — not a bundled, self-contained installer. Remote mode has no such requirement. Documented in `TROUBLESHOOTING.md`.
 - **Pocket Option login is manual.** No supported programmatic login exists; a human completes it once per broker account in a real browser window. This is a permanent characteristic of the broker, not a gap to close.
 - **`same_asset_only`/`same_source_only` Martingale fields** are stored and shown in the UI but not enforced — genuinely underspecified (would need a product decision on exact reset semantics), deliberately not guessed at.
 - **Billing/Stripe** is a complete scaffold with zero live calls until real API keys are supplied — intentional, not accidental.

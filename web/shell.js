@@ -88,7 +88,7 @@ const AximShell = (() => {
     const isAdmin = user.role === "owner" || user.role === "admin";
     const items = NAV_ITEMS.filter(i => !i.adminOnly || isAdmin);
     root.innerHTML = `
-      <div class="sidebar-logo"><span class="mark">${LOGO_MARK}</span> <span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">TradeStation</span></span></div>
+      <div class="sidebar-logo"><span class="mark">${LOGO_MARK}</span> <span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">Trader</span></span></div>
       <div class="nav-group">
         ${items.map(i => `
           <a class="nav-item ${i.key === activeKey ? "active" : ""}" href="${i.href}">

@@ -1,4 +1,4 @@
-# AXIM TradeStation
+# AXIM Trader
 
 AXIM watches a Telegram channel for binary-options trading signals, parses
 them, runs them through a risk-rule pipeline, and (only when explicitly
@@ -48,7 +48,7 @@ or something needs debugging, not just the pass/fail summary.
 |---|---|
 | `USER_GUIDE.md` | Day-to-day operation (older, single-connection-era detail - `docs/AXIM_SETUP_GUIDE.md` reflects the current flow more accurately) |
 | `DEPLOYMENT.md` | Running unattended: process supervision, backups, monitoring, resource sizing |
-| `docs/AXIM_REMOTE_ACCESS.md` | Connecting a second device (AXIM TradeStation) over Tailscale |
+| `docs/AXIM_REMOTE_ACCESS.md` | Connecting a second device (AXIM Trader) over Tailscale |
 | `docs/AXIM_CAPITAL_STRATEGIES.md` | The Capital Strategies (tm) catalog - Investment Houses, what's real vs. catalog-only |
 | `docs/AXIM_ROADMAP.md` | Development history - what was built, when, and why |
 

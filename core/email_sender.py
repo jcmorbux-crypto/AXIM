@@ -44,11 +44,11 @@ def send_password_reset_email(to_email, reset_url):
         return {"configured": False, "sent": False}
 
     message = EmailMessage()
-    message["Subject"] = "Reset your AXIM TradeStation password"
+    message["Subject"] = "Reset your AXIM Trader password"
     message["From"] = SMTP_FROM_EMAIL
     message["To"] = to_email
     message.set_content(
-        "A password reset was requested for your AXIM TradeStation account.\n\n"
+        "A password reset was requested for your AXIM Trader account.\n\n"
         f"Reset your password: {reset_url}\n\n"
         "This link expires in 30 minutes. If you didn't request this, you can ignore this email."
     )

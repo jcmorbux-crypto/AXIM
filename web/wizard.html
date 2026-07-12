@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Setup - AXIM TradeStation</title>
+<title>Setup - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="/web/favicon.svg">
 <link rel="stylesheet" href="/web/theme.css">
@@ -27,7 +27,7 @@
 <body>
 
 <div class="wizard-shell">
-  <div class="wizard-logo"><span class="mark"><svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 50 12 L 84 46 L 50 80 L 16 46 Z M 66 30 L 82 46 L 66 62 L 50 46 Z"/></svg></span><span class="name">AXIM TradeStation Setup</span></div>
+  <div class="wizard-logo"><span class="mark"><svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 50 12 L 84 46 L 50 80 L 16 46 Z M 66 30 L 82 46 L 66 62 L 50 46 Z"/></svg></span><span class="name">AXIM Trader Setup</span></div>
   <div class="step-track" id="step-track"></div>
 
   <div class="wizard-card">
@@ -268,7 +268,7 @@ async function renderStepContent(content, nextBtn) {
 
   else if (currentStep === 7) {
     content.innerHTML = `
-      <h2>AXIM TradeStation is ready</h2>
+      <h2>AXIM Trader is ready</h2>
       <div class="wizard-subtitle">Setup complete. Head to Mission Control to see everything live.</div>
       ${wizardState.fundCreatedWithoutSession ? `
         <div class="banner warn">"${escapeHtml(wizardState.fundCreatedWithoutSession)}" was created, but couldn't start a session yet - connect a Pocket Option account and attach it from the Funds page, then start a session from Trading Sessions.</div>

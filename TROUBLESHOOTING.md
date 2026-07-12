@@ -48,9 +48,9 @@ automated login; a human must complete it once per broker account.
 means two listener processes are running against the same broker
 account's browser profile at once - almost always caused by starting
 the listener twice (e.g. once by hand, once via a Scheduled Task, or
-once via AXIM TradeStation's local mode while a listener was already
+once via AXIM Trader's local mode while a listener was already
 running elsewhere). Only one should ever run per install. Stop the
-extra one; AXIM TradeStation's local mode now checks for an
+extra one; AXIM Trader's local mode now checks for an
 already-fresh listener heartbeat before spawning a new one, but a
 manually-started terminal process isn't visible to that check.
 
@@ -84,7 +84,7 @@ at the right Fund/session, since some settings are per-profile.
 shutdown, or another AXIM instance) is already listening. Find and stop
 it, or change `API_BIND_PORT` in `.env` and use that port instead.
 
-## AXIM TradeStation (desktop / remote client)
+## AXIM Trader (desktop / remote client)
 
 **"Failed to start: could not reach ..." error on launch.** The
 configured server address is wrong, the AXIM Server isn't running, or

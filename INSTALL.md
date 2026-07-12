@@ -112,10 +112,10 @@ Both register genuine Windows Scheduled Tasks under your account with
 automatic restart-on-failure - read the script before running it, same
 as any system-level change. Full detail in `DEPLOYMENT.md`.
 
-## Adding a second device (AXIM TradeStation Remote Client)
+## Adding a second device (AXIM Trader Remote Client)
 
 To monitor/control AXIM from a laptop over a private Tailscale network
-(no public port, no public IP), install `AXIM TradeStation` on that
+(no public port, no public IP), install `AXIM Trader` on that
 second device and choose "Connect to a remote AXIM Server" on first
 launch. See `docs/AXIM_REMOTE_ACCESS.md` for the full Tailscale setup.
 

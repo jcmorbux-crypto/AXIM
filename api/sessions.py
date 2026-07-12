@@ -243,7 +243,7 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
 def pre_start_summary(fund_id: int, user=Depends(get_current_user)):
     """Everything Trading Sessions' "Start New Session" screen needs to
     show BEFORE the operator commits (docs/AXIM_APP_PLAN.md: "Before
-    starting a session, AXIM TradeStation must show: Fund name, Pocket
+    starting a session, AXIM Trader must show: Fund name, Pocket
     Option account, Demo/Live mode, Balance, ..."), in one call - avoids
     the UI re-deriving the same can_trade logic start_session itself
     enforces, which would risk the two drifting apart."""

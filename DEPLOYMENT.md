@@ -1,4 +1,4 @@
-# AXIM TradeStation Deployment Guide
+# AXIM Trader Deployment Guide
 
 This document covers running AXIM unattended / long-term, beyond the
 single-terminal usage covered in `USER_GUIDE.md`. Read

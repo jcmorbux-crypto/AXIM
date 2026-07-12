@@ -836,7 +836,7 @@ real state, not hardcoded.
 
 ## Known gaps / honest state as of Phase 1
 
-**Superseded by the AXIM TradeStation multi-fund/multi-broker-account
+**Superseded by the AXIM Trader multi-fund/multi-broker-account
 rebuild** (`broker_accounts`/`fund_broker_accounts` tables, Fund-scoped
 concurrent trading sessions, Fund-owned Rule Builder - see
 `docs/AXIM_SESSION_ARCHITECTURE.md`):

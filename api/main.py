@@ -106,7 +106,7 @@ logger = get_logger("axim.ui", filename="ui.log")
 database.initialize_database()
 database.seed_risk_profile_templates()
 
-app = FastAPI(title="AXIM TradeStation API")
+app = FastAPI(title="AXIM Trader API")
 
 # CORS (docs/AXIM_REMOTE_ACCESS.md) - empty ALLOWED_ORIGINS (the default)
 # means no cross-origin browser requests are permitted at all, matching

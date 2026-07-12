@@ -47,7 +47,7 @@ per the brief's "no gradients required for recognizability."
 
 ## Where it's used
 
-- AXIM TradeStation: app icon, installer icon (MSI/NSIS), window icon,
+- AXIM Trader: app icon, installer icon (MSI/NSIS), window icon,
   taskbar icon - generated via `axim-desktop/src-tauri/icons/`.
 - Web app: favicon, sidebar logo mark (replacing the old plain "A"
   lettermark), login/bootstrap/password-reset screen branding.
