@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "api"))
 
 import database
 import sessions
+from trade_lifecycle import TradeStatus
 
 
 class VaultTransferTests(unittest.TestCase):
@@ -69,6 +70,53 @@ class VaultTransferTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             sessions.vault_transfer(99999, sessions.VaultTransfer(amount=10))
         self.assertEqual(ctx.exception.status_code, 404)
+
+
+class WithProgressTests(unittest.TestCase):
+    """sessions._with_progress feeds the Trading Sessions UI's "remaining
+    to loss limit" display - it must match what core/session_manager.py's
+    check_session_limits will actually enforce on the next signal, or an
+    operator sees reassuring headroom that doesn't explain a rejection
+    they're about to hit."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_remaining_to_loss_limit_with_no_pending_exposure(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", loss_limit=20)
+        database.update_session_pnl(session_id, -5)
+        result = sessions._with_progress(database.get_trading_session(session_id))
+        self.assertEqual(result["remaining_to_loss_limit"], 15)
+
+    def test_remaining_to_loss_limit_nets_out_pending_stake(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", loss_limit=20)
+        database.update_session_pnl(session_id, -5)
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+        trade_id = database.record_signal_received(signal, session_id=session_id)
+        database.update_trade_status(trade_id, TradeStatus.TRADE_CLICKED, trade_amount=6)
+        result = sessions._with_progress(database.get_trading_session(session_id))
+        self.assertEqual(result["remaining_to_loss_limit"], 9)  # 20 - 5 - 6
+
+    def test_remaining_to_loss_limit_floors_at_zero_not_negative(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", loss_limit=20)
+        database.update_session_pnl(session_id, -5)
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+        trade_id = database.record_signal_received(signal, session_id=session_id)
+        database.update_trade_status(trade_id, TradeStatus.TRADE_CLICKED, trade_amount=100)
+        result = sessions._with_progress(database.get_trading_session(session_id))
+        self.assertEqual(result["remaining_to_loss_limit"], 0)
+
+    def test_remaining_to_loss_limit_none_when_disabled(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", loss_limit=0)
+        result = sessions._with_progress(database.get_trading_session(session_id))
+        self.assertIsNone(result["remaining_to_loss_limit"])
 
 
 if __name__ == "__main__":
