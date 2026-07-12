@@ -348,6 +348,77 @@ class CapitalStrategiesSimulationTests(unittest.TestCase):
         self.assertEqual(result["sessions"][0]["trades"][0]["trade_amount"], ladder[0])
         self.assertEqual(result["sessions"][1]["trades"][0]["trade_amount"], ladder[1])
 
+    def _strike_profile(self, max_consecutive_losses=0, max_session_duration_minutes=0):
+        profile = _fixed_profile(fixed_amount=10)
+        profile["strike"] = {
+            "enabled": True, "max_consecutive_losses": max_consecutive_losses,
+            "max_session_duration_minutes": max_session_duration_minutes,
+        }
+        return profile
+
+    def test_strike_absent_from_profile_snapshot_is_a_pure_noop(self):
+        # Pre-existing snapshots saved before Strike's backtest simulation
+        # was added have no "strike" key at all - must keep working
+        # exactly like the bare _fixed_profile() fixture, same as every
+        # other Capital Strategies layer.
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "loss") for i in range(10)]
+        result = backtest_engine.simulate_strategy(pool, _fixed_profile(fixed_amount=10), 1000)
+        self.assertEqual(result["sessions"][0]["status"], "completed")
+        self.assertEqual(result["sessions"][0]["trades_count"], 10)
+
+    def test_consecutive_losses_streak_stops_the_session(self):
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "loss") for i in range(5)]
+        result = backtest_engine.simulate_strategy(
+            pool, self._strike_profile(max_consecutive_losses=3), 1000,
+        )
+        session = result["sessions"][0]
+        self.assertEqual(session["status"], "stopped_strike_max_consecutive_losses")
+        self.assertEqual(session["trades_count"], 3)
+
+    def test_a_win_breaks_the_streak(self):
+        pool = [
+            _signal("2026-01-01T10:00:00", "loss"), _signal("2026-01-01T10:01:00", "loss"),
+            _signal("2026-01-01T10:02:00", "win"),
+            _signal("2026-01-01T10:03:00", "loss"), _signal("2026-01-01T10:04:00", "loss"),
+        ]
+        result = backtest_engine.simulate_strategy(
+            pool, self._strike_profile(max_consecutive_losses=3), 1000,
+        )
+        session = result["sessions"][0]
+        self.assertEqual(session["status"], "completed")
+        self.assertEqual(session["trades_count"], 5)
+
+    def test_a_draw_also_breaks_the_streak(self):
+        pool = [
+            _signal("2026-01-01T10:00:00", "loss"), _signal("2026-01-01T10:01:00", "loss"),
+            _signal("2026-01-01T10:02:00", "draw"),
+            _signal("2026-01-01T10:03:00", "loss"), _signal("2026-01-01T10:04:00", "loss"),
+        ]
+        result = backtest_engine.simulate_strategy(
+            pool, self._strike_profile(max_consecutive_losses=3), 1000,
+        )
+        self.assertEqual(result["sessions"][0]["status"], "completed")
+
+    def test_session_duration_cap_stops_the_session(self):
+        pool = [
+            _signal("2026-01-01T10:00:00", "win"),
+            _signal("2026-01-01T10:15:00", "win"),
+            _signal("2026-01-01T11:00:00", "win"),  # 60 minutes after the first
+        ]
+        result = backtest_engine.simulate_strategy(
+            pool, self._strike_profile(max_session_duration_minutes=30), 1000,
+        )
+        session = result["sessions"][0]
+        self.assertEqual(session["status"], "stopped_strike_max_duration")
+        self.assertEqual(session["trades_count"], 3)  # stops AFTER the trade that crosses the cap
+
+    def test_within_duration_cap_completes_normally(self):
+        pool = [_signal("2026-01-01T10:00:00", "win"), _signal("2026-01-01T10:05:00", "win")]
+        result = backtest_engine.simulate_strategy(
+            pool, self._strike_profile(max_session_duration_minutes=30), 1000,
+        )
+        self.assertEqual(result["sessions"][0]["status"], "completed")
+
 
 class MetricsTests(unittest.TestCase):
     def test_metrics_on_all_wins(self):

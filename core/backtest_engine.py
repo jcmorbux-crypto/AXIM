@@ -259,7 +259,12 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
 
     profit_target/loss_limit/max_trades are the SESSION-level stop
     conditions - same semantics as core/session_manager.check_session_limits
-    (0 = disabled), applied fresh to every simulated session."""
+    (0 = disabled), applied fresh to every simulated session. Strike's own
+    two genuinely distinct conditions (a consecutive-losses streak, a
+    session duration cap) are simulated the same way check_session_limits
+    enforces them live - its profit_target/max_session_loss/max_trades are
+    the same fields already covered above, so re-simulating them under
+    Strike's name would be inert."""
     session_groups = _group_signals_into_sessions(signal_pool, session_window)
 
     cumulative_realized_pnl = 0.0
@@ -281,8 +286,12 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
         cashflow = profile.get("cashflow", _DISABLED)
         sentinel = profile.get("drawdown_protection", _DISABLED)
         vault = profile.get("profit_vault", _DISABLED)
+        strike = profile.get("strike", _DISABLED)
 
-        session_state = {"realized_pnl": 0.0, "current_martingale_step": 0, "current_momentum_step": 0}
+        session_state = {
+            "realized_pnl": 0.0, "current_martingale_step": 0, "current_momentum_step": 0,
+            "consecutive_losses": 0,
+        }
         session_vaulted = 0.0
         session_trades = []
         status = "completed"
@@ -366,6 +375,14 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
                 else:
                     session_state["current_momentum_step"] = 0
 
+            # A draw breaks a loss streak the same as a win does, matching
+            # core/trade_statistics.py's consecutive_losses (breaks on the
+            # first non-"loss" result, not just on a win).
+            if result == "loss":
+                session_state["consecutive_losses"] += 1
+            else:
+                session_state["consecutive_losses"] = 0
+
             if empire["enabled"] and empire["current_level"] >= 0:
                 new_level = capital_strategies.empire_advance(empire, won)
                 if new_level != empire["current_level"]:
@@ -400,6 +417,26 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
             if max_trades > 0 and (seq + 1) >= max_trades:
                 status = "stopped_max_trades"
                 break
+
+            # Strike (tm)'s own profit_target/max_session_loss/max_trades
+            # are the same profile fields already checked above under
+            # different names, so re-checking them here would be inert -
+            # only its two genuinely distinct conditions (a consecutive-
+            # losses streak, a session duration cap) are simulated, same
+            # scope as core/session_manager.py's live wiring.
+            if strike["enabled"]:
+                strike_max_losses = strike.get("max_consecutive_losses", 0)
+                if strike_max_losses > 0 and session_state["consecutive_losses"] >= strike_max_losses:
+                    status = "stopped_strike_max_consecutive_losses"
+                    break
+                strike_max_minutes = strike.get("max_session_duration_minutes", 0)
+                if strike_max_minutes > 0:
+                    elapsed_minutes = (
+                        datetime.fromisoformat(signal["timestamp"]) - datetime.fromisoformat(started_at)
+                    ).total_seconds() / 60
+                    if elapsed_minutes >= strike_max_minutes:
+                        status = "stopped_strike_max_duration"
+                        break
 
         end_skim = risk_engine.every_winning_session_vault_skim(vault, session_state["realized_pnl"])
         if end_skim > 0:
