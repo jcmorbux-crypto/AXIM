@@ -32,15 +32,17 @@ class BrowserWarmupModeTests(unittest.TestCase):
         page.evaluate = AsyncMock(return_value=verification_class_present)
         return page
 
-    def _run_start_with_mocks(self, warmup, page, target_urls):
+    def _run_start_with_mocks(self, warmup, page, target_urls, call_kwargs=None):
         """Patches every Playwright-facing dependency of start() with a
         plain (non-async) side_effect that just records the URL and
         returns the mock page directly - using an async helper here
         would return an unawaited coroutine as the "page", since
         get_trading_page is itself detected as async and auto-wrapped
         as AsyncMock by patch()."""
-        def fake_get_trading_page(ctx, url):
+        def fake_get_trading_page(ctx, url, **kwargs):
             target_urls.append(url)
+            if call_kwargs is not None:
+                call_kwargs.append(kwargs)
             return page
 
         with patch("browser_warmup.PocketBrowserSession") as MockSession, \
@@ -52,16 +54,23 @@ class BrowserWarmupModeTests(unittest.TestCase):
 
     def test_default_mode_uses_demo_url_and_verifies_is_chart_demo(self):
         target_urls = []
+        call_kwargs = []
         page = self._mock_page(verification_class_present=True)
         warmup = BrowserWarmupService()
         warmup.asset_cache.build_cache = AsyncMock()
 
-        self._run_start_with_mocks(warmup, page, target_urls)
+        self._run_start_with_mocks(warmup, page, target_urls, call_kwargs)
 
         self.assertEqual(target_urls, [browser_warmup.DEMO_URL])
         page.evaluate.assert_awaited_once()
         # Second positional arg to page.evaluate is the class name checked.
         self.assertEqual(page.evaluate.await_args.args[1], "is-chart-demo")
+        # This is the one call site allowed to reuse launch_persistent_
+        # context's own auto-opened blank tab (see get_trading_page's own
+        # docstring for why every OTHER caller must not) - a real bug once
+        # let every worker beyond the first, plus this service's own page,
+        # silently collapse onto that same shared tab.
+        self.assertEqual(call_kwargs, [{"reuse_existing": True}])
 
     def test_live_mode_without_configured_url_raises_before_touching_browser(self):
         warmup = BrowserWarmupService(mode="live")

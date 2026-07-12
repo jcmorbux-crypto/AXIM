@@ -109,7 +109,13 @@ class BrowserWarmupService:
             else PocketBrowserSession()
         )
         self._context = await self._session.__aenter__()
-        self._page = await get_trading_page(self._context, target_url)
+        # reuse_existing=True is correct here specifically because this
+        # call always immediately follows a fresh context launch (see
+        # get_trading_page's own docstring for why every other caller
+        # must NOT do this) - reuses launch_persistent_context's
+        # auto-opened blank tab for this service's own dedicated page
+        # instead of leaving it idle and opening a redundant one.
+        self._page = await get_trading_page(self._context, target_url, reuse_existing=True)
         await pocket_dom.dismiss_blocking_modals(self._page)
         await self._verify_account_mode()
         self.generation += 1

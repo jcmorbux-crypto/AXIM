@@ -50,8 +50,22 @@ class PocketBrowserSession:
             await self._playwright.stop()
 
 
-async def get_trading_page(context, url=DEMO_URL, ready_timeout=15000):
-    page = context.pages[0] if context.pages else await context.new_page()
+async def get_trading_page(context, url=DEMO_URL, ready_timeout=15000, reuse_existing=False):
+    """reuse_existing=True reuses launch_persistent_context's own
+    auto-opened blank tab (context.pages[0]) instead of leaving it idle
+    and opening a redundant one - correct ONLY for the single call made
+    immediately after a fresh context launch (browser_warmup.py's own
+    dedicated page). Every other caller (BrowserWorkerPool building or
+    respawning a worker) needs a genuinely separate page and must use
+    the default False - context.pages stays non-empty forever after the
+    first page exists, so `context.pages[0] if context.pages else ...`
+    would otherwise hand out that SAME page object to every subsequent
+    caller (confirmed empirically, not assumed): each worker's own
+    asyncio.Lock would then protect nothing real, since it guards the
+    worker, not the page multiple workers secretly shared - two
+    concurrently acquired workers could manipulate the identical
+    browser tab at once with no real mutual exclusion."""
+    page = context.pages[0] if (reuse_existing and context.pages) else await context.new_page()
     await page.goto(url, wait_until="domcontentloaded")
     await expect(page.locator(pocket_dom.SEL_ASSET_TRIGGER).first).to_be_visible(timeout=ready_timeout)
     return page
