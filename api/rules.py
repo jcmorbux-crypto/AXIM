@@ -57,20 +57,28 @@ def _validate_types(condition_type, action_type):
 
 
 def _validate_action_params(action_type, action_params):
-    """switch_session_risk_profile's risk_profile_id lives inside the
-    free-form action_params JSON blob, not a typed Pydantic field, so it
-    was never checked against real data the way fund_id/session_id are -
-    a rule could be saved pointing at a deleted/nonexistent profile and
-    would only fail silently (core/risk_engine.py's compute_position_size
-    already falls back to static sizing on a missing profile lookup) the
-    next time the rule actually fired. Catching it here means it's
-    rejected at save time instead, same as every other ID reference this
-    router validates."""
-    if action_type != "switch_session_risk_profile":
-        return
-    risk_profile_id = (action_params or {}).get("risk_profile_id")
-    if risk_profile_id is not None and database.get_risk_profile(risk_profile_id) is None:
-        raise HTTPException(status_code=404, detail="risk profile not found")
+    """Two action types carry an ID reference inside the free-form
+    action_params JSON blob rather than a typed Pydantic field, so
+    neither was ever checked against real data the way fund_id/
+    session_id are:
+    - switch_session_risk_profile's risk_profile_id: a rule could be
+      saved pointing at a deleted/nonexistent profile and would only
+      fail silently (core/risk_engine.py's compute_position_size
+      already falls back to static sizing on a missing lookup) the
+      next time the rule actually fired.
+    - disable_channel's channel_id: core/database.py's
+      set_channel_enabled is an UPDATE ... WHERE id = ? with no
+      existence check, so a bad id here is a silent no-op forever.
+    Both rejected at save time instead, same as every other ID
+    reference this router validates."""
+    if action_type == "switch_session_risk_profile":
+        risk_profile_id = (action_params or {}).get("risk_profile_id")
+        if risk_profile_id is not None and database.get_risk_profile(risk_profile_id) is None:
+            raise HTTPException(status_code=404, detail="risk profile not found")
+    elif action_type == "disable_channel":
+        channel_id = (action_params or {}).get("channel_id")
+        if channel_id is not None and database.get_channel(channel_id) is None:
+            raise HTTPException(status_code=404, detail="channel not found")
 
 
 def _validate_condition_params(condition_type, condition_params):
