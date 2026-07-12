@@ -84,10 +84,26 @@ def _time_log_calls(logger):
         setattr(logger, method_name, make_wrapper())
 
 
+_ROOT_MARKER = "\x00axim_root\x00"  # can never collide with a real logger
+                                     # name (get_logger's own "name not in
+                                     # _configured" check shares this same
+                                     # set) - previously the literal "axim",
+                                     # which meant a hypothetical future
+                                     # get_logger("axim") call (no dotted
+                                     # sub-name, unlike every current real
+                                     # call site) would have silently
+                                     # skipped its own console/rotation
+                                     # setup, since _attach_root() runs
+                                     # first and would have already marked
+                                     # that exact name as configured. Never
+                                     # actually triggered (grepped for it),
+                                     # fixed as a cheap precaution anyway.
+
+
 def _attach_root():
-    if "axim" in _configured:
+    if _ROOT_MARKER in _configured:
         return
-    _configured.add("axim")
+    _configured.add(_ROOT_MARKER)
     root = logging.getLogger("axim")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     handler = RotatingFileHandler(
