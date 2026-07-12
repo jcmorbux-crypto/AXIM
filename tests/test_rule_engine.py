@@ -236,6 +236,31 @@ class ActionExecutorTests(RuleEngineTestCase):
         rule_engine._act_increase_risk_profile_percent({"percent_increase": 10}, "test rule", {})
         self.assertAlmostEqual(database.get_risk_profile(profile_id)["percent_of_bankroll"], 2.2)
 
+    def test_increase_risk_profile_percent_caps_at_the_hard_ceiling(self):
+        profile_id = database.create_risk_profile("P", sizing_mode="percent", percent_of_bankroll=20.0)
+        database.start_trading_session("Test", [1], "DEMO", risk_profile_id=profile_id)
+        rule_engine._act_increase_risk_profile_percent({"percent_increase": 50}, "test rule", {})
+        self.assertEqual(
+            database.get_risk_profile(profile_id)["percent_of_bankroll"],
+            rule_engine.MAX_RULE_DRIVEN_PERCENT_OF_BANKROLL,
+        )
+
+    def test_increase_risk_profile_percent_repeated_firings_cannot_exceed_the_ceiling(self):
+        # Edge-triggering (see module docstring) only stops this from
+        # refiring on every tick of an unchanged condition - a condition
+        # that repeatedly transitions false->true over a session's
+        # lifetime (e.g. a win-streak counter that resets and rebuilds)
+        # can still fire this action many times. Simulates that directly
+        # rather than trusting the single-firing test above to generalize.
+        profile_id = database.create_risk_profile("P", sizing_mode="percent", percent_of_bankroll=2.0)
+        database.start_trading_session("Test", [1], "DEMO", risk_profile_id=profile_id)
+        for _ in range(50):
+            rule_engine._act_increase_risk_profile_percent({"percent_increase": 10}, "test rule", {})
+        self.assertLessEqual(
+            database.get_risk_profile(profile_id)["percent_of_bankroll"],
+            rule_engine.MAX_RULE_DRIVEN_PERCENT_OF_BANKROLL,
+        )
+
     def test_switch_session_risk_profile(self):
         profile_id = database.create_risk_profile("New Profile")
         session_id = database.start_trading_session("Test", [1], "DEMO")

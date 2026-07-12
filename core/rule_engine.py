@@ -253,7 +253,28 @@ def _act_emergency_stop(params, rule_name, rule):
     return "emergency stop engaged"
 
 
+MAX_RULE_DRIVEN_PERCENT_OF_BANKROLL = 25.0
+
+
 def _act_increase_risk_profile_percent(params, rule_name, rule):
+    """Edge-triggering (module docstring) bounds how often this can fire,
+    not how far it can compound over a profile's lifetime - a rule that
+    refires on every new win streak, say, would otherwise push
+    percent_of_bankroll arbitrarily high with no ceiling (core/risk_engine.
+    py's compounding.max_risk_percent clamp is opt-in/off by default and
+    skipped entirely when compounding is disabled, so it can't be relied
+    on here). core/trade_coordinator.py's check_max_trade_amount already
+    stops a runaway percent from producing an oversized executed trade,
+    but does so by rejecting every signal once the computed amount crosses
+    MAX_TRADE_AMOUNT - silently breaking trading for every OTHER session
+    sharing this profile (risk_profile_id isn't exclusive to one Fund),
+    not just the one this rule belongs to. Capping the stored value here
+    keeps that failure mode from being reachable in the first place.
+    percent_of_bankroll is still a genuinely shared value across Funds
+    that happen to use the same profile - a Fund-scoped rule increasing
+    it always affects every other Fund on that profile too, capped or
+    not. That's an accepted, documented characteristic of sharing one
+    profile across Funds, not something this cap addresses."""
     percent_increase = float(params.get("percent_increase", 0))
     session = _resolve_session_for_rule(rule)
     if session is None or session["risk_profile_id"] is None:
@@ -262,6 +283,7 @@ def _act_increase_risk_profile_percent(params, rule_name, rule):
     if profile is None:
         return "session's risk profile no longer exists"
     new_percent = profile["percent_of_bankroll"] * (1 + percent_increase / 100)
+    new_percent = min(new_percent, MAX_RULE_DRIVEN_PERCENT_OF_BANKROLL)
     database.update_risk_profile(profile["id"], percent_of_bankroll=new_percent)
     return f"increased profile {profile['id']} percent_of_bankroll to {new_percent:.4f}"
 
