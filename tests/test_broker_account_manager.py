@@ -354,5 +354,86 @@ class ArchivedOrPausedFundMidSessionTests(unittest.TestCase):
         self.assertEqual(database.get_trading_session(session_id)["id"], session_id)
 
 
+class BalanceRefreshLoopEvictionTests(unittest.TestCase):
+    """api/broker_accounts_routes.py's disconnect/archive endpoints run in
+    the separate API process and only ever flip a DB column - they have
+    no way to reach into this process's _registry to close the account's
+    actual browser context. Nothing evicted a stale entry except a full
+    stop_all() (whole-listener shutdown), so a disconnected/archived
+    account's browser+worker pool would keep running indefinitely.
+    _balance_refresh_loop now self-evicts on its own existing wake-up
+    cadence instead - confirms that directly rather than just reading the
+    new code and assuming it works."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+        self._original_interval = broker_account_manager.BALANCE_REFRESH_INTERVAL_SECONDS
+        broker_account_manager.BALANCE_REFRESH_INTERVAL_SECONDS = 0
+        self._original_read_balance = broker_account_manager.pocket_dom.read_balance
+        broker_account_manager.pocket_dom.read_balance = AsyncMock(return_value=None)
+
+    def tearDown(self):
+        broker_account_manager.BALANCE_REFRESH_INTERVAL_SECONDS = self._original_interval
+        broker_account_manager.pocket_dom.read_balance = self._original_read_balance
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+
+    def test_loop_self_evicts_and_stops_pool_and_warmup_once_disconnected(self):
+        account_id = database.create_broker_account("Acc1", mode="demo")
+        database.update_broker_account(account_id, connection_status="connected")
+
+        pool = AsyncMock()
+        warmup = AsyncMock()
+        entry = {"warmup": warmup, "pool": pool, "coordinator": FakeCoordinator()}
+        broker_account_manager._registry[account_id] = entry
+
+        async def _scenario():
+            task = asyncio.create_task(broker_account_manager._balance_refresh_loop(account_id, warmup))
+            entry["balance_task"] = task
+            await asyncio.sleep(0.01)  # let it wake at least once while still "connected"
+            database.update_broker_account(account_id, connection_status="disconnected")
+            await asyncio.wait_for(task, timeout=1.0)
+
+        _run(_scenario())
+
+        self.assertNotIn(account_id, broker_account_manager._registry)
+        pool.stop.assert_awaited_once()
+        warmup.stop.assert_awaited_once()
+
+    def test_loop_evicts_when_account_is_deleted_outright(self):
+        account_id = database.create_broker_account("Acc1", mode="demo")
+        database.update_broker_account(account_id, connection_status="connected")
+
+        pool = AsyncMock()
+        warmup = AsyncMock()
+        broker_account_manager._registry[account_id] = {
+            "warmup": warmup, "pool": pool, "coordinator": FakeCoordinator(),
+        }
+
+        async def _scenario():
+            conn = database.get_connection()
+            try:
+                conn.execute("DELETE FROM broker_accounts WHERE id = ?", (account_id,))
+                conn.commit()
+            finally:
+                conn.close()
+            await asyncio.wait_for(
+                broker_account_manager._balance_refresh_loop(account_id, warmup), timeout=1.0,
+            )
+
+        _run(_scenario())
+
+        self.assertNotIn(account_id, broker_account_manager._registry)
+        pool.stop.assert_awaited_once()
+        warmup.stop.assert_awaited_once()
+
+
 if __name__ == "__main__":
     unittest.main()

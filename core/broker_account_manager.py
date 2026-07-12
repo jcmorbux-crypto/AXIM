@@ -137,6 +137,33 @@ async def _balance_refresh_loop(broker_account_id, warmup):
     place rather than flickering it to blank on a transient DOM hiccup."""
     while True:
         await asyncio.sleep(BALANCE_REFRESH_INTERVAL_SECONDS)
+
+        account = database.get_broker_account(broker_account_id)
+        if account is None or account["connection_status"] != "connected":
+            # api/broker_accounts_routes.py's disconnect/archive endpoints
+            # run in the separate API process and only flip this DB
+            # column - they have no way to reach into this process's
+            # _registry. can_trade() already blocks any NEW signal from
+            # reaching this account (checked before _registry is ever
+            # consulted - see get_or_build_account_context), but nothing
+            # was closing the now-orphaned browser/worker pool itself,
+            # leaving it running until the whole listener restarted. This
+            # loop already wakes up per-account on its own cadence, so
+            # it's the natural place to notice and self-evict, mirroring
+            # stop_all()'s teardown.
+            entry = _registry.pop(broker_account_id, None)
+            if entry is not None:
+                try:
+                    await entry["pool"].stop()
+                    await entry["warmup"].stop()
+                except Exception as e:
+                    logger.error("broker_account_manager: error stopping orphaned account_id=%s: %s", broker_account_id, e)
+                logger.info(
+                    "broker_account_manager: account_id=%s evicted (connection_status=%s)",
+                    broker_account_id, account["connection_status"] if account else "deleted",
+                )
+            return
+
         try:
             page = await warmup.get_page()
             balance = await pocket_dom.read_balance(page)
