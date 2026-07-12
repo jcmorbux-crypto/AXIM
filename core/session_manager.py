@@ -12,15 +12,18 @@ path; execution/pocket_executor.py itself is never touched.
 import asyncio
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CORE_DIR.parent / "config"))
 
+import capital_strategies
 import database
 import risk_engine
 import rule_engine
+import trade_statistics
 from logger import get_logger
 from settings import TRADE_CONFIRMATION_TIMEOUT_SECONDS
 
@@ -90,11 +93,13 @@ def end_session(session_id, status, reason=None):
 
 def check_session_limits(session_id):
     """No-op if session_id is None (no active session covers this
-    signal). Otherwise checks the three stop conditions in order and, on
-    the first breach, transitions the session to stopped AND raises -
-    the caller (trade_coordinator.handle_signal) treats this exactly like
-    a RiskViolation: reject the current signal, same as every other
-    rejected-before-execution path."""
+    signal). Otherwise checks this session's own profit_target/loss_limit/
+    max_trades in order, then - only if the attached risk profile has
+    Strike (tm) enabled - its own equivalent trio plus a consecutive-
+    losses streak and a duration cap. On the first breach, transitions
+    the session to stopped AND raises - the caller (trade_coordinator.
+    handle_signal) treats this exactly like a RiskViolation: reject the
+    current signal, same as every other rejected-before-execution path."""
     if session_id is None:
         return
     session = database.get_trading_session(session_id)
@@ -129,6 +134,38 @@ def check_session_limits(session_id):
                         f"{session['trades_count']} closed + {pending_count} open trades reached max {session['max_trades']}")
             raise SessionLimitReached("session_max_trades",
                                        f"session {session_id} reached its max trades - session stopped")
+
+    if session["risk_profile_id"] is not None:
+        profile = database.get_risk_profile(session["risk_profile_id"])
+        if profile is not None and profile["strike"] is not None and profile["strike"]["enabled"]:
+            # Strike (tm) names the profit_target/loss/max_trades trio
+            # above (this profile's OWN copy of those fields, which can
+            # differ from this session's) and adds two genuinely new
+            # conditions: a per-session consecutive-losses streak and a
+            # duration cap. Pending exposure is folded in the same
+            # pessimistic way as above - both for the loss/count
+            # conditions strike_should_terminate re-derives from this
+            # profile, and for the streak (every currently-open trade
+            # counted as a hypothetical additional loss), so this new
+            # path can't reopen the same burst-race gap the checks above
+            # were just closed against.
+            pending_stake = database.get_session_pending_stake(session_id)
+            pending_count = database.count_session_pending_trades(session_id)
+            elapsed_minutes = (
+                datetime.now() - datetime.fromisoformat(session["started_at"])
+            ).total_seconds() / 60
+            session_state = {
+                "realized_pnl": session["realized_pnl"] - pending_stake,
+                "trades_count": session["trades_count"] + pending_count,
+                "consecutive_losses": trade_statistics.consecutive_losses(session_id=session_id) + pending_count,
+                "elapsed_minutes": elapsed_minutes,
+            }
+            reason = capital_strategies.strike_should_terminate(profile, profile["strike"], session_state)
+            if reason is not None:
+                end_session(session_id, f"stopped_strike_{reason}",
+                            f"Strike (tm): {reason} condition met - session stopped")
+                raise SessionLimitReached(f"session_strike_{reason}",
+                                           f"session {session_id} met Strike's {reason} condition - session stopped")
 
 
 def record_trade_started(session_id):

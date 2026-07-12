@@ -206,6 +206,122 @@ class SessionManagerTests(unittest.TestCase):
         self.assertEqual(database.get_trading_session(session_id)["realized_pnl"], 0)
 
 
+class StrikeIntegrationTests(unittest.TestCase):
+    """capital_strategies.strike_should_terminate existed as a fully
+    tested pure function but was never actually called from any live
+    code path - the Strike (tm) catalog entry claimed "implemented":
+    True while its two genuinely distinct conditions (a per-session
+    consecutive-losses streak, a session duration cap) were silently
+    unenforced. Wired into check_session_limits per explicit approval.
+    These confirm the wiring itself, not strike_should_terminate's own
+    logic (already covered by tests/test_capital_strategies.py)."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def _strike_session(self, max_consecutive_losses=0, max_session_duration_minutes=0):
+        profile_id = database.create_risk_profile("Strike test")
+        database.update_strike_settings(
+            profile_id, enabled=1,
+            max_consecutive_losses=max_consecutive_losses,
+            max_session_duration_minutes=max_session_duration_minutes,
+        )
+        return database.start_trading_session("Test", [1], "DEMO", risk_profile_id=profile_id)
+
+    def test_disabled_strike_never_terminates(self):
+        profile_id = database.create_risk_profile("No strike")
+        session_id = database.start_trading_session("Test", [1], "DEMO", risk_profile_id=profile_id)
+        for _ in range(50):
+            database.update_trade_status(
+                database.record_signal_received(
+                    {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"},
+                    session_id=session_id,
+                ),
+                TradeStatus.TRADE_CLOSED, result="loss", profit_loss=-1,
+                closed_at="2026-01-01T00:00:00",
+            )
+        session_manager.check_session_limits(session_id)  # must not raise
+        self.assertEqual(database.get_trading_session(session_id)["status"], "active")
+
+    def test_consecutive_losses_streak_terminates(self):
+        session_id = self._strike_session(max_consecutive_losses=3)
+        for _ in range(3):
+            signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+            trade_id = database.record_signal_received(signal, session_id=session_id)
+            database.update_trade_status(trade_id, TradeStatus.TRADE_CLOSED, result="loss", profit_loss=-1,
+                                          closed_at="2026-01-01T00:00:00")
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.check_session_limits(session_id)
+        self.assertEqual(ctx.exception.rule, "session_strike_max_consecutive_losses")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_strike_max_consecutive_losses")
+
+    def test_pending_trades_count_pessimistically_toward_the_streak(self):
+        # Same burst-race concern the other checks were fixed against -
+        # a pending (unresolved) trade is treated as a hypothetical loss
+        # extending the streak, not silently invisible to it.
+        session_id = self._strike_session(max_consecutive_losses=2)
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+        trade_id = database.record_signal_received(signal, session_id=session_id)
+        database.update_trade_status(trade_id, TradeStatus.TRADE_CLOSED, result="loss", profit_loss=-1,
+                                      closed_at="2026-01-01T00:00:00")
+        _insert_pending_signal(session_id, trade_amount=5)
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.check_session_limits(session_id)
+        self.assertEqual(ctx.exception.rule, "session_strike_max_consecutive_losses")
+
+    def test_a_real_win_breaks_the_streak_despite_pending_trades(self):
+        session_id = self._strike_session(max_consecutive_losses=2)
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+        trade_id = database.record_signal_received(signal, session_id=session_id)
+        database.update_trade_status(trade_id, TradeStatus.TRADE_CLOSED, result="win", profit_loss=1,
+                                      closed_at="2026-01-01T00:00:00")
+        _insert_pending_signal(session_id, trade_amount=5)
+        session_manager.check_session_limits(session_id)  # must not raise
+        self.assertEqual(database.get_trading_session(session_id)["status"], "active")
+
+    def test_session_duration_cap_terminates(self):
+        session_id = self._strike_session(max_session_duration_minutes=30)
+        conn = database.get_connection()
+        try:
+            conn.execute(
+                "UPDATE trading_sessions SET started_at = ? WHERE id = ?",
+                ("2020-01-01T00:00:00", session_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.check_session_limits(session_id)
+        self.assertEqual(ctx.exception.rule, "session_strike_max_duration")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_strike_max_duration")
+
+    def test_session_within_duration_cap_does_not_terminate(self):
+        session_id = self._strike_session(max_session_duration_minutes=30)
+        session_manager.check_session_limits(session_id)  # just started - must not raise
+        self.assertEqual(database.get_trading_session(session_id)["status"], "active")
+
+    def test_missing_strike_settings_row_does_not_crash(self):
+        # Defensive: get_strike_settings can return None (predates the
+        # schema addition, or any other unexpected gap) - must not raise
+        # an AttributeError/TypeError, just skip the Strike check.
+        profile_id = database.create_risk_profile("No strike row")
+        conn = database.get_connection()
+        try:
+            conn.execute("DELETE FROM strike_settings WHERE risk_profile_id = ?", (profile_id,))
+            conn.commit()
+        finally:
+            conn.close()
+        session_id = database.start_trading_session("Test", [1], "DEMO", risk_profile_id=profile_id)
+        session_manager.check_session_limits(session_id)  # must not raise
+
+
 class TradeConfirmationGateTests(unittest.TestCase):
     def setUp(self):
         self._tmp_dir = tempfile.TemporaryDirectory()

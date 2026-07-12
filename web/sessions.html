@@ -123,6 +123,9 @@ function statusBadge(status) {
     stopped_loss_limit: "danger", stopped_max_trades: "info",
     stopped_emergency: "danger", stopped_connection_lost: "warn", stopped_parse_failures: "warn",
     stopped_fund_target: "info", stopped_fund_loss_limit: "danger", stopped_fund_max_trades: "info",
+    stopped_strike_profit_target: "info", stopped_strike_loss_limit: "danger",
+    stopped_strike_max_trades: "info", stopped_strike_max_consecutive_losses: "danger",
+    stopped_strike_max_duration: "info",
   };
   return `<span class="badge ${map[status] || "off"}">${status.replace(/_/g, " ")}</span>`;
 }

@@ -1370,9 +1370,20 @@ def count_fund_pending_trades(fund_id):
 
 
 @timed("database")
-def get_recent_results(limit, fund_id=None):
+def get_recent_results(limit, fund_id=None, session_id=None):
+    """fund_id and session_id are mutually exclusive scopes - session_id
+    added for core/capital_strategies.py's Strike (tm) strategy, whose
+    max_consecutive_losses is a per-session streak, distinct from
+    core/risk_manager.py's app-wide one and from a Fund's lifetime one."""
     conn = get_connection()
-    if fund_id is not None:
+    if session_id is not None:
+        rows = conn.execute("""
+            SELECT result FROM signals
+            WHERE result IS NOT NULL AND session_id = ?
+            ORDER BY closed_at DESC
+            LIMIT ?
+        """, (session_id, limit)).fetchall()
+    elif fund_id is not None:
         rows = conn.execute("""
             SELECT result FROM signals
             WHERE result IS NOT NULL AND fund_id = ?
@@ -2384,6 +2395,11 @@ _VALID_SESSION_STOP_STATUSES = {
     "stopped_target", "stopped_loss_limit", "stopped_max_trades", "stopped_manual",
     "stopped_emergency", "stopped_connection_lost", "stopped_parse_failures", "stopped_rule",
     "stopped_fund_target", "stopped_fund_loss_limit", "stopped_fund_max_trades",
+    # One per reason string capital_strategies.strike_should_terminate can
+    # return - core/session_manager.py's check_session_limits builds
+    # these dynamically as f"stopped_strike_{reason}".
+    "stopped_strike_profit_target", "stopped_strike_loss_limit", "stopped_strike_max_trades",
+    "stopped_strike_max_consecutive_losses", "stopped_strike_max_duration",
 }
 
 

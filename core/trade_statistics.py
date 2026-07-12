@@ -44,8 +44,8 @@ def weekly_stats(now=None):
     return _summarize(rows)
 
 
-def _consecutive(kind, fund_id=None):
-    results = database.get_recent_results(1000, fund_id=fund_id)
+def _consecutive(kind, fund_id=None, session_id=None):
+    results = database.get_recent_results(1000, fund_id=fund_id, session_id=session_id)
     count = 0
     for r in results:
         if r == kind:
@@ -59,8 +59,8 @@ def consecutive_wins(fund_id=None):
     return _consecutive("win", fund_id=fund_id)
 
 
-def consecutive_losses(fund_id=None):
-    return _consecutive("loss", fund_id=fund_id)
+def consecutive_losses(fund_id=None, session_id=None):
+    return _consecutive("loss", fund_id=fund_id, session_id=session_id)
 
 
 def signals_ignored_count(since_iso=None):
