@@ -5,6 +5,7 @@ webhook handling. See core/billing.py's module docstring for the
 that honestly over HTTP, including a real "not configured" response
 shape rather than a generic error.
 """
+import asyncio
 import sys
 from pathlib import Path
 
@@ -46,11 +47,17 @@ def checkout(body: CheckoutRequest, user=Depends(get_current_user)):
 async def webhook(request: Request):
     """No auth dependency - Stripe calls this directly with its own
     signature scheme (Stripe-Signature header), verified inside
-    core/billing.py.handle_webhook_event against STRIPE_WEBHOOK_SECRET."""
+    core/billing.py.handle_webhook_event against STRIPE_WEBHOOK_SECRET.
+
+    handle_webhook_event does synchronous sqlite writes (database.update_user,
+    apply_subscription_tier, downgrade_from_customer_id) - run off-thread so a
+    webhook delivery can't stall this process's single event loop, which the
+    SSE dashboard stream (api/event_stream_routes.py) and every other request
+    also share. Same class of bug as commit 0f517e9's trade_coordinator fix."""
     payload = await request.body()
     signature = request.headers.get("stripe-signature", "")
     try:
-        result = billing_module.handle_webhook_event(payload, signature)
+        result = await asyncio.to_thread(billing_module.handle_webhook_event, payload, signature)
     except billing_module.BillingNotConfiguredError:
         raise HTTPException(status_code=503, detail="billing is not configured")
     except stripe.SignatureVerificationError:

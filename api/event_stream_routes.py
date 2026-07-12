@@ -67,10 +67,17 @@ _poller_cursor = None
 async def _poller_loop():
     global _poller_cursor
     if _poller_cursor is None:
-        _poller_cursor = database.latest_server_event_id() or 0
+        _poller_cursor = await asyncio.to_thread(database.latest_server_event_id) or 0
     while True:
         try:
-            rows = database.list_server_events_since(_poller_cursor, limit=200)
+            # Runs every POLL_INTERVAL_SECONDS for the life of the process -
+            # a synchronous sqlite call here (as this was before) blocks
+            # every other coroutine on this process's one event loop
+            # (every other request, plus every other SSE subscriber's own
+            # stream) for its duration, 2.5x/second forever. Same class of
+            # bug as commit 0f517e9's trade_coordinator fix, just smaller
+            # per-call cost and higher frequency.
+            rows = await asyncio.to_thread(database.list_server_events_since, _poller_cursor, limit=200)
             if rows:
                 _poller_cursor = rows[-1]["id"]
                 for queue in list(_subscribers):
@@ -127,13 +134,13 @@ async def _event_generator(request, resume_from_id, user_id):
             # simply "resume_from_id is old", since resume_from_id ==
             # oldest - 1 means the very next row is still intact and
             # nothing was actually lost.
-            oldest = database.oldest_server_event_id()
+            oldest = await asyncio.to_thread(database.oldest_server_event_id)
             if oldest is None or resume_from_id < oldest - 1:
                 # A genuine gap - tell the client to re-fetch current
                 # state via normal REST rather than silently skipping it.
                 yield _format_sse(None, "resync", {})
             else:
-                for row in database.list_server_events_since(resume_from_id):
+                for row in await asyncio.to_thread(database.list_server_events_since, resume_from_id):
                     last_yielded_id = row["id"]
                     if _visible_to(user_id, row["event_type"], row["payload"]):
                         yield _format_sse(row["id"], row["event_type"], row["payload"])
@@ -141,7 +148,7 @@ async def _event_generator(request, resume_from_id, user_id):
             # Explicit "I have no prior state, send me everything you
             # currently have" - never a gap regardless of pruning, since
             # a resume_from_id=0 client never had anything to lose.
-            for row in database.list_server_events_since(0):
+            for row in await asyncio.to_thread(database.list_server_events_since, 0):
                 last_yielded_id = row["id"]
                 if _visible_to(user_id, row["event_type"], row["payload"]):
                     yield _format_sse(row["id"], row["event_type"], row["payload"])
