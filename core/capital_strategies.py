@@ -261,6 +261,9 @@ _STATEFUL_STRATEGIES = {"empire"}
 SIMULATABLE_STRATEGIES = set(_SIZE_FUNCS) | _STATEFUL_STRATEGIES
 
 
+MAX_SIMULATE_NUM_TRADES = 10000
+
+
 def simulate_strategy(strategy_key, settings, num_trades, win_rate, avg_payout_percent,
                        starting_bankroll=None, seed=None):
     """One deterministic (seedable) simulated run - single-path, not a
@@ -273,6 +276,8 @@ def simulate_strategy(strategy_key, settings, num_trades, win_rate, avg_payout_p
     reasonable" preview, not an audit record."""
     if strategy_key not in SIMULATABLE_STRATEGIES:
         raise ValueError(f"no basic simulation available for strategy {strategy_key!r} yet")
+    if not 0 < num_trades <= MAX_SIMULATE_NUM_TRADES:
+        raise ValueError(f"num_trades must be between 1 and {MAX_SIMULATE_NUM_TRADES}")
     if not 0 <= win_rate <= 1:
         raise ValueError("win_rate must be between 0 and 1")
     if avg_payout_percent <= 0:

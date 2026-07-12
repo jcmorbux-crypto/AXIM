@@ -477,6 +477,28 @@ class SimulateStrategyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             cs.simulate_strategy("foundation", {"fixed_amount": 1}, 10, 0.5, 0)
 
+    def test_num_trades_beyond_ceiling_raises(self):
+        # api/capital_strategies_routes.py's /simulate is reachable by any
+        # authenticated user (not just admins) and this is a pure random-
+        # walk loop with no data-size ceiling of its own (unlike core/
+        # backtest_engine.py's separate simulate_strategy, which is
+        # naturally bounded by the real historical pool it replays) - an
+        # unbounded num_trades ties up a threadpool worker for as long as
+        # the caller likes.
+        with self.assertRaises(ValueError):
+            cs.simulate_strategy("foundation", {"fixed_amount": 1}, cs.MAX_SIMULATE_NUM_TRADES + 1, 0.5, 90)
+
+    def test_num_trades_zero_or_negative_raises(self):
+        with self.assertRaises(ValueError):
+            cs.simulate_strategy("foundation", {"fixed_amount": 1}, 0, 0.5, 90)
+
+    def test_num_trades_at_the_ceiling_is_allowed(self):
+        # Doesn't raise, and trades_run can only be <= what was asked for
+        # (ruin/early-stop can cut a run short, so an exact match isn't
+        # guaranteed even with a fixed seed).
+        result = cs.simulate_strategy("foundation", {"fixed_amount": 1}, cs.MAX_SIMULATE_NUM_TRADES, 0.5, 90, seed=1)
+        self.assertLessEqual(result["trades_run"], cs.MAX_SIMULATE_NUM_TRADES)
+
     def test_deterministic_with_same_seed(self):
         settings = {"fixed_amount": 10}
         r1 = cs.simulate_strategy("foundation", settings, 100, 0.4, 85, starting_bankroll=1000, seed=42)
