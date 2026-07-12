@@ -38,6 +38,16 @@ On **both** the Mini PC and the laptop:
 That's it for Tailscale itself - no port forwarding, no router
 configuration, no public IP or domain needed.
 
+**Verify it's actually YOUR account, not a cached one.** If you (or
+whoever set up this machine) have signed into a different Google/
+Microsoft account in this browser before, `tailscale up`'s sign-in flow
+can silently reuse that cached session instead of prompting fresh -
+confirmed to happen in practice, not a hypothetical. Run
+`tailscale status` and check the account name next to your device's
+entry actually matches you before continuing; if it doesn't,
+`tailscale logout` then `tailscale up` again and pick the right account
+explicitly at the prompt.
+
 ## Step 2 - Find the Mini PC's Tailscale hostname
 
 On the **Mini PC**, open a terminal and run:
