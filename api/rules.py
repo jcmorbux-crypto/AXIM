@@ -56,6 +56,23 @@ def _validate_types(condition_type, action_type):
         raise HTTPException(status_code=400, detail=f"unknown action_type: {action_type!r}")
 
 
+def _validate_action_params(action_type, action_params):
+    """switch_session_risk_profile's risk_profile_id lives inside the
+    free-form action_params JSON blob, not a typed Pydantic field, so it
+    was never checked against real data the way fund_id/session_id are -
+    a rule could be saved pointing at a deleted/nonexistent profile and
+    would only fail silently (core/risk_engine.py's compute_position_size
+    already falls back to static sizing on a missing profile lookup) the
+    next time the rule actually fired. Catching it here means it's
+    rejected at save time instead, same as every other ID reference this
+    router validates."""
+    if action_type != "switch_session_risk_profile":
+        return
+    risk_profile_id = (action_params or {}).get("risk_profile_id")
+    if risk_profile_id is not None and database.get_risk_profile(risk_profile_id) is None:
+        raise HTTPException(status_code=404, detail="risk profile not found")
+
+
 def _get_or_404(rule_id):
     rule = database.get_rule(rule_id)
     if rule is None:
@@ -88,6 +105,7 @@ def list_rules(fund_id: Optional[int] = None, user=Depends(get_current_user)):
 @router.post("")
 def create_rule(body: RuleCreate, user=Depends(require_admin)):
     _validate_types(body.condition_type, body.action_type)
+    _validate_action_params(body.action_type, body.action_params)
     if database.get_fund(body.fund_id) is None:
         raise HTTPException(status_code=404, detail="fund not found")
     if body.scope == "session":
@@ -147,6 +165,10 @@ def update_rule(rule_id: int, body: RuleUpdate, user=Depends(require_admin)):
         session = database.get_trading_session(effective_session_id)
         if session is None or session["fund_id"] != effective_fund_id:
             raise HTTPException(status_code=400, detail="session_id must belong to this fund")
+
+    effective_action_type = body.action_type if body.action_type is not None else rule["action_type"]
+    effective_action_params = body.action_params if body.action_params is not None else rule["action_params"]
+    _validate_action_params(effective_action_type, effective_action_params)
 
     updates = body.model_dump(exclude_unset=True, exclude={"condition_params", "action_params"})
     try:
