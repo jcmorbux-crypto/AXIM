@@ -73,6 +73,23 @@ def _validate_action_params(action_type, action_params):
         raise HTTPException(status_code=404, detail="risk profile not found")
 
 
+def _validate_condition_params(condition_type, condition_params):
+    """channel_disabled/source_win_rate_below's channel_id has the same
+    unvalidated-JSON-blob shape as switch_session_risk_profile's
+    risk_profile_id above, but lower stakes - core/rule_engine.py's
+    _cond_channel_disabled/_cond_source_win_rate_below already fail
+    closed on a bad channel_id (return False, condition just never
+    matches), so this isn't a correctness bug the way the action-side
+    one was. Still worth rejecting at save time rather than leaving an
+    operator with a rule that silently never fires and no indication
+    why - same reasoning, lower severity."""
+    if condition_type not in ("channel_disabled", "source_win_rate_below"):
+        return
+    channel_id = (condition_params or {}).get("channel_id")
+    if channel_id is not None and database.get_channel(channel_id) is None:
+        raise HTTPException(status_code=404, detail="channel not found")
+
+
 def _get_or_404(rule_id):
     rule = database.get_rule(rule_id)
     if rule is None:
@@ -106,6 +123,7 @@ def list_rules(fund_id: Optional[int] = None, user=Depends(get_current_user)):
 def create_rule(body: RuleCreate, user=Depends(require_admin)):
     _validate_types(body.condition_type, body.action_type)
     _validate_action_params(body.action_type, body.action_params)
+    _validate_condition_params(body.condition_type, body.condition_params)
     if database.get_fund(body.fund_id) is None:
         raise HTTPException(status_code=404, detail="fund not found")
     if body.scope == "session":
@@ -169,6 +187,10 @@ def update_rule(rule_id: int, body: RuleUpdate, user=Depends(require_admin)):
     effective_action_type = body.action_type if body.action_type is not None else rule["action_type"]
     effective_action_params = body.action_params if body.action_params is not None else rule["action_params"]
     _validate_action_params(effective_action_type, effective_action_params)
+
+    effective_condition_type = body.condition_type if body.condition_type is not None else rule["condition_type"]
+    effective_condition_params = body.condition_params if body.condition_params is not None else rule["condition_params"]
+    _validate_condition_params(effective_condition_type, effective_condition_params)
 
     updates = body.model_dump(exclude_unset=True, exclude={"condition_params", "action_params"})
     try:
