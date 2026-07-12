@@ -285,5 +285,74 @@ class LiveAuthorizationGateTests(unittest.TestCase):
         self.assertIs(coordinator, fake_coordinator)
 
 
+class ArchivedOrPausedFundMidSessionTests(unittest.TestCase):
+    """api/funds_routes.py's archive_fund/pause_fund endpoints don't
+    force-stop an already-active session (pause_fund's own docstring:
+    "without stopping the session outright, so resuming picks back up
+    exactly where it left off") - this only works safely because
+    resolve_coordinator_for_session re-checks fund_manager.can_trade on
+    EVERY signal, not just at session start. Confirms that safety
+    property directly rather than just reading the code and assuming -
+    no prior test covered this exact "fund status changes out from under
+    an already-running session" scenario."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+        broker_account_manager._registry.clear()
+        broker_account_manager._build_locks.clear()
+
+    def _active_session(self):
+        fund_id = database.create_fund("F1", starting_balance=100)
+        account_id = database.create_broker_account("Acc1", mode="demo")
+        database.update_broker_account(account_id, connection_status="connected")
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
+        broker_account_manager._registry[account_id] = {
+            "warmup": None, "pool": None, "coordinator": FakeCoordinator(),
+        }
+        return fund_id, session_id
+
+    def test_archiving_the_fund_blocks_the_next_signal_on_its_still_active_session(self):
+        fund_id, session_id = self._active_session()
+        # Session itself is untouched - still "active" in the DB - archiving
+        # alone doesn't stop it. The next signal must be blocked anyway.
+        self.assertEqual(database.get_trading_session(session_id)["status"], "active")
+        database.update_fund(fund_id, status="archived")
+        with self.assertRaises(AccountUnavailable) as ctx:
+            _run(broker_account_manager.resolve_coordinator_for_session(session_id))
+        self.assertIn("archived", str(ctx.exception))
+
+    def test_pausing_the_fund_blocks_the_next_signal_on_its_still_active_session(self):
+        fund_id, session_id = self._active_session()
+        database.update_fund(fund_id, status="paused")
+        with self.assertRaises(AccountUnavailable) as ctx:
+            _run(broker_account_manager.resolve_coordinator_for_session(session_id))
+        self.assertIn("paused", str(ctx.exception))
+
+    def test_resuming_the_fund_lets_the_same_session_resolve_again(self):
+        # pause_fund's whole point: resuming picks back up exactly where
+        # it left off, not requiring a fresh session.
+        fund_id, session_id = self._active_session()
+        database.update_fund(fund_id, status="paused")
+        with self.assertRaises(AccountUnavailable):
+            _run(broker_account_manager.resolve_coordinator_for_session(session_id))
+
+        database.update_fund(fund_id, status="active")
+        coordinator, resolved_fund_id, _ = _run(
+            broker_account_manager.resolve_coordinator_for_session(session_id)
+        )
+        self.assertEqual(resolved_fund_id, fund_id)
+        self.assertEqual(database.get_trading_session(session_id)["id"], session_id)
+
+
 if __name__ == "__main__":
     unittest.main()
