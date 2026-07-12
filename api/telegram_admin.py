@@ -118,8 +118,26 @@ async def connection_status(user=Depends(require_admin)):
         await client.disconnect()
 
 
+async def _clear_pending_logins():
+    """An operator who calls send-code and never follows through with
+    verify-code (wrong number, gave up, closed the tab) left that pending
+    login's TelegramClient connected forever - verify_code's cleanup only
+    runs on the path that actually completes. Since this is already a
+    "single-operator tool, not designed for concurrent linking attempts"
+    (module docstring), the next send-code call is a safe, natural place
+    to close out whatever's left over rather than letting attempts
+    accumulate unboundedly."""
+    for pending in list(_pending_logins.values()):
+        try:
+            await pending["client"].disconnect()
+        except Exception:
+            pass
+    _pending_logins.clear()
+
+
 @router.post("/connect/send-code")
 async def send_code(body: SendCodeRequest, user=Depends(require_admin)):
+    await _clear_pending_logins()
     api_id, api_hash, phone = _resolve_credentials(body.api_id, body.api_hash, body.phone)
     client = TelegramClient(UI_SESSION_NAME, api_id, api_hash)
     await client.connect()
