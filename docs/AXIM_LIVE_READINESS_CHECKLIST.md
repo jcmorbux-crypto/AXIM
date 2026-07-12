@@ -397,6 +397,36 @@ findings and reasoning in commit history; summarized here.
       independently off their own real balances, a no-Fund session still
       uses the static bankroll unchanged, and Apex Ascension's tier
       lookup benefits from the same override. 650/650 tests pass.
+- [x] **Loss/count-based safety checks could be bypassed by a burst of
+      signals - found and fixed.** `execution/pocket_executor.py`'s
+      `track_outcome` docstring documents a deliberate throughput fix:
+      `MAX_CONCURRENT_WORKERS` bounds simultaneous *placements*, not
+      simultaneous *open positions*. Every loss/count-based check -
+      session `loss_limit`/`max_trades`
+      (`core/session_manager.py:check_session_limits`), the global
+      `max_daily_loss`/`max_consecutive_losses`
+      (`core/risk_manager.py`), and a Fund's own lifetime
+      `loss_limit`/`max_trades` (`core/fund_manager.py:can_trade`) - only
+      ever read already-*closed* trade data, so several signals arriving
+      within one expiry window could all pass the same stale numbers
+      before any of them resolved. The Fund-lifetime check had it worse:
+      it only ever ran reactively, after a trade closed - there was no
+      proactive pre-signal check at all. Fixed by treating every
+      currently-open (placed, unresolved) trade as a worst-case loss of
+      its full stake against each of these limits
+      (`core/database.py`'s new `get_*_pending_stake`/
+      `count_*_pending_trades` helpers). `api/sessions.py`'s
+      `remaining_to_loss_limit` display was updated the same way, so the
+      UI never shows headroom that doesn't match what will actually be
+      enforced next. `profit_target` is deliberately untouched -
+      overshooting a profit goal isn't a safety concern the way these
+      are. Implemented per explicit approval of the "track pending
+      exposure, block pessimistically" approach (two alternatives -
+      capping concurrency instead, or documenting as a known limitation -
+      were presented and declined). 18 new tests across
+      `tests/test_session_manager.py`, `tests/test_risk_manager.py`,
+      `tests/test_fund_manager.py`, `tests/test_sessions_api.py`.
+      688/688 tests pass.
 - True-simultaneous burst-traffic DOM contention, the settlement-window
   crash-overlap edge case, and same-minute closed-item matching ambiguity
   are all unchanged, still fail-safe (never a wrong result, only an
