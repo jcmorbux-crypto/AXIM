@@ -281,6 +281,18 @@ def vault_transfer(session_id: int, body: VaultTransfer, user=Depends(require_ad
         raise HTTPException(status_code=404, detail="session not found")
     if body.amount <= 0:
         raise HTTPException(status_code=400, detail="amount must be positive")
+    # Same bound core/rule_engine.py's automated move_profit_to_vault
+    # action already enforces (it computes and moves exactly this, never
+    # more) - without it, an operator could vault more than this session
+    # ever actually earned, driving fund_manager.get_fund_balances'
+    # trading_balance negative and corrupting every future trade's sizing
+    # for the whole Fund, not just this session.
+    unvaulted = session["realized_pnl"] - session["vaulted_amount"]
+    if body.amount > unvaulted:
+        raise HTTPException(
+            status_code=400,
+            detail=f"amount ${body.amount:.2f} exceeds unvaulted profit ${unvaulted:.2f}",
+        )
     database.add_to_vault(session_id, body.amount)
     return _with_progress(database.get_trading_session(session_id))
 
