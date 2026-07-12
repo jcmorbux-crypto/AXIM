@@ -80,10 +80,15 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
     `worker.page`, one of BrowserWorkerPool's N warm pages.
 
     `worker`'s lock is already held by the time this is called (acquired
-    by the caller via pool.acquire_worker()) - held for the whole
-    synchronous part of this call, and transferred to the background
-    outcome tracker (not released here) if a real click happens, since
-    that task keeps using the same worker until the trade closes.
+    by the caller via pool.acquire_worker()) and is always released via
+    the `finally` block below, on every path including a real click -
+    the worker is never held for a trade's expiry. track_outcome (spawned
+    below on a real click) does not reuse this worker at all; it reads
+    from warmup_service's own separate, otherwise-idle page instead - see
+    its own docstring for why. An earlier design held the worker for the
+    whole expiry and this docstring described that; superseded by the P0
+    latency-sprint fix (see track_outcome's docstring), not updated here
+    until now.
 
     "clicked" and "confirmation_detected" are marked inside pocket_dom.
     click_direction itself (via the active timeline, core/timeline.py),
@@ -93,8 +98,6 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
     timeline = timeline or TradeTimeline(trade_id=trade_id)
     timeline.trade_id = trade_id
     page = worker.page
-
-    ownership_transferred = False
     try:
         # Validated first, before touching the DOM at all: a signal whose
         # expiry never matched a recognizable pattern (parsers/signal_parser.py
