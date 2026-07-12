@@ -40,7 +40,7 @@ const AximShell = (() => {
   // this is the glyph only, no background rect, since .sidebar-logo
   // .mark/.auth-logo .mark already paint the rounded-blue-square badge
   // via CSS). Same 0-100 coordinate space as the master SVG.
-  const LOGO_MARK = '<svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg>';
+  const LOGO_MARK = '<svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 50 12 L 84 46 L 50 80 L 16 46 Z M 66 30 L 82 46 L 66 62 L 50 46 Z"/></svg>';
 
   // Same convention as every page's own escapeHtml() (web/*.html) -
   // encodes quotes too, not just & < >, since escaped text sometimes
@@ -53,15 +53,15 @@ const AximShell = (() => {
 
   const NAV_ITEMS = [
     { key: "dashboard", label: "Mission Control", href: "/dashboard", icon: ICONS.dashboard },
-    { key: "funds", label: "Funds", href: "/funds", icon: ICONS.funds },
+    { key: "funds", label: "Multi-Fund Manager", href: "/funds", icon: ICONS.funds },
     { key: "sessions", label: "Trading Sessions", href: "/sessions", icon: ICONS.sessions },
     { key: "telegram", label: "Signal Sources", href: "/telegram", icon: ICONS.telegram },
     { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
-    { key: "money", label: "Risk Engine", href: "/risk", icon: ICONS.money },
+    { key: "money", label: "Money Management Studio", href: "/risk", icon: ICONS.money },
     { key: "capital", label: "Capital Strategies", href: "/capital-strategies", icon: ICONS.capital },
     { key: "automation", label: "Automation Studio", href: "/automation", icon: ICONS.rules },
     { key: "lab", label: "Strategy Lab", href: "/strategy-lab", icon: ICONS.lab },
-    { key: "trades", label: "Trade Center", href: "/trades", icon: ICONS.trades },
+    { key: "trades", label: "Trade History", href: "/trades", icon: ICONS.trades },
     { key: "stats", label: "Performance", href: "/performance", icon: ICONS.stats },
     { key: "pocketoption", label: "Broker", href: "/broker", icon: ICONS.pocketoption },
     { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },

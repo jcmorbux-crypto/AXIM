@@ -130,7 +130,7 @@
 
         <div class="card solid">
           <h3>Strategies to Compare</h3>
-          <div class="stat-caption" style="margin-bottom:10px;">Pick two or more Risk Engine profiles to compare side by side.</div>
+          <div class="stat-caption" style="margin-bottom:10px;">Pick two or more Money Management Studio profiles to compare side by side.</div>
           <div class="strategy-checklist" id="strategy-checklist">Loading...</div>
         </div>
       </div>
@@ -350,7 +350,7 @@ async function loadSetupData() {
 
     document.getElementById("strategy-checklist").innerHTML = profiles.map(p => `
       <label><input type="checkbox" value="${p.id}" ${p.is_template ? "" : "checked"}> ${escapeHtml(p.name)}${p.is_template ? " <span class=\"faint\">(template)</span>" : ""}</label>
-    `).join("") || '<div class="empty">No risk profiles yet - create one in Risk Engine first.</div>';
+    `).join("") || '<div class="empty">No risk profiles yet - create one in Money Management Studio first.</div>';
 
     const channelSelect = document.getElementById("r-channel");
     channelSelect.innerHTML = '<option value="">All channels</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");

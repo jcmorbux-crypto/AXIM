@@ -90,12 +90,12 @@
 
         <div class="guide-section" id="sec-funds">
           <div class="section-kicker">C</div>
-          <h2>Funds</h2>
+          <h2>Multi-Fund Manager</h2>
           <p>A Fund is a separate bankroll with its own balance, its own Pocket Option account, sources, strategy, and history - AXIM doesn't assume you only ever run one pool of money on one account. Use separate Funds to keep a Demo bankroll apart from a Live one, run two different Pocket Option accounts side by side, or keep an aggressive strategy's results apart from a conservative one.</p>
           <h3>Trading Balance vs. Protected Balance</h3>
           <p><strong>Trading Balance</strong> is the money actually available for AXIM to size new trades against. <strong>Protected Balance</strong> (shown in gold) is money the Profit Vault has skimmed off and set aside - it no longer affects position sizing, on purpose, so a good run doesn't put your whole balance back at risk. <strong>Total Account Value</strong> is simply the two added together - vaulting moves money into a safer bucket, it never destroys it.</p>
           <h3>Creating a Fund</h3>
-          <p>Go to Funds &gt; New Fund, give it a name and a starting balance. From the Fund's detail view you can then attach a Pocket Option account (see "Connecting a broker account" below), assign Signal Sources (which Telegram channels feed it), and set a default money management profile (used automatically when you start a session under this Fund, unless you override it).</p>
+          <p>Go to Multi-Fund Manager &gt; New Fund, give it a name and a starting balance. From the Fund's detail view you can then attach a Pocket Option account (see "Connecting a broker account" below), assign Signal Sources (which Telegram channels feed it), and set a default money management profile (used automatically when you start a session under this Fund, unless you override it).</p>
           <h3>Connecting a broker account</h3>
           <p>Each Fund trades through one Pocket Option account, attached from the Fund's detail view: pick an account from the <strong>Broker Account</strong> dropdown and click Attach. If the account you want doesn't exist yet, add it first from the Broker page (see Section I) - a Fund can't start a session without an account attached.</p>
           <h3>Running multiple Funds and accounts</h3>
@@ -129,7 +129,7 @@
 
         <div class="guide-section" id="sec-risk-engine">
           <div class="section-kicker">F</div>
-          <h2>Risk Engine (Capital Manager)</h2>
+          <h2>Money Management Studio</h2>
           <p>Controls exactly how much money AXIM risks on each trade. This is the single most important setting in AXIM - review it carefully before running anything on a Live account.</p>
           <h3>Sizing modes</h3>
           <ul>
@@ -146,9 +146,9 @@
         <div class="guide-section" id="sec-strategy-lab">
           <div class="section-kicker">G</div>
           <h2>Strategy Lab</h2>
-          <p>Lets you replay historical signals through one or more Risk Engine profiles to see how each would have performed, before risking real money.</p>
+          <p>Lets you replay historical signals through one or more Money Management Studio profiles to see how each would have performed, before risking real money.</p>
           <h3>Running a backtest</h3>
-          <p>Import historical signals (CSV, or use ones AXIM already recorded live), pick a starting bankroll and date range, choose the strategies to compare, and run. AXIM simulates day-by-day (or one continuous) sessions using the exact same sizing math the live Risk Engine uses - not a simplified approximation.</p>
+          <p>Import historical signals (CSV, or use ones AXIM already recorded live), pick a starting bankroll and date range, choose the strategies to compare, and run. AXIM simulates day-by-day (or one continuous) sessions using the exact same sizing math live trading uses - not a simplified approximation.</p>
           <h3>Comparing strategies</h3>
           <p>Each strategy gets a comparison card (final bankroll, ROI, max drawdown, win rate, a Low/Medium/High risk score) plus an equity curve chart so you can see the shape of each strategy's results, not just the final number.</p>
           <p class="muted"><strong>Past results do not guarantee future results.</strong> A backtest is a simulation based on the signals and assumptions you provide - it cannot predict what a signal source will do next.</p>
@@ -156,7 +156,7 @@
 
         <div class="guide-section" id="sec-trading-desk">
           <div class="section-kicker">H</div>
-          <h2>Trade Center (Trading Desk)</h2>
+          <h2>Trade History</h2>
           <p>Every trade AXIM has placed, with its full detail: the original signal, how it was parsed, the sizing decision AXIM made, execution timeline, and the result.</p>
           <h3>Trade statuses</h3>
           <p>A trade moves through preparation, placement, and settlement - the status column shows exactly where it is. Closed trades show Win, Loss, or Draw with the real profit/loss amount.</p>
@@ -209,9 +209,9 @@
           <h3>Signal not parsed</h3>
           <p>Open the message in Signal Inspector - it shows exactly why a message wasn't recognized as a tradeable signal. Some channels need a custom parsing rule (also configurable from Signal Sources) if their message format is unusual.</p>
           <h3>Trade not executing</h3>
-          <p>Check Trade Center for the trade's status and any recorded error. Common causes: the session's loss limit or max trades was already reached, the signal's payout was below your configured minimum, or Pocket Option's connection was unhealthy at that moment.</p>
+          <p>Check Trade History for the trade's status and any recorded error. Common causes: the session's loss limit or max trades was already reached, the signal's payout was below your configured minimum, or Pocket Option's connection was unhealthy at that moment.</p>
           <h3>Balance not updating</h3>
-          <p>AXIM does not yet read a live balance directly from Pocket Option - Fund and session balances are computed from AXIM's own recorded trade history, not a live account balance poll. This is a known, current limitation, not a bug.</p>
+          <p>AXIM reads your real Pocket Option balance directly and refreshes it periodically per broker account - if a number looks stale, check that account's connection status on the Broker page first; a disconnected account stops refreshing until reconnected.</p>
         </div>
 
       </div>

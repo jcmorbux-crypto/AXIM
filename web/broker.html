@@ -178,7 +178,7 @@ function summarizeTestTradeResult(result) {
     const pl = result.profit_loss !== undefined && result.profit_loss !== null ? ` (${result.profit_loss > 0 ? "+" : ""}$${Number(result.profit_loss).toFixed(2)})` : "";
     return `${outcome}${pl}`;
   }
-  return "Trade recorded - see Trade Center for full details.";
+  return "Trade recorded - see Trade History for full details.";
 }
 
 async function runTestTrade() {
@@ -206,7 +206,7 @@ async function runTestTrade() {
         return;
       }
     }
-    statusEl.textContent = "timed out waiting for a result - check Trade Center.";
+    statusEl.textContent = "timed out waiting for a result - check Trade History.";
   } catch (e) {
     statusEl.textContent = "failed: " + e.message;
   } finally {
