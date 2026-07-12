@@ -37,6 +37,16 @@ class RiskManagerTests(unittest.TestCase):
             )
         return trade_id
 
+    def _insert_pending_signal(self, trade_amount, asset="EUR/USD OTC", direction="BUY", expiry="1 Minute"):
+        # Mirrors execution/pocket_executor.py's real sequence: a stake is
+        # locked in (trade_amount set) at TRADE_CLICKED, well before the
+        # trade's expiry resolves it to a result.
+        trade_id = database.record_signal_received(
+            {"asset": asset, "direction": direction, "expiry": expiry, "raw_message": "test"},
+        )
+        database.update_trade_status(trade_id, TradeStatus.TRADE_CLICKED, trade_amount=trade_amount)
+        return trade_id
+
     def test_duplicate_signal_detected_within_window(self):
         self._insert_signal()
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
@@ -77,6 +87,38 @@ class RiskManagerTests(unittest.TestCase):
         self._insert_signal(result="loss")
         self._insert_signal(result="win")
         self._insert_signal(result="loss")
+        risk_manager.check_max_consecutive_losses()
+
+    def test_consecutive_losses_pending_trades_count_pessimistically(self):
+        # A burst of signals arriving within one expiry window would
+        # otherwise all read the same closed-only recent-results and all
+        # pass this check before any of them resolve - execution/
+        # pocket_executor.py's track_outcome docstring documents this as
+        # a deliberate throughput trade-off (MAX_CONCURRENT_WORKERS bounds
+        # placements, not open positions). One real loss short of the
+        # limit, plus one still-open trade, must already block.
+        for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES - 1):
+            self._insert_signal(result="loss")
+        self._insert_pending_signal(trade_amount=10)
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_max_consecutive_losses()
+        self.assertEqual(ctx.exception.rule, "max_consecutive_losses")
+
+    def test_consecutive_losses_enough_pending_trades_alone_blocks(self):
+        for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
+            self._insert_pending_signal(trade_amount=10)
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_max_consecutive_losses()
+        self.assertEqual(ctx.exception.rule, "max_consecutive_losses")
+
+    def test_consecutive_losses_a_real_win_still_breaks_the_pessimistic_streak(self):
+        # MAX_CONSECUTIVE_LOSSES=3: 2 real losses, then a real win (breaks
+        # the streak), then 1 pending trade. remaining=3-1=2 most recent
+        # closed results are [win, loss] - not all losses, must not raise.
+        self._insert_signal(result="loss")
+        self._insert_signal(result="loss")
+        self._insert_signal(result="win")
+        self._insert_pending_signal(trade_amount=10)
         risk_manager.check_max_consecutive_losses()
 
     def test_cooldown_after_loss_blocks(self):
@@ -150,6 +192,31 @@ class RiskManagerTests(unittest.TestCase):
             self.assertEqual(ctx.exception.rule, "max_daily_loss")
             # Confirm the premise: consecutive-losses would NOT have caught this.
             risk_manager.check_max_consecutive_losses()  # must not raise
+        finally:
+            risk_manager.MAX_DAILY_LOSS = original
+
+    def test_max_daily_loss_counts_pending_stake_as_worst_case(self):
+        # Realized P/L alone (-1) is well within the -5 limit, but a
+        # pending trade risking $10 would breach it if it loses - same
+        # burst-race reasoning as check_max_consecutive_losses above.
+        original = risk_manager.MAX_DAILY_LOSS
+        risk_manager.MAX_DAILY_LOSS = 5
+        try:
+            self._insert_signal(result="loss", profit_loss=-1)
+            self._insert_pending_signal(trade_amount=10)
+            with self.assertRaises(risk_manager.RiskViolation) as ctx:
+                risk_manager.check_max_daily_loss()
+            self.assertEqual(ctx.exception.rule, "max_daily_loss")
+        finally:
+            risk_manager.MAX_DAILY_LOSS = original
+
+    def test_max_daily_loss_pending_stake_within_threshold_does_not_block(self):
+        original = risk_manager.MAX_DAILY_LOSS
+        risk_manager.MAX_DAILY_LOSS = 50
+        try:
+            self._insert_signal(result="win", profit_loss=2)
+            self._insert_pending_signal(trade_amount=10)
+            risk_manager.check_max_daily_loss()  # worst case -8, within -50
         finally:
             risk_manager.MAX_DAILY_LOSS = original
 

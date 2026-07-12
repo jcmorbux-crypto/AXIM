@@ -1261,6 +1261,114 @@ def count_trades_since(since_iso):
     return row["n"]
 
 
+# A trade sits here between execution/pocket_executor.py locking in a
+# real stake (trade_clicked) and its outcome becoming known some
+# expiry-seconds later (trade_closed/result_*) - core/session_manager.py's
+# check_session_limits and core/risk_manager.py's check_max_daily_loss/
+# check_max_consecutive_losses all read closed-only data
+# (realized_pnl/get_realized_pnl_since/get_recent_results), so a burst of
+# signals arriving within one expiry window can all pass those checks
+# against the same stale numbers before any of them resolve -
+# execution/pocket_executor.py's track_outcome docstring documents this
+# as a deliberate throughput trade-off (MAX_CONCURRENT_WORKERS bounds
+# simultaneous PLACEMENTS, not simultaneous open positions). These
+# helpers let the callers above pessimistically treat every currently-
+# open trade as a worst-case loss/count against their limit, closing
+# that gap without touching the placement throughput fix.
+_PENDING_TRADE_STATUSES = ("trade_clicked", "trade_opened")
+
+
+@timed("database")
+def get_session_pending_stake(session_id):
+    """Sum of trade_amount for this session's trades that are placed
+    (real stake locked in) but not yet resolved."""
+    conn = get_connection()
+    placeholders = ", ".join("?" for _ in _PENDING_TRADE_STATUSES)
+    row = conn.execute(
+        f"SELECT SUM(trade_amount) AS total FROM signals "
+        f"WHERE session_id = ? AND execution_status IN ({placeholders})",
+        (session_id, *_PENDING_TRADE_STATUSES),
+    ).fetchone()
+    conn.close()
+    return row["total"] or 0.0
+
+
+@timed("database")
+def count_session_pending_trades(session_id):
+    conn = get_connection()
+    placeholders = ", ".join("?" for _ in _PENDING_TRADE_STATUSES)
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n FROM signals "
+        f"WHERE session_id = ? AND execution_status IN ({placeholders})",
+        (session_id, *_PENDING_TRADE_STATUSES),
+    ).fetchone()
+    conn.close()
+    return row["n"]
+
+
+@timed("database")
+def get_pending_stake_since(since_iso):
+    """Global (not session-scoped) counterpart of get_session_pending_stake
+    - for core/risk_manager.py's check_max_daily_loss, which is itself
+    app-wide, not per-Fund/session."""
+    conn = get_connection()
+    placeholders = ", ".join("?" for _ in _PENDING_TRADE_STATUSES)
+    row = conn.execute(
+        f"SELECT SUM(trade_amount) AS total FROM signals "
+        f"WHERE received_at >= ? AND execution_status IN ({placeholders})",
+        (since_iso, *_PENDING_TRADE_STATUSES),
+    ).fetchone()
+    conn.close()
+    return row["total"] or 0.0
+
+
+@timed("database")
+def count_pending_trades():
+    """App-wide count of currently open trades, for
+    core/risk_manager.py's check_max_consecutive_losses - not time-windowed
+    since any of these could still resolve as a loss and extend the
+    current streak regardless of when they were placed."""
+    conn = get_connection()
+    placeholders = ", ".join("?" for _ in _PENDING_TRADE_STATUSES)
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n FROM signals WHERE execution_status IN ({placeholders})",
+        _PENDING_TRADE_STATUSES,
+    ).fetchone()
+    conn.close()
+    return row["n"]
+
+
+@timed("database")
+def get_fund_pending_stake(fund_id):
+    """Fund-scoped counterpart of get_session_pending_stake, for
+    core/fund_manager.py's can_trade - a fund's LIFETIME loss_limit had no
+    proactive pre-signal check at all (core/fund_manager.py's
+    check_fund_limits only runs reactively, after a trade closes), so
+    even without the burst-race this specific number matters."""
+    conn = get_connection()
+    placeholders = ", ".join("?" for _ in _PENDING_TRADE_STATUSES)
+    row = conn.execute(
+        f"SELECT SUM(trade_amount) AS total FROM signals "
+        f"WHERE fund_id = ? AND execution_status IN ({placeholders})",
+        (fund_id, *_PENDING_TRADE_STATUSES),
+    ).fetchone()
+    conn.close()
+    return row["total"] or 0.0
+
+
+@timed("database")
+def count_fund_pending_trades(fund_id):
+    conn = get_connection()
+    placeholders = ", ".join("?" for _ in _PENDING_TRADE_STATUSES)
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n FROM signals "
+        f"WHERE fund_id = ? AND execution_status IN ({placeholders})",
+        (fund_id, *_PENDING_TRADE_STATUSES),
+    ).fetchone()
+    conn.close()
+    return row["n"]
+
+
 @timed("database")
 def get_recent_results(limit, fund_id=None):
     conn = get_connection()

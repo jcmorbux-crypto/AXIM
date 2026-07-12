@@ -107,17 +107,28 @@ def check_session_limits(session_id):
         raise SessionLimitReached("session_profit_target",
                                    f"session {session_id} reached its profit target - session stopped")
 
-    if session["loss_limit"] > 0 and session["realized_pnl"] <= -session["loss_limit"]:
-        end_session(session_id, "stopped_loss_limit",
-                    f"realized P/L ${session['realized_pnl']:.2f} breached loss limit ${session['loss_limit']:.2f}")
-        raise SessionLimitReached("session_loss_limit",
-                                   f"session {session_id} breached its loss limit - session stopped")
+    if session["loss_limit"] > 0:
+        # Pessimistic: every currently-open (placed, unresolved) trade is
+        # treated as a worst-case loss of its full stake - see
+        # database.get_session_pending_stake's docstring for why closed-
+        # only realized_pnl alone isn't enough to enforce this promise
+        # under a burst of signals.
+        pending_stake = database.get_session_pending_stake(session_id)
+        effective_pnl = session["realized_pnl"] - pending_stake
+        if effective_pnl <= -session["loss_limit"]:
+            end_session(session_id, "stopped_loss_limit",
+                        f"realized P/L ${session['realized_pnl']:.2f} with ${pending_stake:.2f} at risk in "
+                        f"open trades would breach loss limit ${session['loss_limit']:.2f} if they all lose")
+            raise SessionLimitReached("session_loss_limit",
+                                       f"session {session_id} breached its loss limit - session stopped")
 
-    if session["max_trades"] > 0 and session["trades_count"] >= session["max_trades"]:
-        end_session(session_id, "stopped_max_trades",
-                    f"{session['trades_count']} trades reached max {session['max_trades']}")
-        raise SessionLimitReached("session_max_trades",
-                                   f"session {session_id} reached its max trades - session stopped")
+    if session["max_trades"] > 0:
+        pending_count = database.count_session_pending_trades(session_id)
+        if session["trades_count"] + pending_count >= session["max_trades"]:
+            end_session(session_id, "stopped_max_trades",
+                        f"{session['trades_count']} closed + {pending_count} open trades reached max {session['max_trades']}")
+            raise SessionLimitReached("session_max_trades",
+                                       f"session {session_id} reached its max trades - session stopped")
 
 
 def record_trade_started(session_id):

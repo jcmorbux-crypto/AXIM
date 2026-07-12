@@ -9,10 +9,21 @@ sys.path.insert(0, str(PROJECT_ROOT / "core"))
 
 import database
 import session_manager
+from trade_lifecycle import TradeStatus
 
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+def _insert_pending_signal(session_id, trade_amount):
+    # Mirrors execution/pocket_executor.py's real sequence: a stake is
+    # locked in (trade_amount set) at TRADE_CLICKED, well before the
+    # trade's expiry resolves it to a result.
+    signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+    trade_id = database.record_signal_received(signal, session_id=session_id)
+    database.update_trade_status(trade_id, TradeStatus.TRADE_CLICKED, trade_amount=trade_amount)
+    return trade_id
 
 
 class SessionManagerTests(unittest.TestCase):
@@ -58,6 +69,48 @@ class SessionManagerTests(unittest.TestCase):
             session_manager.check_session_limits(session_id)
         self.assertEqual(ctx.exception.rule, "session_max_trades")
         self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_max_trades")
+
+    def test_loss_limit_counts_pending_stake_as_worst_case(self):
+        # A burst of signals arriving within one expiry window would
+        # otherwise all read the same stale realized_pnl and all pass
+        # this check before any of them resolve - execution/
+        # pocket_executor.py's track_outcome docstring documents this as
+        # a deliberate throughput trade-off (MAX_CONCURRENT_WORKERS
+        # bounds placements, not open positions). Realized P/L alone
+        # (-5) is within the -20 limit, but a $16 open trade pushes the
+        # worst case to -21.
+        session_id = database.start_trading_session("Test", [1], "DEMO", loss_limit=20)
+        database.update_session_pnl(session_id, -5)
+        _insert_pending_signal(session_id, trade_amount=16)
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.check_session_limits(session_id)
+        self.assertEqual(ctx.exception.rule, "session_loss_limit")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_loss_limit")
+
+    def test_loss_limit_pending_stake_within_threshold_does_not_block(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", loss_limit=20)
+        database.update_session_pnl(session_id, -5)
+        _insert_pending_signal(session_id, trade_amount=5)
+        session_manager.check_session_limits(session_id)  # worst case -10, within -20
+        self.assertEqual(database.get_trading_session(session_id)["status"], "active")
+
+    def test_max_trades_counts_pending_trades_toward_the_limit(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", max_trades=2)
+        database.record_session_trade(session_id)
+        _insert_pending_signal(session_id, trade_amount=5)
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.check_session_limits(session_id)
+        self.assertEqual(ctx.exception.rule, "session_max_trades")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_max_trades")
+
+    def test_pending_stake_from_a_different_session_is_not_counted(self):
+        session_a = database.start_trading_session("A", [1], "DEMO", loss_limit=20)
+        account_b = database.create_broker_account("Acct B")
+        session_b = database.start_trading_session("B", [2], "DEMO", loss_limit=20, broker_account_id=account_b)
+        database.update_session_pnl(session_a, -5)
+        _insert_pending_signal(session_b, trade_amount=1000)  # someone else's exposure
+        session_manager.check_session_limits(session_a)  # must not raise
+        self.assertEqual(database.get_trading_session(session_a)["status"], "active")
 
     def test_zero_thresholds_mean_disabled(self):
         session_id = database.start_trading_session("Test", [1], "DEMO", profit_target=0, loss_limit=0, max_trades=0)

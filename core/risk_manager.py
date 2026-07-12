@@ -84,12 +84,27 @@ def check_max_trades_per_day():
 
 
 def check_max_consecutive_losses():
+    """Pessimistic: every currently-open (placed, unresolved) trade is
+    treated as a hypothetical loss extending the current streak - a burst
+    of signals arriving within one expiry window would otherwise all read
+    the same closed-only get_recent_results and could all pass this check
+    before any of them resolve (execution/pocket_executor.py's
+    track_outcome docstring: MAX_CONCURRENT_WORKERS bounds simultaneous
+    placements, not simultaneous open positions)."""
     limit = _setting("max_consecutive_losses", MAX_CONSECUTIVE_LOSSES)
-    recent = database.get_recent_results(limit)
-    if len(recent) == limit and all(r == "loss" for r in recent):
+    pending_count = database.count_pending_trades()
+    if pending_count >= limit:
         raise RiskViolation(
             "max_consecutive_losses",
-            f"last {limit} trades were all losses",
+            f"{pending_count} trade(s) currently open - if they all lose, that alone reaches the limit of {limit} consecutive losses",
+        )
+    remaining = limit - pending_count
+    recent = database.get_recent_results(remaining)
+    if len(recent) == remaining and all(r == "loss" for r in recent):
+        raise RiskViolation(
+            "max_consecutive_losses",
+            f"last {remaining} closed trades were all losses, plus {pending_count} more currently open - "
+            f"would reach the limit of {limit} if they also lose",
         )
 
 
@@ -151,10 +166,16 @@ def check_max_daily_loss():
         return
     midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     realized_pnl = database.get_realized_pnl_since(midnight)
-    if realized_pnl <= -limit:
+    # Pessimistic: every currently-open trade placed today is treated as
+    # a worst-case loss of its full stake - same reasoning as
+    # check_max_consecutive_losses above.
+    pending_stake = database.get_pending_stake_since(midnight)
+    effective_pnl = realized_pnl - pending_stake
+    if effective_pnl <= -limit:
         raise RiskViolation(
             "max_daily_loss",
-            f"realized P/L today is ${realized_pnl:.2f}, at or beyond -MAX_DAILY_LOSS ${limit:.2f}",
+            f"realized P/L today is ${realized_pnl:.2f} with ${pending_stake:.2f} at risk in open trades - "
+            f"would be at or beyond -MAX_DAILY_LOSS ${limit:.2f} if they all lose",
         )
 
 

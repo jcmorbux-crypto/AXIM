@@ -239,6 +239,71 @@ class CanTradeTests(FundManagerTestCase):
         _, _, can_go_live = fund_manager.can_trade(fund_id)
         self.assertFalse(can_go_live)
 
+    def _connected_fund(self, loss_limit=0, max_trades=0):
+        fund_id = database.create_fund("F1", loss_limit=loss_limit, max_trades=max_trades)
+        account_id = database.create_broker_account("Acc1", mode="both")
+        database.update_broker_account(account_id, connection_status="connected")
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        return fund_id
+
+    def _pending_trade(self, fund_id, trade_amount, session_id=None):
+        # Mirrors execution/pocket_executor.py's real sequence: a stake is
+        # locked in (trade_amount set) at TRADE_CLICKED, well before the
+        # trade's expiry resolves it to a result. Reuses a caller-given
+        # session_id when placing more than one pending trade for the
+        # same fund - start_trading_session enforces one active session
+        # per broker account.
+        if session_id is None:
+            session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"}
+        trade_id = database.record_signal_received(signal, session_id=session_id, fund_id=fund_id)
+        database.update_trade_status(trade_id, trade_lifecycle.TradeStatus.TRADE_CLICKED, trade_amount=trade_amount)
+        return trade_id, session_id
+
+    def test_lifetime_loss_limit_has_no_proactive_check_when_no_pending_exposure(self):
+        # Baseline: closed-only P/L within the limit and nothing pending
+        # must still allow trading - confirms the new check doesn't
+        # change behavior for the common case.
+        fund_id = self._connected_fund(loss_limit=20)
+        allowed, reason, _ = fund_manager.can_trade(fund_id)
+        self.assertTrue(allowed)
+
+    def test_lifetime_loss_limit_blocked_by_pending_exposure_alone(self):
+        # check_fund_limits (reactive, on trade close) never ran yet -
+        # there is no closed trade at all - but a burst of signals could
+        # otherwise still get accepted purely because nothing proactively
+        # checked the fund's own lifetime limit before this fix.
+        fund_id = self._connected_fund(loss_limit=20)
+        self._pending_trade(fund_id, trade_amount=25)
+        allowed, reason, can_go_live = fund_manager.can_trade(fund_id)
+        self.assertFalse(allowed)
+        self.assertIn("lifetime loss limit", reason)
+        self.assertFalse(can_go_live)
+        # Read-only: no mutation, unlike check_fund_limits' actual breach handling.
+        self.assertEqual(database.get_fund(fund_id)["status"], "active")
+
+    def test_lifetime_loss_limit_pending_exposure_within_threshold_allows_trade(self):
+        fund_id = self._connected_fund(loss_limit=20)
+        self._pending_trade(fund_id, trade_amount=5)
+        allowed, _, _ = fund_manager.can_trade(fund_id)
+        self.assertTrue(allowed)
+
+    def test_lifetime_max_trades_counts_pending_trades(self):
+        fund_id = self._connected_fund(max_trades=2)
+        _, session_id = self._pending_trade(fund_id, trade_amount=5)
+        self._pending_trade(fund_id, trade_amount=5, session_id=session_id)
+        allowed, reason, _ = fund_manager.can_trade(fund_id)
+        self.assertFalse(allowed)
+        self.assertIn("lifetime max trades", reason)
+        self.assertEqual(database.get_fund(fund_id)["status"], "active")
+
+    def test_pending_exposure_from_a_different_fund_is_not_counted(self):
+        fund_a = self._connected_fund(loss_limit=20)
+        fund_b = self._connected_fund(loss_limit=20)
+        self._pending_trade(fund_b, trade_amount=1000)  # someone else's exposure
+        allowed, _, _ = fund_manager.can_trade(fund_a)
+        self.assertTrue(allowed)
+
 
 class CheckFundLimitsTests(FundManagerTestCase):
     """A Fund's own profit_target/loss_limit/max_trades are a lifetime

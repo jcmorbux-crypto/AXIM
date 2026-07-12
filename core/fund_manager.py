@@ -194,4 +194,34 @@ def can_trade(fund_id):
         return False, f"the attached broker account ({account['name']}) is not connected - reconnect it before starting a session", False
 
     can_go_live = bool(fund["live_enabled"]) and bool(account["live_enabled"]) and account["mode"] in ("live", "both")
+
+    # Pessimistic pre-check for the fund's own LIFETIME loss_limit/
+    # max_trades - check_fund_limits below still owns the actual pause+
+    # stop once a trade closes and confirms a real breach; this is an
+    # ADDITIONAL, non-mutating proactive gate. Unlike session-scoped
+    # limits, check_fund_limits only ever ran reactively (after a trade
+    # closes) - there was no proactive check here at all, so a burst of
+    # signals arriving within one expiry window could all pass it before
+    # any of them resolve (execution/pocket_executor.py's track_outcome
+    # docstring: MAX_CONCURRENT_WORKERS bounds placements, not open
+    # positions). Read-only: never pauses the fund or ends a session -
+    # only the reactive check below does that.
+    if fund["loss_limit"] > 0 or fund["max_trades"] > 0:
+        performance = get_fund_performance(fund_id)
+        if fund["loss_limit"] > 0:
+            pending_stake = database.get_fund_pending_stake(fund_id)
+            effective_pnl = performance["profit_loss"] - pending_stake
+            if effective_pnl <= -fund["loss_limit"]:
+                return False, (
+                    f"fund's lifetime loss limit ${fund['loss_limit']:.2f} would be breached if "
+                    f"${pending_stake:.2f} currently at risk in open trades all lose"
+                ), False
+        if fund["max_trades"] > 0:
+            pending_count = database.count_fund_pending_trades(fund_id)
+            if performance["total_closed"] + pending_count >= fund["max_trades"]:
+                return False, (
+                    f"fund's lifetime max trades {fund['max_trades']} would be reached by "
+                    f"{pending_count} currently open trade(s)"
+                ), False
+
     return True, None, can_go_live
