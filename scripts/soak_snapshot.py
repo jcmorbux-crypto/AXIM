@@ -95,6 +95,18 @@ def count_new_error_lines():
         return 0
     lines = AXIM_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
     last_count = int(STATE_FILE.read_text()) if STATE_FILE.exists() else 0
+    # core/logger.py's axim.log is a RotatingFileHandler - once it hits
+    # MAX_BYTES it gets renamed aside and a fresh, empty axim.log starts.
+    # A stored last_count from before that rotation would be larger than
+    # this fresh file's actual line count, and lines[last_count:] silently
+    # returns [] for any out-of-range start index (confirmed, not
+    # assumed) rather than raising - every run after a rotation would
+    # report 0 new errors regardless of what's actually in the file,
+    # until it happened to regrow past the old count. Detected here by
+    # the file simply being shorter than last time; treated as "start
+    # counting fresh from this rotation" rather than silently going blind.
+    if len(lines) < last_count:
+        last_count = 0
     new_lines = lines[last_count:]
     new_errors = sum(1 for l in new_lines if " ERROR " in l or " CRITICAL " in l)
     STATE_FILE.write_text(str(len(lines)))
