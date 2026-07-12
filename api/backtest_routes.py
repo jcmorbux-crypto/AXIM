@@ -6,6 +6,7 @@ queue) - fine for the signal-pool sizes this feature targets; a very
 large pool could make that request slow, a known/documented limit
 rather than a silent one.
 """
+import asyncio
 import base64
 import csv
 import io
@@ -179,6 +180,17 @@ async def import_telegram_history(body: TelegramHistoryImportRequest, user=Depen
         raise HTTPException(status_code=502, detail=f"could not fetch Telegram history: {e}")
 
     batch = body.import_batch or f"telegram-{datetime.now().isoformat()}"
+    # A history import can run to hundreds of rows (body.limit) - looping
+    # database.create_imported_signal synchronously right here, inside this
+    # async route, would block this process's one shared event loop (every
+    # other user's dashboard/trading request) for the whole loop's
+    # duration. Off-thread as one batch rather than per-row, so the loop
+    # itself doesn't repeatedly hop back onto the event loop between rows.
+    imported = await asyncio.to_thread(_import_signal_rows, rows, batch)
+    return {"imported": imported, "scanned": scanned, "import_batch": batch}
+
+
+def _import_signal_rows(rows, batch):
     imported = 0
     for row in rows:
         database.create_imported_signal(
@@ -187,7 +199,7 @@ async def import_telegram_history(body: TelegramHistoryImportRequest, user=Depen
             import_batch=batch,
         )
         imported += 1
-    return {"imported": imported, "scanned": scanned, "import_batch": batch}
+    return imported
 
 
 @router.patch("/signals/{signal_id}/grade")
