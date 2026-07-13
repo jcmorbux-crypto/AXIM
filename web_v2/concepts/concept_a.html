@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Concept A — Executive Portfolio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --paper: #faf8f3;
+  --surface: #ffffff;
+  --ink: #17181d;
+  --ink-dim: #6b6a63;
+  --ink-faint: #a3a196;
+  --border: #eae6da;
+  --accent: #1c3aa8;
+  --accent-dim: #eaeefb;
+  --gold: #97742b;
+  --gold-bg: #f8f0dc;
+  --green: #157a4a;
+  --green-bg: #e8f5ee;
+  --red: #a92e26;
+  --red-bg: #faece9;
+  --radius: 18px;
+  --shadow: 0 1px 2px rgba(23,24,29,.04), 0 12px 32px rgba(23,24,29,.06);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink);
+  font-family: -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.tag { position: fixed; top: 0; left: 0; right: 0; z-index: 50; background: #17181d; color: #fff; text-align: center; font-size: 11.5px; font-weight: 700; letter-spacing: .04em; padding: 6px; text-transform: uppercase; }
+.tag b { color: #e8c15a; }
+
+.shell { display: flex; min-height: 100vh; padding-top: 30px; }
+.nav { width: 220px; flex-shrink: 0; padding: 32px 18px; border-right: 1px solid var(--border); }
+.nav .brand { font-weight: 800; font-size: 17px; margin-bottom: 40px; }
+.nav .item { display: block; padding: 9px 12px; border-radius: 9px; color: var(--ink-dim); font-size: 14px; font-weight: 600; text-decoration: none; margin-bottom: 2px; }
+.nav .item.active { background: var(--accent-dim); color: var(--accent); }
+
+.main { flex: 1; max-width: 980px; margin: 0 auto; padding: 36px 40px 80px; }
+.eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); font-weight: 700; margin-bottom: 6px; }
+.greeting { font-size: 24px; font-weight: 700; letter-spacing: -.015em; margin: 0 0 28px; }
+
+/* ---- Hero: total portfolio value dominates ---- */
+.hero {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 36px 40px; margin-bottom: 20px; position: relative; overflow: hidden;
+}
+.hero::before { content: ""; position: absolute; top: -60px; right: -60px; width: 280px; height: 280px; border-radius: 50%; background: radial-gradient(circle, var(--gold-bg) 0%, transparent 70%); opacity: .8; }
+.hero-top { display: flex; justify-content: space-between; align-items: flex-start; position: relative; }
+.hero-label { font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); font-weight: 700; margin-bottom: 10px; }
+.hero-value { font-size: 58px; font-weight: 800; letter-spacing: -.025em; line-height: 1; font-variant-numeric: tabular-nums; }
+.hero-delta { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 15px; font-weight: 700; }
+.hero-delta.up { color: var(--green); }
+.hero-delta .sub { color: var(--ink-faint); font-weight: 500; font-size: 13px; }
+.tf-toggle { display: flex; gap: 4px; background: var(--paper); border-radius: 10px; padding: 4px; }
+.tf-toggle button { border: none; background: none; padding: 6px 14px; border-radius: 7px; font-size: 12.5px; font-weight: 700; color: var(--ink-dim); cursor: pointer; }
+.tf-toggle button.active { background: var(--surface); color: var(--accent); box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+
+.chart-wrap { margin-top: 24px; position: relative; }
+.chart-legend { display: flex; gap: 20px; font-size: 12px; color: var(--ink-dim); margin-bottom: 6px; }
+.chart-legend .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 5px; }
+.growth-stats { display: flex; gap: 36px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); }
+.growth-stats .g { display: flex; flex-direction: column; gap: 2px; }
+.growth-stats .g .l { font-size: 11.5px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .05em; }
+.growth-stats .g .v { font-size: 19px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.growth-stats .g .v.up { color: var(--green); }
+
+/* ---- Fund cards ---- */
+.section-label { font-size: 12.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); font-weight: 750; margin: 32px 0 14px; }
+.fund-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.fund-card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; box-shadow: var(--shadow); }
+.fund-card .fname { font-weight: 750; font-size: 15px; margin-bottom: 2px; }
+.fund-card .fstatus { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 750; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; margin: 6px 0 14px; }
+.fstatus.trading { background: var(--green-bg); color: var(--green); }
+.fstatus.paused { background: var(--gold-bg); color: var(--gold); }
+.fstatus.target { background: var(--accent-dim); color: var(--accent); }
+.fstatus.stopped { background: var(--red-bg); color: var(--red); }
+.fund-card .fvalue { font-size: 25px; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.fund-card .fdelta { font-size: 12.5px; font-weight: 700; margin-top: 2px; }
+.fund-card svg { margin-top: 12px; width: 100%; height: 36px; }
+
+/* ---- Today strip ---- */
+.today-strip { display: flex; gap: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); margin-top: 28px; overflow: hidden; }
+.today-strip .cell { flex: 1; padding: 18px 22px; border-right: 1px solid var(--border); }
+.today-strip .cell:last-child { border-right: none; }
+.today-strip .cell .l { font-size: 11.5px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 5px; }
+.today-strip .cell .v { font-size: 21px; font-weight: 750; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="tag">DASHBOARD CONCEPT <b>A</b> &middot; EXECUTIVE PORTFOLIO &middot; NOT WIRED TO LIVE DATA</div>
+<div class="shell">
+  <div class="nav">
+    <div class="brand">AXIM Trader</div>
+    <a class="item active" href="#">Portfolio</a>
+    <a class="item" href="#">Funds</a>
+    <a class="item" href="#">Signals</a>
+    <a class="item" href="#">Strategy</a>
+    <a class="item" href="#">Settings</a>
+  </div>
+  <div class="main">
+    <div class="eyebrow">Wednesday, July 15</div>
+    <h1 class="greeting">Good morning</h1>
+
+    <div class="hero">
+      <div class="hero-top">
+        <div>
+          <div class="hero-label">Total Portfolio Value</div>
+          <div class="hero-value">$48,214.62</div>
+          <div class="hero-delta up">&#9650; $1,204.11 <span class="sub">(+2.56%) today</span></div>
+        </div>
+        <div class="tf-toggle">
+          <button>1D</button><button class="active">1W</button><button>1M</button><button>ALL</button>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart-legend"><span><span class="dot" style="background:var(--accent);"></span>Your Portfolio</span><span><span class="dot" style="background:var(--ink-faint);"></span>30-Day Baseline</span></div>
+        <svg viewBox="0 0 900 160" style="width:100%; height:160px;">
+          <polyline points="0,120 90,110 180,118 270,95 360,100 450,80 540,88 630,60 720,68 810,40 900,35" fill="none" stroke="var(--ink-faint)" stroke-width="2" stroke-dasharray="4 4" opacity="0.6"/>
+          <polyline points="0,130 90,122 180,126 270,90 360,98 450,70 540,82 630,45 720,58 810,25 900,18" fill="none" stroke="var(--accent)" stroke-width="3"/>
+          <circle cx="900" cy="18" r="5" fill="var(--accent)"/>
+        </svg>
+      </div>
+      <div class="growth-stats">
+        <div class="g"><div class="l">Today</div><div class="v up">+2.56%</div></div>
+        <div class="g"><div class="l">This Week</div><div class="v up">+5.14%</div></div>
+        <div class="g"><div class="l">This Month</div><div class="v up">+11.82%</div></div>
+        <div class="g"><div class="l">All-Time</div><div class="v up">+38.4%</div></div>
+      </div>
+    </div>
+
+    <div class="section-label">Your Funds</div>
+    <div class="fund-grid">
+      <div class="fund-card">
+        <div class="fname">Primary Fund</div>
+        <span class="fstatus trading">&#9679; Trading</span>
+        <div class="fvalue">$21,940.00</div>
+        <div class="fdelta" style="color:var(--green);">+$412.00 today</div>
+        <svg viewBox="0 0 200 36"><polyline points="0,28 30,24 60,26 90,18 120,20 150,10 180,12 200,6" fill="none" stroke="var(--green)" stroke-width="2"/></svg>
+      </div>
+      <div class="fund-card">
+        <div class="fname">Momentum Fund</div>
+        <span class="fstatus target">&#9679; Target Hit</span>
+        <div class="fvalue">$14,320.50</div>
+        <div class="fdelta" style="color:var(--green);">+$680.50 today</div>
+        <svg viewBox="0 0 200 36"><polyline points="0,30 30,20 60,22 90,12 120,14 150,6 180,8 200,4" fill="none" stroke="var(--accent)" stroke-width="2"/></svg>
+      </div>
+      <div class="fund-card">
+        <div class="fname">Conservative Fund</div>
+        <span class="fstatus paused">&#9679; Paused</span>
+        <div class="fvalue">$8,954.12</div>
+        <div class="fdelta" style="color:var(--ink-faint);">$0.00 today</div>
+        <svg viewBox="0 0 200 36"><polyline points="0,18 30,17 60,19 90,18 120,17 150,18 180,17 200,18" fill="none" stroke="var(--ink-faint)" stroke-width="2"/></svg>
+      </div>
+      <div class="fund-card">
+        <div class="fname">Recovery Test Fund</div>
+        <span class="fstatus stopped">&#9679; Stopped — Risk Limit</span>
+        <div class="fvalue">$3,000.00</div>
+        <div class="fdelta" style="color:var(--red);">&minus;$111.02 today</div>
+        <svg viewBox="0 0 200 36"><polyline points="0,10 30,14 60,12 90,20 120,18 150,26 180,24 200,30" fill="none" stroke="var(--red)" stroke-width="2"/></svg>
+      </div>
+    </div>
+
+    <div class="today-strip">
+      <div class="cell"><div class="l">Completed Trades Today</div><div class="v">47</div></div>
+      <div class="cell"><div class="l">Funds Trading</div><div class="v">2 of 4</div></div>
+      <div class="cell"><div class="l">Best Performer Today</div><div class="v" style="color:var(--green);">Momentum Fund</div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

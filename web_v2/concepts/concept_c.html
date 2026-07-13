@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Concept C — Pocket Option-Inspired Fund Automation</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --bg: #0a0b10;
+  --surface: #15161e;
+  --surface-2: #1c1e29;
+  --border: #262835;
+  --ink: #f5f6fa;
+  --ink-dim: #8d90a3;
+  --ink-faint: #5b5e70;
+  --up: #17dc8f;
+  --up-bg: #0c2e22;
+  --down: #ff4d5e;
+  --down-bg: #33151b;
+  --brand: #17dc8f;
+  --gold: #ffc94d;
+  --radius: 20px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.tag { position: fixed; top: 0; left: 0; right: 0; z-index: 50; background: #000; color: #fff; text-align: center; font-size: 11.5px; font-weight: 700; letter-spacing: .04em; padding: 6px; text-transform: uppercase; }
+.tag b { color: var(--up); }
+
+.shell { display: flex; min-height: 100vh; padding-top: 30px; }
+.nav { width: 84px; flex-shrink: 0; padding: 24px 0; border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.nav .mark { width: 34px; height: 34px; border-radius: 10px; background: var(--brand); margin-bottom: 26px; }
+.nav .item { width: 52px; height: 52px; border-radius: 14px; display: flex; align-items: center; justify-content: center; color: var(--ink-faint); font-size: 19px; text-decoration: none; margin-bottom: 4px; }
+.nav .item.active { background: var(--surface-2); color: var(--up); }
+
+.main { flex: 1; padding: 26px 32px 60px; max-width: 1200px; }
+
+/* ---- Pulsing balance header, PO-style ---- */
+.balance-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);
+  border: 1px solid var(--border); border-radius: var(--radius); padding: 26px 32px; margin-bottom: 24px;
+  position: relative; overflow: hidden;
+}
+.balance-bar::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 85% 20%, rgba(23,220,143,.12) 0%, transparent 55%); }
+.balance-left { position: relative; }
+.balance-label { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); font-weight: 700; margin-bottom: 6px; }
+.balance-value-row { display: flex; align-items: baseline; gap: 14px; }
+.balance-value { font-size: 46px; font-weight: 800; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.balance-pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--up); position: relative; top: -18px; }
+.balance-pulse::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 1.5px solid var(--up); animation: pulse 1.8s ease-out infinite; }
+@keyframes pulse { 0% { transform: scale(.6); opacity: .9; } 100% { transform: scale(2.1); opacity: 0; } }
+.balance-delta { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; padding: 5px 12px; border-radius: 999px; background: var(--up-bg); color: var(--up); font-weight: 750; font-size: 14px; }
+.balance-right { position: relative; display: flex; gap: 10px; }
+.pill-btn { border: none; border-radius: 999px; padding: 13px 26px; font-size: 14px; font-weight: 800; cursor: pointer; font-family: inherit; }
+.pill-btn.resume { background: var(--up); color: #06120d; }
+.pill-btn.pause { background: var(--surface-2); color: var(--ink); border: 1px solid var(--border); }
+
+/* ---- Fund cards, horizontal PO-asset-row style ---- */
+.section-label { font-size: 12px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); font-weight: 750; margin: 4px 0 12px; }
+.fund-scroll { display: flex; gap: 14px; overflow-x: auto; padding-bottom: 6px; }
+.fund-tile {
+  min-width: 220px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px;
+  flex-shrink: 0; position: relative;
+}
+.fund-tile.up { border-color: rgba(23,220,143,.35); }
+.fund-tile.down { border-color: rgba(255,77,94,.35); }
+.fund-tile .ft-name { font-size: 13px; font-weight: 700; color: var(--ink-dim); margin-bottom: 6px; }
+.fund-tile .ft-value { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.fund-tile .ft-pct { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; font-weight: 800; margin-top: 4px; }
+.fund-tile .ft-pct.up { color: var(--up); }
+.fund-tile .ft-pct.down { color: var(--down); }
+.fund-tile .ft-pct.flat { color: var(--ink-faint); }
+.fund-tile svg { margin-top: 10px; width: 100%; height: 30px; }
+.fund-tile .ft-status { position: absolute; top: 16px; right: 16px; font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; padding: 3px 8px; border-radius: 999px; }
+.ft-status.live { background: var(--up-bg); color: var(--up); }
+.ft-status.paused { background: var(--surface-2); color: var(--ink-faint); }
+.ft-status.stopped { background: var(--down-bg); color: var(--down); }
+
+/* ---- Fast outcome ticker ---- */
+.ticker { margin-top: 26px; background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 16px 20px; overflow: hidden; }
+.ticker-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.tick-pill { display: flex; align-items: center; gap: 7px; background: var(--surface-2); border-radius: 999px; padding: 7px 14px; font-size: 12.5px; font-weight: 700; }
+.tick-pill .res { font-weight: 800; }
+.tick-pill .res.win { color: var(--up); }
+.tick-pill .res.loss { color: var(--down); }
+.tick-pill .asset { color: var(--ink-dim); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="tag">DASHBOARD CONCEPT <b>C</b> &middot; POCKET-OPTION-INSPIRED FUND AUTOMATION &middot; NOT WIRED TO LIVE DATA</div>
+<div class="shell">
+  <div class="nav">
+    <div class="mark"></div>
+    <a class="item active" href="#">&#9679;</a>
+    <a class="item" href="#">&#9670;</a>
+    <a class="item" href="#">&#9733;</a>
+    <a class="item" href="#">&#9881;</a>
+  </div>
+  <div class="main">
+    <div class="balance-bar">
+      <div class="balance-left">
+        <div class="balance-label">Total Portfolio Value</div>
+        <div class="balance-value-row"><span class="balance-value">$48,214.62</span><span class="balance-pulse"></span></div>
+        <div class="balance-delta">&#9650; +$1,204.11 today (+2.56%)</div>
+      </div>
+      <div class="balance-right">
+        <button class="pill-btn pause">Pause All</button>
+        <button class="pill-btn resume">Funds Trading</button>
+      </div>
+    </div>
+
+    <div class="section-label">Your Funds — swipe to see all</div>
+    <div class="fund-scroll">
+      <div class="fund-tile up">
+        <span class="ft-status live">Live</span>
+        <div class="ft-name">Primary Fund</div>
+        <div class="ft-value">$21,940</div>
+        <div class="ft-pct up">&#9650; 1.91%</div>
+        <svg viewBox="0 0 180 30"><polyline points="0,24 20,20 40,22 60,14 80,16 100,8 120,10 140,4 160,3 180,1" fill="none" stroke="#17dc8f" stroke-width="2.5"/></svg>
+      </div>
+      <div class="fund-tile up">
+        <span class="ft-status live">Live</span>
+        <div class="ft-name">Momentum Fund</div>
+        <div class="ft-value">$14,320</div>
+        <div class="ft-pct up">&#9650; 4.99%</div>
+        <svg viewBox="0 0 180 30"><polyline points="0,26 20,16 40,18 60,9 80,11 100,3 120,5 140,1 160,2 180,0" fill="none" stroke="#17dc8f" stroke-width="2.5"/></svg>
+      </div>
+      <div class="fund-tile">
+        <span class="ft-status paused">Paused</span>
+        <div class="ft-name">Conservative Fund</div>
+        <div class="ft-value">$8,954</div>
+        <div class="ft-pct flat">&#9679; 0.00%</div>
+        <svg viewBox="0 0 180 30"><polyline points="0,15 20,14 40,16 60,15 80,14 100,15 120,14 140,15 160,14 180,15" fill="none" stroke="#5b5e70" stroke-width="2.5"/></svg>
+      </div>
+      <div class="fund-tile down">
+        <span class="ft-status stopped">Stopped</span>
+        <div class="ft-name">Recovery Test Fund</div>
+        <div class="ft-value">$3,000</div>
+        <div class="ft-pct down">&#9660; 3.57%</div>
+        <svg viewBox="0 0 180 30"><polyline points="0,6 20,10 40,8 60,17 80,14 100,22 120,19 140,26 160,24 180,28" fill="none" stroke="#ff4d5e" stroke-width="2.5"/></svg>
+      </div>
+    </div>
+
+    <div class="section-label" style="margin-top:24px;">Latest Results</div>
+    <div class="ticker">
+      <div class="ticker-row">
+        <span class="tick-pill"><span class="res win">WIN</span><span class="asset">EUR/USD &middot; +$22</span></span>
+        <span class="tick-pill"><span class="res win">WIN</span><span class="asset">GBP/JPY &middot; +$18</span></span>
+        <span class="tick-pill"><span class="res loss">LOSS</span><span class="asset">AUD/CAD &middot; &minus;$40</span></span>
+        <span class="tick-pill"><span class="res win">WIN</span><span class="asset">USD/CHF &middot; +$25</span></span>
+        <span class="tick-pill"><span class="res loss">LOSS</span><span class="asset">EUR/JPY &middot; &minus;$20</span></span>
+        <span class="tick-pill"><span class="res win">WIN</span><span class="asset">NZD/USD &middot; +$16</span></span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

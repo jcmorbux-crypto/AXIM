@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Concept B — Professional Trading Desk</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root {
+  --bg: #0c0e14;
+  --surface: #14161f;
+  --surface-2: #191c27;
+  --border: #262936;
+  --ink: #eef0f5;
+  --ink-dim: #8b90a3;
+  --ink-faint: #575c6f;
+  --accent: #4f8dff;
+  --accent-dim: #16233f;
+  --green: #29c58a;
+  --green-bg: #0f2a20;
+  --red: #ff5d5d;
+  --red-bg: #351317;
+  --amber: #e0a83e;
+  --amber-bg: #332507;
+  --mono: "SF Mono", "Cascadia Code", Consolas, monospace;
+  --radius: 12px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: -apple-system, "Segoe UI", Inter, Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.tag { position: fixed; top: 0; left: 0; right: 0; z-index: 50; background: #000; color: #fff; text-align: center; font-size: 11.5px; font-weight: 700; letter-spacing: .04em; padding: 6px; text-transform: uppercase; }
+.tag b { color: #4f8dff; }
+
+.shell { display: flex; min-height: 100vh; padding-top: 30px; }
+.nav { width: 200px; flex-shrink: 0; padding: 28px 16px; border-right: 1px solid var(--border); }
+.nav .brand { font-weight: 800; font-size: 15.5px; margin-bottom: 32px; letter-spacing: -.01em; }
+.nav .item { display: block; padding: 8px 10px; border-radius: 8px; color: var(--ink-dim); font-size: 13px; font-weight: 600; text-decoration: none; margin-bottom: 2px; }
+.nav .item.active { background: var(--accent-dim); color: var(--accent); }
+
+.main { flex: 1; padding: 24px 28px 60px; max-width: 1300px; }
+
+/* ---- Top strip: aggregate + global controls ---- */
+.top-strip { display: flex; align-items: center; gap: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 22px; margin-bottom: 20px; }
+.top-strip .agg { display: flex; flex-direction: column; gap: 2px; }
+.top-strip .agg .l { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); font-weight: 700; }
+.top-strip .agg .v { font-family: var(--mono); font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--green); }
+.top-strip .divider { width: 1px; height: 34px; background: var(--border); }
+.top-strip .spacer { flex: 1; }
+.btn { border: none; border-radius: 8px; padding: 9px 16px; font-size: 12.5px; font-weight: 700; cursor: pointer; font-family: inherit; }
+.btn-pause { background: var(--surface-2); color: var(--ink); border: 1px solid var(--border); }
+.btn-stop { background: var(--red); color: #fff; }
+
+/* ---- Fund tile grid ---- */
+.grid-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); font-weight: 750; margin: 22px 0 10px; }
+.tile-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; position: relative; }
+.tile .t-status { position: absolute; top: 14px; right: 14px; width: 8px; height: 8px; border-radius: 50%; }
+.tile .t-status.live { background: var(--green); box-shadow: 0 0 0 3px var(--green-bg); }
+.tile .t-status.paused { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-bg); }
+.tile .t-status.stopped { background: var(--red); box-shadow: 0 0 0 3px var(--red-bg); }
+.tile .t-name { font-size: 12.5px; font-weight: 700; color: var(--ink-dim); margin-bottom: 8px; padding-right: 20px; }
+.tile .t-value { font-family: var(--mono); font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.tile .t-delta { font-family: var(--mono); font-size: 12px; font-weight: 700; margin-top: 3px; }
+.tile .t-delta.up { color: var(--green); }
+.tile .t-delta.down { color: var(--red); }
+.tile .t-delta.flat { color: var(--ink-faint); }
+.tile svg { margin-top: 10px; width: 100%; height: 26px; }
+.tile .t-tag { display: inline-block; margin-top: 8px; font-size: 9.5px; font-weight: 750; text-transform: uppercase; letter-spacing: .04em; padding: 2px 7px; border-radius: 4px; }
+.t-tag.live { background: var(--green-bg); color: var(--green); }
+.t-tag.paused { background: var(--amber-bg); color: var(--amber); }
+.t-tag.stopped { background: var(--red-bg); color: var(--red); }
+
+/* ---- Desk layout: ticker + risk rail ---- */
+.desk { display: flex; gap: 16px; margin-top: 22px; }
+.ticker-panel { flex: 2; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px; }
+.ticker-panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); margin: 0 0 10px; font-weight: 750; }
+.trow { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.trow:last-child { border-bottom: none; }
+.trow .fund { color: var(--ink-dim); width: 130px; flex-shrink: 0; font-weight: 600; }
+.trow .asset { font-family: var(--mono); flex: 1; }
+.trow .result { font-family: var(--mono); font-weight: 700; width: 70px; text-align: right; }
+.trow .result.win { color: var(--green); }
+.trow .result.loss { color: var(--red); }
+.trow .time { color: var(--ink-faint); font-size: 11px; width: 50px; text-align: right; font-family: var(--mono); }
+
+.risk-panel { flex: 1; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px; }
+.risk-panel h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-faint); margin: 0 0 12px; font-weight: 750; }
+.risk-row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+.risk-row:last-child { border-bottom: none; }
+.risk-row .rv { font-family: var(--mono); font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="tag">DASHBOARD CONCEPT <b>B</b> &middot; PROFESSIONAL TRADING DESK &middot; NOT WIRED TO LIVE DATA</div>
+<div class="shell">
+  <div class="nav">
+    <div class="brand">AXIM Trader</div>
+    <a class="item active" href="#">Desk</a>
+    <a class="item" href="#">Funds</a>
+    <a class="item" href="#">Signals</a>
+    <a class="item" href="#">Strategy</a>
+    <a class="item" href="#">Settings</a>
+  </div>
+  <div class="main">
+    <div class="top-strip">
+      <div class="agg"><div class="l">Today, All Funds</div><div class="v">+$981.09</div></div>
+      <div class="divider"></div>
+      <div class="agg"><div class="l">Open Positions</div><div class="v" style="color:var(--ink); font-size:19px;">3</div></div>
+      <div class="divider"></div>
+      <div class="agg"><div class="l">Funds Live</div><div class="v" style="color:var(--ink); font-size:19px;">2 / 4</div></div>
+      <div class="spacer"></div>
+      <button class="btn btn-pause">Pause All</button>
+      <button class="btn btn-stop">Emergency Stop</button>
+    </div>
+
+    <div class="grid-label">Funds (4)</div>
+    <div class="tile-grid">
+      <div class="tile">
+        <span class="t-status live"></span>
+        <div class="t-name">Primary Fund</div>
+        <div class="t-value">$21,940.00</div>
+        <div class="t-delta up">+$412.00</div>
+        <svg viewBox="0 0 160 26"><polyline points="0,20 20,17 40,19 60,12 80,14 100,7 120,9 140,4 160,3" fill="none" stroke="#29c58a" stroke-width="2"/></svg>
+        <span class="t-tag live">Live</span>
+      </div>
+      <div class="tile">
+        <span class="t-status live"></span>
+        <div class="t-name">Momentum Fund</div>
+        <div class="t-value">$14,320.50</div>
+        <div class="t-delta up">+$680.50</div>
+        <svg viewBox="0 0 160 26"><polyline points="0,22 20,14 40,16 60,8 80,10 100,3 120,5 140,2 160,1" fill="none" stroke="#29c58a" stroke-width="2"/></svg>
+        <span class="t-tag live">Live</span>
+      </div>
+      <div class="tile">
+        <span class="t-status paused"></span>
+        <div class="t-name">Conservative Fund</div>
+        <div class="t-value">$8,954.12</div>
+        <div class="t-delta flat">$0.00</div>
+        <svg viewBox="0 0 160 26"><polyline points="0,13 20,12 40,14 60,13 80,12 100,13 120,12 140,13 160,12" fill="none" stroke="#575c6f" stroke-width="2"/></svg>
+        <span class="t-tag paused">Paused</span>
+      </div>
+      <div class="tile">
+        <span class="t-status stopped"></span>
+        <div class="t-name">Recovery Test Fund</div>
+        <div class="t-value">$3,000.00</div>
+        <div class="t-delta down">&minus;$111.02</div>
+        <svg viewBox="0 0 160 26"><polyline points="0,6 20,9 40,8 60,15 80,13 100,19 120,17 140,22 160,21" fill="none" stroke="#ff5d5d" stroke-width="2"/></svg>
+        <span class="t-tag stopped">Stopped — Risk Limit</span>
+      </div>
+    </div>
+
+    <div class="desk">
+      <div class="ticker-panel">
+        <h3>Recent Outcomes</h3>
+        <div class="trow"><span class="fund">Momentum Fund</span><span class="asset">EUR/USD OTC &middot; CALL</span><span class="result win">WIN +$22</span><span class="time">0:12</span></div>
+        <div class="trow"><span class="fund">Primary Fund</span><span class="asset">GBP/JPY OTC &middot; PUT</span><span class="result win">WIN +$18</span><span class="time">1:04</span></div>
+        <div class="trow"><span class="fund">Recovery Test Fund</span><span class="asset">AUD/CAD OTC &middot; CALL</span><span class="result loss">LOSS &minus;$40</span><span class="time">2:31</span></div>
+        <div class="trow"><span class="fund">Momentum Fund</span><span class="asset">USD/CHF OTC &middot; CALL</span><span class="result win">WIN +$25</span><span class="time">3:47</span></div>
+        <div class="trow"><span class="fund">Primary Fund</span><span class="asset">EUR/JPY OTC &middot; PUT</span><span class="result loss">LOSS &minus;$20</span><span class="time">5:02</span></div>
+      </div>
+      <div class="risk-panel">
+        <h3>Risk &amp; Limits</h3>
+        <div class="risk-row"><span>Daily loss limit</span><span class="rv" style="color:var(--green);">14% used</span></div>
+        <div class="risk-row"><span>Max exposure</span><span class="rv">$1,240</span></div>
+        <div class="risk-row"><span>Consecutive losses</span><span class="rv">1</span></div>
+        <div class="risk-row"><span>Funds within limits</span><span class="rv" style="color:var(--green);">4 / 4</span></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
