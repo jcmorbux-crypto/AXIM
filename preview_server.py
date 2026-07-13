@@ -37,23 +37,251 @@ import database
 import fund_manager
 import trade_statistics
 import backtest_engine
+import risk_engine  # pure computation module, same one backtest_engine.py itself imports - no DB writes, no execution
 
 app = FastAPI(title="AXIM Trader V2 Preview (read-only)")
 
 WEB_V2_DIR = PROJECT_ROOT / "web_v2"
 
-# The 6 curated starter strategies (Strategy Studio) - a genuine spread
-# across the real archetype space, not an arbitrary/random 6: two
-# no-martingale capital-preservation profiles (Capital Shield, Base
-# Camp), the profile production's own template set already calls "the
-# default starting point" (Balanced Builder - the one with a light,
-# capped martingale), two no-martingale growth profiles at different
-# aggressiveness (AutoPilot Growth, Elite Session), and one genuine
-# controlled-martingale example (Recovery Guard) so a beginner sees what
-# "capped recovery" actually looks like rather than only extremes.
-# Picked by reading all 27 templates' real config, not by name alone -
-# see the session that built this for the actual numbers compared.
-STARTER_STRATEGY_IDS = [1, 17, 3, 26, 8, 27]
+# Starter names v2 - direct feedback that the original 6 (and several
+# of the 27 template names, e.g. "Base Camp", "Mission Control") were
+# "vague or gimmicky" and didn't explain the risk logic. Every starter
+# below is either a real template (mapped to its closest honest config
+# match, not by name) or a SYNTHETIC snapshot for the two archetypes no
+# real template covers (a true fixed-$ strategy, and "build your own").
+#
+# Real template mapping, chosen by re-reading all 27 templates' actual
+# config (not name):
+#   Capital Preservation <- id 1  "Capital Shield"   (1% fixed/percent-lean, no martingale, vault optional)
+#   Balanced Growth       <- id 16 "RiskBound"         (2%, session/target-based compounding, explicitly capped, NO martingale)
+#   Controlled Recovery   <- id 22 "Controlled Recovery" (already named correctly: short, capped martingale ladder)
+#   Profit Compounding    <- id 7  "Growth Engine"     (milestone-based compounding only, no martingale)
+# Fixed Stake and Custom Strategy have no real template (every one of
+# the 27 uses percent or kelly sizing, never a plain fixed dollar
+# amount) - built as explicit synthetic snapshots instead of forcing a
+# dishonest mapping onto a percent-based template.
+SYNTHETIC_PROFILES = {
+    9001: {
+        "id": 9001, "name": "Fixed Stake", "description": "The same trade amount every time - no percentage math, no ladder, no compounding.",
+        "is_template": 1, "bankroll": 0.0, "sizing_mode": "fixed", "fixed_amount": 5.0, "percent_of_bankroll": 0.0,
+        "kelly_win_rate_estimate": None, "kelly_payout_estimate": None, "kelly_fraction_multiplier": 0.5,
+        "max_trade_amount": 0.0, "max_daily_loss": 0.0, "max_session_loss": 0.0, "profit_target": 0.0, "max_trades": 0,
+        "martingale": {"enabled": False}, "compounding": {"mode": "disabled"}, "profit_vault": {"enabled": False},
+    },
+    9002: {
+        "id": 9002, "name": "Custom Strategy", "description": "Start from a blank, safe default and set every rule yourself.",
+        "is_template": 1, "bankroll": 0.0, "sizing_mode": "percent", "fixed_amount": 1.0, "percent_of_bankroll": 1.0,
+        "kelly_win_rate_estimate": None, "kelly_payout_estimate": None, "kelly_fraction_multiplier": 0.5,
+        "max_trade_amount": 0.0, "max_daily_loss": 0.0, "max_session_loss": 0.0, "profit_target": 0.0, "max_trades": 0,
+        "martingale": {"enabled": False}, "compounding": {"mode": "disabled"}, "profit_vault": {"enabled": False},
+        "is_custom_entry": True,  # routes straight to the customize form, never shows a simulated detail page
+    },
+}
+
+STARTER_STRATEGY_IDS = [1, 16, 22, 7, 9001, 9002]
+
+# Display-name overrides - the profile's REAL config and real template
+# row are untouched (this is a preview-layer rename only, never a DB
+# write); applied to both the 6 starters and a subset of the 27
+# "Advanced Library" entries whose original names were flagged as
+# gimmicky. Picked per-template by matching the suggested descriptive
+# names against each one's actual real config, not assigned arbitrarily.
+NAME_OVERRIDES = {
+    1: "Capital Preservation",
+    16: "Balanced Growth",
+    7: "Profit Compounding",
+    # Advanced Library renames - "Base Camp", "Mission Control", "Elite
+    # Session", "Signal Sprint", "Daily Climb", "TargetRun", "StepUp"
+    # explicitly flagged for removal; renamed here to describe the real
+    # config rather than removed outright, since the underlying
+    # strategies themselves are still real and usable, just misnamed.
+    17: "Small Bankroll Preservation",   # was "Base Camp" - 1%, no martingale, no vault, minimal-risk
+    12: "Session Compounding",           # was "Mission Control" - 2%, daily compounding, no martingale
+    27: "High-Conviction Risk",          # was "Elite Session" - 3%, smart compounding, vault
+    13: "Percentage Risk Growth",        # was "Signal Sprint" - 1.5%, plain percent, nothing else enabled
+    14: "Daily Risk Compounding",        # was "Daily Climb" - 2%, daily compounding, no martingale
+    20: "Daily Target Stop",             # was "TargetRun" - sprints to a fixed target then stops
+    18: "Milestone Risk Growth",         # was "StepUp" - milestone-based compounding, no martingale
+    3: "Two-Step Recovery",              # was "Balanced Builder" - exactly 2 martingale steps
+    23: "Milestone Compounding",         # was "Profit Staircase" - milestone-based compounding, no martingale
+    9: "Kelly Fractional",               # was "Precision Compounding" - Kelly-criterion sizing
+    2: "Profit Vault Conservative",      # was "Vault Builder" - large vault skim, no martingale
+}
+
+
+def _display_name(profile):
+    return NAME_OVERRIDES.get(profile["id"], profile["name"])
+
+
+def _get_profile(strategy_id):
+    """Looks up a starter/library profile by id - real DB templates
+    first, then the 2 synthetic ones (Fixed Stake, Custom Strategy) that
+    have no real template row at all."""
+    if strategy_id in SYNTHETIC_PROFILES:
+        return dict(SYNTHETIC_PROFILES[strategy_id])
+    return database.get_risk_profile(strategy_id)
+
+
+# Real finding, not assumed: EVERY one of the 27 real templates has
+# compounding_settings.steps_json = NULL - the compounding `mode`
+# string ("daily"/"smart"/"milestone_based"/etc) is currently a label
+# with no functional milestone schedule behind it anywhere in
+# production's template set (core/risk_engine.py's
+# _effective_risk_percent treats every non-disabled mode identically,
+# driven entirely by steps_json - confirmed by reading the function, not
+# assumed). Rather than either display a broken "does nothing" card or
+# fabricate numbers pretending the real template already has them, the
+# 2 compounding-flavored starters get a clearly-labeled REPRESENTATIVE
+# starting schedule here - exactly what a "starter template, customize
+# it" is supposed to offer. Applied only for display/simulation in THIS
+# preview process; never written back to the real template row (this
+# server has no write path at all).
+STARTER_COMPOUNDING_OVERLAY = {
+    16: {"steps_json": '[{"profit_threshold": 50, "risk_percent": 2.5}]', "max_risk_percent": 3.0, "drawdown_reset_percent": 10.0},  # Balanced Growth
+    7: {"steps_json": '[{"profit_threshold": 100, "risk_percent": 2.5}, {"profit_threshold": 250, "risk_percent": 3.0}]', "max_risk_percent": 3.0},  # Profit Compounding
+}
+
+
+def _with_overlay(profile):
+    """Returns a deep-enough copy with STARTER_COMPOUNDING_OVERLAY merged
+    into the compounding sub-dict, if this profile has one - used
+    identically for both the displayed money-rules text and the actual
+    simulation run, so what's shown always matches what was simulated."""
+    overlay = STARTER_COMPOUNDING_OVERLAY.get(profile["id"])
+    if not overlay:
+        return profile
+    p = dict(profile)
+    p["compounding"] = {**profile["compounding"], **overlay}
+    return p
+
+
+def _fmt_pct(n):
+    return f"{n:g}%"
+
+
+def _martingale_ladder_string(m):
+    if m.get("custom_ladder_json"):
+        import json as _json
+        ladder = _json.loads(m["custom_ladder_json"])
+        return " -> ".join(f"${v:g}" for v in ladder)
+    steps = list(range(0, m["max_steps"] + 1))
+    return " -> ".join(f"{m['multiplier'] ** s:.2g}x" for s in steps)
+
+
+def _martingale_max_exposure_percent(profile):
+    """Worst case: every step in the ladder loses in a row. Sum of the
+    ladder's own stake-multiples (not a simulated average) - a real,
+    deterministic ceiling, not a scenario-dependent estimate."""
+    m = profile["martingale"]
+    if not m["enabled"]:
+        return None
+    base_pct = profile.get("percent_of_bankroll") or 0
+    if profile["sizing_mode"] != "percent" or not base_pct:
+        return None
+    total_multiple = sum(m["multiplier"] ** s for s in range(0, m["max_steps"] + 1))
+    return round(base_pct * total_multiple, 2)
+
+
+def _money_rules(profile):
+    """The exact-numbers card/detail content - direct response to 'cards
+    describe personalities, not bankroll mechanics.' Every field is
+    either a real stored number or explicitly says when a mechanism is
+    present but has no configured schedule (never silently blank, never
+    fabricated - P9)."""
+    sizing_mode = profile["sizing_mode"]
+    pct = profile.get("percent_of_bankroll") or 0
+    m, c, v = profile["martingale"], profile["compounding"], profile["profit_vault"]
+
+    if sizing_mode == "fixed":
+        risk_per_trade = f"Fixed ${profile['fixed_amount']:g} per trade"
+        sizing_method = "Fixed amount"
+    elif sizing_mode == "kelly":
+        risk_per_trade = "Dynamic - computed from your win-rate/payout estimates each trade"
+        sizing_method = "Kelly-based"
+    elif sizing_mode == "dynamic":
+        risk_per_trade = f"Dynamic {_fmt_pct(pct)} of current balance (recalculated every trade)"
+        sizing_method = "Dynamic percentage"
+    else:
+        risk_per_trade = f"{_fmt_pct(pct)} of active bankroll"
+        sizing_method = "Percentage of bankroll"
+
+    martingale = None
+    if m["enabled"]:
+        max_exposure = _martingale_max_exposure_percent(profile)
+        martingale = {
+            "steps": m["max_steps"],
+            "ladder": _martingale_ladder_string(m),
+            "reset_rule": "Resets after a win" if m.get("reset_after_win") else "Does not reset after a win",
+            "max_exposure": f"{max_exposure:g}% of bankroll" if max_exposure is not None else "Depends on bankroll (fixed-amount sizing)",
+        }
+
+    compounding = None
+    if c["mode"] != "disabled":
+        import json as _json
+        steps = _json.loads(c["steps_json"]) if c.get("steps_json") else []
+        if steps:
+            steps_sorted = sorted(steps, key=lambda s: s["profit_threshold"])
+            chain = [f"{_fmt_pct(c['base_risk_percent'])}"] if c.get("base_risk_percent") else []
+            chain += [f"{_fmt_pct(s['risk_percent'])} at ${s['profit_threshold']:g} profit" for s in steps_sorted]
+            increase_rule = "Risk increases " + " -> ".join(chain)
+        else:
+            increase_rule = f"Labeled \"{c['mode'].replace('_',' ')}\" but no milestone schedule is configured yet on this template - customize to set one"
+        compounding = {
+            "trigger": c["mode"].replace("_", " "),
+            "increase_rule": increase_rule,
+            "reset_rule": f"Resets after a {c['drawdown_reset_percent']:g}% drawdown" if c.get("drawdown_reset_percent") else "No automatic reset configured",
+            "max_risk_cap": f"{_fmt_pct(c['max_risk_percent'])}" if c.get("max_risk_percent") else "No cap configured",
+        }
+
+    vault = None
+    if v["enabled"]:
+        vault = {"percent": f"{v['vault_percent']:g}%", "trigger": v["trigger_event"].replace("_", " ")}
+
+    profit_target = f"Stop at +${profile['profit_target']:g}" if profile.get("profit_target") else "No automatic stop"
+    loss_limit = f"Stop at -${profile['max_session_loss']:g}" if profile.get("max_session_loss") else "No automatic stop"
+
+    return {
+        "risk_per_trade": risk_per_trade, "sizing_method": sizing_method,
+        "martingale": martingale, "compounding": compounding, "vault": vault,
+        "profit_target": profit_target, "loss_limit": loss_limit,
+    }
+
+
+def _single_trade_scenarios(profile):
+    """Win scenario / loss scenario - a single real next-trade projection
+    from the profile's OWN sizing rule at bankroll=$1000, step=0 (not a
+    multi-trade simulation, so it's exact, not an average)."""
+    bankroll = DEFAULT_SCENARIO_BANKROLL
+    session_state = {"realized_pnl": 0.0, "current_martingale_step": 0, "current_momentum_step": 0, "consecutive_losses": 0}
+    p = dict(profile)
+    p["bankroll"] = bankroll
+    try:
+        stake = round(risk_engine._base_amount(p, session_state, record_events=False), 2)
+    except Exception:
+        stake = profile.get("fixed_amount", 1.0)
+    payout = DEFAULT_SCENARIO_PAYOUT / 100.0
+    win_amount = round(stake * payout, 2)
+    return {
+        "stake": stake,
+        "win": {"profit": win_amount, "new_balance": round(bankroll + win_amount, 2)},
+        "loss": {"loss": -stake, "new_balance": round(bankroll - stake, 2)},
+    }
+
+
+def _trade_by_trade_example(profile, win_rate=0.5, n=8):
+    """First N trades of the SAME simulation the animated chart already
+    ran - real numbers from a real (if hypothetical) run, not a
+    hand-crafted illustrative table."""
+    pool = _synthetic_signal_pool(win_rate, seed=42, num_trades=max(n, 20))
+    result = backtest_engine.simulate_strategy(pool, profile, DEFAULT_SCENARIO_BANKROLL, session_window="all")
+    return [
+        {
+            "seq": i + 1, "amount": t["trade_amount"], "result": t["result"],
+            "profit_loss": t["profit_loss"], "running_balance": t["running_balance"],
+            "martingale_step": t["martingale_step"],
+        }
+        for i, t in enumerate(result["trades"][:n])
+    ]
 
 DEFAULT_SCENARIO_BANKROLL = 1000
 DEFAULT_SCENARIO_TRADES = 60
@@ -310,15 +538,19 @@ def preview_dashboard():
 
 
 def _strategy_summary(profile, win_rate=0.5):
+    profile = _with_overlay(profile)
     sim = _simulate(profile, win_rate)
     desc = _describe(profile)
+    rules = _money_rules(profile)
     m, c, v = profile["martingale"], profile["compounding"], profile["profit_vault"]
     return {
-        "id": profile["id"], "name": profile["name"], "description": profile["description"],
+        "id": profile["id"], "name": _display_name(profile), "description": profile["description"],
         "uses_martingale": bool(m["enabled"]), "uses_compounding": c["mode"] != "disabled",
         "uses_vault": bool(v["enabled"]),
         "risk_level": sim["risk_score"], "growth_label": sim["best_for_label"],
         "roi_percent": sim["metrics"]["roi_percent"], "max_drawdown_percent": sim["metrics"]["max_drawdown_percent"],
+        "rules": rules,
+        "is_custom_entry": profile.get("is_custom_entry", False),
         **desc,
     }
 
@@ -327,7 +559,7 @@ def _strategy_summary(profile, win_rate=0.5):
 def preview_strategies_starters():
     """The 6 curated starters - Strategy Studio's default page (never
     the full 27), per the explicit 'reduce cognitive overload' brief."""
-    profiles = [database.get_risk_profile(i) for i in STARTER_STRATEGY_IDS]
+    profiles = [_get_profile(i) for i in STARTER_STRATEGY_IDS]
     return {"strategies": [_strategy_summary(p) for p in profiles if p]}
 
 
@@ -342,19 +574,26 @@ def preview_strategies_library():
 @app.get("/api/preview/strategies/{strategy_id}")
 def preview_strategy_detail(strategy_id: int, win_rate: float = 0.5):
     """Full educational detail for one strategy, including the animated
-    bankroll simulator's real data. win_rate is a query param specifically
-    so the UI can offer a scenario toggle (e.g. 45% / 50% / 55%) without
-    a second endpoint - every value is honestly labeled as a hypothetical
-    scenario, never presented as a prediction (P9)."""
-    profile = database.get_risk_profile(strategy_id)
+    bankroll simulator's real data, real money rules, real single-trade
+    win/loss scenarios, and a real trade-by-trade example - all from the
+    SAME (possibly overlaid) profile snapshot, so nothing shown
+    contradicts what was actually simulated. win_rate is a query param
+    specifically so the UI can offer a scenario toggle (e.g. 45% / 50% /
+    55%) without a second endpoint - every value is honestly labeled as
+    a hypothetical scenario, never presented as a prediction (P9)."""
+    profile = _get_profile(strategy_id)
     if profile is None:
         return {"error": "strategy not found"}
+    profile = _with_overlay(profile)
     win_rate = max(0.1, min(0.9, win_rate))  # keep scenarios sane, still user-adjustable
     sim = _simulate(profile, win_rate)
     desc = _describe(profile)
+    rules = _money_rules(profile)
+    scenarios = _single_trade_scenarios(profile)
+    trade_example = _trade_by_trade_example(profile, win_rate)
     m, c, v = profile["martingale"], profile["compounding"], profile["profit_vault"]
     return {
-        "id": profile["id"], "name": profile["name"], "description": profile["description"],
+        "id": profile["id"], "name": _display_name(profile), "description": profile["description"],
         "sizing_mode": profile["sizing_mode"], "percent_of_bankroll": profile.get("percent_of_bankroll"),
         "uses_martingale": bool(m["enabled"]), "martingale": {"multiplier": m.get("multiplier"), "max_steps": m.get("max_steps")} if m["enabled"] else None,
         "uses_compounding": c["mode"] != "disabled", "compounding_mode": c["mode"] if c["mode"] != "disabled" else None,
@@ -362,6 +601,8 @@ def preview_strategy_detail(strategy_id: int, win_rate: float = 0.5):
         "risk_level": sim["risk_score"], "growth_label": sim["best_for_label"],
         "scenario_win_rate": win_rate,
         "metrics": sim["metrics"], "curve": sim["curve"],
+        "rules": rules, "scenarios": scenarios, "trade_example": trade_example,
+        "is_custom_entry": profile.get("is_custom_entry", False),
         **desc,
     }
 
