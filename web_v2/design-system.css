@@ -204,6 +204,27 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
 .s-mini-stats { display: flex; gap: 16px; font-size: 12px; }
 .s-mini-stats .stat b { display: block; font-size: 15px; }
 
+/* Money rules - the exact-numbers block that replaced feature-pill
+   guessing. Only rendered for mechanisms that are actually enabled -
+   no disabled-feature entries at all (not even greyed out). */
+.money-rules { font-size: 12.5px; }
+.money-rules .rule-row { display: flex; justify-content: space-between; gap: 10px; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+.money-rules .rule-row:last-child { border-bottom: none; }
+.money-rules .rule-label { color: var(--ink-faint); flex-shrink: 0; }
+.money-rules .rule-value { text-align: right; font-weight: 600; }
+.money-rules .mechanism-block { background: var(--canvas); border-radius: 8px; padding: 8px 10px; margin: 8px 0; font-size: 12px; }
+.money-rules .mechanism-block .mech-title { font-weight: 800; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 4px; }
+.money-rules .mechanism-block.martingale { background: #fff4e0; }
+.money-rules .mechanism-block.martingale .mech-title { color: #b5750a; }
+.money-rules .mechanism-block.compounding { background: var(--brand-dim); }
+.money-rules .mechanism-block.compounding .mech-title { color: var(--brand); }
+.money-rules .mechanism-block.vault { background: var(--green-bg); }
+.money-rules .mechanism-block.vault .mech-title { color: var(--green); }
+
+.risk-numbers { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; margin-top: 8px; }
+.risk-numbers .rn { background: var(--canvas); border-radius: 6px; padding: 4px 9px; }
+.risk-numbers .rn b { font-family: "SF Mono", Consolas, monospace; }
+
 /* Animated bankroll simulator - stroke-dasharray draw-in, a well-
    understood, tasteful "line drawing itself" pattern (not decorative
    for its own sake - it visually distinguishes a SIMULATION being

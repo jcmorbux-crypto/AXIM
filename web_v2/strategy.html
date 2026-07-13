@@ -10,13 +10,43 @@
 <div class="shell" id="shell-root"></div>
 <script src="shell.js"></script>
 <script>
-renderShell("strategy", "Money Management Studio", "Six strategies to start with. Click one to learn how it actually works - nothing is created until you say so.");
+renderShell("strategy", "Money Management Studio", "Six strategies to start with. Every card shows the real bankroll rules - click one for the full picture. Nothing is created until you say so.");
 
 function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
 }
-function flagBadge(label, on) {
-  return `<span class="badge ${on ? "badge-flag-on" : "badge-flag-off"}">${on ? "✓" : "—"} ${label}</span>`;
+
+// Only mechanisms that are actually enabled render at all - no
+// disabled-feature pills anywhere, per the explicit requirement.
+function renderMoneyRules(s) {
+  const r = s.rules;
+  let html = `<div class="money-rules">
+    <div class="rule-row"><span class="rule-label">Risk per trade</span><span class="rule-value">${r.risk_per_trade}</span></div>
+    <div class="rule-row"><span class="rule-label">Sizing method</span><span class="rule-value">${r.sizing_method}</span></div>`;
+
+  if (r.martingale) {
+    html += `<div class="mechanism-block martingale">
+      <div class="mech-title">Martingale: ${r.martingale.steps} step(s)</div>
+      Ladder: ${r.martingale.ladder}<br>${r.martingale.reset_rule}<br>Max exposure: ${r.martingale.max_exposure}
+    </div>`;
+  }
+  if (r.compounding) {
+    html += `<div class="mechanism-block compounding">
+      <div class="mech-title">Compounding (${r.compounding.trigger})</div>
+      ${r.compounding.increase_rule}<br>${r.compounding.reset_rule}<br>Maximum risk: ${r.compounding.max_risk_cap}
+    </div>`;
+  }
+  if (r.vault) {
+    html += `<div class="mechanism-block vault">
+      <div class="mech-title">Profit Vault</div>
+      Moves ${r.vault.percent} of profit to Protected Balance (${r.vault.trigger})
+    </div>`;
+  }
+
+  html += `<div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${r.profit_target}</span></div>
+    <div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${r.loss_limit}</span></div>
+  </div>`;
+  return html;
 }
 
 async function load() {
@@ -31,17 +61,19 @@ async function load() {
         <a class="btn btn-secondary" href="strategy_library.html">Browse Advanced Library →</a>
       </div>
       <div class="grid">
-        ${data.strategies.map(s => `
+        ${data.strategies.map(s => s.is_custom_entry ? `
+          <a class="strategy-card" href="strategy_customize.html?id=${s.id}" style="border-style:dashed; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; min-height:220px;">
+            <div style="font-size:28px; margin-bottom:8px;">+</div>
+            <div class="s-name">${s.name}</div>
+            <div class="s-desc">${s.description}</div>
+          </a>
+        ` : `
           <a class="strategy-card" href="strategy_detail.html?id=${s.id}">
             <div class="s-name">${s.name}</div>
             <div class="s-desc">${s.description}</div>
-            <div class="s-badges">
-              <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
-              ${flagBadge("Martingale", s.uses_martingale)}
-              ${flagBadge("Compounding", s.uses_compounding)}
-              ${flagBadge("Vault", s.uses_vault)}
-            </div>
-            <div class="s-mini-stats">
+            <div style="margin-bottom:8px;"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span></div>
+            ${renderMoneyRules(s)}
+            <div class="s-mini-stats" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--border);">
               <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Illustrative ROI</span><b class="up">+${s.roi_percent}%</b></div>
               <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Max drawdown</span><b class="down">${s.max_drawdown_percent}%</b></div>
             </div>
