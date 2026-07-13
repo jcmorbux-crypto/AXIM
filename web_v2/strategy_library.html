@@ -56,18 +56,20 @@ function render(filter) {
         <div class="s-desc-clamp">${s.description}</div>
       </div>
       <div class="card-sec sec-risk">
-        <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
+        <div style="display:flex; gap:6px; margin-bottom:8px;">
+          <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
+          <span class="badge badge-flag-on">${s.growth_label}</span>
+        </div>
         <div class="risk-stat">
           <div class="risk-stat-label">Risk per trade</div>
           <div class="risk-stat-value">${s.rules.risk_per_trade}</div>
         </div>
+        <div style="font-size:11px; color:var(--ink-faint); margin-top:4px;">${s.rules.risk_model}</div>
       </div>
       <div class="card-sec sec-rules">${renderMechList(s)}</div>
-      <div class="card-sec sec-stats">
-        <div class="s-mini-stats">
-          <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Illustrative ROI</span><b class="up">+${s.roi_percent}%</b></div>
-          <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Max drawdown</span><b class="down">${s.max_drawdown_percent}%</b></div>
-        </div>
+      <div class="card-sec sec-usecase">
+        <div class="rule-label" style="font-size:11px; margin-bottom:4px;">Who should use it</div>
+        <div class="usecase-text">${s.who_should_use}</div>
       </div>
       <div class="card-sec sec-footer">View Strategy &rarr;</div>
     </a>

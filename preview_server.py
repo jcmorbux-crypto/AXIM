@@ -182,6 +182,63 @@ def _martingale_max_exposure_percent(profile):
     return round(base_pct * total_multiple, 2)
 
 
+def _structural_risk_rating(profile):
+    """Risk rating derived ENTIRELY from the strategy's own configured
+    rules (base risk %, martingale's worst-case exposure, compounding's
+    configured cap) - never from a simulated outcome. A strategy's risk
+    is a property of what it's willing to risk on a bad run, not of how
+    one particular synthetic backtest happened to go. Confirmed
+    deliberately separate from backtest_engine._risk_score(), which
+    takes simulated max_drawdown_percent as an input - that's an
+    OUTCOME metric and belongs to a provider+strategy backtest, not to
+    the strategy definition itself."""
+    m, c = profile["martingale"], profile["compounding"]
+    sizing_mode = profile["sizing_mode"]
+    base = profile.get("percent_of_bankroll") or 0 if sizing_mode == "percent" else 1.0
+
+    worst_case = base
+    exposure = _martingale_max_exposure_percent(profile)
+    if exposure is not None:
+        worst_case = max(worst_case, exposure)
+    if c["mode"] != "disabled" and c.get("max_risk_percent"):
+        worst_case = max(worst_case, c["max_risk_percent"])
+
+    if worst_case < 3:
+        return "Low"
+    if worst_case < 8:
+        return "Medium"
+    return "High"
+
+
+def _structural_growth_label(profile):
+    """Same discipline as _structural_risk_rating - categorizes the
+    strategy's own design intent (config), not a simulated ROI number."""
+    m, c, v = profile["martingale"], profile["compounding"], profile["profit_vault"]
+    if v["enabled"] and (v.get("vault_percent") or 0) >= 20:
+        return "Capital Preservation"
+    if c["mode"] != "disabled":
+        return "Growth"
+    if m["enabled"]:
+        return "Recovery-Focused"
+    return "Predictable"
+
+
+def _risk_model_label(profile):
+    """One short phrase naming the overall mechanism mix - e.g. "Fixed
+    Percentage", "Percentage + Martingale + Compounding" - so a card
+    can show a single risk-model term without the reader having to
+    infer it from the individual rule blocks."""
+    m, c = profile["martingale"], profile["compounding"]
+    sizing_mode = profile["sizing_mode"]
+    base = {"fixed": "Fixed Amount", "kelly": "Kelly-Based", "dynamic": "Dynamic Percentage"}.get(sizing_mode, "Fixed Percentage")
+    parts = [base]
+    if m["enabled"]:
+        parts.append("Martingale")
+    if c["mode"] != "disabled":
+        parts.append("Compounding")
+    return " + ".join(parts)
+
+
 def _money_rules(profile):
     """The exact-numbers card/detail content - direct response to 'cards
     describe personalities, not bankroll mechanics.' Every field is
@@ -242,8 +299,15 @@ def _money_rules(profile):
 
     return {
         "risk_per_trade": risk_per_trade, "sizing_method": sizing_method,
+        "risk_model": _risk_model_label(profile),
         "martingale": martingale, "compounding": compounding, "vault": vault,
         "profit_target": profit_target, "loss_limit": loss_limit,
+        "max_exposure": (
+            f"{_martingale_max_exposure_percent(profile):g}% of bankroll (worst-case martingale run)"
+            if martingale is not None and _martingale_max_exposure_percent(profile) is not None
+            else f"{_fmt_pct(c['max_risk_percent'])} of bankroll (compounding cap)" if compounding is not None and c.get("max_risk_percent")
+            else risk_per_trade
+        ),
     }
 
 
@@ -268,72 +332,8 @@ def _single_trade_scenarios(profile):
     }
 
 
-def _trade_by_trade_example(profile, win_rate=0.5, n=8):
-    """First N trades of the SAME simulation the animated chart already
-    ran - real numbers from a real (if hypothetical) run, not a
-    hand-crafted illustrative table."""
-    pool = _synthetic_signal_pool(win_rate, seed=42, num_trades=max(n, 20))
-    result = backtest_engine.simulate_strategy(pool, profile, DEFAULT_SCENARIO_BANKROLL, session_window="all")
-    return [
-        {
-            "seq": i + 1, "amount": t["trade_amount"], "result": t["result"],
-            "profit_loss": t["profit_loss"], "running_balance": t["running_balance"],
-            "martingale_step": t["martingale_step"],
-        }
-        for i, t in enumerate(result["trades"][:n])
-    ]
-
 DEFAULT_SCENARIO_BANKROLL = 1000
-DEFAULT_SCENARIO_TRADES = 60
-DEFAULT_SCENARIO_DAYS = 30
 DEFAULT_SCENARIO_PAYOUT = 88  # matches AXIM's real observed historical average payout range
-
-
-def _synthetic_signal_pool(win_rate, seed, num_trades=DEFAULT_SCENARIO_TRADES,
-                            days=DEFAULT_SCENARIO_DAYS, payout_percent=DEFAULT_SCENARIO_PAYOUT):
-    """A labeled, honest hypothetical - NOT a prediction. AXIM has no
-    verified real edge yet (see docs/AXIM_LIVE_READINESS_CHECKLIST.md),
-    so this generates a clearly-scenario-tagged sequence at an ASSUMED
-    win rate the caller must state, spread realistically over `days`
-    calendar days so session-scoped stepping (Martingale/Momentum resets
-    daily) behaves the way it would live - never presented as real
-    trading history anywhere in the UI (P9: never fabricate confidence)."""
-    import random
-    rng = random.Random(seed)
-    start = datetime.now() - timedelta(days=days)
-    assets = ["EUR/USD OTC", "GBP/USD OTC", "Gold OTC", "BTC/USD OTC"]
-    pool = []
-    for i in range(num_trades):
-        day_offset = (i / num_trades) * days
-        ts = start + timedelta(days=day_offset, hours=rng.uniform(0, 8))
-        result = "win" if rng.random() < win_rate else "loss"
-        pool.append({
-            "timestamp": ts.isoformat(), "result": result, "payout_percent": payout_percent,
-            "source_type": "illustrative_scenario", "signal_id": i,
-            "asset": assets[i % len(assets)], "direction": "BUY" if rng.random() < 0.5 else "SELL",
-        })
-    return pool
-
-
-def _simulate(profile_snapshot, win_rate, seed=42):
-    """Runs the SAME simulate_strategy/compute_metrics production's own
-    Strategy Lab uses - see core/backtest_engine.py. Returns the bankroll
-    curve (for the animated simulator), real computed metrics, and the
-    same _risk_score/_best_for_label heuristics Strategy Lab already
-    shows, so a strategy is never described two different ways in two
-    different parts of the product."""
-    pool = _synthetic_signal_pool(win_rate, seed)
-    result = backtest_engine.simulate_strategy(pool, profile_snapshot, DEFAULT_SCENARIO_BANKROLL, session_window="all")
-    metrics = backtest_engine.compute_metrics(result["sessions"], result["trades"], DEFAULT_SCENARIO_BANKROLL)
-    curve = [{"t": i, "balance": round(DEFAULT_SCENARIO_BANKROLL + sum(
-        tr["profit_loss"] for tr in result["trades"][:i + 1]
-    ), 2)} for i in range(len(result["trades"]))]
-    return {
-        "metrics": metrics,
-        "curve": [{"t": 0, "balance": DEFAULT_SCENARIO_BANKROLL}] + curve,
-        "risk_score": backtest_engine._risk_score(metrics["max_drawdown_percent"], metrics["max_martingale_step_used"]),
-        "best_for_label": backtest_engine._best_for_label(metrics["roi_percent"], metrics["max_drawdown_percent"]),
-    }
 
 
 def _describe(profile):
@@ -537,9 +537,18 @@ def preview_dashboard():
     }
 
 
-def _strategy_summary(profile, win_rate=0.5):
+def _strategy_summary(profile):
+    """Describes what a strategy IS and how it behaves - never how well
+    it performed. A money-management strategy has no intrinsic ROI or
+    drawdown; those only exist once a strategy is combined with a
+    specific signal provider's real historical signals, a starting
+    bankroll, and a broker payout (see docs/UI_VISION_DESIGN_PRINCIPLES.md
+    and the Provider Analysis feature, /api/preview/provider-analysis/
+    {channel_id}, which is the only place performance numbers are
+    computed - always from a real completed backtest, never guessed).
+    risk_level and growth_label here are STRUCTURAL (derived from the
+    strategy's own configured rules), not from any simulated outcome."""
     profile = _with_overlay(profile)
-    sim = _simulate(profile, win_rate)
     desc = _describe(profile)
     rules = _money_rules(profile)
     m, c, v = profile["martingale"], profile["compounding"], profile["profit_vault"]
@@ -547,9 +556,9 @@ def _strategy_summary(profile, win_rate=0.5):
         "id": profile["id"], "name": _display_name(profile), "description": profile["description"],
         "uses_martingale": bool(m["enabled"]), "uses_compounding": c["mode"] != "disabled",
         "uses_vault": bool(v["enabled"]),
-        "risk_level": sim["risk_score"], "growth_label": sim["best_for_label"],
-        "roi_percent": sim["metrics"]["roi_percent"], "max_drawdown_percent": sim["metrics"]["max_drawdown_percent"],
+        "risk_level": _structural_risk_rating(profile), "growth_label": _structural_growth_label(profile),
         "rules": rules,
+        "who_should_use": desc["best_for"],
         "is_custom_entry": profile.get("is_custom_entry", False),
         **desc,
     }
@@ -572,25 +581,23 @@ def preview_strategies_library():
 
 
 @app.get("/api/preview/strategies/{strategy_id}")
-def preview_strategy_detail(strategy_id: int, win_rate: float = 0.5):
-    """Full educational detail for one strategy, including the animated
-    bankroll simulator's real data, real money rules, real single-trade
-    win/loss scenarios, and a real trade-by-trade example - all from the
-    SAME (possibly overlaid) profile snapshot, so nothing shown
-    contradicts what was actually simulated. win_rate is a query param
-    specifically so the UI can offer a scenario toggle (e.g. 45% / 50% /
-    55%) without a second endpoint - every value is honestly labeled as
-    a hypothetical scenario, never presented as a prediction (P9)."""
+def preview_strategy_detail(strategy_id: int):
+    """Full educational detail for one strategy - explains HOW it
+    works, never how well it performed. No backtest runs here and no
+    win_rate is accepted: a strategy alone has no ROI or drawdown,
+    those only exist once combined with a specific signal provider's
+    real historical signals (see /api/preview/provider-analysis/
+    {channel_id}). scenarios is a single deterministic next-trade
+    projection from the strategy's OWN sizing rule (e.g. "2% of $1000
+    = $20") - a mechanical fact about the rule, not a simulated
+    outcome, so it's safe to show here."""
     profile = _get_profile(strategy_id)
     if profile is None:
         return {"error": "strategy not found"}
     profile = _with_overlay(profile)
-    win_rate = max(0.1, min(0.9, win_rate))  # keep scenarios sane, still user-adjustable
-    sim = _simulate(profile, win_rate)
     desc = _describe(profile)
     rules = _money_rules(profile)
     scenarios = _single_trade_scenarios(profile)
-    trade_example = _trade_by_trade_example(profile, win_rate)
     m, c, v = profile["martingale"], profile["compounding"], profile["profit_vault"]
     return {
         "id": profile["id"], "name": _display_name(profile), "description": profile["description"],
@@ -598,10 +605,9 @@ def preview_strategy_detail(strategy_id: int, win_rate: float = 0.5):
         "uses_martingale": bool(m["enabled"]), "martingale": {"multiplier": m.get("multiplier"), "max_steps": m.get("max_steps")} if m["enabled"] else None,
         "uses_compounding": c["mode"] != "disabled", "compounding_mode": c["mode"] if c["mode"] != "disabled" else None,
         "uses_vault": bool(v["enabled"]), "vault_percent": v.get("vault_percent") if v["enabled"] else None,
-        "risk_level": sim["risk_score"], "growth_label": sim["best_for_label"],
-        "scenario_win_rate": win_rate,
-        "metrics": sim["metrics"], "curve": sim["curve"],
-        "rules": rules, "scenarios": scenarios, "trade_example": trade_example,
+        "risk_level": _structural_risk_rating(profile), "growth_label": _structural_growth_label(profile),
+        "rules": rules, "scenarios": scenarios,
+        "who_should_use": desc["best_for"],
         "is_custom_entry": profile.get("is_custom_entry", False),
         **desc,
     }
