@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Signals - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("signals", "Signals", "Every source judged the way you'd judge a capper - transparently, by real record.");
+
+function fmtPct(n) { return n === null || n === undefined ? "&mdash;" : (n * 100).toFixed(1) + "%"; }
+
+async function load() {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading sources...</div>`;
+  try {
+    const data = await fetchPreview("/signals");
+    content.innerHTML = `
+      <div class="grid">
+        ${data.sources.map(s => `
+          <div class="card source-card" style="flex-direction:column; align-items:flex-start;">
+            <div class="source-name">${s.title}</div>
+            ${s.total_signals > 0 ? `
+              <div class="source-winrate ${moneyClass(s.profit_loss)}">${fmtPct(s.win_rate)} win</div>
+              <div class="source-meta">${fmtMoney(s.profit_loss)} &middot; ${s.total_signals} signals</div>
+            ` : `
+              <div class="source-nodata">Not enough signals yet to judge honestly.</div>
+            `}
+          </div>
+        `).join("")}
+      </div>
+      <div class="card">
+        <details class="disclosure">
+          <summary>Signal Inspector (advanced)</summary>
+          <div class="content">Test-parse a raw message, review/adjust parsing rules per source - moved here from a peer-level nav item, since it's a debugging tool for power users, not a primary destination (P6).</div>
+        </details>
+      </div>
+    `;
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+  }
+}
+load();
+</script>
+</body>
+</html>

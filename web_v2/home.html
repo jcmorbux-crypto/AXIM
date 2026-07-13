@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Home - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("home", "Home", "Everything running, at a glance.");
+
+async function load() {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading your trading operation...</div>`;
+  try {
+    const data = await fetchPreview("/home");
+    const pnlClass = moneyClass(data.today_pnl);
+    const session = data.active_session;
+    content.innerHTML = `
+      <div class="card">
+        <div class="card-label">Today's performance</div>
+        <div class="hero-number ${pnlClass}">${fmtMoney(data.today_pnl)}</div>
+        <div class="status-line">
+          <span class="dot ${session ? "" : "off"}"></span>
+          ${session ? `Running normally &middot; watching ${data.watching_count} signal source${data.watching_count === 1 ? "" : "s"}` : "No active session"}
+        </div>
+      </div>
+
+      <div class="grid" style="margin-bottom:16px;">
+        <div class="card">
+          <div class="card-label">Quick actions</div>
+          <button class="btn btn-secondary">Pause</button>
+          <button class="btn btn-danger">Emergency Stop</button>
+          ${session ? `<button class="btn btn-primary">View Session</button>` : `<button class="btn btn-primary">Start Session</button>`}
+        </div>
+        <div class="card">
+          <div class="card-label">Active session</div>
+          ${session ? `
+            <div style="font-weight:700;">${session.name}</div>
+            <div class="status-line" style="margin-top:6px;">P/L: <b class="${moneyClass(session.realized_pnl)}">${fmtMoney(session.realized_pnl)}</b></div>
+          ` : `<div class="source-nodata">No session running right now.</div>`}
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-label">Recent activity</div>
+        ${data.recent_activity.map(a => `
+          <div class="status-line" style="justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border);">
+            <span>${a.asset || "—"} <span style="color:var(--ink-faint);">${a.direction || ""}</span></span>
+            <span class="${a.result === "win" ? "up" : a.result === "loss" ? "down" : ""}" style="font-weight:600;">${a.result || "pending"}</span>
+          </div>
+        `).join("") || `<div class="source-nodata">No signals yet.</div>`}
+      </div>
+    `;
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+  }
+}
+load();
+</script>
+</body>
+</html>

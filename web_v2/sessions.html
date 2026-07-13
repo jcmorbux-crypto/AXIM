@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sessions - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("sessions", "Sessions", "Active and historical trading activity - one timeline, not two separate pages.");
+
+async function load() {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading sessions...</div>`;
+  try {
+    const data = await fetchPreview("/sessions");
+    content.innerHTML = `
+      <div class="card">
+        <div class="card-label">Timeline</div>
+        ${data.sessions.map(s => `
+          <div class="status-line" style="justify-content:space-between; padding:10px 0; border-bottom:1px solid var(--border);">
+            <span>
+              <span class="dot ${s.status === "active" ? "" : "off"}"></span>
+              <b>${s.name}</b>
+              <span style="color:var(--ink-faint); font-size:12px;"> &middot; ${s.status} &middot; ${s.trades_count} trades</span>
+            </span>
+            <span class="${moneyClass(s.realized_pnl)}" style="font-weight:700;">${fmtMoney(s.realized_pnl)}</span>
+          </div>
+        `).join("") || `<div class="source-nodata">No sessions yet.</div>`}
+      </div>
+      <div class="card">
+        <button class="btn btn-primary">Start New Session</button>
+      </div>
+    `;
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+  }
+}
+load();
+</script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Portfolio - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("portfolio", "Portfolio", "Your Funds, broker connections, and balances - together.");
+
+async function load() {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading portfolio...</div>`;
+  try {
+    const data = await fetchPreview("/portfolio");
+    content.innerHTML = `
+      <div class="grid">
+        <div class="card">
+          <div class="card-label">Funds</div>
+          ${data.funds.map(f => `
+            <div style="padding:10px 0; border-bottom:1px solid var(--border);">
+              <div style="font-weight:700;">${f.name}</div>
+              <div class="hero-number ${moneyClass(f.trading_balance)}" style="font-size:22px;">${fmtMoney(f.trading_balance)}</div>
+              <div class="source-meta">${f.status}</div>
+            </div>
+          `).join("") || `<div class="source-nodata">No funds yet.</div>`}
+        </div>
+        <div class="card">
+          <div class="card-label">Broker accounts</div>
+          ${data.broker_accounts.map(a => `
+            <div style="padding:10px 0; border-bottom:1px solid var(--border);">
+              <div style="font-weight:700;">${a.name} <span style="font-weight:400; color:var(--ink-faint); font-size:12px;">${a.mode}</span></div>
+              <div class="status-line"><span class="dot ${a.connection_status === "connected" ? "" : "off"}"></span> ${a.connection_status}</div>
+              <div class="source-meta">Balance: ${fmtMoney(a.last_balance)}</div>
+            </div>
+          `).join("") || `<div class="source-nodata">No broker accounts yet.</div>`}
+        </div>
+      </div>
+      <div class="card">
+        <details class="disclosure">
+          <summary>Money Management details</summary>
+          <div class="content">Sizing mode, Martingale ladder, Compounding curve, and Profit Vault settings live here - collapsed by default (P2), one click away for anyone who wants the formula.</div>
+        </details>
+      </div>
+    `;
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+  }
+}
+load();
+</script>
+</body>
+</html>

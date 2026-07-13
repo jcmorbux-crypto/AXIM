@@ -1,0 +1,122 @@
+/* AXIM Trader V2 — Design System
+   Built from docs/UI_VISION_DESIGN_PRINCIPLES.md. Every rule here traces
+   to a principle (P1-P9) or a research finding. Independent of, and
+   never loaded by, production's web/theme.css. */
+
+:root {
+  /* P3: blue is the ONLY brand/action color. Green/red are reserved
+     exclusively for price/P&L direction and used nowhere else. */
+  --brand: #2452eb;
+  --brand-dim: #eef1fd;
+  --green: #0a9d5c;
+  --green-bg: #e9f9f1;
+  --red: #d1373f;
+  --red-bg: #fdedee;
+
+  --ink: #14151a;
+  --ink-dim: #6b6f7b;
+  --ink-faint: #9a9ea8;
+  --surface: #ffffff;
+  --canvas: #f7f8fb;
+  --border: #e7e9ef;
+  --radius: 14px;
+  --radius-sm: 9px;
+  --shadow: 0 1px 2px rgba(20,21,26,0.04), 0 8px 24px rgba(20,21,26,0.05);
+
+  --space-1: 6px; --space-2: 10px; --space-3: 16px; --space-4: 24px; --space-5: 36px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: var(--font);
+  background: var(--canvas);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---- Preview badge (P: preview-mode requirement, not a design principle
+   but a hard functional requirement of this whole program) ---- */
+.preview-badge {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 999;
+  background: #1a1b1f; color: #fff; text-align: center;
+  font-size: 12px; font-weight: 600; letter-spacing: 0.04em;
+  padding: 6px; text-transform: uppercase;
+}
+.preview-badge b { color: #ffd166; }
+
+/* ---- Shell / nav (IA: 6 primary destinations, P6) ---- */
+.shell { display: flex; min-height: 100vh; padding-top: 30px; }
+.sidebar {
+  width: 232px; flex-shrink: 0; background: var(--surface);
+  border-right: 1px solid var(--border); padding: var(--space-4) var(--space-3);
+}
+.sidebar .brand { font-weight: 800; font-size: 17px; margin-bottom: var(--space-4); display: flex; align-items: center; gap: 8px; }
+.sidebar .brand .mark { width: 26px; height: 26px; background: var(--brand); border-radius: 8px; }
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  color: var(--ink-dim); font-size: 14px; font-weight: 500;
+  text-decoration: none; margin-bottom: 2px; cursor: pointer;
+}
+.nav-item:hover { background: var(--canvas); }
+.nav-item.active { background: var(--brand-dim); color: var(--brand); font-weight: 700; }
+
+.main { flex: 1; padding: var(--space-4) var(--space-5); max-width: 1180px; }
+h1 { font-size: 22px; margin: 0 0 4px 0; }
+.subtitle { color: var(--ink-dim); font-size: 13.5px; margin-bottom: var(--space-4); }
+
+/* ---- Cards ---- */
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: var(--space-4);
+  box-shadow: var(--shadow); margin-bottom: var(--space-3);
+}
+.card-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: var(--space-2); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); }
+
+/* ---- Hero (P6: one number tells the whole story) ---- */
+.hero-number { font-size: 44px; font-weight: 800; line-height: 1; margin: 6px 0; }
+.hero-number.up { color: var(--green); }
+.hero-number.down { color: var(--red); }
+.status-line { display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--ink-dim); }
+.dot { width: 8px; height: 8px; border-radius: 999px; background: var(--green); }
+.dot.warn { background: #e2a12b; }
+.dot.off { background: var(--ink-faint); }
+
+/* ---- Disclosure (P2: math is one click away, never zero) ---- */
+.disclosure summary { cursor: pointer; font-size: 12.5px; color: var(--brand); font-weight: 600; list-style: none; }
+.disclosure summary::before { content: "▸ "; }
+.disclosure[open] summary::before { content: "▾ "; }
+.disclosure .content { margin-top: var(--space-2); font-size: 13px; color: var(--ink-dim); }
+
+/* ---- Buttons ---- */
+.btn { display: inline-flex; align-items: center; gap: 6px; border: none; border-radius: 10px; padding: 9px 16px; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.btn-primary { background: var(--brand); color: #fff; }
+.btn-secondary { background: var(--canvas); color: var(--ink); border: 1px solid var(--border); }
+.btn-danger { background: var(--red); color: #fff; }
+
+/* ---- Signal source card (P8: DubClub-style transparency) ---- */
+.source-card { display: flex; justify-content: space-between; align-items: center; }
+.source-name { font-weight: 700; font-size: 14.5px; }
+.source-winrate { font-size: 26px; font-weight: 800; }
+.source-meta { font-size: 12px; color: var(--ink-faint); }
+.source-nodata { font-size: 13px; color: var(--ink-faint); font-style: italic; }
+
+/* ---- In-progress state (P4: every long action shows real progress) ---- */
+.progress-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-dim); }
+.spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--brand); border-radius: 999px; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---- Mobile (P5) ---- */
+@media (max-width: 900px) {
+  .sidebar { display: none; }
+  .mobile-nav { position: fixed; bottom: 0; left: 0; right: 0; display: flex; background: var(--surface); border-top: 1px solid var(--border); z-index: 50; }
+  .mobile-nav .item { flex: 1; text-align: center; padding: 10px 4px; font-size: 11px; color: var(--ink-dim); text-decoration: none; }
+  .mobile-nav .item.active { color: var(--brand); font-weight: 700; }
+  .main { padding: var(--space-3); padding-bottom: 70px; max-width: 100%; }
+  .grid { grid-template-columns: 1fr; }
+  .hero-number { font-size: 36px; }
+}
+@media (min-width: 901px) { .mobile-nav { display: none; } }
