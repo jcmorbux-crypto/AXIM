@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Customize Strategy - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("strategy", "Customize Strategy", "Every rule below is editable. Nothing is saved until you click Save as New Profile - and the original starter template is never overwritten.");
+
+const params = new URLSearchParams(location.search);
+const baseId = params.get("id");
+const STORAGE_KEY = "axim_preview_custom_profiles";
+
+function loadSaved() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch (e) { return []; }
+}
+function saveSaved(list) { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); }
+
+function fmtMoneyPlain(n) { return "$" + Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
+
+function ladderRowHTML(value) {
+  return `<div class="ladder-row">
+    <input type="number" step="0.1" min="1" class="ladder-mult" value="${value}">
+    <button type="button" class="row-remove" onclick="this.parentElement.remove(); updateSummary();">&times;</button>
+  </div>`;
+}
+function milestoneRowHTML(risk, amount) {
+  return `<div class="milestone-row">
+    <input type="number" step="0.1" min="0" class="ms-risk" value="${risk}" placeholder="Risk %">
+    <span style="font-size:12px; color:var(--ink-faint);">% at</span>
+    <input type="number" step="1" min="0" class="ms-amount" value="${amount}" placeholder="Profit $">
+    <button type="button" class="row-remove" onclick="this.parentElement.remove(); updateSummary();">&times;</button>
+  </div>`;
+}
+
+function buildForm(base) {
+  const r = base.rules || {};
+  const hasMart = base.uses_martingale;
+  const hasComp = base.uses_compounding;
+  const hasVault = base.uses_vault;
+
+  document.getElementById("page-content").innerHTML = `
+    <div class="row" style="align-items:flex-start; gap:16px;">
+      <div style="flex:2; min-width:0;">
+        <form id="custom-form" onsubmit="return false;">
+
+          <div class="card">
+            <div class="card-label">Profile identity</div>
+            <div class="field">
+              <label>Profile name</label>
+              <input type="text" id="f-name" value="${base.name} (Custom)">
+            </div>
+            <div class="field">
+              <label>Starting bankroll ($)</label>
+              <input type="number" id="f-bankroll" min="1" step="1" value="1000">
+              <div class="hint">Used only to illustrate this profile's rules - your real Fund balance is unaffected.</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-label">Position sizing</div>
+            <div class="field">
+              <label>Method</label>
+              <select id="f-sizing-mode">
+                <option value="percent" ${base.sizing_mode !== "fixed" ? "selected" : ""}>Percentage of bankroll</option>
+                <option value="fixed" ${base.sizing_mode === "fixed" ? "selected" : ""}>Fixed dollar amount</option>
+              </select>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label>Risk percentage (%)</label>
+                <input type="number" id="f-percent" step="0.1" min="0.1" value="${base.percent_of_bankroll || 2}">
+              </div>
+              <div class="field">
+                <label>Fixed amount ($)</label>
+                <input type="number" id="f-fixed" step="1" min="1" value="${base.fixed_amount || 10}">
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label>Minimum trade amount ($)</label>
+                <input type="number" id="f-min-trade" step="1" min="0" value="0">
+                <div class="hint">0 = no floor</div>
+              </div>
+              <div class="field">
+                <label>Maximum trade amount ($)</label>
+                <input type="number" id="f-max-trade" step="1" min="0" value="0">
+                <div class="hint">0 = no cap</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-toggle">
+              <div><div class="st-text">Martingale (loss recovery)</div><div class="st-sub">Increases stake after a loss, resets on a win</div></div>
+              <label class="switch"><input type="checkbox" id="f-mart-enabled" ${hasMart ? "checked" : ""}><span class="slider"></span></label>
+            </div>
+            <div id="mart-fields" class="mechanism-fields ${hasMart ? "" : "disabled"}">
+              <div class="field-row">
+                <div class="field">
+                  <label>Steps</label>
+                  <input type="number" id="f-mart-steps" min="1" max="10" value="${(base.martingale && base.martingale.max_steps) || 2}">
+                </div>
+                <div class="field">
+                  <label>Multiplier</label>
+                  <input type="number" id="f-mart-mult" step="0.1" min="1" value="${(base.martingale && base.martingale.multiplier) || 2}">
+                </div>
+              </div>
+              <div class="checkbox-field field">
+                <input type="checkbox" id="f-mart-reset" checked>
+                <label style="margin:0;" for="f-mart-reset">Reset to base stake after a win</label>
+              </div>
+              <div class="field">
+                <label>Custom ladder (optional - overrides steps/multiplier above)</label>
+                <div id="ladder-rows"></div>
+                <button type="button" class="add-row-btn" id="add-ladder-row">+ Add ladder step</button>
+                <div class="hint">Each value is a multiplier applied to the base stake, e.g. 1, 2, 4.5</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-toggle">
+              <div><div class="st-text">Compounding (growth)</div><div class="st-sub">Increases risk as your balance grows</div></div>
+              <label class="switch"><input type="checkbox" id="f-comp-enabled" ${hasComp ? "checked" : ""}><span class="slider"></span></label>
+            </div>
+            <div id="comp-fields" class="mechanism-fields ${hasComp ? "" : "disabled"}">
+              <div class="field">
+                <label>Trigger</label>
+                <select id="f-comp-trigger">
+                  <option value="profit_target">Profit target reached</option>
+                  <option value="balance_milestone" ${base.compounding_mode === "milestone_based" ? "selected" : ""}>Balance milestone reached</option>
+                  <option value="winning_session">End of a winning session</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Milestones (risk % increases at each profit level)</label>
+                <div id="milestone-rows"></div>
+                <button type="button" class="add-row-btn" id="add-milestone-row">+ Add milestone</button>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label>Maximum risk cap (%)</label>
+                  <input type="number" id="f-comp-maxrisk" step="0.1" min="0" value="3">
+                </div>
+                <div class="field">
+                  <label>Reset drawdown (%, 0 = never auto-reset)</label>
+                  <input type="number" id="f-comp-reset" step="1" min="0" value="0">
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-toggle">
+              <div><div class="st-text">Profit Vault</div><div class="st-sub">Automatically moves a slice of profit to a protected balance</div></div>
+              <label class="switch"><input type="checkbox" id="f-vault-enabled" ${hasVault ? "checked" : ""}><span class="slider"></span></label>
+            </div>
+            <div id="vault-fields" class="mechanism-fields ${hasVault ? "" : "disabled"}">
+              <div class="field-row">
+                <div class="field">
+                  <label>Vault percentage (%)</label>
+                  <input type="number" id="f-vault-percent" step="1" min="1" max="100" value="${base.vault_percent || 10}">
+                </div>
+                <div class="field">
+                  <label>Trigger</label>
+                  <select id="f-vault-trigger">
+                    <option value="every_winning_session">Every winning session</option>
+                    <option value="daily_target">Daily profit target hit</option>
+                    <option value="milestone">Balance milestone</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-label">Stop conditions</div>
+            <div class="field-row">
+              <div class="field">
+                <label>Profit target ($, session)</label>
+                <input type="number" id="f-profit-target" step="1" min="0" value="0">
+                <div class="hint">0 = no automatic stop</div>
+              </div>
+              <div class="field">
+                <label>Loss limit ($, session)</label>
+                <input type="number" id="f-loss-limit" step="1" min="0" value="0">
+                <div class="hint">0 = no automatic stop</div>
+              </div>
+            </div>
+            <div class="field-row">
+              <div class="field">
+                <label>Consecutive-loss limit (#)</label>
+                <input type="number" id="f-consec-loss" step="1" min="0" value="0">
+                <div class="hint">0 = no limit</div>
+              </div>
+              <div class="field">
+                <label>Maximum trades (#, session)</label>
+                <input type="number" id="f-max-trades" step="1" min="0" value="0">
+                <div class="hint">0 = no limit</div>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+
+      <div style="flex:1; position:sticky; top:40px;">
+        <div class="card">
+          <div class="card-label">Live summary</div>
+          <div id="live-summary" class="money-rules"></div>
+        </div>
+        <div class="card">
+          <div class="card-label">Save</div>
+          <p style="font-size:12px; color:var(--ink-dim); margin:0 0 10px;">Saved locally to this preview browser only - never sent to the server, and the "${base.name}" starter template is never modified.</p>
+          <button class="btn btn-primary" style="width:100%; justify-content:center;" id="save-btn">Save as New Profile</button>
+          <div id="save-confirm" style="display:none; margin-top:10px; font-size:12.5px; color:var(--green); font-weight:600;"></div>
+        </div>
+        <div class="card" id="saved-list-card" style="display:none;">
+          <div class="card-label">Saved custom profiles (this preview)</div>
+          <div id="saved-list"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function currentLadder() {
+  return Array.from(document.querySelectorAll(".ladder-mult")).map(i => parseFloat(i.value) || 1);
+}
+function currentMilestones() {
+  return Array.from(document.querySelectorAll(".milestone-row")).map(row => ({
+    risk_percent: parseFloat(row.querySelector(".ms-risk").value) || 0,
+    profit_amount: parseFloat(row.querySelector(".ms-amount").value) || 0,
+  }));
+}
+
+function computeMaxExposure(sizingMode, percent, fixed, steps, multiplier, ladder) {
+  const mults = ladder.length ? ladder : Array.from({ length: steps + 1 }, (_, i) => Math.pow(multiplier, i));
+  const sum = mults.reduce((a, b) => a + b, 0);
+  if (sizingMode === "fixed") return fmtMoneyPlain((fixed * sum).toFixed(2)) + " total across the ladder";
+  return (percent * sum).toFixed(2) + "% of bankroll at the deepest step";
+}
+
+function gatherForm() {
+  const sizingMode = document.getElementById("f-sizing-mode").value;
+  const percent = parseFloat(document.getElementById("f-percent").value) || 0;
+  const fixed = parseFloat(document.getElementById("f-fixed").value) || 0;
+  const martEnabled = document.getElementById("f-mart-enabled").checked;
+  const compEnabled = document.getElementById("f-comp-enabled").checked;
+  const vaultEnabled = document.getElementById("f-vault-enabled").checked;
+  return {
+    name: document.getElementById("f-name").value.trim(),
+    bankroll: parseFloat(document.getElementById("f-bankroll").value) || 1000,
+    sizing_mode: sizingMode, percent_of_bankroll: percent, fixed_amount: fixed,
+    min_trade_amount: parseFloat(document.getElementById("f-min-trade").value) || 0,
+    max_trade_amount: parseFloat(document.getElementById("f-max-trade").value) || 0,
+    martingale: martEnabled ? {
+      enabled: true,
+      steps: parseInt(document.getElementById("f-mart-steps").value) || 1,
+      multiplier: parseFloat(document.getElementById("f-mart-mult").value) || 2,
+      reset_after_win: document.getElementById("f-mart-reset").checked,
+      custom_ladder: currentLadder().length > 1 ? currentLadder() : [],
+    } : { enabled: false },
+    compounding: compEnabled ? {
+      enabled: true,
+      trigger: document.getElementById("f-comp-trigger").value,
+      milestones: currentMilestones(),
+      max_risk_percent: parseFloat(document.getElementById("f-comp-maxrisk").value) || 0,
+      drawdown_reset_percent: parseFloat(document.getElementById("f-comp-reset").value) || 0,
+    } : { enabled: false },
+    vault: vaultEnabled ? {
+      enabled: true,
+      vault_percent: parseFloat(document.getElementById("f-vault-percent").value) || 10,
+      trigger: document.getElementById("f-vault-trigger").value,
+    } : { enabled: false },
+    profit_target: parseFloat(document.getElementById("f-profit-target").value) || 0,
+    loss_limit: parseFloat(document.getElementById("f-loss-limit").value) || 0,
+    consecutive_loss_limit: parseInt(document.getElementById("f-consec-loss").value) || 0,
+    max_trades: parseInt(document.getElementById("f-max-trades").value) || 0,
+  };
+}
+
+function updateSummary() {
+  const f = gatherForm();
+  let html = `<div class="rule-row"><span class="rule-label">Risk per trade</span><span class="rule-value">${f.sizing_mode === "fixed" ? "$" + f.fixed_amount : f.percent_of_bankroll + "%"}</span></div>
+    <div class="rule-row"><span class="rule-label">Sizing method</span><span class="rule-value">${f.sizing_mode === "fixed" ? "Fixed dollar amount" : "Percentage of bankroll"}</span></div>`;
+  if (f.min_trade_amount > 0) html += `<div class="rule-row"><span class="rule-label">Minimum trade</span><span class="rule-value">$${f.min_trade_amount}</span></div>`;
+  if (f.max_trade_amount > 0) html += `<div class="rule-row"><span class="rule-label">Maximum trade</span><span class="rule-value">$${f.max_trade_amount}</span></div>`;
+
+  if (f.martingale.enabled) {
+    const exposure = computeMaxExposure(f.sizing_mode, f.percent_of_bankroll, f.fixed_amount, f.martingale.steps, f.martingale.multiplier, f.martingale.custom_ladder);
+    html += `<div class="mechanism-block martingale">
+      <div class="mech-title">Martingale: ${f.martingale.steps} step(s)</div>
+      Multiplier ${f.martingale.multiplier}x per step${f.martingale.custom_ladder.length ? " (custom ladder: " + f.martingale.custom_ladder.join(", ") + "x)" : ""}<br>
+      ${f.martingale.reset_after_win ? "Resets after a win" : "Does not auto-reset after a win"}<br>
+      <b>Max exposure: ${exposure}</b>
+    </div>`;
+  }
+  if (f.compounding.enabled) {
+    const msText = f.compounding.milestones.length
+      ? f.compounding.milestones.map(m => `+${m.risk_percent}% at $${m.profit_amount} profit`).join(" -> ")
+      : "No milestones added yet";
+    html += `<div class="mechanism-block compounding">
+      <div class="mech-title">Compounding (${f.compounding.trigger.replace(/_/g, " ")})</div>
+      ${msText}<br>Maximum risk cap: ${f.compounding.max_risk_percent}%
+    </div>`;
+  }
+  if (f.vault.enabled) {
+    html += `<div class="mechanism-block vault">
+      <div class="mech-title">Profit Vault</div>
+      Moves ${f.vault.vault_percent}% of profit to Protected Balance (${f.vault.trigger.replace(/_/g, " ")})
+    </div>`;
+  }
+  html += `<div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${f.profit_target > 0 ? "$" + f.profit_target : "No automatic stop"}</span></div>
+    <div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${f.loss_limit > 0 ? "$" + f.loss_limit : "No automatic stop"}</span></div>
+    <div class="rule-row"><span class="rule-label">Consecutive-loss limit</span><span class="rule-value">${f.consecutive_loss_limit > 0 ? f.consecutive_loss_limit : "None"}</span></div>
+    <div class="rule-row"><span class="rule-label">Max trades / session</span><span class="rule-value">${f.max_trades > 0 ? f.max_trades : "None"}</span></div>`;
+
+  document.getElementById("live-summary").innerHTML = html;
+}
+
+function renderSavedList() {
+  const list = loadSaved();
+  const card = document.getElementById("saved-list-card");
+  if (!list.length) { card.style.display = "none"; return; }
+  card.style.display = "block";
+  document.getElementById("saved-list").innerHTML = list.map((p, i) => `
+    <div class="saved-profile-row">
+      <div><div class="sp-name">${p.name}</div><div class="sp-meta">Based on ${p.based_on} - saved ${new Date(p.saved_at).toLocaleString()}</div></div>
+      <button class="row-remove" title="Remove" onclick="removeSaved(${i})">&times;</button>
+    </div>
+  `).join("");
+}
+function removeSaved(i) {
+  const list = loadSaved();
+  list.splice(i, 1);
+  saveSaved(list);
+  renderSavedList();
+}
+
+function wireForm(base) {
+  document.querySelectorAll(".ladder-mult").length; // no-op, rows added below
+  document.getElementById("ladder-rows").innerHTML = ladderRowHTML(1) + ladderRowHTML((base.martingale && base.martingale.multiplier) || 2);
+  document.getElementById("milestone-rows").innerHTML = base.uses_compounding
+    ? milestoneRowHTML(base.percent_of_bankroll || 2, 100) + milestoneRowHTML((base.percent_of_bankroll || 2) + 0.5, 250)
+    : "";
+
+  document.getElementById("add-ladder-row").onclick = () => {
+    document.getElementById("ladder-rows").insertAdjacentHTML("beforeend", ladderRowHTML(2));
+    wireLive();
+  };
+  document.getElementById("add-milestone-row").onclick = () => {
+    document.getElementById("milestone-rows").insertAdjacentHTML("beforeend", milestoneRowHTML(2.5, 100));
+    wireLive();
+  };
+
+  document.getElementById("f-mart-enabled").onchange = (e) => {
+    document.getElementById("mart-fields").classList.toggle("disabled", !e.target.checked);
+    updateSummary();
+  };
+  document.getElementById("f-comp-enabled").onchange = (e) => {
+    document.getElementById("comp-fields").classList.toggle("disabled", !e.target.checked);
+    updateSummary();
+  };
+  document.getElementById("f-vault-enabled").onchange = (e) => {
+    document.getElementById("vault-fields").classList.toggle("disabled", !e.target.checked);
+    updateSummary();
+  };
+
+  document.getElementById("save-btn").onclick = () => {
+    const f = gatherForm();
+    if (!f.name) { alert("Please give this profile a name."); return; }
+    const list = loadSaved();
+    list.push({ ...f, based_on: base.name, base_id: base.id, saved_at: new Date().toISOString() });
+    saveSaved(list);
+    const confirm = document.getElementById("save-confirm");
+    confirm.style.display = "block";
+    confirm.textContent = `Saved "${f.name}" to this preview browser. "${base.name}" itself is untouched.`;
+    renderSavedList();
+  };
+
+  wireLive();
+}
+
+// The 3 mechanism toggles (#f-mart-enabled etc.) already have their own
+// onchange handler in wireForm() that shows/hides the field block AND
+// calls updateSummary() - skip them here so this blanket rebind doesn't
+// clobber that handler (confirmed as a real bug: without this exclusion,
+// flipping a switch never revealed its fields, only silently updated the
+// summary panel, since assigning .onchange overwrites, not adds).
+const TOGGLE_IDS = new Set(["f-mart-enabled", "f-comp-enabled", "f-vault-enabled"]);
+function wireLive() {
+  document.querySelectorAll("#custom-form input, #custom-form select").forEach(el => {
+    if (TOGGLE_IDS.has(el.id)) return;
+    el.oninput = updateSummary;
+    el.onchange = updateSummary;
+  });
+  updateSummary();
+}
+
+async function init() {
+  let base;
+  try {
+    base = await fetchPreview(`/strategies/${baseId || 9002}?win_rate=0.5`);
+  } catch (e) {
+    document.getElementById("page-content").innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+    return;
+  }
+  buildForm(base);
+  wireForm(base);
+  renderSavedList();
+}
+init();
+</script>
+</body>
+</html>

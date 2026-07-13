@@ -75,6 +75,15 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
 }
 .card-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-faint); font-weight: 700; margin-bottom: var(--space-2); }
 .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); }
+/* Generic flex row - callers set gap/align-items/flex-basis via inline
+   style (cascade already gives inline styles priority), this just
+   supplies the display:flex those inline props need to do anything.
+   Confirmed as a real, pre-existing gap: several pages (strategy.html,
+   strategy_wizard.html, strategy_library.html, strategy_detail.html)
+   already relied on class="row" with inline flex:/gap: styles that were
+   silently inert without this - block children just stacked instead of
+   sitting side by side. */
+.row { display: flex; flex-wrap: wrap; gap: 10px; }
 
 /* ---- Hero (P6: one number tells the whole story) ---- */
 .hero-number { font-size: 44px; font-weight: 800; line-height: 1; margin: 6px 0; }
@@ -308,3 +317,52 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
   .terminal-col.col-center { order: 1; }
 }
 @media (min-width: 901px) { .mobile-nav { display: none; } }
+
+/* ==============================================================
+   STRATEGY CUSTOMIZATION FORM — every field editable, nothing
+   written until "Save as New Profile" (localStorage only, this
+   preview never POSTs to the server - see preview_server.py's
+   module docstring for the structural read-only guarantee).
+   ============================================================== */
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 12px; font-weight: 700; color: var(--ink-dim); margin-bottom: 5px; }
+.field .hint { font-size: 11px; color: var(--ink-faint); margin-top: 4px; }
+.field input[type="text"], .field input[type="number"], .field select {
+  width: 100%; padding: 9px 11px; border: 1.5px solid var(--border); border-radius: 8px;
+  font-size: 13.5px; font-family: var(--font); background: var(--surface); color: var(--ink);
+}
+.field input:focus, .field select:focus { outline: none; border-color: var(--brand); }
+.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
+.section-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  padding-bottom: 10px; margin-bottom: 14px; border-bottom: 1px solid var(--border);
+}
+.section-toggle .st-text { font-weight: 800; font-size: 14px; }
+.section-toggle .st-sub { font-size: 11.5px; color: var(--ink-faint); font-weight: 500; margin-top: 2px; }
+
+.switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .slider { position: absolute; inset: 0; background: var(--border); border-radius: 999px; cursor: pointer; transition: background 0.15s; }
+.switch .slider::before { content: ""; position: absolute; width: 16px; height: 16px; left: 3px; top: 3px; background: #fff; border-radius: 999px; transition: transform 0.15s; }
+.switch input:checked + .slider { background: var(--brand); }
+.switch input:checked + .slider::before { transform: translateX(18px); }
+
+.mechanism-fields { padding: 2px 2px 4px; }
+.mechanism-fields.disabled { display: none; }
+
+.ladder-row, .milestone-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.ladder-row input, .milestone-row input { flex: 1; }
+.row-remove { background: none; border: none; color: var(--ink-faint); cursor: pointer; font-size: 16px; padding: 4px 8px; }
+.row-remove:hover { color: var(--red); }
+.add-row-btn { font-size: 12px; color: var(--brand); background: none; border: none; cursor: pointer; font-weight: 700; padding: 4px 0; }
+
+.checkbox-field { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+
+.saved-profile-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+}
+.saved-profile-row:last-child { border-bottom: none; }
+.saved-profile-row .sp-name { font-weight: 700; }
+.saved-profile-row .sp-meta { font-size: 11.5px; color: var(--ink-faint); }
