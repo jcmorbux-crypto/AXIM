@@ -577,7 +577,7 @@ function renderPage(base) {
 async function init() {
   let base;
   try {
-    base = await fetchPreview(`/strategies/${baseId || 9002}?win_rate=0.5`);
+    base = await fetchPreview(`/strategies/${baseId || 9002}`);
   } catch (e) {
     document.getElementById("page-content").innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
     return;

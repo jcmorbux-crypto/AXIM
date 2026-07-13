@@ -49,15 +49,16 @@ function renderPicker() {
 
 async function renderComparison() {
   const content = document.getElementById("page-content");
-  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Running comparison...</div>`;
-  const details = await Promise.all(picked.map(id => fetchPreview(`/strategies/${id}?win_rate=0.5`)));
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading comparison...</div>`;
+  const details = await Promise.all(picked.map(id => fetchPreview(`/strategies/${id}`)));
   const rows = [
     ["Risk level", d => `<span class="badge ${riskBadgeClass(d.risk_level)}">${d.risk_level}</span>`],
+    ["Risk model", d => d.rules.risk_model],
+    ["Risk per trade", d => d.rules.risk_per_trade],
+    ["Maximum exposure", d => d.rules.max_exposure],
     ["Uses Martingale?", d => d.uses_martingale ? `Yes (${d.martingale.multiplier}x, ${d.martingale.max_steps} steps)` : "No"],
     ["Uses Compounding?", d => d.uses_compounding ? d.compounding_mode.replace("_"," ") : "No"],
     ["Uses Vault?", d => d.uses_vault ? d.vault_percent + "%" : "No"],
-    ["Illustrative ROI (50% win rate)", d => `<span class="up">+${d.metrics.roi_percent}%</span>`],
-    ["Expected drawdown (50% win rate)", d => `<span class="down">${d.metrics.max_drawdown_percent}%</span>`],
     ["Best for", d => `<span style="font-size:12px;">${d.best_for}</span>`],
     ["Worst for", d => `<span style="font-size:12px;">${d.worst_for}</span>`],
   ];
@@ -71,6 +72,11 @@ async function renderComparison() {
           <tr><th>Detail</th>${details.map(d => `<td><a href="strategy_detail.html?id=${d.id}">View full page →</a></td>`).join("")}</tr>
         </tbody>
       </table>
+    </div>
+    <div class="card" style="border-color:var(--brand); border-width:1.5px;">
+      <div class="card-label">Want to see how these would have actually performed?</div>
+      <p style="font-size:13px; margin:0 0 12px;">These strategies have no intrinsic ROI or drawdown - pick a Signal Provider to run a real backtest of each one against that provider's actual historical signals.</p>
+      <a class="btn btn-primary" href="provider_analysis.html">Analyze with a Signal Provider &rarr;</a>
     </div>
   `;
   document.getElementById("back-btn").onclick = renderPicker;
