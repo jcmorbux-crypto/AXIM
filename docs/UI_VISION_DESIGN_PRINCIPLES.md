@@ -41,6 +41,14 @@ A signal source's win rate and realized P&L are first-class, prominent informati
 ### P9. Never fabricate confidence
 If a number isn't real (a confidence score the parser doesn't compute, a projection with no real basis), the UI says so in plain language instead of inventing a plausible-looking placeholder. This is an existing, hard-won AXIM discipline from the production codebase — V2 inherits it unconditionally, it is not up for redesign.
 
+### P10. Density is a function of audience, not a universal good — added after live feedback
+The first Dashboard pass ("Home") applied P1/P6 (one decision, one hero number) to a screen where they didn't belong, and it read as "an admin panel with trading widgets." The research itself explains why: *"Bloomberg Terminal users expect maximum data density... while retail investors on platforms like Robinhood need progressive disclosure"* (Lollypop, 2026). The determining factor isn't the product category, it's **who opens the screen and why**.
+
+AXIM's Dashboard is opened by a *returning daily trader* checking a running operation — closer to a Bloomberg/TradingView audience than a first-time Robinhood signup. It is now a dense, three-column trading-terminal layout (nav+sources / live activity / funds+risk+controls), with real motion (a live-pulse connection indicator, flash-on-update for changing values) rather than a static card stack.
+
+**This does not repeal P1, P2, or P6.** The Setup Wizard, Risk Profile creation, and other configuration flows are opened by a user making a one-time or infrequent *decision* — those stay exactly as spread-out and disclosure-first as originally specified. P10 says density is *earned* by a screen's specific audience and task, not applied uniformly across the whole product.
+*Source: Lollypop trading-app design guide (2026), Bloomberg/TradingView workflow research, live product feedback during this session.*
+
 ---
 
 ## Part 2 — Information Architecture
