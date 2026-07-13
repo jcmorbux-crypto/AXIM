@@ -1605,6 +1605,40 @@ def get_channel_performance(title):
     }
 
 
+def get_channel_signal_history(title, limit=1000):
+    """Real, individual closed-signal outcomes for one channel, in the
+    exact shape core/backtest_engine.py's simulate_strategy() expects
+    for its signal_pool argument (timestamp/result/payout_percent/
+    source_type/signal_id/asset/direction). Ordered oldest-first, since
+    simulate_strategy groups signals into sessions by real
+    chronological order.
+
+    This is the "actual completed backtest" data source: a strategy's
+    ROI/drawdown only exist once its rules are replayed against a
+    specific provider's REAL historical signals, never a synthetic or
+    assumed win rate. Read-only, nothing is inferred or fabricated -
+    only signals with a real recorded win/loss/draw outcome are
+    returned; still-open or never-executed signals are excluded,
+    matching get_channel_performance()'s own filter."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT received_at, asset, direction, result, payout
+        FROM signals
+        WHERE channel = ? AND execution_status IN ('result_win', 'result_loss', 'result_draw')
+        ORDER BY received_at ASC
+        LIMIT ?
+    """, (title, limit)).fetchall()
+    conn.close()
+    return [
+        {
+            "timestamp": r["received_at"], "result": r["result"],
+            "payout_percent": r["payout"], "source_type": "real_historical_signal",
+            "signal_id": i, "asset": r["asset"], "direction": r["direction"],
+        }
+        for i, r in enumerate(rows)
+    ]
+
+
 # ---------------------------------------------------------------------
 # UI-managed channel allow-list (api/, core/telegram_channels.py,
 # core/telegram_listener.py)
