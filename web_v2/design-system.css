@@ -26,25 +26,29 @@
   --brand: #2452eb;
   --brand-hover: #1a3fc4;
   --brand-dim: #eef1fd;
-  --green: #14804a;
-  --green-bg: #eaf7f0;
-  --red: #b3261e;
-  --red-bg: #fbeeed;
+  --green: #0e9f5e;
+  --green-bg: #e6f7ee;
+  --red: #d1362a;
+  --red-bg: #fceceb;
   /* Extra semantic accents beyond brand/green/red - gives the product
      visual variety instead of every non-P&L thing defaulting to gray.
      Gold = protected/vault/premium. Purple = AI/recommendation voice.
-     Never repurposed for anything else (same discipline as P3). */
-  --gold: #8a6a17;
+     Amber = waiting/attention (never reused for loss - that's red). */
+  --gold: #a3780a;
   --gold-bg: #faf1d6;
   --gold-border: #eddfa8;
-  --purple: #6d3fc4;
+  --purple: #7c3fd6;
   --purple-bg: #f3edfc;
   --purple-border: #e2d3f7;
+  --amber: #b5750a;
+  --amber-bg: #fff4e0;
+  --amber-border: #f5deac;
 
   --ink: #14151a;
   --ink-dim: #6b6f7b;
   --ink-faint: #9a9ea8;
   --surface: #ffffff;
+  --surface-2: #fbfaf6;
   --canvas: #f8f8f7;
   --border: #e8e7e3;
   --radius: 14px;
@@ -65,6 +69,75 @@
   --font-mono: "SF Mono", "Cascadia Code", "IBM Plex Mono", Consolas, monospace;
 }
 
+/* ==============================================================
+   DARK MODE — a fully designed second theme (2026-07-13), not an
+   inverted afterthought. Deep charcoal-navy base (never pure black -
+   "no hacker/Matrix aesthetic" was an explicit requirement), elevated
+   surfaces via --surface-2 rather than shadows (box-shadows barely
+   read against a dark ground - real design systems use a lighter fill
+   for elevation instead), and every accent re-tuned for legibility
+   and restraint against a dark ground rather than a straight hex
+   invert. Applies automatically from OS preference, and can be
+   force-set either direction via data-theme (see theme.js). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --brand: #6788ff;
+    --brand-hover: #89a3ff;
+    --brand-dim: #1a2340;
+    --green: #2edb92;
+    --green-bg: #123023;
+    --red: #ff5b6b;
+    --red-bg: #3a1620;
+    --gold: #e8c15a;
+    --gold-bg: #332a12;
+    --gold-border: #4a3c1a;
+    --purple: #b295f7;
+    --purple-bg: #271c42;
+    --purple-border: #3d2f5c;
+    --amber: #ffb84d;
+    --amber-bg: #3a2a10;
+    --amber-border: #4d3a15;
+
+    --ink: #eef0f5;
+    --ink-dim: #9296a6;
+    --ink-faint: #5f6373;
+    --surface: #171b24;
+    --surface-2: #1e2330;
+    --canvas: #0f1218;
+    --border: #2a2f3d;
+    --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+    --shadow-lift: 0 4px 10px rgba(0,0,0,0.35), 0 16px 40px rgba(0,0,0,0.45);
+  }
+}
+:root[data-theme="dark"] {
+  --brand: #6788ff;
+  --brand-hover: #89a3ff;
+  --brand-dim: #1a2340;
+  --green: #2edb92;
+  --green-bg: #123023;
+  --red: #ff5b6b;
+  --red-bg: #3a1620;
+  --gold: #e8c15a;
+  --gold-bg: #332a12;
+  --gold-border: #4a3c1a;
+  --purple: #b295f7;
+  --purple-bg: #271c42;
+  --purple-border: #3d2f5c;
+  --amber: #ffb84d;
+  --amber-bg: #3a2a10;
+  --amber-border: #4d3a15;
+
+  --ink: #eef0f5;
+  --ink-dim: #9296a6;
+  --ink-faint: #5f6373;
+  --surface: #171b24;
+  --surface-2: #1e2330;
+  --canvas: #0f1218;
+  --border: #2a2f3d;
+  --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.35);
+  --shadow-lift: 0 4px 10px rgba(0,0,0,0.35), 0 16px 40px rgba(0,0,0,0.45);
+}
+
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
 body {
@@ -72,6 +145,7 @@ body {
   background: var(--canvas);
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
 }
 
 /* Apply wherever a financial figure appears - $ amounts, %, prices.
@@ -95,6 +169,7 @@ body {
 .sidebar {
   width: 232px; flex-shrink: 0; background: var(--surface);
   border-right: 1px solid var(--border); padding: var(--space-4) var(--space-3);
+  display: flex; flex-direction: column;
 }
 .sidebar .brand { font-weight: 800; font-size: 17px; margin-bottom: var(--space-4); display: flex; align-items: center; gap: 8px; }
 .sidebar .brand .mark { width: 26px; height: 26px; background: var(--brand); border-radius: 8px; }
@@ -106,6 +181,41 @@ body {
 }
 .nav-item:hover { background: var(--canvas); }
 .nav-item.active { background: var(--brand-dim); color: var(--brand); font-weight: 700; }
+
+/* ---- "More" menu (IA: primary nav trimmed to 6 daily-use items,
+   everything occasional lives here, collapsed by default) ---- */
+.nav-more { margin-top: 2px; border-top: 1px solid var(--border); padding-top: var(--space-2); margin-top: var(--space-2); }
+.nav-more-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px; border-radius: var(--radius-sm);
+  color: var(--ink-dim); font-size: 14px; font-weight: 500; cursor: pointer;
+}
+.nav-more-toggle:hover { background: var(--canvas); }
+.nav-more .chev { transition: transform 0.15s var(--ease); font-size: 11px; color: var(--ink-faint); }
+.nav-more.open .chev { transform: rotate(180deg); }
+.nav-more-list { display: none; padding-left: 4px; }
+.nav-more.open .nav-more-list { display: block; }
+.nav-more .more-item { font-size: 13.5px; padding: 8px 12px; }
+
+.theme-toggle-wrap { margin-top: auto; padding-top: var(--space-3); border-top: 1px solid var(--border); }
+.theme-toggle { display: flex; gap: 4px; background: var(--canvas); border-radius: 10px; padding: 4px; }
+.theme-toggle button {
+  flex: 1; border: none; background: none; padding: 7px 0; border-radius: 7px;
+  font-size: 14px; color: var(--ink-faint); cursor: pointer; transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+.theme-toggle button.active { background: var(--surface); color: var(--brand); box-shadow: var(--shadow); }
+.theme-toggle button:hover:not(.active) { color: var(--ink-dim); }
+
+/* Mobile "More" bottom sheet - opened by the mobile-nav's More tab */
+.more-sheet { display: none; position: fixed; inset: 0; z-index: 60; background: rgba(0,0,0,0.4); }
+.more-sheet.open { display: block; }
+.more-sheet-inner {
+  position: absolute; left: 0; right: 0; bottom: 0; background: var(--surface);
+  border-radius: 18px 18px 0 0; padding: var(--space-3) var(--space-3) calc(var(--space-4) + 60px);
+  max-height: 70vh; overflow-y: auto;
+}
+.more-sheet-title { font-weight: 800; font-size: 15px; padding: 8px 12px 12px; }
+.more-sheet .nav-item { color: var(--ink); font-size: 15px; padding: 12px; }
 
 .main { flex: 1; padding: var(--space-4) var(--space-5); max-width: 1180px; }
 h1 { font-size: 25px; font-weight: 750; letter-spacing: -0.015em; margin: 0 0 4px 0; }
@@ -559,4 +669,147 @@ h1 { font-size: 25px; font-weight: 750; letter-spacing: -0.015em; margin: 0 0 4p
 .plain-summary b { font-family: "SF Mono", Consolas, monospace; }
 
 .mode-link { font-size: 12.5px; color: var(--brand); font-weight: 700; cursor: pointer; background: none; border: none; padding: 0; text-decoration: underline; }
+
+/* ==============================================================
+   PORTFOLIO COMMAND DASHBOARD (2026-07-13) — hybrid of Concept A
+   (Executive Portfolio: hero value, growth chart, capital breakdown)
+   and Concept C (Pocket Option-inspired: pulse, bold color, one-tap
+   fund control). Leads with money and momentum, never with signal
+   stream / parser events / system health - those live under More.
+   ============================================================== */
+
+.cmd-eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); font-weight: 700; margin-bottom: 6px; display: flex; align-items: center; gap: 10px; }
+.mode-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 800; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
+.mode-pill.demo { background: var(--brand-dim); color: var(--brand); }
+.mode-pill.live { background: var(--red-bg); color: var(--red); }
+
+/* ---- Hero: total portfolio value + chart (Concept A structure,
+   Concept C's pulse + warmer glow for "this is alive") ---- */
+.cmd-hero {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow); padding: 30px 34px; margin-bottom: 18px; position: relative; overflow: hidden;
+}
+.cmd-hero::before {
+  content: ""; position: absolute; top: -70px; right: -70px; width: 320px; height: 320px; border-radius: 50%;
+  background: radial-gradient(circle, var(--green-bg) 0%, transparent 70%); opacity: .8; pointer-events: none;
+}
+.cmd-hero-top { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px; position: relative; }
+.cmd-hero-label { font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); font-weight: 700; margin-bottom: 8px; }
+.cmd-hero-value-row { display: flex; align-items: baseline; gap: 12px; }
+.cmd-hero-value { font-size: 52px; font-weight: 800; letter-spacing: -.025em; line-height: 1; font-variant-numeric: tabular-nums; }
+.cmd-hero-pulse { width: 10px; height: 10px; border-radius: 50%; background: var(--green); position: relative; }
+.cmd-hero-pulse::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 1.5px solid var(--green); animation: live-pulse 1.8s ease-out infinite; }
+.cmd-hero-delta { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14.5px; font-weight: 700; }
+.cmd-hero-delta.up { color: var(--green); }
+.cmd-hero-delta.down { color: var(--red); }
+.cmd-hero-delta .sub { color: var(--ink-faint); font-weight: 500; font-size: 12.5px; }
+
+.tf-toggle { display: flex; gap: 4px; background: var(--canvas); border-radius: 10px; padding: 4px; }
+.tf-toggle button { border: none; background: none; padding: 6px 13px; border-radius: 7px; font-size: 12.5px; font-weight: 700; color: var(--ink-dim); cursor: pointer; font-family: var(--font); }
+.tf-toggle button.active { background: var(--surface); color: var(--brand); box-shadow: var(--shadow); }
+
+.cmd-chart-wrap { margin-top: 22px; position: relative; }
+.cmd-chart-wrap svg { width: 100%; height: 150px; display: block; }
+.cmd-chart-basis { font-size: 11.5px; color: var(--ink-faint); margin-top: 6px; font-style: italic; }
+
+.cmd-capital-strip { display: flex; gap: 0; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); flex-wrap: wrap; position: relative; }
+.cmd-capital-strip .cell { flex: 1; min-width: 130px; padding-right: 22px; }
+.cmd-capital-strip .cell .l { font-size: 11px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; display: flex; align-items: center; gap: 5px; }
+.cmd-capital-strip .cell .v { font-size: 19px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.cmd-capital-strip .cell .v.gold { color: var(--gold); }
+.cmd-capital-strip .cell .v.green { color: var(--green); }
+
+/* ---- Fund Control cards (Concept C energy + Concept A's real info
+   density: provider, strategy, broker, target/risk progress) ---- */
+.cmd-fund-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.fund-card-v2 {
+  background: var(--surface); border: 1.5px solid var(--border); border-radius: var(--radius-lg);
+  padding: 18px 20px; cursor: pointer; position: relative; transition: transform .15s var(--ease), box-shadow .15s var(--ease), border-color .15s var(--ease);
+}
+.fund-card-v2:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+.fund-card-v2.selected { border-color: var(--brand); box-shadow: var(--shadow-lift); background: linear-gradient(160deg, var(--surface) 0%, var(--brand-dim) 240%); }
+.fund-card-v2 .fc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+.fund-card-v2 .fc-name { font-weight: 750; font-size: 15.5px; }
+.fund-card-v2 .fc-status { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 800; padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
+.fc-status.trading { background: var(--green-bg); color: var(--green); }
+.fc-status.paused { background: var(--amber-bg); color: var(--amber); }
+.fc-status.target_hit { background: var(--brand-dim); color: var(--brand); }
+.fc-status.stopped_risk { background: var(--red-bg); color: var(--red); }
+.fund-card-v2 .fc-value { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.fund-card-v2 .fc-delta { font-size: 12.5px; font-weight: 700; margin-top: 2px; }
+.fund-card-v2 .fc-chips { display: flex; flex-wrap: wrap; gap: 5px; margin: 12px 0; }
+.fc-chip { font-size: 10.5px; font-weight: 650; padding: 3px 8px; border-radius: 6px; background: var(--canvas); color: var(--ink-dim); }
+.fund-card-v2 .fc-bars { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.fc-bar-row { font-size: 10.5px; color: var(--ink-faint); display: flex; justify-content: space-between; margin-bottom: 2px; }
+.fc-bar-track { height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.fc-bar-fill { height: 100%; border-radius: 3px; }
+.fc-bar-fill.target { background: var(--green); }
+.fc-bar-fill.risk { background: var(--red); }
+.fund-card-v2 .fc-controls { display: flex; gap: 6px; margin-top: 12px; }
+.fc-ctrl-btn {
+  flex: 1; border: none; border-radius: 8px; padding: 8px 0; font-size: 12px; font-weight: 750; cursor: pointer;
+  font-family: var(--font); transition: background .12s var(--ease);
+}
+.fc-ctrl-btn.start { background: var(--green); color: #fff; }
+.fc-ctrl-btn.pause { background: var(--amber-bg); color: var(--amber); }
+.fc-ctrl-btn.resume { background: var(--brand); color: #fff; }
+.fc-ctrl-btn.stop { background: var(--red-bg); color: var(--red); }
+
+/* ---- Active Session Panel: what THIS fund is doing right now ---- */
+.session-panel {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow); padding: 24px 26px; margin-bottom: 18px; position: relative; overflow: hidden;
+}
+.session-panel::before {
+  content: ""; position: absolute; top: -50px; left: -50px; width: 220px; height: 220px; border-radius: 50%;
+  background: radial-gradient(circle, var(--purple-bg) 0%, transparent 70%); opacity: .7; pointer-events: none;
+}
+.session-panel .sp-head { display: flex; justify-content: space-between; align-items: flex-start; position: relative; flex-wrap: wrap; gap: 14px; }
+.session-panel .sp-name { font-weight: 800; font-size: 19px; }
+.session-panel .sp-sub { font-size: 12.5px; color: var(--ink-dim); margin-top: 3px; }
+.session-panel .sp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; margin-top: 20px; position: relative; }
+.session-panel .sp-stat .l { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); font-weight: 700; margin-bottom: 4px; }
+.session-panel .sp-stat .v { font-size: 17px; font-weight: 750; font-variant-numeric: tabular-nums; }
+.session-panel .sp-primary-btn {
+  border: none; border-radius: 10px; padding: 12px 26px; font-size: 14px; font-weight: 800; cursor: pointer;
+  font-family: var(--font); transition: background .12s var(--ease), transform .12s var(--ease);
+}
+.session-panel .sp-primary-btn:active { transform: scale(.97); }
+.session-panel .sp-primary-btn.start { background: var(--green); color: #fff; }
+.session-panel .sp-primary-btn.pause { background: var(--amber); color: #251a02; }
+.session-panel .sp-primary-btn.resume { background: var(--brand); color: #fff; }
+.session-panel .sp-primary-btn.waiting { background: var(--canvas); color: var(--ink-faint); cursor: default; }
+.session-panel .sp-primary-btn.review { background: var(--surface-2); color: var(--ink); border: 1.5px solid var(--border); }
+
+/* ---- Signal Information: last trade / result / next status only —
+   never a stream (see docs/UI_VISION_DESIGN_PRINCIPLES.md, direct
+   user instruction 2026-07-13: no recent-signals list on Home). ---- */
+.signal-mini {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 20px;
+}
+.signal-mini .sm-item { display: flex; flex-direction: column; gap: 3px; }
+.signal-mini .sm-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); font-weight: 700; }
+.signal-mini .sm-value { font-size: 14px; font-weight: 700; }
+.signal-mini .sm-value.win { color: var(--green); }
+.signal-mini .sm-value.loss { color: var(--red); }
+.view-activity-link { font-size: 12.5px; font-weight: 700; color: var(--brand); text-decoration: none; white-space: nowrap; }
+.view-activity-link:hover { text-decoration: underline; }
+
+/* Toast for preview-safe control clicks - confirms the click registered
+   without ever pretending a real session started/stopped (structural
+   safety: preview_server.py exposes no write endpoints at all). */
+.preview-toast {
+  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px); z-index: 200;
+  background: var(--ink); color: var(--surface); padding: 12px 22px; border-radius: 10px; font-size: 13px; font-weight: 600;
+  box-shadow: var(--shadow-lift); opacity: 0; transition: opacity .2s var(--ease), transform .2s var(--ease); pointer-events: none;
+}
+.preview-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+@media (max-width: 900px) {
+  .cmd-hero-value { font-size: 38px; }
+  .cmd-fund-grid { grid-template-columns: 1fr; }
+  .cmd-capital-strip .cell { min-width: 45%; margin-bottom: 12px; }
+  .session-panel .sp-head { flex-direction: column; }
+}
 .mode-banner { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; font-size: 12.5px; color: var(--ink-dim); }

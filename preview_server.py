@@ -537,6 +537,143 @@ def preview_dashboard():
     }
 
 
+def _fund_growth_pct(balances):
+    start = balances.get("starting_balance") or 0
+    if not start:
+        return None
+    return round((balances.get("total_account_value", 0) - start) / start * 100, 2)
+
+
+def _session_status_label(fund, active_session):
+    """One honest word for what a Fund is doing RIGHT NOW - never
+    fabricated, always derived from real fund.status / an actual active
+    trading_session row (or its absence)."""
+    if fund.get("status") != "active":
+        return "paused"
+    if active_session:
+        return "trading"
+    return "paused"
+
+
+@app.get("/api/preview/portfolio-command")
+def preview_portfolio_command(days: int = 90, fund_id: int | None = None):
+    """Backend for the Portfolio Command Dashboard (hybrid of Concept A
+    + Concept C). Every number is real, computed from this isolated
+    preview database's actual funds/sessions/signals - including the 3
+    additional demo Funds seeded via seed_preview_funds.py /
+    seed_preview_signals.py for evaluating the design at realistic
+    multi-fund density (the user's own instruction explicitly permits
+    "read-only or seeded data" for this deliverable). No number here is
+    invented at request time - the growth curve especially is
+    reconstructed from real signals rows, and honestly discloses how
+    much real history actually exists rather than padding a fixed
+    90-day curve."""
+    funds = fund_manager.list_funds_with_balances()
+
+    fund_cards = []
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    for f in funds:
+        active_session = database.get_active_trading_session_for_fund(f["id"])
+        balances = f["balances"] or {}
+        broker = f.get("broker_account") or {}
+        sources = database.get_fund_source_channels(f["id"])
+        strategy_profile = _get_profile(f.get("default_risk_profile_id")) if f.get("default_risk_profile_id") else None
+
+        trades_today = database.get_fund_trades_since(f["id"], today_start)
+        today_pnl = round(sum(t["profit_loss"] for t in trades_today), 2)
+
+        sessions_today = [
+            s for s in database.list_fund_sessions(f["id"], limit=50)
+            if (s.get("started_at") or "") >= today_start
+        ]
+
+        profit_target = f.get("profit_target") or 0
+        loss_limit = f.get("loss_limit") or 0
+        lifetime_pnl = round(balances.get("total_account_value", 0) - balances.get("starting_balance", 0), 2)
+        target_progress_pct = round(min(100, max(0, lifetime_pnl / profit_target * 100)), 1) if profit_target else None
+        risk_remaining_pct = round(min(100, max(0, 100 - abs(min(lifetime_pnl, 0)) / loss_limit * 100)), 1) if loss_limit else None
+
+        status_label = _session_status_label(f, active_session)
+        if status_label == "paused" and profit_target and lifetime_pnl >= profit_target:
+            status_label = "target_hit"
+        if status_label == "paused" and loss_limit and lifetime_pnl <= -loss_limit:
+            status_label = "stopped_risk"
+
+        fund_cards.append({
+            "id": f["id"], "name": f["name"],
+            "balance": balances.get("total_account_value"),
+            "today_pnl": today_pnl,
+            "growth_pct": _fund_growth_pct(balances),
+            "broker_account_name": broker.get("name"),
+            "signal_providers": [s["title"] for s in sources],
+            "strategy_name": _display_name(strategy_profile) if strategy_profile else None,
+            "status": status_label,
+            "target_progress_pct": target_progress_pct,
+            "risk_remaining_pct": risk_remaining_pct,
+            "profit_target": profit_target or None,
+            "loss_limit": loss_limit or None,
+            "mode": (broker.get("mode") or "demo"),
+            "trades_completed": active_session["trades_count"] if active_session else (sessions_today[-1]["trades_count"] if sessions_today else 0),
+            "session_pnl": active_session["realized_pnl"] if active_session else (sessions_today[-1]["realized_pnl"] if sessions_today else 0),
+        })
+
+    selected = fund_id or (fund_cards[0]["id"] if fund_cards else None)
+    selected_card = next((c for c in fund_cards if c["id"] == selected), None)
+
+    total_value = round(sum(c["balance"] or 0 for c in fund_cards), 2)
+    total_today_pnl = round(sum(c["today_pnl"] or 0 for c in fund_cards), 2)
+    total_starting = round(sum((f["balances"] or {}).get("starting_balance", 0) for f in funds), 2)
+    today_growth_pct = round(total_today_pnl / total_starting * 100, 2) if total_starting else None
+    active_trading_capital = round(sum((f["balances"] or {}).get("trading_balance", 0) for f in funds), 2)
+    protected_capital = round(sum((f["balances"] or {}).get("protected_balance", 0) for f in funds), 2)
+    active_funds_count = sum(1 for c in fund_cards if c["status"] == "trading")
+    lifetime_growth_pct = round((total_value - total_starting) / total_starting * 100, 2) if total_starting else None
+
+    raw_curve = database.get_portfolio_growth_curve(days=days)
+    running = total_starting
+    points = []
+    for p in raw_curve:
+        running += p["profit_loss"]
+        points.append({"t": p["timestamp"], "balance": round(running, 2)})
+    real_span_days = None
+    if len(raw_curve) >= 2:
+        first = datetime.fromisoformat(raw_curve[0]["timestamp"])
+        last = datetime.fromisoformat(raw_curve[-1]["timestamp"])
+        real_span_days = round((last - first).total_seconds() / 86400, 2)
+
+    last_trade = None
+    recent = database.get_recent_signals(limit=1)
+    if recent:
+        r = recent[0]
+        last_trade = {
+            "asset": r.get("asset"), "direction": (r.get("direction") or "").upper(),
+            "result": _short_result(r.get("result")), "profit_loss": r.get("profit_loss"),
+        }
+
+    return {
+        "portfolio": {
+            "total_value": total_value,
+            "today_pnl": total_today_pnl,
+            "today_growth_pct": today_growth_pct,
+            "lifetime_growth_pct": lifetime_growth_pct,
+            "active_trading_capital": active_trading_capital,
+            "protected_capital": protected_capital,
+            "active_funds_count": active_funds_count,
+            "total_funds_count": len(fund_cards),
+            "mode": "demo",  # every broker account in this preview is demo-mode, structurally - see module docstring
+        },
+        "growth_curve": {
+            "points": points,
+            "requested_days": days,
+            "real_span_days": real_span_days,
+            "real_point_count": len(points),
+        },
+        "funds": fund_cards,
+        "selected_fund": selected_card,
+        "last_trade": last_trade,
+    }
+
+
 def _strategy_summary(profile):
     """Describes what a strategy IS and how it behaves - never how well
     it performed. A money-management strategy has no intrinsic ROI or

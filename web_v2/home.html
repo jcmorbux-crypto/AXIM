@@ -2,186 +2,264 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Dashboard - AXIM Trader</title>
+<title>Home - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
 <link rel="stylesheet" href="design-system.css">
 </head>
 <body>
-<div class="preview-badge">Preview Mode &middot; <b>Read-only</b> &middot; AXIM Trader V2 (UI Vision) &middot; No real trades are ever placed here</div>
-
-<div class="terminal-shell">
-
-  <!-- LEFT: navigation + signal sources -->
-  <div class="terminal-col col-left">
-    <div class="terminal-col-inner">
-      <div style="display:flex; align-items:center; gap:8px; font-weight:800; font-size:15px; padding:4px 4px 16px;">
-        <span style="width:22px; height:22px; background:var(--brand); border-radius:7px; display:inline-block;"></span>
-        AXIM Trader
-      </div>
-      <div id="left-nav"></div>
-      <div class="terminal-panel" style="margin-top:16px;">
-        <div class="terminal-panel-title">Signal Sources <span class="live-dot"></span></div>
-        <div id="left-sources"><div class="progress-row"><span class="spinner"></span></div></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- CENTER: live activity -->
-  <div class="terminal-col col-center">
-    <div class="terminal-col-inner">
-      <div class="terminal-panel">
-        <div class="terminal-panel-title">
-          <span>Today's Performance</span>
-          <span class="live-dot"></span>
-        </div>
-        <div id="center-hero"><div class="progress-row"><span class="spinner"></span> Connecting...</div></div>
-      </div>
-
-      <div class="terminal-panel">
-        <div class="terminal-panel-title">Live Activity</div>
-        <div id="center-activity"></div>
-      </div>
-
-      <div class="terminal-panel">
-        <div class="terminal-panel-title">Active Session</div>
-        <div id="center-session"></div>
-      </div>
-    </div>
-  </div>
-
-  <!-- RIGHT: funds, risk, performance, emergency controls, positions -->
-  <div class="terminal-col col-right">
-    <div class="terminal-col-inner">
-      <div class="terminal-panel" style="border-color:var(--red); background:var(--red-bg);">
-        <button class="btn btn-danger" style="width:100%; justify-content:center; font-size:14px; padding:12px;">⏹ Emergency Stop</button>
-        <button class="btn btn-secondary" style="width:100%; justify-content:center; margin-top:8px;">Pause</button>
-      </div>
-
-      <div class="terminal-panel">
-        <div class="terminal-panel-title">Funds</div>
-        <div id="right-funds"></div>
-      </div>
-
-      <div class="terminal-panel">
-        <div class="terminal-panel-title">Open Positions</div>
-        <div id="right-positions"></div>
-      </div>
-
-      <div class="terminal-panel">
-        <div class="terminal-panel-title">Risk</div>
-        <div id="right-risk"></div>
-      </div>
-    </div>
-  </div>
-
-</div>
-
-<div class="mobile-nav" id="mobile-nav-root"></div>
-
+<div class="shell" id="shell-root"></div>
+<script src="theme.js"></script>
 <script src="shell.js"></script>
 <script>
-document.getElementById("left-nav").innerHTML = NAV_ITEMS.map(i => `
-  <a class="nav-item ${i.id === "home" ? "active" : ""}" href="${i.href}" style="font-size:13px;">${i.label}</a>
-`).join("");
-document.getElementById("mobile-nav-root").outerHTML = (() => {
-  const items = NAV_ITEMS.filter(i => MOBILE_NAV_ITEMS.includes(i.id)).map(i => `
-    <a class="item ${i.id === "home" ? "active" : ""}" href="${i.href}">${i.label}</a>
-  `).join("") + `<a class="item">More</a>`;
-  return `<div class="mobile-nav">${items}</div>`;
-})();
+// Portfolio Command Dashboard - hybrid of Concept A (Executive Portfolio)
+// and Concept C (Pocket Option-inspired Fund Automation), per direct user
+// spec (2026-07-13). Leads with money and momentum (portfolio value,
+// growth, capital breakdown, Fund control) - never with a signal stream,
+// parser events, or system health, which live under More. Every number
+// on this page comes from /api/preview/portfolio-command, itself built
+// entirely from real read-only queries (see preview_server.py's module
+// docstring) - nothing here is fabricated or simulated.
+renderShell("home", "Home", "Your Funds, at a glance.");
 
-function fmtPct(n) { return n === null || n === undefined ? "&mdash;" : (n * 100).toFixed(1) + "%"; }
-function timeAgo(iso) {
-  if (!iso) return "";
-  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
-  if (mins < 1) return "now";
-  if (mins < 60) return mins + "m";
-  return Math.round(mins / 60) + "h";
+const TIMEFRAMES = [
+  { label: "1D", days: 1 },
+  { label: "7D", days: 7 },
+  { label: "30D", days: 30 },
+  { label: "90D", days: 90 },
+  { label: "ALL", days: 3650 },
+];
+
+let selectedFundId = null;
+let currentDays = 7;
+
+function statusLabel(status) {
+  return { trading: "Trading", paused: "Paused", target_hit: "Target Hit", stopped_risk: "Stopped — Risk Limit" }[status] || status;
 }
 
-let lastPayload = null;
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML; }
 
-function flashIfChanged(el, key, newVal) {
-  if (lastPayload && JSON.stringify(lastPayload[key]) !== JSON.stringify(newVal)) {
-    el.classList.remove("flash-update");
-    void el.offsetWidth; // restart animation
-    el.classList.add("flash-update");
+function previewAction(action, fundName) {
+  showToast(`${action}: ${fundName} — preview only, no real session was changed.`);
+}
+
+function fundControls(fund) {
+  if (fund.status === "trading") {
+    return `
+      <button class="fc-ctrl-btn pause" onclick="event.stopPropagation(); previewAction('Pause', '${escapeHtml(fund.name)}')">Pause</button>
+      <button class="fc-ctrl-btn stop" onclick="event.stopPropagation(); previewAction('Stop', '${escapeHtml(fund.name)}')">Stop</button>
+    `;
   }
+  if (fund.status === "paused") {
+    const label = fund.trades_completed > 0 ? "Resume" : "Start";
+    const cls = fund.trades_completed > 0 ? "resume" : "start";
+    return `
+      <button class="fc-ctrl-btn ${cls}" onclick="event.stopPropagation(); previewAction('${label}', '${escapeHtml(fund.name)}')">${label}</button>
+      <button class="fc-ctrl-btn stop" onclick="event.stopPropagation(); previewAction('Stop', '${escapeHtml(fund.name)}')">Stop</button>
+    `;
+  }
+  // target_hit / stopped_risk - nothing to start/pause until the operator
+  // reviews why it stopped, so a single "Review Setup" action, not a
+  // Start/Pause pair that would imply this can just resume as-is.
+  return `<button class="fc-ctrl-btn resume" style="flex:1;" onclick="event.stopPropagation(); previewAction('Review Setup', '${escapeHtml(fund.name)}')">Review Setup</button>`;
 }
 
-async function tick() {
+function buildChart(points) {
+  if (points.length < 2) {
+    return `<div class="source-nodata" style="padding:30px 0;">Not enough real trade history yet to draw a growth chart for this range.</div>`;
+  }
+  const balances = points.map(p => p.balance);
+  const min = Math.min(...balances), max = Math.max(...balances);
+  const span = (max - min) || 1;
+  const w = 900, h = 150, pad = 6;
+  const coords = points.map((p, i) => {
+    const x = points.length === 1 ? 0 : (i / (points.length - 1)) * w;
+    const y = h - pad - ((p.balance - min) / span) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const last = coords[coords.length - 1].split(",");
+  return `
+    <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <polyline points="${coords.join(" ")}" fill="none" stroke="var(--brand)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${last[0]}" cy="${last[1]}" r="5" fill="var(--brand)"/>
+    </svg>
+  `;
+}
+
+// Overlapping load() calls are real, not hypothetical - clicking a
+// different Fund card fires a new request before the page's initial
+// load has necessarily resolved, and there is no guarantee responses
+// arrive in the order they were sent. Without a generation guard, a
+// slower, now-stale response can land AFTER a newer one and silently
+// overwrite the correct render with the wrong Fund's data (caught live
+// via Playwright - a fast click right after page load reproduced it
+// reliably, not just in theory).
+let _loadGeneration = 0;
+
+async function load() {
+  const myGeneration = ++_loadGeneration;
+  const content = document.getElementById("page-content");
+  if (!content.dataset.loaded) {
+    content.innerHTML = `<div class="progress-row" style="padding:40px 0;"><span class="spinner"></span> Loading your portfolio...</div>`;
+  }
+  let data;
   try {
-    const data = await fetchPreview("/dashboard");
-
-    // CENTER: hero
-    const heroEl = document.getElementById("center-hero");
-    flashIfChanged(heroEl, "today_pnl", data.today_pnl);
-    heroEl.innerHTML = `
-      <div class="hero-number terminal-font ${moneyClass(data.today_pnl)}" style="font-size:34px;">${fmtMoney(data.today_pnl)}</div>
-      <div class="status-line">
-        <span class="live-dot"></span> ${data.today_trades} trades today &middot; ${fmtPct(data.today_win_rate)} win rate
-      </div>
-    `;
-
-    // CENTER: activity
-    const actEl = document.getElementById("center-activity");
-    flashIfChanged(actEl, "activity", data.activity);
-    actEl.innerHTML = data.activity.length ? data.activity.map(a => `
-      <div class="trow">
-        <span class="t-time terminal-font">${timeAgo(a.received_at)}</span>
-        <span class="t-asset">${a.asset || "—"}</span>
-        <span class="t-dir ${a.direction}">${(a.direction || "").toUpperCase()}</span>
-        <span class="t-result terminal-font ${a.result === "win" ? "up" : a.result === "loss" ? "down" : ""}">${a.result || "pending"}</span>
-      </div>
-    `).join("") : `<div class="source-nodata">No signals yet.</div>`;
-
-    // CENTER: session
-    const sessEl = document.getElementById("center-session");
-    const s = data.active_session;
-    sessEl.innerHTML = s ? `
-      <div class="stat-row"><span class="label">${s.name}</span><span class="value ${moneyClass(s.realized_pnl)} terminal-font">${fmtMoney(s.realized_pnl)}</span></div>
-      <div class="stat-row"><span class="label">Trades</span><span class="value terminal-font">${s.trades_count}</span></div>
-      <div class="stat-row"><span class="label">Status</span><span class="value" style="text-transform:capitalize;">${s.status}</span></div>
-    ` : `<div class="source-nodata">No active session.</div>`;
-
-    // LEFT: sources
-    document.getElementById("left-sources").innerHTML = data.sources.length ? data.sources.map(src => `
-      <div class="sig-mini">
-        <span class="name">${src.title}</span>
-        <span class="wr terminal-font ${src.total_signals > 0 ? (src.win_rate >= 0.5 ? "up" : "down") : ""}">${src.total_signals > 0 ? fmtPct(src.win_rate) : "—"}</span>
-      </div>
-    `).join("") : `<div class="source-nodata">None watched.</div>`;
-
-    // RIGHT: funds
-    document.getElementById("right-funds").innerHTML = data.funds_summary.length ? data.funds_summary.map(f => `
-      <div class="stat-row"><span class="label">${f.name}</span><span class="value terminal-font ${moneyClass(f.trading_balance)}">${fmtMoney(f.trading_balance)}</span></div>
-    `).join("") : `<div class="source-nodata">No funds yet.</div>`;
-
-    // RIGHT: open positions
-    const posEl = document.getElementById("right-positions");
-    flashIfChanged(posEl, "open_positions", data.open_positions);
-    posEl.innerHTML = data.open_positions.length ? data.open_positions.map(p => `
-      <div class="trow" style="grid-template-columns: 1fr auto auto;">
-        <span class="t-asset">${p.asset}</span>
-        <span class="t-dir ${p.direction}">${(p.direction || "").toUpperCase()}</span>
-        <span class="terminal-font">${fmtMoney(p.trade_amount)}</span>
-      </div>
-    `).join("") : `<div class="source-nodata">No open positions right now.</div>`;
-
-    // RIGHT: risk
-    document.getElementById("right-risk").innerHTML = `
-      <div class="status-line"><span class="dot"></span> Within all your risk limits</div>
-      <details class="disclosure" style="margin-top:8px;"><summary>Limit details</summary><div class="content">Daily loss cap, max trades/hour, and consecutive-loss cooldown all currently unbreached.</div></details>
-    `;
-
-    lastPayload = data;
+    const qs = new URLSearchParams({ days: currentDays });
+    if (selectedFundId) qs.set("fund_id", selectedFundId);
+    data = await fetchPreview(`/portfolio-command?${qs.toString()}`);
   } catch (e) {
-    document.getElementById("center-hero").innerHTML = `<div class="card-label" style="color:var(--red);">Connection error</div>${e.message}`;
+    if (myGeneration !== _loadGeneration) return; // a newer load has since started - don't show this error over it
+    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+    return;
   }
+  if (myGeneration !== _loadGeneration) return; // a newer request has already superseded this one
+  content.dataset.loaded = "1";
+
+  const p = data.portfolio;
+  const sel = data.selected_fund;
+  if (sel) selectedFundId = sel.id;
+
+  const deltaClass = p.today_pnl > 0 ? "up" : p.today_pnl < 0 ? "down" : "";
+  const deltaArrow = p.today_pnl > 0 ? "&#9650;" : p.today_pnl < 0 ? "&#9660;" : "&#9679;";
+
+  const heroHtml = `
+    <div class="mode-banner">
+      <span class="cmd-eyebrow">Portfolio Overview <span class="mode-pill ${p.mode}">${p.mode}</span></span>
+    </div>
+    <div class="cmd-hero glow-panel">
+      <div class="cmd-hero-top">
+        <div>
+          <div class="cmd-hero-label">Total Portfolio Value</div>
+          <div class="cmd-hero-value-row">
+            <span class="cmd-hero-value num">${fmtMoney(p.total_value)}</span>
+            <span class="cmd-hero-pulse"></span>
+          </div>
+          <div class="cmd-hero-delta ${deltaClass}">
+            ${deltaArrow} ${fmtMoney(p.today_pnl)} <span class="sub">(${fmtPct(p.today_growth_pct)}) today</span>
+          </div>
+        </div>
+        <div class="tf-toggle" id="tf-toggle">
+          ${TIMEFRAMES.map(tf => `<button class="${tf.days === currentDays ? "active" : ""}" onclick="setTimeframe(${tf.days})">${tf.label}</button>`).join("")}
+        </div>
+      </div>
+      <div class="cmd-chart-wrap">
+        ${buildChart(data.growth_curve.points)}
+        <div class="cmd-chart-basis">
+          ${data.growth_curve.real_point_count} real closed-trade point${data.growth_curve.real_point_count === 1 ? "" : "s"}
+          ${data.growth_curve.real_span_days ? ` across ${data.growth_curve.real_span_days} day${data.growth_curve.real_span_days === 1 ? "" : "s"} of actual history` : ""}
+          &middot; all-time growth ${fmtPct(p.lifetime_growth_pct)}
+        </div>
+      </div>
+      <div class="cmd-capital-strip">
+        <div class="cell"><div class="l">Active Trading Capital</div><div class="v num">${fmtMoney(p.active_trading_capital)}</div></div>
+        <div class="cell"><div class="l">&#128274; Protected (Vault)</div><div class="v gold num">${fmtMoney(p.protected_capital)}</div></div>
+        <div class="cell"><div class="l">Active Funds</div><div class="v">${p.active_funds_count} of ${p.total_funds_count}</div></div>
+        <div class="cell"><div class="l">Today's Growth</div><div class="v ${deltaClass === "up" ? "green" : ""} num">${fmtPct(p.today_growth_pct)}</div></div>
+      </div>
+    </div>
+  `;
+
+  const fundCardsHtml = data.funds.length ? data.funds.map(f => `
+    <div class="fund-card-v2 ${f.id === selectedFundId ? "selected" : ""}" onclick="selectFund(${f.id})">
+      <div class="fc-top">
+        <div class="fc-name">${escapeHtml(f.name)}</div>
+        <span class="fc-status ${f.status}">&#9679; ${statusLabel(f.status)}</span>
+      </div>
+      <div class="fc-value num">${fmtMoney(f.balance)}</div>
+      <div class="fc-delta" style="color:${f.today_pnl > 0 ? "var(--green)" : f.today_pnl < 0 ? "var(--red)" : "var(--ink-faint)"};">
+        ${fmtMoney(f.today_pnl)} today ${f.growth_pct !== null ? `&middot; ${fmtPct(f.growth_pct)} all-time` : ""}
+      </div>
+      <div class="fc-chips">
+        ${f.broker_account_name ? `<span class="fc-chip">&#128179; ${escapeHtml(f.broker_account_name)}</span>` : ""}
+        ${f.signal_providers.length ? `<span class="fc-chip">&#128225; ${escapeHtml(f.signal_providers.join(", "))}</span>` : `<span class="fc-chip">No source assigned</span>`}
+        ${f.strategy_name ? `<span class="fc-chip">&#9878; ${escapeHtml(f.strategy_name)}</span>` : ""}
+        <span class="fc-chip">${escapeHtml(f.mode)}</span>
+      </div>
+      <div class="fc-bars">
+        ${f.profit_target ? `
+          <div>
+            <div class="fc-bar-row"><span>Target progress</span><span>${f.target_progress_pct}%</span></div>
+            <div class="fc-bar-track"><div class="fc-bar-fill target" style="width:${f.target_progress_pct}%;"></div></div>
+          </div>` : ""}
+        ${f.loss_limit ? `
+          <div>
+            <div class="fc-bar-row"><span>Risk remaining</span><span>${f.risk_remaining_pct}%</span></div>
+            <div class="fc-bar-track"><div class="fc-bar-fill risk" style="width:${f.risk_remaining_pct}%;"></div></div>
+          </div>` : ""}
+        ${!f.profit_target && !f.loss_limit ? `<div class="source-nodata" style="padding:2px 0;">No target or loss limit set</div>` : ""}
+      </div>
+      <div class="fc-controls">${fundControls(f)}</div>
+    </div>
+  `).join("") : `<div class="source-nodata">No Funds yet.</div>`;
+
+  let sessionHtml = `<div class="source-nodata">Select a Fund above to see its session.</div>`;
+  if (sel) {
+    const state = { trading: "Executing — waiting for next provider signal", paused: sel.trades_completed > 0 ? "Paused" : "Not started yet",
+                    target_hit: "Completed — profit target reached", stopped_risk: "Stopped — risk limit reached" }[sel.status] || sel.status;
+    let btn;
+    if (sel.status === "trading") btn = { cls: "pause", label: "Pause Session" };
+    else if (sel.status === "paused") btn = sel.trades_completed > 0 ? { cls: "resume", label: "Resume Session" } : { cls: "start", label: "Start Demo Session" };
+    else btn = { cls: "review", label: "Review Setup" };
+
+    sessionHtml = `
+      <div class="session-panel">
+        <div class="sp-head">
+          <div>
+            <div class="sp-name">${escapeHtml(sel.name)}</div>
+            <div class="sp-sub">${escapeHtml(sel.signal_providers.join(", ") || "No provider assigned")} &middot; ${escapeHtml(sel.strategy_name || "No strategy assigned")}</div>
+          </div>
+          <button class="sp-primary-btn ${btn.cls}" onclick="previewAction('${btn.label}', '${escapeHtml(sel.name)}')">${btn.label}</button>
+        </div>
+        <div class="sp-grid">
+          <div class="sp-stat"><div class="l">Balance</div><div class="v num">${fmtMoney(sel.balance)}</div></div>
+          <div class="sp-stat"><div class="l">Session P/L</div><div class="v num" style="color:${sel.session_pnl > 0 ? "var(--green)" : sel.session_pnl < 0 ? "var(--red)" : "var(--ink)"};">${fmtMoney(sel.session_pnl)}</div></div>
+          <div class="sp-stat"><div class="l">Profit Target</div><div class="v num">${sel.profit_target ? fmtMoney(sel.profit_target) : "Not set"}</div></div>
+          <div class="sp-stat"><div class="l">Loss Limit</div><div class="v num">${sel.loss_limit ? fmtMoney(sel.loss_limit) : "Not set"}</div></div>
+          <div class="sp-stat"><div class="l">Trades Completed</div><div class="v">${sel.trades_completed}</div></div>
+          <div class="sp-stat"><div class="l">Status</div><div class="v">${state}</div></div>
+        </div>
+      </div>
+    `;
+  }
+
+  let signalHtml = `<div class="source-nodata">No trades yet.</div>`;
+  if (data.last_trade) {
+    const t = data.last_trade;
+    const resultClass = t.result === "win" ? "win" : t.result === "loss" ? "loss" : "";
+    const nextStatus = sel ? { trading: "Waiting for next provider signal", paused: "Session paused — no new signals will be requested",
+                               target_hit: "Target reached — session complete", stopped_risk: "Risk limit reached — session stopped" }[sel.status] : "—";
+    signalHtml = `
+      <div class="signal-mini">
+        <div class="sm-item"><span class="sm-label">Last Trade</span><span class="sm-value">${escapeHtml(t.asset || "-")} — ${escapeHtml(t.direction || "")}</span></div>
+        <div class="sm-item"><span class="sm-label">Last Result</span><span class="sm-value ${resultClass}">${(t.result || "-").toUpperCase()} ${t.profit_loss !== null && t.profit_loss !== undefined ? fmtMoney(t.profit_loss) : ""}</span></div>
+        <div class="sm-item"><span class="sm-label">Current Status</span><span class="sm-value">${escapeHtml(nextStatus || "-")}</span></div>
+        <a class="view-activity-link" href="signal_inspector.html">View Activity &rarr;</a>
+      </div>
+    `;
+  }
+
+  content.innerHTML = `
+    ${heroHtml}
+    <div class="section-label" style="text-transform:uppercase; font-size:12px; letter-spacing:.06em; color:var(--ink-faint); font-weight:700; margin:26px 0 12px;">Your Funds</div>
+    <div class="cmd-fund-grid">${fundCardsHtml}</div>
+    <div class="section-label" style="text-transform:uppercase; font-size:12px; letter-spacing:.06em; color:var(--ink-faint); font-weight:700; margin:26px 0 12px;">Active Session</div>
+    ${sessionHtml}
+    <div class="section-label" style="text-transform:uppercase; font-size:12px; letter-spacing:.06em; color:var(--ink-faint); font-weight:700; margin:26px 0 12px;">Signal Activity</div>
+    ${signalHtml}
+  `;
 }
 
-tick();
-setInterval(tick, 5000); // genuine polling loop - the live-update MECHANISM is real, even against this preview's static snapshot
+function setTimeframe(days) {
+  currentDays = days;
+  load();
+}
+
+function selectFund(id) {
+  selectedFundId = id;
+  load();
+}
+
+load();
 </script>
 </body>
 </html>

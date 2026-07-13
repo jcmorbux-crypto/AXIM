@@ -1639,6 +1639,65 @@ def get_channel_signal_history(title, limit=1000):
     ]
 
 
+def get_fund_source_channels(fund_id):
+    """Real channels assigned to a fund via fund_sources - the signal
+    provider(s) that fund's automated sessions actually draw from.
+    Read-only join against ui_channels for display names."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT c.id, c.title, c.username
+        FROM fund_sources fs
+        JOIN ui_channels c ON c.id = fs.channel_id
+        WHERE fs.fund_id = ?
+        ORDER BY fs.id ASC
+    """, (fund_id,)).fetchall()
+    conn.close()
+    return [{"id": r["id"], "title": r["title"] or r["username"]} for r in rows]
+
+
+def get_portfolio_growth_curve(days=90):
+    """Real, chronologically-ordered cumulative P/L points across every
+    Fund's closed trades over the last `days` days - reconstructed from
+    the signals table (via session_id -> trading_sessions.fund_id),
+    never a synthetic or interpolated curve. Returns however many real
+    points actually exist in the window, which may be far fewer than a
+    full time series if trading history is short - callers must not
+    silently pad/smooth this into looking like more history than is
+    real (P9)."""
+    conn = get_connection()
+    cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+    rows = conn.execute("""
+        SELECT s.closed_at, s.profit_loss
+        FROM signals s
+        JOIN trading_sessions ts ON ts.id = s.session_id
+        WHERE s.execution_status IN ('result_win', 'result_loss', 'result_draw')
+          AND s.closed_at IS NOT NULL AND s.closed_at >= ?
+        ORDER BY s.closed_at ASC
+    """, (cutoff,)).fetchall()
+    conn.close()
+    return [{"timestamp": r["closed_at"], "profit_loss": r["profit_loss"] or 0.0} for r in rows]
+
+
+def get_fund_trades_since(fund_id, since_iso):
+    """Real closed trades for one fund since `since_iso`, sourced from the
+    signals table (via session_id -> trading_sessions.fund_id) rather than
+    trading_sessions.started_at - a session can start before a day
+    boundary while still having trades that closed after it, so filtering
+    on session start time undercounts "today". Used for today's P/L."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT s.closed_at, s.profit_loss
+        FROM signals s
+        JOIN trading_sessions ts ON ts.id = s.session_id
+        WHERE ts.fund_id = ?
+          AND s.execution_status IN ('result_win', 'result_loss', 'result_draw')
+          AND s.closed_at IS NOT NULL AND s.closed_at >= ?
+        ORDER BY s.closed_at ASC
+    """, (fund_id, since_iso)).fetchall()
+    conn.close()
+    return [{"timestamp": r["closed_at"], "profit_loss": r["profit_loss"] or 0.0} for r in rows]
+
+
 # ---------------------------------------------------------------------
 # UI-managed channel allow-list (api/, core/telegram_channels.py,
 # core/telegram_listener.py)

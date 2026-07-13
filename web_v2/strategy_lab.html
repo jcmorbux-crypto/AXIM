@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Strategy Lab - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="theme.js"></script>
+<script src="shell.js"></script>
+<script>
+renderShell("strategy-lab", "Strategy Lab", "AI-assisted strategy discovery, provider backtesting, and side-by-side comparison - the AXIM Capital Strategies framework, in one place.");
+document.getElementById("page-content").innerHTML = `
+  <div class="card">
+    <div class="card-label">Not yet built as a unified page in this preview</div>
+    <p>The pieces already exist and work today, just not consolidated under one destination yet:</p>
+    <div class="row" style="margin-top:12px;">
+      <a class="btn btn-secondary" href="strategy.html">Money Management Studio &rarr;</a>
+      <a class="btn btn-secondary" href="strategy_wizard.html">AI Recommendation Wizard &rarr;</a>
+      <a class="btn btn-secondary" href="strategy_compare.html">Compare Strategies &rarr;</a>
+      <a class="btn btn-secondary" href="signals.html">Sources (Provider Analysis) &rarr;</a>
+    </div>
+  </div>
+`;
+</script>
+</body>
+</html>
