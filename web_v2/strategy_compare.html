@@ -18,6 +18,9 @@ let picked = [];
 function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
 }
+function tierColor(level) {
+  return level === "Low" ? "var(--green)" : level === "Medium" ? "#b5750a" : "var(--red)";
+}
 
 function renderPicker() {
   const content = document.getElementById("page-content");
@@ -26,9 +29,11 @@ function renderPicker() {
       <div class="card-label">Choose up to 3 strategies (${picked.length}/3 selected)</div>
       <div class="grid">
         ${allStrategies.map(s => `
-          <div class="strategy-card ${picked.includes(s.id) ? "" : ""}" style="border-color:${picked.includes(s.id) ? "var(--brand)" : "var(--border)"}; background:${picked.includes(s.id) ? "var(--brand-dim)" : "var(--surface)"};" data-id="${s.id}">
-            <div class="s-name">${s.name}</div>
-            <div class="s-badges"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span></div>
+          <div class="strategy-card card-interactive" style="--tier-color:${tierColor(s.risk_level)}; ${picked.includes(s.id) ? "border-color:var(--brand); box-shadow:var(--shadow-lift);" : ""}" data-id="${s.id}">
+            <div class="card-body" style="padding:16px; ${picked.includes(s.id) ? "background:var(--brand-dim);" : ""}">
+              <div class="s-name">${s.name}</div>
+              <div class="s-badges" style="margin-top:6px;"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>${picked.includes(s.id) ? ' <span class="badge badge-flag-on">Selected</span>' : ""}</div>
+            </div>
           </div>
         `).join("")}
       </div>

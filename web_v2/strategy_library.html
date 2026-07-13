@@ -20,23 +20,33 @@ document.querySelector(".subtitle").insertAdjacentHTML("afterend", `
 function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
 }
+function tierColor(level) {
+  return level === "Low" ? "var(--green)" : level === "Medium" ? "#b5750a" : "var(--red)";
+}
+const GROWTH_ICON = { "Capital Preservation": "\u{1F6E1}️", "Growth": "\u{1F4C8}", "Recovery-Focused": "\u{1F504}", "Predictable": "⚖️" };
 
-// Same compact, plain-language pattern as the starter grid (Constitution
-// Q1/Q9) - real headline number kept, ladder/milestone jargon replaced
-// with one sentence per mechanism. Exact breakdown is one tap away on
-// the detail page. Fixed-height sections (design-system.css
-// .strategy-card .card-sec) keep dividers and card bottoms aligned
-// across all 27 cards regardless of text length.
-function renderMechList(s) {
+function splitRiskValue(text) {
+  let m = text.match(/^(\d+(\.\d+)?%)\s+(.*)$/);
+  if (m) return { big: m[1], small: m[3] };
+  m = text.match(/^Fixed (\$\d+(\.\d+)?)\s+(.*)$/);
+  if (m) return { big: m[1], small: m[3] + " (fixed)" };
+  m = text.match(/^Dynamic (\d+(\.\d+)?%)\s+(.*)$/);
+  if (m) return { big: m[1], small: "of balance, recalculated every trade" };
+  return { big: "Dynamic", small: "sizing computed each trade" };
+}
+
+// Same premium-card pattern as the starter grid (design-system.css
+// .strategy-card v3) - real numbers kept, presented as a hero risk
+// figure + compact pills instead of prose. Exact breakdown is one tap
+// away on the detail page.
+function renderMechPills(s) {
   const r = s.rules;
-  const mech = [];
-  if (r.martingale) mech.push(`Recovers losses: stake rises after a loss (max ${r.martingale.max_exposure} of bankroll), resets on a win`);
-  if (r.compounding) mech.push(r.compounding.max_risk_cap === "No cap configured"
-    ? "Grows with your balance: risk climbs automatically as you profit, with no maximum cap set yet"
-    : `Grows with your balance: risk climbs up to ${r.compounding.max_risk_cap} as you profit`);
-  if (r.vault) mech.push(`Auto-protects ${r.vault.percent} of profit into a safe balance`);
-  if (!mech.length) mech.push("Stake never changes - completely predictable, every trade");
-  return `<ul class="mech-list">${mech.map(m => `<li>${m}</li>`).join("")}</ul>`;
+  const pills = [];
+  if (r.martingale) pills.push(`<span class="mech-pill martingale">\u{1F504} Recovery <b>max ${r.martingale.max_exposure.replace(' of bankroll','')}</b></span>`);
+  if (r.compounding) pills.push(`<span class="mech-pill compounding">\u{1F4C8} Compounding ${r.compounding.max_risk_cap === "No cap configured" ? "" : `<b>up to ${r.compounding.max_risk_cap}</b>`}</span>`);
+  if (r.vault) pills.push(`<span class="mech-pill vault">\u{1F512} Vault <b>${r.vault.percent}</b></span>`);
+  if (!pills.length) pills.push(`<span class="mech-pill predictable">✓ Fixed stake, never changes</span>`);
+  return pills.join("");
 }
 
 let allStrategies = [];
@@ -49,31 +59,30 @@ function render(filter) {
     if (filter === "low") return s.risk_level === "Low";
     return true;
   });
-  document.getElementById("results").innerHTML = list.map(s => `
-    <a class="strategy-card" href="strategy_detail.html?id=${s.id}">
-      <div class="card-sec sec-title">
-        <div class="s-name">${s.name}</div>
-        <div class="s-desc-clamp">${s.description}</div>
-      </div>
-      <div class="card-sec sec-risk">
-        <div style="display:flex; gap:6px; margin-bottom:8px;">
-          <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
-          <span class="badge badge-flag-on">${s.growth_label}</span>
+  document.getElementById("results").innerHTML = list.map(s => {
+    const risk = splitRiskValue(s.rules.risk_per_trade);
+    return `
+    <a class="strategy-card card-interactive" href="strategy_detail.html?id=${s.id}" style="--tier-color:${tierColor(s.risk_level)};">
+      <div class="card-body">
+        <div class="sec-title">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
+            <div class="s-name">${s.name}</div>
+            <span title="${s.growth_label}" style="font-size:20px; flex-shrink:0;">${GROWTH_ICON[s.growth_label] || ""}</span>
+          </div>
+          <div class="s-desc-clamp">${s.description}</div>
         </div>
-        <div class="risk-stat">
-          <div class="risk-stat-label">Risk per trade</div>
-          <div class="risk-stat-value">${s.rules.risk_per_trade}</div>
+        <div class="sec-hero">
+          <div class="hero-risk-label">Risk per trade</div>
+          <div class="hero-risk-value">${risk.big}</div>
+          <div class="hero-risk-sub">${risk.small}</div>
         </div>
-        <div style="font-size:11px; color:var(--ink-faint); margin-top:4px;">${s.rules.risk_model}</div>
+        <div class="sec-pills">${renderMechPills(s)}</div>
+        <div class="sec-usecase"><div class="usecase-text">${s.who_should_use}</div></div>
+        <div class="sec-footer"><span class="learn-more-pill">View Strategy &rarr;</span></div>
       </div>
-      <div class="card-sec sec-rules">${renderMechList(s)}</div>
-      <div class="card-sec sec-usecase">
-        <div class="rule-label" style="font-size:11px; margin-bottom:4px;">Who should use it</div>
-        <div class="usecase-text">${s.who_should_use}</div>
-      </div>
-      <div class="card-sec sec-footer">View Strategy &rarr;</div>
     </a>
-  `).join("");
+  `;
+  }).join("");
 }
 
 async function load() {
