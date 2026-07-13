@@ -366,3 +366,32 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
 .saved-profile-row:last-child { border-bottom: none; }
 .saved-profile-row .sp-name { font-weight: 700; }
 .saved-profile-row .sp-meta { font-size: 11.5px; color: var(--ink-faint); }
+
+/* ==============================================================
+   SIMPLE MODE (Design Constitution) — 3 plain-language risk-level
+   cards replace the raw config form as the DEFAULT customize view.
+   A visual risk meter stands in for jargon (Q9: visual over text);
+   the full field-by-field form still exists, opt-in only, behind
+   "Advanced" (Q7: expert functionality exists but never surfaces
+   first).
+   ============================================================== */
+.risk-level-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+@media (max-width: 900px) { .risk-level-picker { grid-template-columns: 1fr; } }
+.risk-level-card {
+  border: 1.5px solid var(--border); border-radius: var(--radius); padding: var(--space-3);
+  cursor: pointer; text-align: left; background: var(--surface); transition: border-color 0.15s, background 0.15s;
+}
+.risk-level-card:hover { border-color: var(--brand); }
+.risk-level-card.selected { border-color: var(--brand); background: var(--brand-dim); box-shadow: var(--shadow); }
+.risk-level-card .rl-title { font-weight: 800; font-size: 15.5px; margin-bottom: 2px; }
+.risk-level-card .rl-sub { font-size: 12px; color: var(--ink-dim); margin-bottom: 12px; min-height: 32px; }
+.risk-meter { display: flex; gap: 3px; margin-bottom: 12px; }
+.risk-meter .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--border); }
+.risk-meter .bar.filled { background: var(--brand); }
+.risk-level-card .rl-detail { font-size: 12px; color: var(--ink-dim); line-height: 1.5; }
+
+.plain-summary { font-size: 14.5px; line-height: 1.75; color: var(--ink); }
+.plain-summary b { font-family: "SF Mono", Consolas, monospace; }
+
+.mode-link { font-size: 12.5px; color: var(--brand); font-weight: 700; cursor: pointer; background: none; border: none; padding: 0; text-decoration: underline; }
+.mode-banner { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; font-size: 12.5px; color: var(--ink-dim); }

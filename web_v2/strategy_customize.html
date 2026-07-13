@@ -10,19 +10,179 @@
 <div class="shell" id="shell-root"></div>
 <script src="shell.js"></script>
 <script>
-renderShell("strategy", "Customize Strategy", "Every rule below is editable. Nothing is saved until you click Save as New Profile - and the original starter template is never overwritten.");
+renderShell("strategy", "Customize Strategy", "Nothing is saved until you confirm - and the original starter template is never overwritten.");
 
 const params = new URLSearchParams(location.search);
 const baseId = params.get("id");
 const STORAGE_KEY = "axim_preview_custom_profiles";
+let mode = "simple";
+let selectedRiskLevel = "balanced";
+let currentBase = null;
 
 function loadSaved() {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch (e) { return []; }
 }
 function saveSaved(list) { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); }
-
 function fmtMoneyPlain(n) { return "$" + Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
 
+// ==================================================================
+// SIMPLE MODE (default) - 3 plain-language risk levels replace the
+// raw config form. Real numbers underneath are unchanged from what
+// Advanced mode would produce, just explained in a sentence instead
+// of a labeled field. Constitution Q1/Q7/Q9.
+// ==================================================================
+const RISK_PRESETS = {
+  conservative: {
+    label: "Conservative", sub: "Protect what you have first", bars: 1,
+    percent_of_bankroll: 1, sizing_mode: "percent", fixed_amount: 10,
+    martingale: { enabled: false },
+    compounding: { enabled: false },
+    vault: { enabled: true, vault_percent: 20, trigger: "every_winning_session" },
+    profit_target: 0, loss_limit: 0, consecutive_loss_limit: 0, max_trades: 0,
+    blurb: "Every trade risks the same small slice of your balance, no matter what happened on the trade before it. Part of your profit is automatically set aside where it can't be lost again.",
+  },
+  balanced: {
+    label: "Balanced", sub: "Steady growth, no loss-chasing", bars: 3,
+    percent_of_bankroll: 2, sizing_mode: "percent", fixed_amount: 10,
+    martingale: { enabled: false },
+    compounding: { enabled: true, trigger: "balance_milestone", milestones: [{ risk_percent: 2.5, profit_amount: 100 }, { risk_percent: 3, profit_amount: 250 }], max_risk_percent: 3.5, drawdown_reset_percent: 0 },
+    vault: { enabled: false },
+    profit_target: 0, loss_limit: 0, consecutive_loss_limit: 0, max_trades: 0,
+    blurb: "Your risk starts small and only increases automatically as your balance actually grows - never as a reaction to a loss.",
+  },
+  aggressive: {
+    label: "Aggressive", sub: "Faster recovery, bigger swings", bars: 5,
+    percent_of_bankroll: 2, sizing_mode: "percent", fixed_amount: 10,
+    martingale: { enabled: true, steps: 2, multiplier: 1.8, reset_after_win: true, custom_ladder: [] },
+    compounding: { enabled: true, trigger: "balance_milestone", milestones: [{ risk_percent: 2.5, profit_amount: 100 }], max_risk_percent: 3, drawdown_reset_percent: 0 },
+    vault: { enabled: false },
+    profit_target: 0, loss_limit: 0, consecutive_loss_limit: 0, max_trades: 0,
+    blurb: "After a loss, your next stake temporarily rises to help recover faster, then resets back to normal the moment you win. Risk also climbs automatically as your balance grows.",
+  },
+};
+
+function meterHTML(filled) {
+  return `<div class="risk-meter">${Array.from({ length: 5 }, (_, i) => `<div class="bar ${i < filled ? "filled" : ""}"></div>`).join("")}</div>`;
+}
+
+function worstCaseSentence(preset, bankroll) {
+  const base = preset.percent_of_bankroll / 100 * bankroll;
+  if (preset.martingale.enabled) {
+    const worst = base * Math.pow(preset.martingale.multiplier, preset.martingale.steps);
+    return `If you lost ${preset.martingale.steps} trades in a row, your next stake would briefly rise to about ${fmtMoneyPlain(worst.toFixed(0))} (from ${fmtMoneyPlain(base.toFixed(0))}), then reset after your next win.`;
+  }
+  if (preset.compounding.enabled) {
+    return `Every trade starts at about ${fmtMoneyPlain(base.toFixed(0))} on a ${fmtMoneyPlain(bankroll)} balance. That never changes because of a loss - it only grows, a little at a time, as your balance grows.`;
+  }
+  return `Every trade risks about ${fmtMoneyPlain(base.toFixed(0))} on a ${fmtMoneyPlain(bankroll)} balance - that stays exactly the same whether you win or lose.`;
+}
+
+function buildSimpleForm(base) {
+  document.getElementById("page-content").innerHTML = `
+    <div class="mode-banner">
+      <span>Simple mode - pick a risk level, we handle the rest.</span>
+      <button class="mode-link" id="to-advanced">Advanced: customize every rule myself &rarr;</button>
+    </div>
+    <div class="row" style="align-items:flex-start; gap:16px;">
+      <div style="flex:2; min-width:0;">
+        <div class="card">
+          <div class="card-label">Profile identity</div>
+          <div class="field">
+            <label>Profile name</label>
+            <input type="text" id="s-name" value="${base.name} (Custom)">
+          </div>
+          <div class="field">
+            <label>Starting bankroll ($)</label>
+            <input type="number" id="s-bankroll" min="1" step="1" value="1000">
+            <div class="hint">Used only to illustrate this profile's rules - your real Fund balance is unaffected.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-label">Choose a risk level</div>
+          <div class="risk-level-picker" id="risk-picker">
+            ${Object.entries(RISK_PRESETS).map(([key, p]) => `
+              <div class="risk-level-card" data-key="${key}">
+                <div class="rl-title">${p.label}</div>
+                <div class="rl-sub">${p.sub}</div>
+                ${meterHTML(p.bars)}
+                <div class="rl-detail">${p.blurb}</div>
+              </div>
+            `).join("")}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-label">Your plan in plain English</div>
+          <div class="plain-summary" id="plain-summary"></div>
+        </div>
+      </div>
+
+      <div style="flex:1; position:sticky; top:40px;">
+        <div class="card">
+          <div class="card-label">Save</div>
+          <p style="font-size:12px; color:var(--ink-dim); margin:0 0 10px;">Saved locally to this preview browser only - never sent to the server, and the "${base.name}" starter template is never modified.</p>
+          <button class="btn btn-primary" style="width:100%; justify-content:center;" id="simple-save-btn">Save as New Profile</button>
+          <div id="simple-save-confirm" style="display:none; margin-top:10px; font-size:12.5px; color:var(--green); font-weight:600;"></div>
+        </div>
+        <div class="card" id="saved-list-card" style="display:none;">
+          <div class="card-label">Saved custom profiles (this preview)</div>
+          <div id="saved-list"></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function refreshSimpleSummary() {
+  const bankroll = parseFloat(document.getElementById("s-bankroll").value) || 1000;
+  const preset = RISK_PRESETS[selectedRiskLevel];
+  document.querySelectorAll(".risk-level-card").forEach(card => {
+    card.classList.toggle("selected", card.dataset.key === selectedRiskLevel);
+  });
+  const vaultLine = preset.vault.enabled ? ` ${preset.vault.vault_percent}% of every winning session's profit moves automatically into a protected balance.` : "";
+  document.getElementById("plain-summary").innerHTML = `
+    <p>${preset.blurb}${vaultLine}</p>
+    <p>${worstCaseSentence(preset, bankroll)}</p>
+    <p style="color:var(--ink-dim); font-size:12.5px;">No automatic profit target or loss limit is set - you stay in control of when a session ends. Change this any time in Advanced mode.</p>
+  `;
+}
+
+function wireSimpleForm(base) {
+  document.getElementById("risk-picker").querySelectorAll(".risk-level-card").forEach(card => {
+    card.onclick = () => { selectedRiskLevel = card.dataset.key; refreshSimpleSummary(); };
+  });
+  document.getElementById("s-bankroll").oninput = refreshSimpleSummary;
+  document.getElementById("to-advanced").onclick = () => { mode = "advanced"; renderPage(base); };
+  document.getElementById("simple-save-btn").onclick = () => {
+    const name = document.getElementById("s-name").value.trim();
+    if (!name) { alert("Please give this profile a name."); return; }
+    const bankroll = parseFloat(document.getElementById("s-bankroll").value) || 1000;
+    const preset = RISK_PRESETS[selectedRiskLevel];
+    const record = {
+      name, bankroll, sizing_mode: preset.sizing_mode, percent_of_bankroll: preset.percent_of_bankroll,
+      fixed_amount: preset.fixed_amount, min_trade_amount: 0, max_trade_amount: 0,
+      martingale: preset.martingale, compounding: preset.compounding, vault: preset.vault,
+      profit_target: preset.profit_target, loss_limit: preset.loss_limit,
+      consecutive_loss_limit: preset.consecutive_loss_limit, max_trades: preset.max_trades,
+      risk_level_chosen: selectedRiskLevel, based_on: base.name, base_id: base.id, saved_at: new Date().toISOString(),
+    };
+    const list = loadSaved();
+    list.push(record);
+    saveSaved(list);
+    const confirm = document.getElementById("simple-save-confirm");
+    confirm.style.display = "block";
+    confirm.textContent = `Saved "${name}" to this preview browser. "${base.name}" itself is untouched.`;
+    renderSavedList();
+  };
+  refreshSimpleSummary();
+  renderSavedList();
+}
+
+// ==================================================================
+// ADVANCED MODE (opt-in) - the full field-by-field form for power
+// users. Same behavior as before; only reachable via the link above.
+// ==================================================================
 function ladderRowHTML(value) {
   return `<div class="ladder-row">
     <input type="number" step="0.1" min="1" class="ladder-mult" value="${value}">
@@ -38,13 +198,17 @@ function milestoneRowHTML(risk, amount) {
   </div>`;
 }
 
-function buildForm(base) {
+function buildAdvancedForm(base) {
   const r = base.rules || {};
   const hasMart = base.uses_martingale;
   const hasComp = base.uses_compounding;
   const hasVault = base.uses_vault;
 
   document.getElementById("page-content").innerHTML = `
+    <div class="mode-banner">
+      <span>Advanced mode - every rule is exposed and editable.</span>
+      <button class="mode-link" id="to-simple">&larr; Back to Simple mode</button>
+    </div>
     <div class="row" style="align-items:flex-start; gap:16px;">
       <div style="flex:2; min-width:0;">
         <form id="custom-form" onsubmit="return false;">
@@ -324,27 +488,17 @@ function updateSummary() {
   document.getElementById("live-summary").innerHTML = html;
 }
 
-function renderSavedList() {
-  const list = loadSaved();
-  const card = document.getElementById("saved-list-card");
-  if (!list.length) { card.style.display = "none"; return; }
-  card.style.display = "block";
-  document.getElementById("saved-list").innerHTML = list.map((p, i) => `
-    <div class="saved-profile-row">
-      <div><div class="sp-name">${p.name}</div><div class="sp-meta">Based on ${p.based_on} - saved ${new Date(p.saved_at).toLocaleString()}</div></div>
-      <button class="row-remove" title="Remove" onclick="removeSaved(${i})">&times;</button>
-    </div>
-  `).join("");
-}
-function removeSaved(i) {
-  const list = loadSaved();
-  list.splice(i, 1);
-  saveSaved(list);
-  renderSavedList();
+const TOGGLE_IDS = new Set(["f-mart-enabled", "f-comp-enabled", "f-vault-enabled"]);
+function wireLive() {
+  document.querySelectorAll("#custom-form input, #custom-form select").forEach(el => {
+    if (TOGGLE_IDS.has(el.id)) return;
+    el.oninput = updateSummary;
+    el.onchange = updateSummary;
+  });
+  updateSummary();
 }
 
-function wireForm(base) {
-  document.querySelectorAll(".ladder-mult").length; // no-op, rows added below
+function wireAdvancedForm(base) {
   document.getElementById("ladder-rows").innerHTML = ladderRowHTML(1) + ladderRowHTML((base.martingale && base.martingale.multiplier) || 2);
   document.getElementById("milestone-rows").innerHTML = base.uses_compounding
     ? milestoneRowHTML(base.percent_of_bankroll || 2, 100) + milestoneRowHTML((base.percent_of_bankroll || 2) + 0.5, 250)
@@ -372,6 +526,8 @@ function wireForm(base) {
     updateSummary();
   };
 
+  document.getElementById("to-simple").onclick = () => { mode = "simple"; renderPage(base); };
+
   document.getElementById("save-btn").onclick = () => {
     const f = gatherForm();
     if (!f.name) { alert("Please give this profile a name."); return; }
@@ -385,22 +541,32 @@ function wireForm(base) {
   };
 
   wireLive();
+  renderSavedList();
 }
 
-// The 3 mechanism toggles (#f-mart-enabled etc.) already have their own
-// onchange handler in wireForm() that shows/hides the field block AND
-// calls updateSummary() - skip them here so this blanket rebind doesn't
-// clobber that handler (confirmed as a real bug: without this exclusion,
-// flipping a switch never revealed its fields, only silently updated the
-// summary panel, since assigning .onchange overwrites, not adds).
-const TOGGLE_IDS = new Set(["f-mart-enabled", "f-comp-enabled", "f-vault-enabled"]);
-function wireLive() {
-  document.querySelectorAll("#custom-form input, #custom-form select").forEach(el => {
-    if (TOGGLE_IDS.has(el.id)) return;
-    el.oninput = updateSummary;
-    el.onchange = updateSummary;
-  });
-  updateSummary();
+function renderSavedList() {
+  const list = loadSaved();
+  const card = document.getElementById("saved-list-card");
+  if (!card) return;
+  if (!list.length) { card.style.display = "none"; return; }
+  card.style.display = "block";
+  document.getElementById("saved-list").innerHTML = list.map((p, i) => `
+    <div class="saved-profile-row">
+      <div><div class="sp-name">${p.name}</div><div class="sp-meta">Based on ${p.based_on} - saved ${new Date(p.saved_at).toLocaleString()}</div></div>
+      <button class="row-remove" title="Remove" onclick="removeSaved(${i})">&times;</button>
+    </div>
+  `).join("");
+}
+function removeSaved(i) {
+  const list = loadSaved();
+  list.splice(i, 1);
+  saveSaved(list);
+  renderSavedList();
+}
+
+function renderPage(base) {
+  if (mode === "simple") { buildSimpleForm(base); wireSimpleForm(base); }
+  else { buildAdvancedForm(base); wireAdvancedForm(base); }
 }
 
 async function init() {
@@ -411,9 +577,8 @@ async function init() {
     document.getElementById("page-content").innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
     return;
   }
-  buildForm(base);
-  wireForm(base);
-  renderSavedList();
+  currentBase = base;
+  renderPage(base);
 }
 init();
 </script>
