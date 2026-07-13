@@ -564,6 +564,96 @@ def _strategy_summary(profile):
     }
 
 
+MIN_SIGNALS_FOR_BACKTEST = 10
+
+
+def _strategy_grade(roi_percent, max_drawdown_percent):
+    """Simple, honestly-labeled A-F grade from a REAL backtest's own
+    ROI-to-drawdown ratio - never shown anywhere except as the output
+    of an actual completed backtest (see preview_provider_analysis).
+    Not a claim of future performance, just a compact summary of how
+    this one historical run went."""
+    if roi_percent <= 0:
+        return "F"
+    if max_drawdown_percent <= 0:
+        return "A"
+    ratio = roi_percent / max_drawdown_percent
+    if ratio >= 3:
+        return "A"
+    if ratio >= 2:
+        return "B"
+    if ratio >= 1:
+        return "C"
+    return "D"
+
+
+@app.get("/api/preview/provider-analysis/{channel_id}")
+def preview_provider_analysis(channel_id: int):
+    """The ONLY place in this preview that shows strategy performance
+    numbers - because they only exist once a strategy is combined with
+    a real signal provider's real historical signals, a starting
+    bankroll, and a broker payout. Every number here comes from an
+    actual completed backtest (backtest_engine.simulate_strategy)
+    against database.get_channel_signal_history()'s REAL closed-signal
+    outcomes - never a synthetic or assumed win rate. If the provider
+    doesn't have enough real signal history yet, this says so plainly
+    instead of fabricating anything (P9)."""
+    channels = database.list_channels()
+    channel = next((c for c in channels if c["id"] == channel_id), None)
+    if channel is None:
+        return {"error": "provider not found"}
+
+    title = channel["title"] or channel.get("username") or ""
+    pool = database.get_channel_signal_history(title)
+
+    provider_info = {
+        "id": channel_id, "title": title,
+        "signal_count": len(pool),
+        "first_signal_at": pool[0]["timestamp"] if pool else None,
+        "last_signal_at": pool[-1]["timestamp"] if pool else None,
+    }
+
+    if len(pool) < MIN_SIGNALS_FOR_BACKTEST:
+        return {
+            "provider": provider_info,
+            "has_sufficient_data": False,
+            "minimum_required": MIN_SIGNALS_FOR_BACKTEST,
+        }
+
+    starting_bankroll = DEFAULT_SCENARIO_BANKROLL
+    profiles = [p for p in database.list_risk_profiles(include_templates=True) if p["is_template"]]
+
+    results = []
+    for profile in profiles:
+        snapshot = _with_overlay(profile)
+        sim = backtest_engine.simulate_strategy(pool, snapshot, starting_bankroll, session_window="daily")
+        metrics = backtest_engine.compute_metrics(sim["sessions"], sim["trades"], starting_bankroll)
+        grade = _strategy_grade(metrics["roi_percent"], metrics["max_drawdown_percent"])
+        results.append({
+            "strategy_id": profile["id"], "strategy_name": _display_name(profile),
+            "ending_balance": metrics["final_bankroll"], "roi_percent": metrics["roi_percent"],
+            "max_drawdown_percent": metrics["max_drawdown_percent"], "win_rate": metrics["win_rate"],
+            "profit_factor": metrics.get("profit_factor"), "max_losing_streak": metrics["longest_loss_streak"],
+            "grade": grade, "trades_simulated": len(sim["trades"]),
+        })
+
+    grade_order = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
+    results.sort(key=lambda r: (grade_order[r["grade"]], -r["roi_percent"]))
+    recommended = results[0]["strategy_id"] if results else None
+
+    return {
+        "provider": provider_info,
+        "has_sufficient_data": True,
+        "backtest_basis": {
+            "starting_bankroll": starting_bankroll,
+            "signals_tested": len(pool),
+            "date_range": f"{pool[0]['timestamp']} to {pool[-1]['timestamp']}",
+        },
+        "results": results,
+        "recommended_strategy_id": recommended,
+    }
+
+
 @app.get("/api/preview/strategies")
 def preview_strategies_starters():
     """The 6 curated starters - Strategy Studio's default page (never
