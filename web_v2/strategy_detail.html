@@ -48,60 +48,37 @@ function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
 }
 
-function buildChartSVG(curve) {
-  const w = 640, h = 220, pad = 8;
-  const balances = curve.map(p => p.balance);
-  const min = Math.min(...balances), max = Math.max(...balances);
-  const range = (max - min) || 1;
-  const stepX = (w - pad * 2) / (curve.length - 1);
-  const points = curve.map((p, i) => {
-    const x = pad + i * stepX;
-    const y = h - pad - ((p.balance - min) / range) * (h - pad * 2);
-    return [x, y];
-  });
-  const linePath = "M " + points.map(p => p.join(",")).join(" L ");
-  const areaPath = linePath + ` L ${w - pad},${h} L ${pad},${h} Z`;
-  return `
-    <svg class="sim-chart" viewBox="0 0 ${w} ${h}" style="width:100%; height:220px;">
-      <defs><linearGradient id="simGradient" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="var(--brand)" stop-opacity="0.18"/>
-        <stop offset="100%" stop-color="var(--brand)" stop-opacity="0"/>
-      </linearGradient></defs>
-      <path class="sim-area" d="${areaPath}"/>
-      <path class="sim-line" d="${linePath}"/>
-    </svg>
-  `;
-}
-
 function renderMoneyRules(r) {
   let html = `<div class="money-rules">
     <div class="rule-row"><span class="rule-label">Risk per trade</span><span class="rule-value">${r.risk_per_trade}</span></div>
-    <div class="rule-row"><span class="rule-label">Sizing method</span><span class="rule-value">${r.sizing_method}</span></div>`;
+    <div class="rule-row"><span class="rule-label">Sizing method</span><span class="rule-value">${r.sizing_method}</span></div>
+    <div class="rule-row"><span class="rule-label">Risk model</span><span class="rule-value">${r.risk_model}</span></div>`;
   if (r.martingale) {
     html += `<div class="mechanism-block martingale">
-      <div class="mech-title">Martingale: ${r.martingale.steps} step(s)</div>
-      Ladder: ${r.martingale.ladder}<br>${r.martingale.reset_rule}<br><b>Max exposure: ${r.martingale.max_exposure}</b>
+      <div class="mech-title">Martingale (Recovery Rule): ${r.martingale.steps} step(s)</div>
+      Ladder: ${r.martingale.ladder}<br>${r.martingale.reset_rule}<br><b>Maximum exposure: ${r.martingale.max_exposure}</b>
     </div>`;
   }
   if (r.compounding) {
     html += `<div class="mechanism-block compounding">
-      <div class="mech-title">Compounding (${r.compounding.trigger})</div>
+      <div class="mech-title">Compounding (Growth Recalculation Rule) - ${r.compounding.trigger}</div>
       ${r.compounding.increase_rule}<br>${r.compounding.reset_rule}<br>Maximum risk: ${r.compounding.max_risk_cap}
     </div>`;
   }
   if (r.vault) {
-    html += `<div class="mechanism-block vault"><div class="mech-title">Profit Vault</div>Moves ${r.vault.percent} of profit to Protected Balance (${r.vault.trigger})</div>`;
+    html += `<div class="mechanism-block vault"><div class="mech-title">Profit Vault (Vault Rule)</div>Moves ${r.vault.percent} of profit to Protected Balance (${r.vault.trigger})</div>`;
   }
-  html += `<div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${r.profit_target}</span></div>
+  html += `<div class="rule-row"><span class="rule-label">Maximum exposure</span><span class="rule-value">${r.max_exposure}</span></div>
+    <div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${r.profit_target}</span></div>
     <div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${r.loss_limit}</span></div></div>`;
   return html;
 }
 
-async function loadDetail(winRate) {
+async function loadDetail() {
   const content = document.getElementById("page-content");
-  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Running simulation...</div>`;
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading strategy...</div>`;
   try {
-    const s = await fetchPreview(`/strategies/${strategyId}?win_rate=${winRate}`);
+    const s = await fetchPreview(`/strategies/${strategyId}`);
     document.querySelector("h1").textContent = s.name;
     document.querySelector(".subtitle").textContent = s.description;
 
@@ -115,65 +92,35 @@ async function loadDetail(winRate) {
           </div>
 
           <div class="card">
+            <div class="row" style="gap:10px; margin-bottom:12px;">
+              <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
+              <span class="badge badge-flag-on">${s.growth_label}</span>
+            </div>
             <div class="card-label">Exact rule configuration</div>
             ${renderMoneyRules(s.rules)}
           </div>
 
           <div class="card">
-            <div class="card-label">Sample bankroll: $1,000 starting balance</div>
-            <div class="row" style="gap:10px; margin-bottom:12px;">
-              <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
-              <span class="badge badge-flag-on">${s.growth_label}</span>
-            </div>
-            <p style="font-size:12.5px; color:var(--ink-dim); margin:0 0 10px;">If your very next trade happened right now, at stake size $${s.scenarios.stake}:</p>
+            <div class="card-label">Worked example: your very next trade</div>
+            <p style="font-size:12.5px; color:var(--ink-dim); margin:0 0 10px;">A mechanical illustration of the sizing rule above, not a performance projection - at a $1,000 bankroll, stake size $${s.scenarios.stake}:</p>
             <div class="scenario-pair">
               <div class="scenario-box win">
-                <div class="sc-title">Win scenario</div>
-                <div class="sc-amount">+$${s.scenarios.win.profit}</div>
-                <div style="font-size:12px; color:var(--ink-dim);">Balance: $1,000 → $${s.scenarios.win.new_balance}</div>
+                <div class="sc-title">If it wins</div>
+                <div class="sc-amount">+$${s.scenarios.win.profit.toFixed(2)}</div>
+                <div style="font-size:12px; color:var(--ink-dim);">Balance: $1,000 &rarr; $${s.scenarios.win.new_balance}</div>
               </div>
               <div class="scenario-box loss">
-                <div class="sc-title">Loss scenario</div>
-                <div class="sc-amount">-$${Math.abs(s.scenarios.loss.loss)}</div>
-                <div style="font-size:12px; color:var(--ink-dim);">Balance: $1,000 → $${s.scenarios.loss.new_balance}</div>
+                <div class="sc-title">If it loses</div>
+                <div class="sc-amount">-$${Math.abs(s.scenarios.loss.loss).toFixed(2)}</div>
+                <div style="font-size:12px; color:var(--ink-dim);">Balance: $1,000 &rarr; $${s.scenarios.loss.new_balance}</div>
               </div>
             </div>
           </div>
 
-          <div class="card">
-            <div class="card-label">Trade-by-trade example (first ${s.trade_example.length} trades of the simulation below)</div>
-            <table class="trade-table">
-              <thead><tr><th>#</th><th>Amount</th><th>Result</th><th>P/L</th><th>Balance</th></tr></thead>
-              <tbody>
-                ${s.trade_example.map(t => `
-                  <tr>
-                    <td>${t.seq}</td><td>$${t.amount}</td>
-                    <td class="${t.result === 'win' ? 'r-win' : t.result === 'loss' ? 'r-loss' : ''}">${t.result}</td>
-                    <td class="${t.profit_loss >= 0 ? 'r-win' : 'r-loss'}">${t.profit_loss >= 0 ? '+$' + t.profit_loss : '-$' + Math.abs(t.profit_loss)}</td>
-                    <td>$${t.running_balance}</td>
-                  </tr>
-                `).join("")}
-              </tbody>
-            </table>
-          </div>
-
-          <div class="card">
-            <div class="card-label">Animated bankroll simulator</div>
-            <div class="sim-scenario-toggle" id="scenario-toggle">
-              <button data-wr="0.45">Cautious (45% win rate)</button>
-              <button data-wr="0.5" class="active">Neutral (50% win rate)</button>
-              <button data-wr="0.55">Favorable (55% win rate)</button>
-            </div>
-            <div class="sim-chart-wrap">${buildChartSVG(s.curve)}</div>
-            <div class="data-basis" style="margin-top:10px;">
-              <div class="db-row"><span>Data basis</span><span>Illustrative backtest</span></div>
-              <div class="db-row"><span>Starting bankroll</span><span>$${s.metrics.final_bankroll ? 1000 : 1000}</span></div>
-              <div class="db-row"><span>Signals tested</span><span>${s.trade_example.length ? s.curve.length - 1 : 0}</span></div>
-              <div class="db-row"><span>Final bankroll</span><span>$${s.metrics.final_bankroll}</span></div>
-              <div class="db-row"><span>ROI</span><span class="up">+${s.metrics.roi_percent}%</span></div>
-              <div class="db-row"><span>Max drawdown</span><span class="down">${s.metrics.max_drawdown_percent}%</span></div>
-            </div>
-            <div class="sim-disclaimer">Illustrative only, at the win rate selected above - AXIM does not yet have a verified real edge for any signal source (see Signals). Not a prediction of real future results.</div>
+          <div class="card" style="border-color:var(--brand); border-width:1.5px;">
+            <div class="card-label">Want real performance numbers?</div>
+            <p style="font-size:13px; margin:0 0 12px;">A strategy alone has no ROI, drawdown, or win rate - those only exist once you combine it with a specific Signal Provider's actual historical signals, a starting bankroll, and a broker payout. Select a provider to run a real backtest across every compatible strategy, including this one.</p>
+            <a class="btn btn-primary" href="provider_analysis.html">Analyze with a Signal Provider &rarr;</a>
           </div>
 
           <div class="row" style="gap:16px;">
@@ -200,13 +147,6 @@ async function loadDetail(winRate) {
       </div>
     `;
 
-    document.querySelectorAll("#scenario-toggle button").forEach(btn => {
-      btn.onclick = () => {
-        document.querySelectorAll("#scenario-toggle button").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
-        loadDetail(parseFloat(btn.dataset.wr));
-      };
-    });
     document.getElementById("use-default-btn").onclick = () => {
       alert("Preview only - this button never creates a real profile in this environment. \"Save as New Profile\" (from Customize & Use) is stored locally in this preview only.");
     };
@@ -218,7 +158,7 @@ async function loadDetail(winRate) {
 if (!strategyId) {
   document.getElementById("page-content").innerHTML = `<div class="card">No strategy selected. <a href="strategy.html">Back to Money Management Studio</a></div>`;
 } else {
-  loadDetail(0.5);
+  loadDetail();
   loadSiblingNav();
 }
 </script>
