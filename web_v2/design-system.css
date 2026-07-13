@@ -225,6 +225,27 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
 .risk-numbers .rn { background: var(--canvas); border-radius: 6px; padding: 4px 9px; }
 .risk-numbers .rn b { font-family: "SF Mono", Consolas, monospace; }
 
+/* Scenario callouts (win/loss) - deliberately side by side, same
+   visual weight, so neither reads as "the expected outcome". */
+.scenario-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.scenario-box { border-radius: 10px; padding: 14px; }
+.scenario-box.win { background: var(--green-bg); }
+.scenario-box.loss { background: var(--red-bg); }
+.scenario-box .sc-title { font-size: 11px; text-transform: uppercase; font-weight: 800; letter-spacing: 0.04em; margin-bottom: 6px; }
+.scenario-box.win .sc-title { color: var(--green); }
+.scenario-box.loss .sc-title { color: var(--red); }
+.scenario-box .sc-amount { font-family: "SF Mono", Consolas, monospace; font-size: 20px; font-weight: 800; }
+
+.trade-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.trade-table th, .trade-table td { padding: 7px 10px; text-align: right; border-bottom: 1px solid var(--border); font-family: "SF Mono", Consolas, monospace; }
+.trade-table th:first-child, .trade-table td:first-child { text-align: left; font-family: var(--font); }
+.trade-table th { font-size: 10.5px; text-transform: uppercase; color: var(--ink-faint); font-family: var(--font); }
+.trade-table .r-win { color: var(--green); }
+.trade-table .r-loss { color: var(--red); }
+
+.data-basis { background: var(--canvas); border-radius: 8px; padding: 10px 12px; font-size: 12px; font-family: "SF Mono", Consolas, monospace; }
+.data-basis .db-row { display: flex; justify-content: space-between; padding: 2px 0; }
+
 /* Animated bankroll simulator - stroke-dasharray draw-in, a well-
    understood, tasteful "line drawing itself" pattern (not decorative
    for its own sake - it visually distinguishes a SIMULATION being

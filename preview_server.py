@@ -380,13 +380,13 @@ def _describe(profile):
         worst_bits.append("traders who want their dollar risk per trade to stay exactly the same every time")
     if v["enabled"]:
         if v["vault_percent"] >= 20:
-            best_bits.append("traders who want to genuinely lock in profit as it happens, not just watch a number grow")
+            best_bits.append("who want to genuinely lock in profit as it happens, not just watch a number grow")
             worst_bits.append("traders trying to compound aggressively - a large vault skim works against fast balance growth")
         else:
-            best_bits.append("traders who want a modest, automatic profit cushion without slowing growth much")
+            best_bits.append("who want a modest, automatic profit cushion without slowing growth much")
 
     if best_bits:
-        best_for = ("Best for " + "; ".join(best_bits) + ".").capitalize()
+        best_for = ("Best for traders " + "; ".join(best_bits) + ".").capitalize()
         worst_for = ("Worst for " + "; ".join(worst_bits) + ".").capitalize() if worst_bits else "No major mismatch identified from this profile's config alone - it's a genuinely flexible fit."
     else:
         best_for = "A calm, predictable starting point - new signal sources, or traders who want one thing to think about at a time: the stake amount, nothing else."
