@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Strategy Detail - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("strategy", "", "");
+
+const params = new URLSearchParams(location.search);
+const strategyId = params.get("id");
+let currentScenario = 0.5;
+
+function riskBadgeClass(level) {
+  return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
+}
+
+function buildChartSVG(curve) {
+  const w = 640, h = 220, pad = 8;
+  const balances = curve.map(p => p.balance);
+  const min = Math.min(...balances), max = Math.max(...balances);
+  const range = (max - min) || 1;
+  const stepX = (w - pad * 2) / (curve.length - 1);
+  const points = curve.map((p, i) => {
+    const x = pad + i * stepX;
+    const y = h - pad - ((p.balance - min) / range) * (h - pad * 2);
+    return [x, y];
+  });
+  const linePath = "M " + points.map(p => p.join(",")).join(" L ");
+  const areaPath = linePath + ` L ${w - pad},${h} L ${pad},${h} Z`;
+  return `
+    <svg class="sim-chart" viewBox="0 0 ${w} ${h}" style="width:100%; height:220px;">
+      <defs>
+        <linearGradient id="simGradient" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="var(--brand)" stop-opacity="0.18"/>
+          <stop offset="100%" stop-color="var(--brand)" stop-opacity="0"/>
+        </linearGradient>
+      </defs>
+      <path class="sim-area" d="${areaPath}"/>
+      <path class="sim-line" d="${linePath}"/>
+    </svg>
+  `;
+}
+
+async function loadDetail(winRate) {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Running simulation...</div>`;
+  try {
+    const s = await fetchPreview(`/strategies/${strategyId}?win_rate=${winRate}`);
+    document.querySelector("h1").textContent = s.name;
+    document.querySelector(".subtitle").textContent = s.description;
+
+    content.innerHTML = `
+      <div class="row" style="align-items:flex-start; gap:16px;">
+        <div style="flex:2;">
+          <div class="card">
+            <div class="card-label">Animated bankroll simulator</div>
+            <div class="sim-scenario-toggle" id="scenario-toggle">
+              <button data-wr="0.45">Cautious (45% win rate)</button>
+              <button data-wr="0.5" class="active">Neutral (50% win rate)</button>
+              <button data-wr="0.55">Favorable (55% win rate)</button>
+            </div>
+            <div class="sim-chart-wrap" id="chart-holder">${buildChartSVG(s.curve)}</div>
+            <div class="sim-disclaimer">Illustrative only - a simulated ${s.curve.length}-trade scenario starting at $1,000, assuming the win rate selected above. AXIM does not yet have a verified real edge for any signal source (see Signals). This is not a prediction of real results.</div>
+          </div>
+
+          <div class="card">
+            <div class="card-label">What it does</div>
+            <p style="font-size:13.5px; margin:0;">${s.what_it_does}</p>
+          </div>
+          <div class="card">
+            <div class="card-label">How it works</div>
+            <p style="font-size:13.5px; margin:0;">${s.how_it_works}</p>
+          </div>
+          <div class="row" style="gap:16px;">
+            <div class="card" style="flex:1;">
+              <div class="card-label">Best for</div>
+              <p style="font-size:13px; margin:0; color:var(--green);">${s.best_for}</p>
+            </div>
+            <div class="card" style="flex:1;">
+              <div class="card-label">Worst for</div>
+              <p style="font-size:13px; margin:0; color:var(--red);">${s.worst_for}</p>
+            </div>
+          </div>
+        </div>
+
+        <div style="flex:1;">
+          <div class="card">
+            <div class="card-label">At a glance</div>
+            <div class="s-badges" style="margin-bottom:14px;">
+              <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
+              <span class="badge badge-flag-on">${s.growth_label}</span>
+            </div>
+            <dl class="detail-field">
+              <dt>Uses Martingale?</dt><dd>${s.uses_martingale ? `Yes - ${s.martingale.multiplier}x, up to ${s.martingale.max_steps} step(s)` : "No"}</dd>
+              <dt>Uses Compounding?</dt><dd>${s.uses_compounding ? `Yes - ${s.compounding_mode.replace("_"," ")}` : "No"}</dd>
+              <dt>Uses Vault?</dt><dd>${s.uses_vault ? `Yes - ${s.vault_percent}% of profit` : "No"}</dd>
+              <dt>Expected drawdown (this scenario)</dt><dd class="down">${s.metrics.max_drawdown_percent}% ($${s.metrics.max_drawdown_amount})</dd>
+              <dt>Growth potential (this scenario)</dt><dd class="up">+${s.metrics.roi_percent}% ROI</dd>
+              <dt>Sizing</dt><dd>${s.sizing_mode === "percent" ? s.percent_of_bankroll + "% of balance" : s.sizing_mode}</dd>
+            </dl>
+          </div>
+          <div class="card">
+            <button class="btn btn-primary" style="width:100%; justify-content:center;" disabled title="Preview only - not wired to production">Use This Strategy</button>
+            <div class="sim-disclaimer" style="text-align:center; margin-top:8px;">Preview only - does not create anything.</div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.querySelectorAll("#scenario-toggle button").forEach(btn => {
+      btn.onclick = () => {
+        document.querySelectorAll("#scenario-toggle button").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        loadDetail(parseFloat(btn.dataset.wr));
+      };
+    });
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+  }
+}
+
+if (!strategyId) {
+  document.getElementById("page-content").innerHTML = `<div class="card">No strategy selected. <a href="strategy.html">Back to Money Management Studio</a></div>`;
+} else {
+  loadDetail(currentScenario);
+}
+</script>
+</body>
+</html>

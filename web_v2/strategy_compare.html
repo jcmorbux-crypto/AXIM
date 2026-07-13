@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Compare Strategies - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("strategy", "Compare Strategies", "Pick 2 or 3 to see them side by side.");
+
+let allStrategies = [];
+let picked = [];
+
+function riskBadgeClass(level) {
+  return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
+}
+
+function renderPicker() {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `
+    <div class="card">
+      <div class="card-label">Choose up to 3 strategies (${picked.length}/3 selected)</div>
+      <div class="grid">
+        ${allStrategies.map(s => `
+          <div class="strategy-card ${picked.includes(s.id) ? "" : ""}" style="border-color:${picked.includes(s.id) ? "var(--brand)" : "var(--border)"}; background:${picked.includes(s.id) ? "var(--brand-dim)" : "var(--surface)"};" data-id="${s.id}">
+            <div class="s-name">${s.name}</div>
+            <div class="s-badges"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span></div>
+          </div>
+        `).join("")}
+      </div>
+      <button class="btn btn-primary" id="compare-btn" style="margin-top:14px;" ${picked.length < 2 ? "disabled" : ""}>Compare ${picked.length} strategies →</button>
+    </div>
+  `;
+  content.querySelectorAll("[data-id]").forEach(card => {
+    card.style.cursor = "pointer";
+    card.onclick = () => {
+      const id = parseInt(card.dataset.id, 10);
+      if (picked.includes(id)) picked = picked.filter(p => p !== id);
+      else if (picked.length < 3) picked.push(id);
+      renderPicker();
+    };
+  });
+  document.getElementById("compare-btn").onclick = renderComparison;
+}
+
+async function renderComparison() {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Running comparison...</div>`;
+  const details = await Promise.all(picked.map(id => fetchPreview(`/strategies/${id}?win_rate=0.5`)));
+  const rows = [
+    ["Risk level", d => `<span class="badge ${riskBadgeClass(d.risk_level)}">${d.risk_level}</span>`],
+    ["Uses Martingale?", d => d.uses_martingale ? `Yes (${d.martingale.multiplier}x, ${d.martingale.max_steps} steps)` : "No"],
+    ["Uses Compounding?", d => d.uses_compounding ? d.compounding_mode.replace("_"," ") : "No"],
+    ["Uses Vault?", d => d.uses_vault ? d.vault_percent + "%" : "No"],
+    ["Illustrative ROI (50% win rate)", d => `<span class="up">+${d.metrics.roi_percent}%</span>`],
+    ["Expected drawdown (50% win rate)", d => `<span class="down">${d.metrics.max_drawdown_percent}%</span>`],
+    ["Best for", d => `<span style="font-size:12px;">${d.best_for}</span>`],
+    ["Worst for", d => `<span style="font-size:12px;">${d.worst_for}</span>`],
+  ];
+  content.innerHTML = `
+    <button class="btn btn-secondary" id="back-btn" style="margin-bottom:12px;">← Change selection</button>
+    <div class="card" style="overflow-x:auto;">
+      <table class="compare-table">
+        <thead><tr><th></th>${details.map(d => `<th>${d.name}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${rows.map(([label, fn]) => `<tr><th>${label}</th>${details.map(d => `<td>${fn(d)}</td>`).join("")}</tr>`).join("")}
+          <tr><th>Detail</th>${details.map(d => `<td><a href="strategy_detail.html?id=${d.id}">View full page →</a></td>`).join("")}</tr>
+        </tbody>
+      </table>
+    </div>
+  `;
+  document.getElementById("back-btn").onclick = renderPicker;
+}
+
+async function load() {
+  const data = await fetchPreview("/strategies/library");
+  allStrategies = data.strategies;
+  renderPicker();
+}
+load();
+</script>
+</body>
+</html>

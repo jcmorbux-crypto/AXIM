@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Advanced Library - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("strategy", "Advanced Library", "All 27 strategies. Most people don't need this page - if you're not sure, start with the 6 recommended ones.");
+
+function riskBadgeClass(level) {
+  return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
+}
+
+let allStrategies = [];
+
+function render(filter) {
+  const list = filter === "all" ? allStrategies : allStrategies.filter(s => {
+    if (filter === "martingale") return s.uses_martingale;
+    if (filter === "compounding") return s.uses_compounding;
+    if (filter === "vault") return s.uses_vault;
+    if (filter === "low") return s.risk_level === "Low";
+    return true;
+  });
+  document.getElementById("results").innerHTML = list.map(s => `
+    <a class="strategy-card" href="strategy_detail.html?id=${s.id}">
+      <div class="s-name">${s.name}</div>
+      <div class="s-desc">${s.description}</div>
+      <div class="s-badges">
+        <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
+        ${s.uses_martingale ? '<span class="badge badge-flag-on">Martingale</span>' : ""}
+        ${s.uses_compounding ? '<span class="badge badge-flag-on">Compounding</span>' : ""}
+        ${s.uses_vault ? '<span class="badge badge-flag-on">Vault</span>' : ""}
+      </div>
+    </a>
+  `).join("");
+}
+
+async function load() {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading library...</div>`;
+  try {
+    const data = await fetchPreview("/strategies/library");
+    allStrategies = data.strategies;
+    content.innerHTML = `
+      <div class="row" style="margin-bottom:14px; gap:6px;">
+        <button class="btn btn-secondary" data-f="all">All (${allStrategies.length})</button>
+        <button class="btn btn-secondary" data-f="low">Low risk</button>
+        <button class="btn btn-secondary" data-f="martingale">Uses Martingale</button>
+        <button class="btn btn-secondary" data-f="compounding">Uses Compounding</button>
+        <button class="btn btn-secondary" data-f="vault">Uses Vault</button>
+      </div>
+      <div class="grid" id="results"></div>
+    `;
+    document.querySelectorAll("[data-f]").forEach(b => b.onclick = () => render(b.dataset.f));
+    render("all");
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+  }
+}
+load();
+</script>
+</body>
+</html>

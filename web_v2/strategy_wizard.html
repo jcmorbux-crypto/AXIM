@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Find My Strategy - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("strategy", "Find My Strategy", "4 quick questions. One clear recommendation - explained, not a black box.");
+
+const QUESTIONS = [
+  { key: "bankroll", label: "How much are you starting with?", options: [
+    { v: "small", label: "Under $500" }, { v: "medium", label: "$500 – $2,000" }, { v: "large", label: "More than $2,000" },
+  ]},
+  { key: "experience", label: "How much trading experience do you have?", options: [
+    { v: "new", label: "None - I'm completely new" }, { v: "some", label: "Some - I've traded before" }, { v: "experienced", label: "A lot - I know what I'm doing" },
+  ]},
+  { key: "source", label: "How much do you trust your signal source?", options: [
+    { v: "new", label: "It's new to me - unproven" }, { v: "trusted", label: "I've watched it a while and trust it" },
+  ]},
+  { key: "risk", label: "How do you feel about risk?", options: [
+    { v: "conservative", label: "Protect what I have first" }, { v: "balanced", label: "A healthy mix of growth and safety" }, { v: "aggressive", label: "I want growth, and I accept the risk" },
+  ]},
+];
+
+let step = 0;
+const answers = {};
+let allStrategies = [];
+
+function renderProgress() {
+  return `<div class="wizard-progress">${QUESTIONS.map((_, i) => `<div class="step ${i < step ? "done" : ""}"></div>`).join("")}</div>`;
+}
+
+function renderQuestion() {
+  const q = QUESTIONS[step];
+  document.getElementById("page-content").innerHTML = `
+    ${renderProgress()}
+    <div class="card">
+      <div class="card-label">Question ${step + 1} of ${QUESTIONS.length}</div>
+      <h2 style="margin:0 0 16px;">${q.label}</h2>
+      ${q.options.map(o => `<button class="wizard-option" data-v="${o.v}">${o.label}</button>`).join("")}
+    </div>
+  `;
+  document.querySelectorAll(".wizard-option").forEach(btn => {
+    btn.onclick = () => {
+      answers[q.key] = btn.dataset.v;
+      step++;
+      if (step < QUESTIONS.length) renderQuestion();
+      else renderResult();
+    };
+  });
+}
+
+function score(s, a) {
+  // Every point traces to a stated reason - pushed into `reasons` so the
+  // result is explainable, not a black-box score (P9 / matches core/
+  // ai_analysis.py's own "never fabricate, always derive" precedent).
+  let pts = 0;
+  const reasons = [];
+
+  if (a.risk === "conservative" && s.risk_level === "Low") { pts += 3; reasons.push("matches your preference to protect capital first"); }
+  if (a.risk === "balanced" && s.risk_level === "Medium") { pts += 3; reasons.push("matches your balanced risk preference"); }
+  if (a.risk === "aggressive" && (s.risk_level === "Medium" || s.risk_level === "High")) { pts += 2; reasons.push("offers more growth potential for your risk appetite"); }
+
+  if (a.bankroll === "small") {
+    if (!s.uses_martingale) { pts += 2; reasons.push("avoids Martingale, which needs real capital behind it for a small bankroll"); }
+    else { pts -= 2; }
+  }
+  if (a.bankroll === "large" && s.uses_martingale) { pts += 1; reasons.push("your larger bankroll can absorb Martingale's occasional bigger stakes"); }
+
+  if (a.experience === "new") {
+    if (!s.uses_martingale) { pts += 2; reasons.push("keeps things simple while you're new to this"); }
+    else { pts -= 1; }
+  }
+  if (a.experience === "experienced" && s.uses_martingale) { pts += 1; }
+
+  if (a.source === "new") {
+    if (s.risk_level === "Low") { pts += 3; reasons.push("appropriate caution for a signal source you haven't proven out yet"); }
+  }
+  if (a.source === "trusted" && (s.risk_level === "Medium" || s.uses_compounding)) { pts += 2; reasons.push("a trusted source can support a strategy built for real growth"); }
+
+  return { pts, reasons };
+}
+
+async function renderResult() {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `${renderProgress()}<div class="progress-row"><span class="spinner"></span> Finding your strategy...</div>`;
+  const scored = allStrategies.map(s => ({ s, ...score(s, answers) })).sort((a, b) => b.pts - a.pts);
+  const winner = scored[0];
+
+  function riskBadgeClass(level) { return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high"; }
+
+  content.innerHTML = `
+    ${renderProgress()}
+    <div class="card" style="border-color:var(--brand); border-width:2px;">
+      <div class="card-label">Our recommendation</div>
+      <h2 style="margin:0 0 6px;">${winner.s.name}</h2>
+      <div class="s-badges" style="margin-bottom:12px;">
+        <span class="badge ${riskBadgeClass(winner.s.risk_level)}">${winner.s.risk_level} risk</span>
+        <span class="badge badge-flag-on">${winner.s.growth_label}</span>
+      </div>
+      <div class="card-label" style="margin-top:10px;">Why this one</div>
+      <ul style="margin:6px 0; padding-left:20px; font-size:13.5px;">
+        ${winner.reasons.length ? winner.reasons.map(r => `<li>${r}</li>`).join("") : "<li>Best overall fit among the 6 starter strategies for your answers.</li>"}
+      </ul>
+      <div class="row" style="gap:8px; margin-top:16px;">
+        <a class="btn btn-primary" href="strategy_detail.html?id=${winner.s.id}">See full details →</a>
+        <button class="btn btn-secondary" id="restart-btn">Start over</button>
+      </div>
+    </div>
+    <details class="disclosure" style="margin-top:10px;">
+      <summary>See how the other 5 scored</summary>
+      <div class="content">
+        ${scored.slice(1).map(r => `<div style="padding:6px 0; border-bottom:1px solid var(--border);">${r.s.name} — ${r.reasons[0] || "lower overall fit"}</div>`).join("")}
+      </div>
+    </details>
+  `;
+  document.getElementById("restart-btn").onclick = () => { step = 0; Object.keys(answers).forEach(k => delete answers[k]); renderQuestion(); };
+}
+
+async function init() {
+  const data = await fetchPreview("/strategies");
+  allStrategies = data.strategies;
+  renderQuestion();
+}
+init();
+</script>
+</body>
+</html>
