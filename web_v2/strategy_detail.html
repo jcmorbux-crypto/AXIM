@@ -11,9 +11,38 @@
 <script src="shell.js"></script>
 <script>
 renderShell("strategy", "", "");
+document.querySelector(".subtitle").insertAdjacentHTML("afterend", `
+  <div class="detail-topnav">
+    <a class="back-link" href="strategy.html">&larr; Money Management Studio</a>
+    <div id="prev-next-nav" class="prev-next-nav"></div>
+  </div>
+`);
 
 const params = new URLSearchParams(location.search);
 const strategyId = params.get("id");
+
+// Prev/Next browses within whichever catalog the current strategy
+// belongs to: the 6 starters if it's one of them, otherwise the full
+// 27-item Advanced Library. The synthetic "Custom Strategy" entry has
+// no detail page, so it's excluded from both lists.
+async function loadSiblingNav() {
+  const nav = document.getElementById("prev-next-nav");
+  try {
+    const starters = (await fetchPreview("/strategies")).strategies.filter(s => !s.is_custom_entry);
+    const inStarters = starters.some(s => String(s.id) === String(strategyId));
+    const list = inStarters ? starters : (await fetchPreview("/strategies/library")).strategies;
+    const idx = list.findIndex(s => String(s.id) === String(strategyId));
+    if (idx === -1) { nav.innerHTML = ""; return; }
+    const prev = idx > 0 ? list[idx - 1] : null;
+    const next = idx < list.length - 1 ? list[idx + 1] : null;
+    nav.innerHTML = `
+      ${prev ? `<a href="strategy_detail.html?id=${prev.id}">&larr; ${prev.name}</a>` : `<span class="pn-spacer">&larr; ${inStarters ? "Start of the list" : "Start of the library"}</span>`}
+      ${next ? `<a class="pn-next" href="strategy_detail.html?id=${next.id}">${next.name} &rarr;</a>` : `<span class="pn-spacer pn-next">${inStarters ? "End of the list" : "End of the library"} &rarr;</span>`}
+    `;
+  } catch (e) {
+    nav.innerHTML = "";
+  }
+}
 
 function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
@@ -190,6 +219,7 @@ if (!strategyId) {
   document.getElementById("page-content").innerHTML = `<div class="card">No strategy selected. <a href="strategy.html">Back to Money Management Studio</a></div>`;
 } else {
   loadDetail(0.5);
+  loadSiblingNav();
 }
 </script>
 </body>

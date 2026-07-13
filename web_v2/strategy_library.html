@@ -11,6 +11,11 @@
 <script src="shell.js"></script>
 <script>
 renderShell("strategy", "Advanced Library", "All 27 strategies. Most people don't need this page - if you're not sure, start with the 6 recommended ones.");
+document.querySelector(".subtitle").insertAdjacentHTML("afterend", `
+  <div class="detail-topnav">
+    <a class="back-link" href="strategy.html">&larr; Money Management Studio</a>
+  </div>
+`);
 
 function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";

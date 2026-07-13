@@ -335,6 +335,16 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
 .wizard-progress .step { flex: 1; height: 3px; background: var(--border); border-radius: 999px; }
 .wizard-progress .step.done { background: var(--brand); }
 
+/* ---- Back / prev-next navigation (never rely on browser Back) ---- */
+.detail-topnav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 12px; flex-wrap: wrap; }
+.back-link { font-size: 13px; font-weight: 700; color: var(--brand); text-decoration: none; display: inline-flex; align-items: center; gap: 4px; }
+.back-link:hover { text-decoration: underline; }
+.prev-next-nav { display: flex; gap: 18px; font-size: 13px; font-weight: 700; }
+.prev-next-nav a { color: var(--brand); text-decoration: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prev-next-nav a:hover { text-decoration: underline; }
+.prev-next-nav .pn-next { text-align: right; }
+.prev-next-nav .pn-spacer { color: var(--ink-faint); font-weight: 500; opacity: 0.5; }
+
 @media (max-width: 900px) {
   .detail-grid { grid-template-columns: 1fr; }
 }

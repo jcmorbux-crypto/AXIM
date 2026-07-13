@@ -11,6 +11,11 @@
 <script src="shell.js"></script>
 <script>
 renderShell("strategy", "Customize Strategy", "Nothing is saved until you confirm - and the original starter template is never overwritten.");
+document.querySelector(".subtitle").insertAdjacentHTML("afterend", `
+  <div class="detail-topnav">
+    <a class="back-link" href="strategy.html">&larr; Money Management Studio</a>
+  </div>
+`);
 
 const params = new URLSearchParams(location.search);
 const baseId = params.get("id");
