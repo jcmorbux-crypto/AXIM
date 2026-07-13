@@ -30,8 +30,14 @@ async function load() {
             ` : `
               <div class="source-nodata">Not enough signals yet to judge honestly.</div>
             `}
+            <a class="btn btn-secondary" style="margin-top:10px; font-size:12px; padding:6px 12px;" href="provider_analysis.html?provider=${s.id}">Analyze with a Strategy &rarr;</a>
           </div>
         `).join("")}
+      </div>
+      <div class="card">
+        <div class="card-label">Which money-management strategy fits this provider?</div>
+        <p style="font-size:13px; color:var(--ink-dim); margin:0 0 10px;">AXIM can run a real backtest of every compatible strategy against a provider's actual historical signals - no guessing, no illustrative numbers.</p>
+        <a class="btn btn-primary" href="provider_analysis.html">Open Provider Analysis &rarr;</a>
       </div>
       <div class="card">
         <details class="disclosure">

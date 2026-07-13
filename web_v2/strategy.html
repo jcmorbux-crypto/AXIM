@@ -89,6 +89,11 @@ async function load() {
         <p style="font-size:13px; color:var(--ink-dim); margin:0 0 10px;">Answer 4 quick questions and get one clear recommendation - most people decide in under 3 minutes.</p>
         <a class="btn btn-primary" href="strategy_wizard.html">✨ Find My Strategy</a>
       </div>
+      <div class="card">
+        <div class="card-label">Already have a Signal Provider in mind?</div>
+        <p style="font-size:13px; color:var(--ink-dim); margin:0 0 10px;">These cards explain how each strategy works, not how well it performed - a strategy has no ROI or drawdown on its own. Pick a provider and AXIM runs a real backtest of every compatible strategy against its actual historical signals.</p>
+        <a class="btn btn-secondary" href="provider_analysis.html">Analyze with a Signal Provider &rarr;</a>
+      </div>
     `;
   } catch (e) {
     content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;

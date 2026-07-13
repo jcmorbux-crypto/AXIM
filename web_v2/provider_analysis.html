@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Provider Analysis - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="design-system.css">
+</head>
+<body>
+<div class="shell" id="shell-root"></div>
+<script src="shell.js"></script>
+<script>
+renderShell("signals", "Provider Analysis", "Pick a Signal Provider - AXIM runs a real backtest of every compatible strategy against that provider's actual historical signals.");
+document.querySelector(".subtitle").insertAdjacentHTML("afterend", `
+  <div class="detail-topnav">
+    <a class="back-link" href="signals.html">&larr; Signals</a>
+  </div>
+`);
+
+const params = new URLSearchParams(location.search);
+const preselectedProvider = params.get("provider");
+
+function fmtPct(n) { return n === null || n === undefined ? "&mdash;" : (n * 100).toFixed(1) + "%"; }
+function gradeClass(g) {
+  return g === "A" ? "badge-risk-low" : g === "B" || g === "C" ? "badge-risk-medium" : "badge-risk-high";
+}
+
+async function loadProviderPicker() {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading providers...</div>`;
+  try {
+    const data = await fetchPreview("/signals");
+    content.innerHTML = `
+      <div class="card">
+        <div class="card-label">Step 1 of 3 &mdash; Choose a Signal Provider</div>
+        <p style="font-size:13px; color:var(--ink-dim); margin:0 0 14px;">Provider &rarr; <b>Analysis</b> &rarr; Strategy Comparison &rarr; Fund Creation &rarr; Demo &rarr; Live</p>
+      </div>
+      <div class="grid">
+        ${data.sources.map(s => `
+          <div class="card source-card" style="flex-direction:column; align-items:flex-start; cursor:pointer;" data-id="${s.id}">
+            <div class="source-name">${s.title}</div>
+            ${s.total_signals > 0 ? `
+              <div class="source-winrate ${moneyClass(s.profit_loss)}">${fmtPct(s.win_rate)} win</div>
+              <div class="source-meta">${fmtMoney(s.profit_loss)} &middot; ${s.total_signals} signals</div>
+            ` : `
+              <div class="source-nodata">Not enough signals yet to judge honestly.</div>
+            `}
+            <div style="margin-top:10px; font-size:11.5px; color:var(--brand); font-weight:700;">Run analysis &rarr;</div>
+          </div>
+        `).join("")}
+      </div>
+    `;
+    content.querySelectorAll("[data-id]").forEach(el => {
+      el.onclick = () => loadAnalysis(el.dataset.id);
+    });
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+  }
+}
+
+async function loadAnalysis(providerId) {
+  const content = document.getElementById("page-content");
+  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Running backtests across every compatible strategy...</div>`;
+  try {
+    const data = await fetchPreview(`/provider-analysis/${providerId}`);
+
+    if (!data.has_sufficient_data) {
+      content.innerHTML = `
+        <button class="btn btn-secondary" id="back-to-picker" style="margin-bottom:12px;">&larr; Choose a different provider</button>
+        <div class="card">
+          <div class="card-label">${data.provider.title}</div>
+          <p style="font-size:14px; margin:0 0 8px;">Not enough real historical signals yet to run a trustworthy backtest.</p>
+          <p style="font-size:13px; color:var(--ink-dim); margin:0;">${data.provider.signal_count} of ${data.minimum_required} minimum closed signals collected so far. AXIM never estimates or fabricates performance numbers from too little data - check back once this provider has more history, or watch it passively from the Signals page in the meantime.</p>
+        </div>
+      `;
+      document.getElementById("back-to-picker").onclick = loadProviderPicker;
+      return;
+    }
+
+    const rows = data.results;
+    content.innerHTML = `
+      <button class="btn btn-secondary" id="back-to-picker" style="margin-bottom:12px;">&larr; Choose a different provider</button>
+      <div class="card">
+        <div class="card-label">Step 2 of 3 &mdash; Real backtest results for ${data.provider.title}</div>
+        <div class="data-basis">
+          <div class="db-row"><span>Data basis</span><span>Real historical signals (not illustrative)</span></div>
+          <div class="db-row"><span>Starting bankroll</span><span>$${data.backtest_basis.starting_bankroll}</span></div>
+          <div class="db-row"><span>Signals tested</span><span>${data.backtest_basis.signals_tested}</span></div>
+        </div>
+        <p style="font-size:12px; color:var(--ink-faint); font-style:italic; margin:10px 0 0;">These are real historical results, not a guarantee of future performance - past signals from this provider do not predict future ones.</p>
+      </div>
+
+      <div class="card" style="overflow-x:auto;">
+        <table class="compare-table">
+          <thead><tr>
+            <th>Strategy</th><th>Grade</th><th>Ending Balance</th><th>ROI</th>
+            <th>Max Drawdown</th><th>Win Rate</th><th>Profit Factor</th><th>Max Losing Streak</th>
+          </tr></thead>
+          <tbody>
+            ${rows.map(r => `
+              <tr style="${r.strategy_id === data.recommended_strategy_id ? 'background:var(--brand-dim);' : ''}">
+                <td>${r.strategy_id === data.recommended_strategy_id ? '&#11088; ' : ''}<a href="strategy_detail.html?id=${r.strategy_id}">${r.strategy_name}</a></td>
+                <td><span class="badge ${gradeClass(r.grade)}">${r.grade}</span></td>
+                <td>$${r.ending_balance}</td>
+                <td class="${r.roi_percent >= 0 ? 'up' : 'down'}">${r.roi_percent >= 0 ? '+' : ''}${r.roi_percent}%</td>
+                <td class="down">${r.max_drawdown_percent}%</td>
+                <td>${fmtPct(r.win_rate)}</td>
+                <td>${r.profit_factor ?? '&mdash;'}</td>
+                <td>${r.max_losing_streak}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card" style="border-color:var(--brand); border-width:1.5px;">
+        <div class="card-label">Step 3 of 3 &mdash; Next steps</div>
+        <p style="font-size:13px; margin:0 0 12px;">&#11088; Recommended for ${data.provider.title}: <b>${rows.find(r => r.strategy_id === data.recommended_strategy_id)?.strategy_name}</b>, based on this real backtest.</p>
+        <div class="row" style="gap:10px;">
+          <a class="btn btn-primary" href="strategy_customize.html?id=${data.recommended_strategy_id}">Customize &amp; Use This Strategy</a>
+          <a class="btn btn-secondary" href="strategy_compare.html">Compare Strategies in Detail</a>
+          <a class="btn btn-secondary" href="portfolio.html">Continue to Fund Creation &rarr;</a>
+        </div>
+      </div>
+    `;
+    document.getElementById("back-to-picker").onclick = loadProviderPicker;
+  } catch (e) {
+    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+  }
+}
+
+if (preselectedProvider) {
+  loadAnalysis(preselectedProvider);
+} else {
+  loadProviderPicker();
+}
+</script>
+</body>
+</html>
