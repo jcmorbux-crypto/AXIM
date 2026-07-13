@@ -22,22 +22,22 @@ function riskBadgeClass(level) {
 // breakdown still exists, unchanged, one tap away on the detail page
 // (P2 "math is one click away, never zero") - nothing here is hidden,
 // it's just not the first thing a beginner has to read.
-function renderMoneyRules(s) {
+//
+// Card layout consistency: every card renders the SAME fixed-height
+// sections (title, risk, rules, stats, footer) regardless of text
+// length - see .strategy-card .card-sec in design-system.css. A card
+// with less to say leaves whitespace in its section instead of
+// shifting the divider below it upward.
+function renderMechList(s) {
   const r = s.rules;
   const mech = [];
   if (r.martingale) mech.push(`Recovers losses: stake rises after a loss (max ${r.martingale.max_exposure} of bankroll), resets on a win`);
-  if (r.compounding) mech.push(`Grows with your balance: risk climbs up to ${r.compounding.max_risk_cap} as you profit`);
+  if (r.compounding) mech.push(r.compounding.max_risk_cap === "No cap configured"
+    ? "Grows with your balance: risk climbs automatically as you profit, with no maximum cap set yet"
+    : `Grows with your balance: risk climbs up to ${r.compounding.max_risk_cap} as you profit`);
   if (r.vault) mech.push(`Auto-protects ${r.vault.percent} of profit into a safe balance`);
   if (!mech.length) mech.push("Stake never changes - completely predictable, every trade");
-
-  let html = `<div class="money-rules">
-    <div class="rule-row"><span class="rule-label">Risk per trade</span><span class="rule-value">${r.risk_per_trade}</span></div>
-    <ul class="mech-list">${mech.map(m => `<li>${m}</li>`).join("")}</ul>`;
-
-  if (r.profit_target !== "No automatic stop") html += `<div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${r.profit_target}</span></div>`;
-  if (r.loss_limit !== "No automatic stop") html += `<div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${r.loss_limit}</span></div>`;
-  html += `</div>`;
-  return html;
+  return `<ul class="mech-list">${mech.map(m => `<li>${m}</li>`).join("")}</ul>`;
 }
 
 async function load() {
@@ -53,22 +53,32 @@ async function load() {
       </div>
       <div class="grid">
         ${data.strategies.map(s => s.is_custom_entry ? `
-          <a class="strategy-card" href="strategy_customize.html?id=${s.id}" style="border-style:dashed; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; min-height:220px;">
+          <a class="strategy-card" href="strategy_customize.html?id=${s.id}" style="border-style:dashed; align-items:center; justify-content:center; text-align:center;">
             <div style="font-size:28px; margin-bottom:8px;">+</div>
             <div class="s-name">${s.name}</div>
             <div class="s-desc">${s.description}</div>
           </a>
         ` : `
           <a class="strategy-card" href="strategy_detail.html?id=${s.id}">
-            <div class="s-name">${s.name}</div>
-            <div class="s-desc">${s.description}</div>
-            <div style="margin-bottom:8px;"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span></div>
-            ${renderMoneyRules(s)}
-            <div class="s-mini-stats" style="margin-top:10px; padding-top:8px; border-top:1px solid var(--border);">
-              <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Illustrative ROI</span><b class="up">+${s.roi_percent}%</b></div>
-              <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Max drawdown</span><b class="down">${s.max_drawdown_percent}%</b></div>
+            <div class="card-sec sec-title">
+              <div class="s-name">${s.name}</div>
+              <div class="s-desc-clamp">${s.description}</div>
             </div>
-            <div style="margin-top:10px; font-size:11.5px; color:var(--brand); font-weight:700;">See the exact rules &amp; a worked example &rarr;</div>
+            <div class="card-sec sec-risk">
+              <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
+              <div class="risk-stat">
+                <div class="risk-stat-label">Risk per trade</div>
+                <div class="risk-stat-value">${s.rules.risk_per_trade}</div>
+              </div>
+            </div>
+            <div class="card-sec sec-rules">${renderMechList(s)}</div>
+            <div class="card-sec sec-stats">
+              <div class="s-mini-stats">
+                <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Illustrative ROI</span><b class="up">+${s.roi_percent}%</b></div>
+                <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Max drawdown</span><b class="down">${s.max_drawdown_percent}%</b></div>
+              </div>
+            </div>
+            <div class="card-sec sec-footer">See the exact rules &amp; a worked example &rarr;</div>
           </a>
         `).join("")}
       </div>

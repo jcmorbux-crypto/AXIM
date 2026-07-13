@@ -195,13 +195,48 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
    ============================================================== */
 .strategy-card {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: var(--space-3); cursor: pointer; transition: box-shadow 0.15s, transform 0.15s;
-  text-decoration: none; color: inherit; display: block;
+  padding: 0; cursor: pointer; transition: box-shadow 0.15s, transform 0.15s;
+  text-decoration: none; color: inherit; display: flex; flex-direction: column; height: 100%;
 }
 .strategy-card:hover { box-shadow: var(--shadow); transform: translateY(-1px); border-color: var(--brand); }
 .strategy-card .s-name { font-weight: 800; font-size: 15px; margin-bottom: 2px; }
 .strategy-card .s-desc { font-size: 12.5px; color: var(--ink-dim); margin-bottom: 12px; min-height: 32px; }
 .strategy-card .s-badges { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+
+/* Fixed-height section grid (Apple-comparison-page consistency) - every
+   card in a grid gets IDENTICAL divider positions and bottom alignment
+   regardless of how much text a given strategy has. If a section has
+   less content than its neighbor, it leaves whitespace rather than
+   letting the divider below it creep upward. */
+.strategy-card .card-sec { padding: 13px var(--space-3); overflow: hidden; }
+.strategy-card .card-sec + .card-sec { border-top: 1px solid var(--border); }
+.strategy-card .sec-title { height: 112px; }
+.strategy-card .sec-title .s-name {
+  font-size: 15.5px; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.strategy-card .sec-title .s-desc-clamp {
+  font-size: 12.5px; color: var(--ink-dim); margin: 4px 0 10px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.strategy-card .sec-risk { height: 108px; }
+.strategy-card .sec-rules { height: 88px; }
+.strategy-card .sec-rules .mech-list { margin: 8px 0 0; }
+.strategy-card .sec-stats { height: 56px; }
+.strategy-card .sec-footer {
+  height: 44px; margin-top: auto; display: flex; align-items: center;
+  font-size: 11.5px; color: var(--brand); font-weight: 700;
+}
+/* Stacked, not side-by-side (label + value collided under the fixed-
+   height, overflow:hidden section once "Risk per trade" wrapped to 2
+   lines on narrower cards - confirmed via bounding-box + screenshot
+   inspection, not assumed). */
+.strategy-card .risk-stat { margin-top: 8px; }
+.strategy-card .risk-stat-label { font-size: 11px; color: var(--ink-faint); }
+.strategy-card .risk-stat-value {
+  font-size: 15px; font-weight: 700; margin-top: 1px; line-height: 1.25;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
 
 .badge { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 700; padding: 3px 8px; border-radius: 999px; text-transform: uppercase; letter-spacing: 0.03em; }
 .badge-risk-low { background: var(--green-bg); color: var(--green); }

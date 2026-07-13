@@ -19,23 +19,19 @@ function riskBadgeClass(level) {
 // Same compact, plain-language pattern as the starter grid (Constitution
 // Q1/Q9) - real headline number kept, ladder/milestone jargon replaced
 // with one sentence per mechanism. Exact breakdown is one tap away on
-// the detail page.
-function renderMoneyRules(s) {
+// the detail page. Fixed-height sections (design-system.css
+// .strategy-card .card-sec) keep dividers and card bottoms aligned
+// across all 27 cards regardless of text length.
+function renderMechList(s) {
   const r = s.rules;
   const mech = [];
   if (r.martingale) mech.push(`Recovers losses: stake rises after a loss (max ${r.martingale.max_exposure} of bankroll), resets on a win`);
-  if (r.compounding) mech.push(`Grows with your balance: risk climbs up to ${r.compounding.max_risk_cap} as you profit`);
+  if (r.compounding) mech.push(r.compounding.max_risk_cap === "No cap configured"
+    ? "Grows with your balance: risk climbs automatically as you profit, with no maximum cap set yet"
+    : `Grows with your balance: risk climbs up to ${r.compounding.max_risk_cap} as you profit`);
   if (r.vault) mech.push(`Auto-protects ${r.vault.percent} of profit into a safe balance`);
   if (!mech.length) mech.push("Stake never changes - completely predictable, every trade");
-
-  let html = `<div class="money-rules">
-    <div class="rule-row"><span class="rule-label">Risk per trade</span><span class="rule-value">${r.risk_per_trade}</span></div>
-    <ul class="mech-list">${mech.map(m => `<li>${m}</li>`).join("")}</ul>`;
-
-  if (r.profit_target !== "No automatic stop") html += `<div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${r.profit_target}</span></div>`;
-  if (r.loss_limit !== "No automatic stop") html += `<div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${r.loss_limit}</span></div>`;
-  html += `</div>`;
-  return html;
+  return `<ul class="mech-list">${mech.map(m => `<li>${m}</li>`).join("")}</ul>`;
 }
 
 let allStrategies = [];
@@ -50,10 +46,25 @@ function render(filter) {
   });
   document.getElementById("results").innerHTML = list.map(s => `
     <a class="strategy-card" href="strategy_detail.html?id=${s.id}">
-      <div class="s-name">${s.name}</div>
-      <div class="s-desc">${s.description}</div>
-      <div style="margin-bottom:8px;"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span></div>
-      ${renderMoneyRules(s)}
+      <div class="card-sec sec-title">
+        <div class="s-name">${s.name}</div>
+        <div class="s-desc-clamp">${s.description}</div>
+      </div>
+      <div class="card-sec sec-risk">
+        <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
+        <div class="risk-stat">
+          <div class="risk-stat-label">Risk per trade</div>
+          <div class="risk-stat-value">${s.rules.risk_per_trade}</div>
+        </div>
+      </div>
+      <div class="card-sec sec-rules">${renderMechList(s)}</div>
+      <div class="card-sec sec-stats">
+        <div class="s-mini-stats">
+          <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Illustrative ROI</span><b class="up">+${s.roi_percent}%</b></div>
+          <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Max drawdown</span><b class="down">${s.max_drawdown_percent}%</b></div>
+        </div>
+      </div>
+      <div class="card-sec sec-footer">View Strategy &rarr;</div>
     </a>
   `).join("");
 }
