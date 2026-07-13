@@ -230,6 +230,15 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
 .money-rules .mechanism-block.vault { background: var(--green-bg); }
 .money-rules .mechanism-block.vault .mech-title { color: var(--green); }
 
+/* Compact card variant (Constitution Q1/Q9) - the starter grid keeps
+   the one real headline number (risk per trade) plus one plain-
+   language sentence per enabled mechanism instead of the full ladder/
+   milestone breakdown. Full mechanics stay one tap away on the detail
+   page (P2) - this is a text/density cut, not an information cut. */
+.mech-list { list-style: none; margin: 8px 0; padding: 0; font-size: 12px; color: var(--ink-dim); line-height: 1.5; }
+.mech-list li { padding: 3px 0 3px 14px; position: relative; }
+.mech-list li::before { content: ""; position: absolute; left: 0; top: 9px; width: 5px; height: 5px; border-radius: 999px; background: var(--brand); }
+
 .risk-numbers { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; margin-top: 8px; }
 .risk-numbers .rn { background: var(--canvas); border-radius: 6px; padding: 4px 9px; }
 .risk-numbers .rn b { font-family: "SF Mono", Consolas, monospace; }

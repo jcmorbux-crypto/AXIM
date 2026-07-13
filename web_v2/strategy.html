@@ -16,36 +16,27 @@ function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
 }
 
-// Only mechanisms that are actually enabled render at all - no
-// disabled-feature pills anywhere, per the explicit requirement.
+// Constitution Q1/Q9: the browsing grid keeps the one real headline
+// number (risk per trade - never a vague label) plus a single plain-
+// language sentence per enabled mechanism. The exact ladder/milestone
+// breakdown still exists, unchanged, one tap away on the detail page
+// (P2 "math is one click away, never zero") - nothing here is hidden,
+// it's just not the first thing a beginner has to read.
 function renderMoneyRules(s) {
   const r = s.rules;
+  const mech = [];
+  if (r.martingale) mech.push(`Recovers losses: stake rises after a loss (max ${r.martingale.max_exposure} of bankroll), resets on a win`);
+  if (r.compounding) mech.push(`Grows with your balance: risk climbs up to ${r.compounding.max_risk_cap} as you profit`);
+  if (r.vault) mech.push(`Auto-protects ${r.vault.percent} of profit into a safe balance`);
+  if (!mech.length) mech.push("Stake never changes - completely predictable, every trade");
+
   let html = `<div class="money-rules">
     <div class="rule-row"><span class="rule-label">Risk per trade</span><span class="rule-value">${r.risk_per_trade}</span></div>
-    <div class="rule-row"><span class="rule-label">Sizing method</span><span class="rule-value">${r.sizing_method}</span></div>`;
+    <ul class="mech-list">${mech.map(m => `<li>${m}</li>`).join("")}</ul>`;
 
-  if (r.martingale) {
-    html += `<div class="mechanism-block martingale">
-      <div class="mech-title">Martingale: ${r.martingale.steps} step(s)</div>
-      Ladder: ${r.martingale.ladder}<br>${r.martingale.reset_rule}<br>Max exposure: ${r.martingale.max_exposure}
-    </div>`;
-  }
-  if (r.compounding) {
-    html += `<div class="mechanism-block compounding">
-      <div class="mech-title">Compounding (${r.compounding.trigger})</div>
-      ${r.compounding.increase_rule}<br>${r.compounding.reset_rule}<br>Maximum risk: ${r.compounding.max_risk_cap}
-    </div>`;
-  }
-  if (r.vault) {
-    html += `<div class="mechanism-block vault">
-      <div class="mech-title">Profit Vault</div>
-      Moves ${r.vault.percent} of profit to Protected Balance (${r.vault.trigger})
-    </div>`;
-  }
-
-  html += `<div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${r.profit_target}</span></div>
-    <div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${r.loss_limit}</span></div>
-  </div>`;
+  if (r.profit_target !== "No automatic stop") html += `<div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${r.profit_target}</span></div>`;
+  if (r.loss_limit !== "No automatic stop") html += `<div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${r.loss_limit}</span></div>`;
+  html += `</div>`;
   return html;
 }
 
@@ -77,6 +68,7 @@ async function load() {
               <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Illustrative ROI</span><b class="up">+${s.roi_percent}%</b></div>
               <div class="stat"><span style="color:var(--ink-faint); font-size:11px;">Max drawdown</span><b class="down">${s.max_drawdown_percent}%</b></div>
             </div>
+            <div style="margin-top:10px; font-size:11.5px; color:var(--brand); font-weight:700;">See the exact rules &amp; a worked example &rarr;</div>
           </a>
         `).join("")}
       </div>
