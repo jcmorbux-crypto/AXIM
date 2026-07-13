@@ -16,6 +16,39 @@ function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
 }
 
+// Same dense, numbers-first pattern as the starter grid - the Advanced
+// Library is still bankroll rules, not branding, just more of them.
+function renderMoneyRules(s) {
+  const r = s.rules;
+  let html = `<div class="money-rules">
+    <div class="rule-row"><span class="rule-label">Risk per trade</span><span class="rule-value">${r.risk_per_trade}</span></div>
+    <div class="rule-row"><span class="rule-label">Sizing method</span><span class="rule-value">${r.sizing_method}</span></div>`;
+
+  if (r.martingale) {
+    html += `<div class="mechanism-block martingale">
+      <div class="mech-title">Martingale: ${r.martingale.steps} step(s)</div>
+      Ladder: ${r.martingale.ladder}<br>${r.martingale.reset_rule}<br>Max exposure: ${r.martingale.max_exposure}
+    </div>`;
+  }
+  if (r.compounding) {
+    html += `<div class="mechanism-block compounding">
+      <div class="mech-title">Compounding (${r.compounding.trigger})</div>
+      ${r.compounding.increase_rule}<br>${r.compounding.reset_rule}<br>Maximum risk: ${r.compounding.max_risk_cap}
+    </div>`;
+  }
+  if (r.vault) {
+    html += `<div class="mechanism-block vault">
+      <div class="mech-title">Profit Vault</div>
+      Moves ${r.vault.percent} of profit to Protected Balance (${r.vault.trigger})
+    </div>`;
+  }
+
+  html += `<div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${r.profit_target}</span></div>
+    <div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${r.loss_limit}</span></div>
+  </div>`;
+  return html;
+}
+
 let allStrategies = [];
 
 function render(filter) {
@@ -30,12 +63,8 @@ function render(filter) {
     <a class="strategy-card" href="strategy_detail.html?id=${s.id}">
       <div class="s-name">${s.name}</div>
       <div class="s-desc">${s.description}</div>
-      <div class="s-badges">
-        <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
-        ${s.uses_martingale ? '<span class="badge badge-flag-on">Martingale</span>' : ""}
-        ${s.uses_compounding ? '<span class="badge badge-flag-on">Compounding</span>' : ""}
-        ${s.uses_vault ? '<span class="badge badge-flag-on">Vault</span>' : ""}
-      </div>
+      <div style="margin-bottom:8px;"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span></div>
+      ${renderMoneyRules(s)}
     </a>
   `).join("");
 }
