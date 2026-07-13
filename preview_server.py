@@ -132,6 +132,55 @@ def preview_sessions():
     }
 
 
+@app.get("/api/preview/dashboard")
+def preview_dashboard():
+    """One consolidated payload for the 3-column terminal Dashboard -
+    LEFT (sources), CENTER (activity/sessions), RIGHT (funds/risk/
+    performance/positions) - one round trip instead of 4, since this
+    screen is specifically the one meant to be scanned fast."""
+    today = trade_statistics.daily_stats()
+    active_session = database.get_active_trading_session()
+    channels = [c for c in database.list_channels() if c.get("enabled")]
+    funds = fund_manager.list_funds_with_balances()
+    open_trades = database.get_open_trades()
+
+    sources = []
+    for c in channels:
+        perf = database.get_channel_performance(c["title"] or c.get("username") or "")
+        sources.append({
+            "title": c["title"] or c.get("username"),
+            "win_rate": perf.get("win_rate") if perf else None,
+            "total_signals": perf.get("total_closed") if perf else 0,
+        })
+
+    return {
+        "today_pnl": today.get("profit_loss", 0),
+        "today_trades": today.get("total_closed", 0),
+        "today_win_rate": today.get("win_rate"),
+        "active_session": {
+            "name": active_session["name"], "status": active_session["status"],
+            "realized_pnl": active_session["realized_pnl"], "trades_count": active_session["trades_count"],
+        } if active_session else None,
+        "sources": sources,
+        "activity": [
+            {
+                "asset": s.get("asset"), "direction": (s.get("direction") or "").lower(),
+                "result": _short_result(s.get("result")), "received_at": s.get("received_at"),
+            }
+            for s in database.get_recent_signals(limit=12)
+        ],
+        "open_positions": [
+            {"id": t["id"], "asset": t["asset"], "direction": (t.get("direction") or "").lower(), "trade_amount": t["trade_amount"]}
+            for t in open_trades
+        ],
+        "funds_summary": [
+            {"name": f["name"], "trading_balance": f.get("balances", {}).get("trading_balance")}
+            for f in funds
+        ],
+        "risk_ok": True,  # preview simplification - real page (Phase 1+) reads the actual risk-limit gate
+    }
+
+
 # Static V2 pages - mounted last so /api/preview/* above takes priority.
 app.mount("/", StaticFiles(directory=str(WEB_V2_DIR), html=True), name="web_v2")
 

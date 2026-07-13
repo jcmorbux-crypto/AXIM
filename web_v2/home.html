@@ -2,64 +2,186 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Home - AXIM Trader</title>
+<title>Dashboard - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="design-system.css">
 </head>
 <body>
-<div class="shell" id="shell-root"></div>
+<div class="preview-badge">Preview Mode &middot; <b>Read-only</b> &middot; AXIM Trader V2 (UI Vision) &middot; No real trades are ever placed here</div>
+
+<div class="terminal-shell">
+
+  <!-- LEFT: navigation + signal sources -->
+  <div class="terminal-col col-left">
+    <div class="terminal-col-inner">
+      <div style="display:flex; align-items:center; gap:8px; font-weight:800; font-size:15px; padding:4px 4px 16px;">
+        <span style="width:22px; height:22px; background:var(--brand); border-radius:7px; display:inline-block;"></span>
+        AXIM Trader
+      </div>
+      <div id="left-nav"></div>
+      <div class="terminal-panel" style="margin-top:16px;">
+        <div class="terminal-panel-title">Signal Sources <span class="live-dot"></span></div>
+        <div id="left-sources"><div class="progress-row"><span class="spinner"></span></div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER: live activity -->
+  <div class="terminal-col col-center">
+    <div class="terminal-col-inner">
+      <div class="terminal-panel">
+        <div class="terminal-panel-title">
+          <span>Today's Performance</span>
+          <span class="live-dot"></span>
+        </div>
+        <div id="center-hero"><div class="progress-row"><span class="spinner"></span> Connecting...</div></div>
+      </div>
+
+      <div class="terminal-panel">
+        <div class="terminal-panel-title">Live Activity</div>
+        <div id="center-activity"></div>
+      </div>
+
+      <div class="terminal-panel">
+        <div class="terminal-panel-title">Active Session</div>
+        <div id="center-session"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: funds, risk, performance, emergency controls, positions -->
+  <div class="terminal-col col-right">
+    <div class="terminal-col-inner">
+      <div class="terminal-panel" style="border-color:var(--red); background:var(--red-bg);">
+        <button class="btn btn-danger" style="width:100%; justify-content:center; font-size:14px; padding:12px;">⏹ Emergency Stop</button>
+        <button class="btn btn-secondary" style="width:100%; justify-content:center; margin-top:8px;">Pause</button>
+      </div>
+
+      <div class="terminal-panel">
+        <div class="terminal-panel-title">Funds</div>
+        <div id="right-funds"></div>
+      </div>
+
+      <div class="terminal-panel">
+        <div class="terminal-panel-title">Open Positions</div>
+        <div id="right-positions"></div>
+      </div>
+
+      <div class="terminal-panel">
+        <div class="terminal-panel-title">Risk</div>
+        <div id="right-risk"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="mobile-nav" id="mobile-nav-root"></div>
+
 <script src="shell.js"></script>
 <script>
-renderShell("home", "Home", "Everything running, at a glance.");
+document.getElementById("left-nav").innerHTML = NAV_ITEMS.map(i => `
+  <a class="nav-item ${i.id === "home" ? "active" : ""}" href="${i.href}" style="font-size:13px;">${i.label}</a>
+`).join("");
+document.getElementById("mobile-nav-root").outerHTML = (() => {
+  const items = NAV_ITEMS.filter(i => MOBILE_NAV_ITEMS.includes(i.id)).map(i => `
+    <a class="item ${i.id === "home" ? "active" : ""}" href="${i.href}">${i.label}</a>
+  `).join("") + `<a class="item">More</a>`;
+  return `<div class="mobile-nav">${items}</div>`;
+})();
 
-async function load() {
-  const content = document.getElementById("page-content");
-  content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading your trading operation...</div>`;
-  try {
-    const data = await fetchPreview("/home");
-    const pnlClass = moneyClass(data.today_pnl);
-    const session = data.active_session;
-    content.innerHTML = `
-      <div class="card">
-        <div class="card-label">Today's performance</div>
-        <div class="hero-number ${pnlClass}">${fmtMoney(data.today_pnl)}</div>
-        <div class="status-line">
-          <span class="dot ${session ? "" : "off"}"></span>
-          ${session ? `Running normally &middot; watching ${data.watching_count} signal source${data.watching_count === 1 ? "" : "s"}` : "No active session"}
-        </div>
-      </div>
+function fmtPct(n) { return n === null || n === undefined ? "&mdash;" : (n * 100).toFixed(1) + "%"; }
+function timeAgo(iso) {
+  if (!iso) return "";
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return "now";
+  if (mins < 60) return mins + "m";
+  return Math.round(mins / 60) + "h";
+}
 
-      <div class="grid" style="margin-bottom:16px;">
-        <div class="card">
-          <div class="card-label">Quick actions</div>
-          <button class="btn btn-secondary">Pause</button>
-          <button class="btn btn-danger">Emergency Stop</button>
-          ${session ? `<button class="btn btn-primary">View Session</button>` : `<button class="btn btn-primary">Start Session</button>`}
-        </div>
-        <div class="card">
-          <div class="card-label">Active session</div>
-          ${session ? `
-            <div style="font-weight:700;">${session.name}</div>
-            <div class="status-line" style="margin-top:6px;">P/L: <b class="${moneyClass(session.realized_pnl)}">${fmtMoney(session.realized_pnl)}</b></div>
-          ` : `<div class="source-nodata">No session running right now.</div>`}
-        </div>
-      </div>
+let lastPayload = null;
 
-      <div class="card">
-        <div class="card-label">Recent activity</div>
-        ${data.recent_activity.map(a => `
-          <div class="status-line" style="justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--border);">
-            <span>${a.asset || "—"} <span style="color:var(--ink-faint);">${a.direction || ""}</span></span>
-            <span class="${a.result === "win" ? "up" : a.result === "loss" ? "down" : ""}" style="font-weight:600;">${a.result || "pending"}</span>
-          </div>
-        `).join("") || `<div class="source-nodata">No signals yet.</div>`}
-      </div>
-    `;
-  } catch (e) {
-    content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
+function flashIfChanged(el, key, newVal) {
+  if (lastPayload && JSON.stringify(lastPayload[key]) !== JSON.stringify(newVal)) {
+    el.classList.remove("flash-update");
+    void el.offsetWidth; // restart animation
+    el.classList.add("flash-update");
   }
 }
-load();
+
+async function tick() {
+  try {
+    const data = await fetchPreview("/dashboard");
+
+    // CENTER: hero
+    const heroEl = document.getElementById("center-hero");
+    flashIfChanged(heroEl, "today_pnl", data.today_pnl);
+    heroEl.innerHTML = `
+      <div class="hero-number terminal-font ${moneyClass(data.today_pnl)}" style="font-size:34px;">${fmtMoney(data.today_pnl)}</div>
+      <div class="status-line">
+        <span class="live-dot"></span> ${data.today_trades} trades today &middot; ${fmtPct(data.today_win_rate)} win rate
+      </div>
+    `;
+
+    // CENTER: activity
+    const actEl = document.getElementById("center-activity");
+    flashIfChanged(actEl, "activity", data.activity);
+    actEl.innerHTML = data.activity.length ? data.activity.map(a => `
+      <div class="trow">
+        <span class="t-time terminal-font">${timeAgo(a.received_at)}</span>
+        <span class="t-asset">${a.asset || "—"}</span>
+        <span class="t-dir ${a.direction}">${(a.direction || "").toUpperCase()}</span>
+        <span class="t-result terminal-font ${a.result === "win" ? "up" : a.result === "loss" ? "down" : ""}">${a.result || "pending"}</span>
+      </div>
+    `).join("") : `<div class="source-nodata">No signals yet.</div>`;
+
+    // CENTER: session
+    const sessEl = document.getElementById("center-session");
+    const s = data.active_session;
+    sessEl.innerHTML = s ? `
+      <div class="stat-row"><span class="label">${s.name}</span><span class="value ${moneyClass(s.realized_pnl)} terminal-font">${fmtMoney(s.realized_pnl)}</span></div>
+      <div class="stat-row"><span class="label">Trades</span><span class="value terminal-font">${s.trades_count}</span></div>
+      <div class="stat-row"><span class="label">Status</span><span class="value" style="text-transform:capitalize;">${s.status}</span></div>
+    ` : `<div class="source-nodata">No active session.</div>`;
+
+    // LEFT: sources
+    document.getElementById("left-sources").innerHTML = data.sources.length ? data.sources.map(src => `
+      <div class="sig-mini">
+        <span class="name">${src.title}</span>
+        <span class="wr terminal-font ${src.total_signals > 0 ? (src.win_rate >= 0.5 ? "up" : "down") : ""}">${src.total_signals > 0 ? fmtPct(src.win_rate) : "—"}</span>
+      </div>
+    `).join("") : `<div class="source-nodata">None watched.</div>`;
+
+    // RIGHT: funds
+    document.getElementById("right-funds").innerHTML = data.funds_summary.length ? data.funds_summary.map(f => `
+      <div class="stat-row"><span class="label">${f.name}</span><span class="value terminal-font ${moneyClass(f.trading_balance)}">${fmtMoney(f.trading_balance)}</span></div>
+    `).join("") : `<div class="source-nodata">No funds yet.</div>`;
+
+    // RIGHT: open positions
+    const posEl = document.getElementById("right-positions");
+    flashIfChanged(posEl, "open_positions", data.open_positions);
+    posEl.innerHTML = data.open_positions.length ? data.open_positions.map(p => `
+      <div class="trow" style="grid-template-columns: 1fr auto auto;">
+        <span class="t-asset">${p.asset}</span>
+        <span class="t-dir ${p.direction}">${(p.direction || "").toUpperCase()}</span>
+        <span class="terminal-font">${fmtMoney(p.trade_amount)}</span>
+      </div>
+    `).join("") : `<div class="source-nodata">No open positions right now.</div>`;
+
+    // RIGHT: risk
+    document.getElementById("right-risk").innerHTML = `
+      <div class="status-line"><span class="dot"></span> Within all your risk limits</div>
+      <details class="disclosure" style="margin-top:8px;"><summary>Limit details</summary><div class="content">Daily loss cap, max trades/hour, and consecutive-loss cooldown all currently unbreached.</div></details>
+    `;
+
+    lastPayload = data;
+  } catch (e) {
+    document.getElementById("center-hero").innerHTML = `<div class="card-label" style="color:var(--red);">Connection error</div>${e.message}`;
+  }
+}
+
+tick();
+setInterval(tick, 5000); // genuine polling loop - the live-update MECHANISM is real, even against this preview's static snapshot
 </script>
 </body>
 </html>

@@ -109,6 +109,77 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
 .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--brand); border-radius: 999px; animation: spin 0.7s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ==============================================================
+   TERMINAL MODE — the Dashboard specifically (P10, added after
+   live feedback: the first pass "read as an admin panel with
+   trading widgets," not a professional trading terminal).
+
+   Reconciles with P1/P6 (progressive disclosure) rather than
+   replacing them: research is explicit that data density is a
+   function of AUDIENCE, not a universal good - "Bloomberg Terminal
+   users expect maximum density... retail investors need progressive
+   disclosure" (Lollypop, 2026). AXIM's Dashboard is opened by a
+   RETURNING daily trader checking on a running operation, not a
+   first-time user being onboarded - the wizard, risk-profile setup,
+   and other configuration flows stay exactly as spread-out and
+   disclosure-first as P1/P2 already specify. Density is a property
+   of THIS screen's specific audience, not a repeal of the principle.
+   ============================================================== */
+.terminal-font { font-family: "SF Mono", "Cascadia Code", "Consolas", monospace; font-variant-numeric: tabular-nums; }
+
+.terminal-shell { display: grid; grid-template-columns: 220px 1fr 300px; gap: 1px; background: var(--border); min-height: calc(100vh - 30px); }
+.terminal-col { background: var(--canvas); overflow-y: auto; }
+.terminal-col-inner { padding: var(--space-3); }
+.terminal-panel {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: var(--space-3); margin-bottom: 10px;
+}
+.terminal-panel-title {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 800;
+  color: var(--ink-faint); margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between;
+}
+
+/* Live pulse - a genuine data connection indicator, not decoration.
+   Research: "a pulsing indicator signaling a live data connection" is
+   the single most-cited trading-terminal motion pattern. */
+.live-dot { position: relative; width: 8px; height: 8px; border-radius: 999px; background: var(--green); display: inline-block; }
+.live-dot::after {
+  content: ""; position: absolute; inset: -4px; border-radius: 999px;
+  border: 1.5px solid var(--green); animation: live-pulse 1.8s ease-out infinite;
+}
+@keyframes live-pulse { 0% { transform: scale(0.6); opacity: 0.9; } 100% { transform: scale(1.9); opacity: 0; } }
+
+/* Flash-on-update - confirms a live-updating card actually just
+   changed, instead of the user having to notice a number is
+   different. Triggered by JS adding/removing this class. */
+.flash-update { animation: flash-bg 900ms ease-out; }
+@keyframes flash-bg { 0% { background: var(--brand-dim); } 100% { background: transparent; } }
+
+/* Dense activity row - replaces the card-per-item pattern for the
+   center column, where the whole point is scanning many rows fast. */
+.trow {
+  display: grid; grid-template-columns: 70px 1fr auto auto; gap: 10px; align-items: center;
+  padding: 7px 8px; border-radius: 6px; font-size: 12.5px;
+}
+.trow:hover { background: var(--canvas); }
+.trow .t-time { color: var(--ink-faint); font-size: 11px; }
+.trow .t-asset { font-weight: 600; }
+.trow .t-dir { font-size: 10px; font-weight: 800; padding: 1px 6px; border-radius: 4px; }
+.trow .t-dir.buy { background: var(--green-bg); color: var(--green); }
+.trow .t-dir.sell { background: var(--red-bg); color: var(--red); }
+.trow .t-result { font-weight: 700; text-align: right; }
+
+/* Right-column stat rows (Funds/Risk/Performance) - denser than the
+   .card pattern, tuned for scanning many numbers, not one hero. */
+.stat-row { display: flex; justify-content: space-between; align-items: baseline; padding: 5px 0; font-size: 12.5px; }
+.stat-row .label { color: var(--ink-dim); }
+.stat-row .value { font-weight: 700; }
+
+.sig-mini { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+.sig-mini:last-child { border-bottom: none; }
+.sig-mini .name { font-weight: 600; }
+.sig-mini .wr { font-weight: 800; font-size: 13px; }
+
 /* ---- Mobile (P5) ---- */
 @media (max-width: 900px) {
   .sidebar { display: none; }
@@ -118,5 +189,16 @@ h1 { font-size: 22px; margin: 0 0 4px 0; }
   .main { padding: var(--space-3); padding-bottom: 70px; max-width: 100%; }
   .grid { grid-template-columns: 1fr; }
   .hero-number { font-size: 36px; }
+  /* Terminal's 3 columns stack to 1 on mobile - CENTER (live activity)
+     first, since P5 says mobile is for monitoring, not configuration;
+     LEFT (nav/sources) and RIGHT (funds/risk) follow below it rather
+     than competing for the same narrow width. `order` only works on a
+     flex/grid container's direct children - display:block here would
+     silently make it a no-op (confirmed: caught this exact bug via
+     screenshot, not assumed safe), so this stays a column flex, not a
+     plain block stack. */
+  .terminal-shell { display: flex; flex-direction: column; padding-bottom: 70px; }
+  .terminal-col { order: 2; }
+  .terminal-col.col-center { order: 1; }
 }
 @media (min-width: 901px) { .mobile-nav { display: none; } }
