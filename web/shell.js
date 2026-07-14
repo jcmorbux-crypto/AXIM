@@ -51,24 +51,40 @@ const AximShell = (() => {
     return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 
-  const NAV_ITEMS = [
-    { key: "dashboard", label: "Mission Control", href: "/dashboard", icon: ICONS.dashboard },
-    { key: "funds", label: "Multi-Fund Manager", href: "/funds", icon: ICONS.funds },
-    { key: "sessions", label: "Trading Sessions", href: "/sessions", icon: ICONS.sessions },
-    { key: "telegram", label: "Signal Sources", href: "/telegram", icon: ICONS.telegram },
-    { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
-    { key: "money", label: "Money Management Studio", href: "/risk", icon: ICONS.money },
-    { key: "capital", label: "Capital Strategies", href: "/capital-strategies", icon: ICONS.capital },
-    { key: "automation", label: "Automation Studio", href: "/automation", icon: ICONS.rules },
+  // IA reorganized 2026-07-14 per the approved UI overhaul spec: primary
+  // nav trimmed to the 6 daily-use destinations, everything else moved
+  // under "More" (progressive disclosure - matches the same grouping
+  // already validated in the UI Vision branch). URLs deliberately
+  // unchanged from before this reorg (only labels/grouping moved) so
+  // existing bookmarks/deep-links keep working. Capital Strategies,
+  // Trade History, and Billing aren't in the approved nav list at all
+  // (primary or "More") - kept reachable via a link from a related page
+  // (Money Management Studio, Performance, Settings respectively)
+  // instead of removed outright, per "do not remove existing working
+  // capabilities."
+  const PRIMARY_NAV_ITEMS = [
+    { key: "dashboard", label: "Home", href: "/dashboard", icon: ICONS.dashboard },
+    { key: "sessions", label: "Sessions", href: "/sessions", icon: ICONS.sessions },
+    { key: "funds", label: "Funds", href: "/funds", icon: ICONS.funds },
+    { key: "telegram", label: "Sources", href: "/telegram", icon: ICONS.telegram },
     { key: "lab", label: "Strategy Lab", href: "/strategy-lab", icon: ICONS.lab },
-    { key: "trades", label: "Trade History", href: "/trades", icon: ICONS.trades },
     { key: "stats", label: "Performance", href: "/performance", icon: ICONS.stats },
-    { key: "pocketoption", label: "Broker", href: "/broker", icon: ICONS.pocketoption },
-    { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
-    { key: "logs", label: "Logs", href: "/logs", icon: ICONS.logs, adminOnly: true },
-    { key: "settings", label: "Settings", href: "/settings", icon: ICONS.settings },
-    { key: "guide", label: "Help / Guide", href: "/guide", icon: ICONS.guide },
   ];
+  const MORE_NAV_ITEMS = [
+    { key: "money", label: "Money Management", href: "/risk", icon: ICONS.money },
+    { key: "automation", label: "Automation Studio", href: "/automation", icon: ICONS.rules },
+    { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
+    { key: "pocketoption", label: "Broker Accounts", href: "/broker", icon: ICONS.pocketoption },
+    { key: "logs", label: "Logs", href: "/logs", icon: ICONS.logs, adminOnly: true },
+    { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
+    { key: "guide", label: "Help", href: "/guide", icon: ICONS.guide },
+    { key: "settings", label: "Settings", href: "/settings", icon: ICONS.settings },
+  ];
+  const NAV_ITEMS = [...PRIMARY_NAV_ITEMS, ...MORE_NAV_ITEMS];
+  // 4 primary + a "More" tab covering the rest - a 6-across mobile bar
+  // doesn't fit comfortably, matching the same constraint already
+  // resolved in the UI Vision branch's mobile nav.
+  const MOBILE_NAV_KEYS = ["dashboard", "sessions", "funds", "telegram"];
 
   async function fetchJSON(url, opts) {
     const res = await fetch(url, { credentials: "same-origin", ...opts });
@@ -86,17 +102,34 @@ const AximShell = (() => {
 
   function renderSidebar(root, user, activeKey) {
     const isAdmin = user.role === "owner" || user.role === "admin";
-    const items = NAV_ITEMS.filter(i => !i.adminOnly || isAdmin);
+    const primary = PRIMARY_NAV_ITEMS;
+    const more = MORE_NAV_ITEMS.filter(i => !i.adminOnly || isAdmin);
+    const moreOpen = more.some(i => i.key === activeKey);
     root.innerHTML = `
       <div class="sidebar-logo"><span class="mark">${LOGO_MARK}</span> <span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">Trader</span></span></div>
       <div class="nav-group">
-        ${items.map(i => `
+        ${primary.map(i => `
           <a class="nav-item ${i.key === activeKey ? "active" : ""}" href="${i.href}">
             ${i.icon}<span>${i.label}</span>
           </a>
         `).join("")}
       </div>
+      <div class="nav-more ${moreOpen ? "open" : ""}">
+        <div class="nav-more-toggle" onclick="this.parentElement.classList.toggle('open')">
+          <span>More</span><span class="chev">&#9662;</span>
+        </div>
+        <div class="nav-more-list">
+          ${more.map(i => `
+            <a class="nav-item more-item ${i.key === activeKey ? "active" : ""}" href="${i.href}">
+              ${i.icon}<span>${i.label}</span>
+            </a>
+          `).join("")}
+        </div>
+      </div>
       <div class="nav-spacer"></div>
+      <div class="theme-toggle-wrap">
+        <div class="theme-toggle" id="theme-toggle-sidebar"></div>
+      </div>
       <div class="sidebar-footer">
         <div class="notif-bell-wrap">
           <button class="notif-bell" id="axim-notif-bell" onclick="AximShell._toggleNotifDropdown()">
@@ -124,6 +157,8 @@ const AximShell = (() => {
         </div>
       </div>
     `;
+    if (typeof initThemeToggle === "function") initThemeToggle("theme-toggle-sidebar");
+    renderMobileNav(user, activeKey, isAdmin);
     document.addEventListener("click", (e) => {
       const wrap = document.querySelector(".notif-bell-wrap");
       if (wrap && !wrap.contains(e.target)) {
@@ -391,49 +426,55 @@ const AximShell = (() => {
     sidebar.id = "sidebar";
     shellRoot.insertBefore(sidebar, shellRoot.firstChild);
     renderSidebar(sidebar, user, opts.active);
-    _initMobileNav(shellRoot, sidebar);
     startConfirmationPolling();
     startNotifPolling();
     return user;
   }
 
-  // Below theme.css's 900px breakpoint the sidebar becomes an off-canvas
-  // drawer (see the matching @media block) - without this, mobile users
-  // had literally no way to navigate between pages, since the sidebar
-  // was the only nav and previously just vanished with nothing in its
-  // place. Toggle button + backdrop are injected here (once, shared
-  // across every page) rather than duplicated in each page's own HTML.
-  function _initMobileNav(shellRoot, sidebar) {
-    const toggle = document.createElement("button");
-    toggle.className = "mobile-nav-toggle";
-    toggle.setAttribute("aria-label", "Open navigation menu");
-    toggle.innerHTML = '<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4.5h12M2 8h12M2 11.5h12"/></svg>';
+  // Below theme.css's 900px breakpoint the sidebar itself is hidden
+  // entirely (see the matching @media block) and replaced by a fixed
+  // bottom nav bar - the approved mobile pattern (2026-07-14 UI
+  // overhaul spec: "an appropriate bottom navigation pattern rather
+  // than shrinking the desktop sidebar"), replacing the previous
+  // off-canvas hamburger drawer. 4 primary destinations + a "More" tab
+  // that opens a bottom sheet with everything else - a 6-across bar
+  // doesn't fit comfortably on a phone. Called from renderSidebar()
+  // (not init() directly) since it needs the same activeKey/isAdmin
+  // filtering the desktop sidebar just computed.
+  function renderMobileNav(user, activeKey, isAdmin) {
+    document.querySelectorAll(".mobile-nav, .more-sheet").forEach(el => el.remove());
+    const more = MORE_NAV_ITEMS.filter(i => !i.adminOnly || isAdmin);
+    const moreActive = more.some(i => i.key === activeKey);
 
-    const backdrop = document.createElement("div");
-    backdrop.className = "mobile-nav-backdrop";
+    const barItems = PRIMARY_NAV_ITEMS.filter(i => MOBILE_NAV_KEYS.includes(i.key)).map(i => `
+      <a class="item ${i.key === activeKey ? "active" : ""}" href="${i.href}">${i.icon}<span>${i.label}</span></a>
+    `).join("") + `
+      <a class="item ${moreActive ? "active" : ""}" href="#" id="mobile-more-tab">${ICONS.settings}<span>More</span></a>
+    `;
 
-    const closeMobileNav = () => {
-      sidebar.classList.remove("mobile-open");
-      backdrop.classList.remove("visible");
-    };
-    const openMobileNav = () => {
-      sidebar.classList.add("mobile-open");
-      backdrop.classList.add("visible");
-    };
+    const moreSheet = document.createElement("div");
+    moreSheet.className = "more-sheet";
+    moreSheet.id = "more-sheet";
+    moreSheet.innerHTML = `
+      <div class="more-sheet-inner">
+        <div class="more-sheet-title">More</div>
+        ${more.map(i => `
+          <a class="nav-item more-item ${i.key === activeKey ? "active" : ""}" href="${i.href}">${i.icon}<span>${i.label}</span></a>
+        `).join("")}
+      </div>
+    `;
+    moreSheet.addEventListener("click", (e) => { if (e.target === moreSheet) moreSheet.classList.remove("open"); });
 
-    toggle.addEventListener("click", () => {
-      sidebar.classList.contains("mobile-open") ? closeMobileNav() : openMobileNav();
+    const mobileNav = document.createElement("div");
+    mobileNav.className = "mobile-nav";
+    mobileNav.innerHTML = barItems;
+
+    document.body.appendChild(mobileNav);
+    document.body.appendChild(moreSheet);
+    document.getElementById("mobile-more-tab").addEventListener("click", (e) => {
+      e.preventDefault();
+      moreSheet.classList.toggle("open");
     });
-    backdrop.addEventListener("click", closeMobileNav);
-    // Tapping any nav link should close the drawer - the click still
-    // navigates normally (a plain <a href>), this just avoids the next
-    // page loading with the drawer already open.
-    sidebar.addEventListener("click", (e) => {
-      if (e.target.closest(".nav-item")) closeMobileNav();
-    });
-
-    shellRoot.appendChild(toggle);
-    shellRoot.appendChild(backdrop);
   }
 
   // Every technical/operational surface (raw ids, pids, heartbeats,

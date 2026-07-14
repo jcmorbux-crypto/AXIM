@@ -56,6 +56,82 @@
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
+/* ==============================================================
+   DARK MODE - a fully designed second theme, not an inverted
+   afterthought. Deep charcoal-navy base (never pure black), elevated
+   surfaces via --surface-hover rather than heavier shadows (box-
+   shadows barely read against a dark ground), every accent re-tuned
+   for legibility against a dark background rather than a straight hex
+   invert. Applies automatically from OS preference, or force-set
+   either direction via data-theme (see theme.js) - matches the same
+   approach already validated in the UI Vision branch's design system.
+   Every existing page already renders through these same variable
+   names (--bg/--surface/--text/etc.), so dark mode applies across the
+   whole app the moment this loads - no page HTML changes needed.
+   ============================================================== */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1218;
+    --surface: #171b24;
+    --surface-hover: #1e2330;
+    --border: #2a2f3d;
+    --text: #eef0f5;
+    --text-dim: #9296a6;
+    --text-faint: #5f6373;
+    --blue: #6788ff;
+    --blue-hover: #89a3ff;
+    --blue-soft: #1a2340;
+    --green: #2edb92;
+    --green-soft: #123023;
+    --red: #ff5b6b;
+    --red-hover: #ff7a87;
+    --red-soft: #3a1620;
+    --yellow: #ffb84d;
+    --yellow-soft: #3a2a10;
+    --highlight: #caa63d;
+    --overlay: rgba(0, 0, 0, 0.6);
+    --gold: #e8c15a;
+    --gold-soft: #332a12;
+    --gold-border: #4a3c1a;
+    --purple: #b295f7;
+    --purple-soft: #271c42;
+    --purple-border: #3d2f5c;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+    --shadow-lift: 0 4px 10px rgba(0, 0, 0, 0.35), 0 16px 40px rgba(0, 0, 0, 0.45);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1218;
+  --surface: #171b24;
+  --surface-hover: #1e2330;
+  --border: #2a2f3d;
+  --text: #eef0f5;
+  --text-dim: #9296a6;
+  --text-faint: #5f6373;
+  --blue: #6788ff;
+  --blue-hover: #89a3ff;
+  --blue-soft: #1a2340;
+  --green: #2edb92;
+  --green-soft: #123023;
+  --red: #ff5b6b;
+  --red-hover: #ff7a87;
+  --red-soft: #3a1620;
+  --yellow: #ffb84d;
+  --yellow-soft: #3a2a10;
+  --highlight: #caa63d;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --gold: #e8c15a;
+  --gold-soft: #332a12;
+  --gold-border: #4a3c1a;
+  --purple: #b295f7;
+  --purple-soft: #271c42;
+  --purple-border: #3d2f5c;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lift: 0 4px 10px rgba(0, 0, 0, 0.35), 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
@@ -568,23 +644,20 @@ td.title-cell { white-space: normal; max-width: 320px; }
 .confirm-countdown-fill { height: 100%; background: var(--red); transition: width 1s linear; }
 .confirm-trade-headline { font-size: 20px; font-weight: 700; margin: 4px 0 14px 0; }
 
-/* Mobile nav (PDM-8) - below 900px the sidebar becomes a slide-in
-   drawer (off-canvas by default, toggled by .mobile-open) instead of
-   just vanishing with no replacement navigation. .mobile-nav-toggle and
-   .mobile-nav-backdrop are injected by shell.js's renderSidebar() -
-   both are display:none above this breakpoint so desktop is unaffected. */
-.mobile-nav-toggle { display: none; }
-.mobile-nav-backdrop { display: none; }
+/* Mobile nav - approved 2026-07-14 UI overhaul spec: "an appropriate
+   bottom navigation pattern rather than shrinking the desktop sidebar."
+   Replaces the previous off-canvas hamburger drawer entirely. Below
+   900px the sidebar is hidden outright (not slid off-canvas) and a
+   fixed bottom bar (4 primary destinations + "More") takes over,
+   matching the same pattern already validated in the UI Vision branch.
+   .mobile-nav / .more-sheet are injected by shell.js's renderMobileNav()
+   - both display:none above this breakpoint so desktop is unaffected. */
+.mobile-nav { display: none; }
+.more-sheet { display: none; }
 
 @media (max-width: 900px) {
-  .sidebar {
-    transform: translateX(-100%);
-    transition: transform 0.22s ease;
-    z-index: 210;
-    box-shadow: 2px 0 24px rgba(0,0,0,0.18);
-  }
-  .sidebar.mobile-open { transform: translateX(0); }
-  .main { margin-left: 0; padding: 20px; padding-top: 68px; max-width: 100%; }
+  .sidebar { display: none; }
+  .main { margin-left: 0; padding: 16px; padding-bottom: 76px; max-width: 100%; }
 
   /* Dense tabular pages (Trade Center, Users, Sessions, etc.) are kept
      as real tables rather than reflowed card-per-row layouts - the
@@ -609,34 +682,68 @@ td.title-cell { white-space: normal; max-width: 320px; }
      breakpoint regardless of what each page's inline template says. */
   .grid { grid-template-columns: 1fr !important; }
 
-  .mobile-nav-toggle {
+  .mobile-nav {
     display: flex;
-    align-items: center;
-    justify-content: center;
-    position: fixed;
-    top: 14px; left: 14px;
-    width: 40px; height: 40px;
-    border-radius: 10px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    z-index: 220;
-    cursor: pointer;
-    color: var(--text);
+    position: fixed; bottom: 0; left: 0; right: 0;
+    background: var(--surface); border-top: 1px solid var(--border);
+    z-index: 210;
+    padding-bottom: env(safe-area-inset-bottom, 0);
   }
-  .mobile-nav-toggle:hover { background: var(--border); }
+  .mobile-nav .item {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+    padding: 9px 4px 8px; font-size: 10.5px; color: var(--text-dim); text-decoration: none;
+  }
+  .mobile-nav .item svg { opacity: 0.85; }
+  .mobile-nav .item.active { color: var(--blue); font-weight: 700; }
+  .mobile-nav .item.active svg { opacity: 1; }
 
-  .mobile-nav-backdrop {
-    display: block;
-    position: fixed;
-    inset: 0;
-    background: var(--overlay);
-    z-index: 205;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.22s ease;
+  .more-sheet {
+    display: block; position: fixed; inset: 0; z-index: 220;
+    background: var(--overlay); opacity: 0; pointer-events: none;
+    transition: opacity 0.2s ease;
   }
-  .mobile-nav-backdrop.visible { opacity: 1; pointer-events: auto; }
+  .more-sheet.open { opacity: 1; pointer-events: auto; }
+  .more-sheet-inner {
+    position: absolute; left: 0; right: 0; bottom: 0; background: var(--surface);
+    border-radius: 18px 18px 0 0; padding: 16px 16px calc(24px + 76px);
+    max-height: 70vh; overflow-y: auto;
+    transform: translateY(100%); transition: transform 0.22s var(--ease);
+  }
+  .more-sheet.open .more-sheet-inner { transform: translateY(0); }
+  .more-sheet-title { font-weight: 800; font-size: 15px; padding: 8px 4px 14px; }
+  .more-sheet .nav-item { color: var(--text); font-size: 15px; padding: 12px 8px; }
 }
+
+/* Desktop-only collapsible "More" group in the sidebar itself - the
+   secondary nav items (Money Management, Automation Studio, Signal
+   Inspector, Broker Accounts, Logs, Users, Help, Settings) per the
+   approved primary/secondary IA split. Closed by default unless the
+   active page is inside it (shell.js sets .open in that case). */
+.nav-more { margin-top: 2px; }
+.nav-more-toggle {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px; border-radius: 9px; cursor: pointer;
+  font-size: 13px; font-weight: 650; color: var(--text-dim);
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+.nav-more-toggle:hover { background: var(--surface-hover); color: var(--text); }
+.nav-more-toggle .chev { transition: transform 0.15s var(--ease); font-size: 11px; }
+.nav-more.open .nav-more-toggle .chev { transform: rotate(180deg); }
+.nav-more-list { display: none; padding-left: 4px; }
+.nav-more.open .nav-more-list { display: block; }
+.nav-more-list .nav-item { font-size: 13px; padding: 8px 12px; }
+
+/* Light/Dark/System theme toggle - lives in the sidebar footer above
+   the notification bell and user chip. */
+.theme-toggle-wrap { padding: 0 4px 10px; }
+.theme-toggle { display: flex; gap: 4px; background: var(--bg); border-radius: 10px; padding: 4px; border: 1px solid var(--border); }
+.theme-toggle button {
+  flex: 1; border: none; background: none; padding: 7px 0; border-radius: 7px;
+  font-size: 14px; color: var(--text-faint); cursor: pointer;
+  transition: background 0.12s var(--ease), color 0.12s var(--ease);
+}
+.theme-toggle button.active { background: var(--surface); color: var(--blue); box-shadow: var(--shadow-sm); }
+.theme-toggle button:hover:not(.active) { color: var(--text-dim); }
 
 /* Shared "AXIS" brand loading mark (brand/axis-mark.svg's glyph) - a
    pulsing badge for full-panel/full-page loading moments. Not used for
