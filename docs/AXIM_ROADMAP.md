@@ -508,3 +508,30 @@ addition, not a bug fix, tracked as a separate follow-up decision
 rather than piecemeal-ported alongside security/safety fixes.
 
 Full regression suite re-run clean after this batch too.
+
+### Real-time SSE sync: master already has its own backend, unwired to any page (open decision)
+Checked before deciding whether to port the branch's real-time sync
+feature: master already has independently-built SSE backend plumbing -
+`api/event_stream_routes.py` (206 lines: a poller loop, per-user event
+visibility filtering, resume-from-`last_event_id`) and scattered
+`database.record_server_event(...)` calls in `funds_routes.py`,
+`broker_accounts_routes.py`, etc. But **zero** pages in `web/*.html`
+actually subscribe to it (`grep -rl "EventSource\|/api/events/stream"
+web/*.html` returns nothing) - the backend exists, nothing consumes it.
+The source branch built a *different* frontend-and-possibly-backend
+implementation of this same idea (`web/shell.js`'s `AximEvents`, wiring
+Funds/Automation Studio/Broker Accounts/Strategy Lab/Sessions/
+Performance/Notification Center to live updates) against whatever
+backend existed when it diverged - which may or may not be
+API-compatible with master's current `event_stream_routes.py`.
+
+Not ported this pass: this is a real feature build (wiring ~7 pages to
+live updates), not a bug fix, and blind-porting the branch's frontend
+against master's independently-evolved backend risks silent
+incompatibility rather than a clean patch-apply failure that would at
+least be visible. Two real options for whoever picks this up: (1) wire
+master's existing pages to master's existing `event_stream_routes.py`
+fresh, using the branch's page list as a checklist but not its code, or
+(2) diff the branch's backend SSE code against master's to see how much
+genuinely still applies. Not decided here - flagging the fork in the
+road rather than picking a side unilaterally.
