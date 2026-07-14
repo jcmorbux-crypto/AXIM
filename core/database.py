@@ -1,4 +1,5 @@
 import json
+import re
 import sqlite3
 import sys
 import threading
@@ -46,6 +47,7 @@ _NEW_CHANNEL_COLUMNS = {
     "trigger_command": "TEXT",
     "command_wait_for_result": "INTEGER DEFAULT 1",
     "max_requests_per_session": "INTEGER",
+    "default_expiry": "TEXT",
 }
 
 _NEW_SESSION_COLUMNS = {
@@ -1839,9 +1841,13 @@ def find_channel(chat_id=None, username=None, title=None):
 
 _CHANNEL_CONFIG_FIELDS = {
     "source_type", "priority", "trigger_command",
-    "command_wait_for_result", "max_requests_per_session",
+    "command_wait_for_result", "max_requests_per_session", "default_expiry",
 }
 _VALID_SOURCE_TYPES = {"passive", "bot_command", "group", "manual_review"}
+# Same shape execution/pocket_dom.py's expiry_to_seconds() accepts ("5 Minute",
+# "30 Seconds") - validated here too so a bad value can never reach a live
+# trade attempt; it would instead fail this write, before it's ever saved.
+_VALID_DEFAULT_EXPIRY_RE = re.compile(r"^\d{1,3}\s*(Second|Minute)s?$", re.IGNORECASE)
 
 
 @timed("database")
@@ -1851,6 +1857,8 @@ def set_channel_config(channel_id, **fields):
             raise ValueError(f"Unknown channel config field: {key!r}")
     if "source_type" in fields and fields["source_type"] not in _VALID_SOURCE_TYPES:
         raise ValueError(f"Invalid source_type: {fields['source_type']!r}")
+    if fields.get("default_expiry") and not _VALID_DEFAULT_EXPIRY_RE.match(fields["default_expiry"]):
+        raise ValueError(f"Invalid default_expiry: {fields['default_expiry']!r}")
     if not fields:
         return
     set_clauses = [f"{key} = ?" for key in fields]

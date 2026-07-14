@@ -50,6 +50,26 @@ class ChannelConfigTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             database.set_channel_config(self.channel_id, enabled=1)
 
+    def test_set_channel_config_accepts_valid_default_expiry(self):
+        database.set_channel_config(self.channel_id, default_expiry="5 Minute")
+        channel = database.list_channels()[0]
+        self.assertEqual(channel["default_expiry"], "5 Minute")
+
+    def test_set_channel_config_accepts_seconds_default_expiry(self):
+        database.set_channel_config(self.channel_id, default_expiry="30 Seconds")
+        channel = database.list_channels()[0]
+        self.assertEqual(channel["default_expiry"], "30 Seconds")
+
+    def test_set_channel_config_rejects_invalid_default_expiry(self):
+        with self.assertRaises(ValueError):
+            database.set_channel_config(self.channel_id, default_expiry="whenever")
+
+    def test_set_channel_config_allows_clearing_default_expiry(self):
+        database.set_channel_config(self.channel_id, default_expiry="5 Minute")
+        database.set_channel_config(self.channel_id, default_expiry="")
+        channel = database.list_channels()[0]
+        self.assertEqual(channel["default_expiry"], "")
+
     def test_find_channel_by_chat_id(self):
         found = database.find_channel(chat_id="1")
         self.assertEqual(found["id"], self.channel_id)

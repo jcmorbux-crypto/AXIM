@@ -5,7 +5,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "parsers"))
 
-from signal_parser import parse_signal, apply_signal_rules
+from signal_parser import parse_signal, apply_signal_rules, apply_expiry_fallback
 
 
 class SignalParserTests(unittest.TestCase):
@@ -162,6 +162,32 @@ class ApplySignalRulesTests(unittest.TestCase):
         rules = [{"find_pattern": "(unclosed", "replace_with": "x"}]
         # Should not raise, and the message passes through unmodified.
         self.assertEqual(apply_signal_rules("hello", rules), "hello")
+
+
+class ApplyExpiryFallbackTests(unittest.TestCase):
+    def test_fills_unknown_expiry_from_configured_default(self):
+        signal = parse_signal("BUY NOW AUD/CAD (OTC)")
+        self.assertEqual(signal["expiry"], "Unknown")
+        result = apply_expiry_fallback(signal, "5 Minute")
+        self.assertEqual(result["expiry"], "5 Minute")
+
+    def test_does_not_override_a_real_parsed_expiry(self):
+        signal = parse_signal("EUR/USD OTC BUY M5")
+        result = apply_expiry_fallback(signal, "1 Minute")
+        self.assertEqual(result["expiry"], "5 Minute")
+
+    def test_no_default_configured_leaves_unknown(self):
+        signal = parse_signal("BUY NOW AUD/CAD (OTC)")
+        result = apply_expiry_fallback(signal, None)
+        self.assertEqual(result["expiry"], "Unknown")
+
+    def test_none_signal_passes_through(self):
+        self.assertIsNone(apply_expiry_fallback(None, "5 Minute"))
+
+    def test_does_not_mutate_the_original_signal_dict(self):
+        signal = parse_signal("BUY NOW AUD/CAD (OTC)")
+        apply_expiry_fallback(signal, "5 Minute")
+        self.assertEqual(signal["expiry"], "Unknown")
 
 
 if __name__ == "__main__":

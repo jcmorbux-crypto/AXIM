@@ -282,6 +282,13 @@ function renderMySources() {
             </div>
             <div class="field"><label>Priority</label><input type="number" class="priority-input" onclick="event.stopPropagation()" value="${c.priority || 0}" onchange="setPriority(${c.id}, this.value)"></div>
           </div>
+          <div class="row">
+            <div class="field" style="flex:1;">
+              <label>Default expiry if this provider omits one (e.g. "5 Minute")</label>
+              <input type="text" placeholder="Leave blank to keep rejecting expiry-less signals" onclick="event.stopPropagation()"
+                     value="${escapeHtml(c.default_expiry || "")}" onchange="setDefaultExpiry(${c.id}, this.value)">
+            </div>
+          </div>
           ${c.source_type === "bot_command" ? botFields(c) : ""}
           <div class="muted" style="font-size:12px; margin-top:8px;">Last signal: ${fmtTime(c.last_signal_at)}</div>
           <button class="subtle" onclick="event.stopPropagation(); openMessages(${c.id})">View recent messages</button>
@@ -380,6 +387,17 @@ async function setTriggerCommand(id, value) {
     });
   } catch (e) {
     alert("Failed: " + e.message);
+  }
+}
+
+async function setDefaultExpiry(id, value) {
+  try {
+    await fetchJSON(`/api/channels/${id}/config`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ default_expiry: value.trim() }),
+    });
+  } catch (e) {
+    alert("Failed: " + e.message);
+    refreshChannels();
   }
 }
 

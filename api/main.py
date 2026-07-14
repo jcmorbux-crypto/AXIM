@@ -214,6 +214,7 @@ class ChannelConfigUpdate(BaseModel):
     trigger_command: Optional[str] = None
     command_wait_for_result: Optional[bool] = None
     max_requests_per_session: Optional[int] = None
+    default_expiry: Optional[str] = None
 
 
 class SignalRuleCreate(BaseModel):

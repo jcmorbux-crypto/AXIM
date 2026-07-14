@@ -21,7 +21,7 @@ sys.path.insert(0, "execution")
 sys.path.insert(0, "core")
 sys.path.insert(0, "config")
 
-from signal_parser import parse_signal, apply_signal_rules
+from signal_parser import parse_signal, apply_signal_rules, apply_expiry_fallback
 from trade_coordinator import TradeCoordinator
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
@@ -226,6 +226,11 @@ async def handler(event):
 
     signal = parse_signal(message_text)
     timeline.mark("signal_parsed")
+
+    if signal and signal["expiry"] == "Unknown" and channel_row and channel_row.get("default_expiry"):
+        print(f"[EXPIRY FALLBACK] {_debug_safe(chat_title)!r} sent no expiry - using its configured "
+              f"default_expiry={channel_row['default_expiry']!r} instead of rejecting.")
+        signal = apply_expiry_fallback(signal, channel_row["default_expiry"])
 
     if signal:
         # route_signal resolves which broker account's coordinator should

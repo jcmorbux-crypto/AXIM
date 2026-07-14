@@ -168,6 +168,24 @@ def parse_signal(message):
     return signal
 
 
+def apply_expiry_fallback(signal, default_expiry):
+    """If parse_signal() found no expiry in the message itself (falls back to
+    the literal "Unknown" rather than guessing), and the channel has an
+    explicit configured default (core/database.py's ui_channels.default_expiry
+    - set only when a human has confirmed that provider's real convention,
+    e.g. "this provider's signals are always 5-minute trades"), use it.
+
+    Never overrides a real parsed expiry, never invents one when no default
+    is configured for that channel - those cases keep failing closed exactly
+    as before. This is the one, narrow, explicitly-configured exception,
+    not a general-purpose guesser."""
+    if not signal or signal.get("expiry") != "Unknown" or not default_expiry:
+        return signal
+    signal = dict(signal)
+    signal["expiry"] = default_expiry
+    return signal
+
+
 def apply_signal_rules(message, rules):
     """Applies channel-specific find/replace rules (core/database.py's
     signal_rules table) to a raw message BEFORE parse_signal() sees it -
