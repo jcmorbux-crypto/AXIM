@@ -7,176 +7,99 @@
 <script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
 <link rel="stylesheet" href="/web/theme.css">
 <style>
-  .template-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-  .template-card {
-    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
-    padding: 14px; cursor: pointer; transition: border-color 0.15s var(--ease), transform 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  .ms-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  .ms-card {
+    background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 16px; cursor: pointer; display: flex; flex-direction: column;
+    transition: border-color 0.15s var(--ease), transform 0.15s var(--ease), box-shadow 0.15s var(--ease);
   }
-  .template-card:hover { border-color: var(--blue); transform: translateY(-2px); box-shadow: var(--shadow); }
-  .template-card h4 { margin: 0 0 6px 0; font-size: 13.5px; font-weight: 600; }
-  .template-card p { margin: 0; font-size: 12px; color: var(--text-dim); line-height: 1.4; }
+  .ms-card:hover { border-color: var(--blue); transform: translateY(-2px); box-shadow: var(--shadow); }
+  .ms-card .name { font-weight: 650; font-size: 16px; margin-bottom: 2px; }
+  .ms-card .tagline { color: var(--text-dim); font-size: 12.5px; margin-bottom: 10px; }
+  .personality-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 750; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; align-self: flex-start; }
+  .personality-conservative { background: var(--green-soft); color: var(--green); }
+  .personality-balanced { background: var(--yellow-soft); color: var(--yellow); }
+  .personality-aggressive { background: var(--red-soft); color: var(--red); }
+  .ms-hero { padding: 10px 0; margin: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .ms-hero-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint); font-weight: 700; }
+  .ms-hero-value { font-size: 22px; font-weight: 750; margin-top: 2px; }
+  .ms-rule-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 12.5px; }
+  .ms-rule-row .l { color: var(--text-faint); font-weight: 650; text-transform: uppercase; font-size: 10.5px; }
+  .ms-rule-row .v.on { color: var(--blue); font-weight: 650; }
+  .ms-rule-row .v.off { color: var(--text-faint); }
+  .ms-custom-tile { border-style: dashed; align-items: center; justify-content: center; text-align: center; }
+  .ms-custom-tile .plus { font-size: 30px; color: var(--blue); margin-bottom: 8px; }
   .profile-list-item {
     display: flex; justify-content: space-between; align-items: center;
     padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer;
-    transition: background 0.12s var(--ease), transform 0.12s var(--ease);
+    transition: background 0.12s var(--ease);
   }
-  .profile-list-item:hover { background: var(--surface); transform: translateX(2px); }
-  .profile-list-item.active { background: var(--blue-soft); }
-  .sizing-field { display: none; }
-  .sizing-field.visible { display: block; }
-  .ladder-preview { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
-  .ladder-step {
-    background: var(--blue-soft); color: var(--blue); border-radius: var(--radius-sm);
-    padding: 4px 10px; font-size: 12px; font-weight: 600;
-  }
-  .section-title { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); font-weight: 650; margin: 18px 0 10px 0; }
-  .section-title:first-child { margin-top: 0; }
+  .profile-list-item:hover { background: var(--surface); }
+  .breadcrumb { font-size: 12.5px; color: var(--text-dim); margin-bottom: 14px; }
+  .breadcrumb a { color: var(--blue); cursor: pointer; text-decoration: none; }
+  .breadcrumb a:hover { text-decoration: underline; }
+  .mm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+  .mm-tile { background: var(--surface); border-radius: var(--radius-sm); padding: 12px; }
+  .mm-tile-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); font-weight: 750; margin-bottom: 4px; }
+  .mm-tile-value { font-size: 13.5px; line-height: 1.4; }
+  .mm-tile.on { background: var(--blue-soft); }
+  .mm-tile.on .mm-tile-label { color: var(--blue); }
+  .checkpoint-row { display: flex; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); }
+  .checkpoint-row:first-child { border-top: none; }
+  .checkpoint-num { flex-shrink: 0; width: 24px; height: 24px; border-radius: 50%; background: var(--blue); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 11px; }
+  .cp-trigger { font-weight: 650; font-size: 13px; margin-bottom: 2px; }
+  .cp-action { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+  .cycle-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12.5px; }
+  .cycle-table th, .cycle-table td { text-align: center; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .cycle-table th { color: var(--text-faint); font-weight: 700; font-size: 10.5px; text-transform: uppercase; }
+  .pro-con-list { list-style: none; margin: 0; padding: 0; font-size: 12.5px; line-height: 1.6; }
+  .pro-con-list li { padding: 6px 0 6px 22px; position: relative; }
+  .pro-con-list.pros li::before { content: "✓"; position: absolute; left: 0; color: var(--green); font-weight: 800; }
+  .pro-con-list.cons li::before { content: "✕"; position: absolute; left: 0; color: var(--red); font-weight: 800; }
+  .plain-list { list-style: none; margin: 0; padding: 0; font-size: 12.5px; }
+  .plain-list li { padding: 7px 0; border-top: 1px solid var(--border); }
+  .plain-list li:first-child { border-top: none; }
+  .faq-item { border-top: 1px solid var(--border); padding: 12px 0; }
+  .faq-item:first-child { border-top: none; }
+  .faq-item summary { font-weight: 650; font-size: 13.5px; cursor: pointer; }
+  .faq-a { font-size: 13px; color: var(--text-dim); margin: 8px 0 0 16px; line-height: 1.55; }
+  .scenario-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .scenario-box { border-radius: 10px; padding: 14px; }
+  .scenario-box.win { background: var(--green-soft); }
+  .scenario-box.loss { background: var(--red-soft); }
+  .sc-title { font-size: 11px; text-transform: uppercase; font-weight: 700; letter-spacing: .04em; }
+  .scenario-box.win .sc-title { color: var(--green); }
+  .scenario-box.loss .sc-title { color: var(--red); }
+  .sc-amount { font-size: 22px; font-weight: 750; font-family: monospace; margin: 4px 0; }
+  .warning-box { background: var(--red-soft); border: 1.5px solid var(--red); border-radius: 10px; padding: 12px 14px; font-size: 12.5px; color: var(--red); font-weight: 600; line-height: 1.5; margin-top: 10px; }
+  .info-box { background: var(--surface); border-radius: 10px; padding: 12px 14px; font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
+  .sizing-sub { display: none; }
+  .sizing-sub.visible { display: block; }
 </style>
 </head>
 <body>
 
 <div id="app-shell">
   <main class="main">
-    <div class="page-header">
-      <div>
-        <h1>Money Management Studio <a href="/guide#sec-risk-engine" class="help-link" title="Help: Money Management Studio">?</a></h1>
-        <div class="subtitle">Bankroll, sizing, Martingale, Compounding, and Profit Vault - the flagship feature.</div>
+    <div id="view-list">
+      <div class="page-header">
+        <div>
+          <h1>Money Management Studio <a href="/guide#sec-risk-engine" class="help-link" title="Help: Money Management Studio">?</a></h1>
+          <div class="subtitle">4 official strategies plus a Custom Strategy Builder. Every card shows the real rules - nothing is created until you say so.</div>
+        </div>
       </div>
-      <button class="primary" onclick="newProfile()">New Profile</button>
-    </div>
+      <div class="ms-grid" id="strategy-grid" style="margin-bottom:28px;"></div>
 
-    <div class="section-title">Starter Templates</div>
-    <div class="template-grid" id="templates-grid" style="margin-bottom:24px;"></div>
-
-    <div class="grid" style="grid-template-columns: 280px 1fr;">
-      <div class="card solid">
-        <h3>My Profiles</h3>
+      <div class="page-header" style="margin-top:8px;">
+        <div><h2 style="margin:0;">My Profiles</h2><div class="subtitle" style="margin-bottom:0;">Profiles you've created from a strategy or built from scratch.</div></div>
+      </div>
+      <div class="card solid" id="profiles-card">
         <div id="profiles-list" class="muted">Loading...</div>
       </div>
-
-      <div class="card solid" id="editor-panel" style="display:none;">
-        <div class="row" style="justify-content:space-between; margin-bottom:4px;">
-          <h3 id="editor-title" style="margin:0;">Profile</h3>
-          <div class="row">
-            <button class="subtle" onclick="exportCurrentProfile()">Export</button>
-            <button class="subtle" onclick="duplicateCurrentProfile()">Duplicate</button>
-            <button class="subtle" onclick="deleteCurrentProfile()" id="delete-profile-btn">Delete</button>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="field" style="flex:2;"><label>Name</label><input type="text" id="p-name"></div>
-          <div class="field" style="flex:1;"><label>Bankroll ($)</label><input type="number" id="p-bankroll" step="0.01"></div>
-        </div>
-
-        <div class="field"><label>Trade sizing</label>
-          <select id="p-sizing-mode" onchange="onSizingModeChange()">
-            <option value="fixed">Fixed amount</option>
-            <option value="percent">Percent of bankroll (static)</option>
-            <option value="dynamic">Percent of bankroll (dynamic - grows/shrinks with session P/L)</option>
-            <option value="kelly">Kelly criterion</option>
-          </select>
-        </div>
-        <div class="sizing-field" data-mode="fixed"><div class="field"><label>Fixed amount ($)</label><input type="number" id="p-fixed-amount" step="0.01"></div></div>
-        <div class="sizing-field" data-mode="percent dynamic"><div class="field"><label>Percent of bankroll (%)</label><input type="number" id="p-percent" step="0.01"></div></div>
-        <div class="sizing-field" data-mode="kelly">
-          <div class="row">
-            <div class="field"><label>Estimated win rate (0-1)</label><input type="number" id="p-kelly-winrate" step="0.01"></div>
-            <div class="field"><label>Estimated payout (0-1)</label><input type="number" id="p-kelly-payout" step="0.01"></div>
-            <div class="field"><label>Kelly fraction (0.5 = half-Kelly)</label><input type="number" id="p-kelly-fraction" step="0.05"></div>
-          </div>
-        </div>
-
-        <div class="row">
-          <div class="field"><label>Profit goal ($, 0=off)</label><input type="number" id="p-profit-target" step="0.01"></div>
-          <div class="field"><label>Loss limit ($, 0=off)</label><input type="number" id="p-max-session-loss" step="0.01"></div>
-          <div class="field"><label>Max per trade ($, 0=off)</label><input type="number" id="p-max-trade" step="0.01"></div>
-        </div>
-        <button class="primary" onclick="saveBasic()">Save</button>
-        <span id="basic-save-status" class="muted"></span>
-
-        <details class="advanced-toggle">
-          <summary>Advanced <span class="hint">Martingale, Compounding, Vault, Kelly automation</span></summary>
-          <div class="advanced-toggle-body">
-
-            <div class="row">
-              <div class="field"><label>Max daily loss ($, 0=off)</label><input type="number" id="p-max-daily-loss" step="0.01"></div>
-              <div class="field"><label>Max trades (0=off)</label><input type="number" id="p-max-trades"></div>
-              <div class="field"><label style="display:flex; align-items:center; gap:8px; margin-top:22px;"><input type="checkbox" id="p-live-allowed" style="width:auto;"> Live trading allowed</label></div>
-            </div>
-            <div class="field"><label>Description</label><input type="text" id="p-description"></div>
-            <button class="subtle" onclick="saveBasic()">Save Additional Limits</button>
-
-            <div class="section-title">Martingale</div>
-            <div class="row"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="m-enabled" style="width:auto;"> Enabled</label></div>
-            <div class="row">
-              <div class="field"><label>Max steps</label><input type="number" id="m-max-steps"></div>
-              <div class="field"><label>Multiplier</label><input type="number" id="m-multiplier" step="0.1"></div>
-              <div class="field"><label>Max total exposure ($, 0=off)</label><input type="number" id="m-max-exposure" step="0.01"></div>
-            </div>
-            <div class="field"><label>Custom ladder (JSON array, optional - overrides multiplier)</label><input type="text" id="m-ladder" placeholder="[10, 22, 48, 105]"></div>
-            <div class="row">
-              <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-reset-win" style="width:auto;"> Reset after win</label>
-              <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-reset-session" style="width:auto;"> Reset after session</label>
-              <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-same-asset" style="width:auto;"> Same asset only</label>
-              <label style="display:flex; align-items:center; gap:6px;"><input type="checkbox" id="m-same-source" style="width:auto;"> Same source only</label>
-            </div>
-            <div class="row">
-              <button class="primary" onclick="saveMartingale()">Save Martingale</button>
-              <button onclick="previewExposure()">Preview Projected Exposure</button>
-              <span id="martingale-save-status" class="muted"></span>
-            </div>
-            <div class="ladder-preview" id="exposure-preview"></div>
-
-            <div class="section-title">Compounding</div>
-            <div class="field"><label>Mode</label>
-              <select id="c-mode">
-                <option value="disabled">Disabled</option>
-                <option value="every_win">Every win</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="target_based">Target-based</option>
-                <option value="milestone_based">Milestone-based</option>
-                <option value="smart">Smart</option>
-              </select>
-            </div>
-            <div class="row">
-              <div class="field"><label>Base risk (%)</label><input type="number" id="c-base-risk" step="0.01"></div>
-              <div class="field"><label>Max risk (%, 0=off)</label><input type="number" id="c-max-risk" step="0.01"></div>
-              <div class="field"><label>Min risk (%, 0=off)</label><input type="number" id="c-min-risk" step="0.01"></div>
-              <div class="field"><label>Drawdown reset (%, 0=off)</label><input type="number" id="c-drawdown-reset" step="0.01"></div>
-            </div>
-            <div class="field"><label>Profit-milestone steps (JSON array)</label>
-              <input type="text" id="c-steps" placeholder='[{"profit_threshold":50,"risk_percent":2.25},{"profit_threshold":100,"risk_percent":2.5}]'>
-            </div>
-            <button class="primary" onclick="saveCompounding()">Save Compounding</button>
-            <span id="compounding-save-status" class="muted"></span>
-
-            <div class="section-title">Profit Vault</div>
-            <div class="row"><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="v-enabled" style="width:auto;"> Enabled</label></div>
-            <div class="row">
-              <div class="field"><label>Vault percent (%)</label><input type="number" id="v-percent" step="0.01"></div>
-              <div class="field"><label>Trigger</label>
-                <select id="v-trigger">
-                  <option value="every_winning_session">Every winning session</option>
-                  <option value="daily_target">Daily target reached</option>
-                  <option value="weekly_target">Weekly target reached</option>
-                  <option value="milestone_based">Bankroll milestone</option>
-                </select>
-              </div>
-              <div class="field"><label>Milestone amount ($)</label><input type="number" id="v-milestone" step="0.01"></div>
-            </div>
-            <button class="primary" onclick="saveVault()">Save Profit Vault</button>
-            <span id="vault-save-status" class="muted"></span>
-
-          </div>
-        </details>
-      </div>
-
-      <div class="card solid" id="empty-state">
-        <div class="empty">Select a profile on the left, duplicate a template above, or create a new profile.</div>
-      </div>
     </div>
+
+    <div id="view-detail" style="display:none;"></div>
+    <div id="view-builder" style="display:none;"></div>
   </main>
 </div>
 
@@ -184,7 +107,7 @@
 <script src="/web/shell.js"></script>
 <script>
 let allProfiles = [];
-let currentProfileId = null;
+let currentStrategy = null;
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, { credentials: "same-origin", ...opts });
@@ -195,314 +118,355 @@ async function fetchJSON(url, opts) {
   }
   return res.json();
 }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+function fmtMoney(n) { return "$" + Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
+function riskBadgeClass(level) { return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high"; }
+function personalityClass(p) { return p === "Conservative" ? "personality-conservative" : p === "Aggressive" ? "personality-aggressive" : "personality-balanced"; }
 
-async function refreshAll() {
-  try {
-    allProfiles = await fetchJSON("/api/risk-profiles");
-    renderTemplates();
-    renderProfileList();
-  } catch (e) {
-    document.getElementById("profiles-list").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
-  }
+function showView(id) {
+  ["view-list", "view-detail", "view-builder"].forEach(v => {
+    document.getElementById(v).style.display = v === id ? "block" : "none";
+  });
+  window.scrollTo(0, 0);
 }
 
-function renderTemplates() {
-  const templates = allProfiles.filter(p => p.is_template);
-  document.getElementById("templates-grid").innerHTML = templates.map(t => `
-    <div class="template-card" onclick="useTemplate(${t.id})">
-      <h4>${escapeHtml(t.name)}</h4>
-      <p>${escapeHtml(t.description || "")}</p>
+function ruleRow(label, active, onText) {
+  return `<div class="ms-rule-row"><span class="l">${label}</span><span class="v ${active ? "on" : "off"}">${active ? onText : "Off"}</span></div>`;
+}
+
+function renderStrategyGrid(strategies) {
+  document.getElementById("strategy-grid").innerHTML = strategies.map(s => `
+    <div class="ms-card" onclick="showStrategyDetail('${s.key}')">
+      <div class="row" style="justify-content:space-between; align-items:flex-start;">
+        <div class="name">${s.icon} ${s.name}</div>
+      </div>
+      <div class="tagline">${escapeHtml(s.tagline)}</div>
+      <span class="personality-badge ${personalityClass(s.personality)}">${s.personality}</span>
+      <div class="ms-hero"><div class="ms-hero-label">Risk per trade</div><div class="ms-hero-value">${s.risk.headline}</div></div>
+      ${ruleRow("Martingale", s.martingale.active, "Yes - limited")}
+      ${ruleRow("Compounding", s.compounding.active, "Yes")}
+      ${ruleRow("Vault", s.vault.active, `Yes - ${s.vault.percent}%`)}
+      ${ruleRow("Recalculates at", s.growth_recalc.active, `+${s.growth_recalc.threshold_percent}% growth`)}
     </div>
-  `).join("");
+  `).join("") + `
+    <div class="ms-card ms-custom-tile" onclick="showBuilder(null)">
+      <div class="plus">+</div>
+      <div class="name">Custom Strategy Builder</div>
+      <div class="tagline">Build your own bankroll rules from scratch.</div>
+    </div>
+  `;
 }
 
-function renderProfileList() {
-  const profiles = allProfiles.filter(p => !p.is_template);
+async function loadStrategies() {
+  const data = await fetchJSON("/api/money-strategies");
+  renderStrategyGrid(data.strategies);
+}
+
+async function loadProfiles() {
   const listEl = document.getElementById("profiles-list");
-  if (!profiles.length) {
-    listEl.innerHTML = '<div class="empty">No profiles yet - duplicate a template to get started.</div>';
+  try {
+    allProfiles = await fetchJSON("/api/risk-profiles?include_templates=false");
+  } catch (e) {
+    listEl.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
     return;
   }
-  listEl.innerHTML = profiles.map(p => `
-    <div class="profile-list-item ${p.id === currentProfileId ? "active" : ""}" onclick="selectProfile(${p.id})">
-      <span>${escapeHtml(p.name)}</span>
+  if (!allProfiles.length) {
+    listEl.innerHTML = '<div class="empty">No profiles yet - use one of the 4 strategies above, or build your own.</div>';
+    return;
+  }
+  listEl.innerHTML = allProfiles.map(p => `
+    <div class="profile-list-item" onclick="showBuilder(null, ${p.id})">
+      <span>${escapeHtml(p.name)}${p.strategy_key ? ` <span class="muted" style="font-size:11.5px;">(based on ${escapeHtml(p.strategy_key.replace(/_/g, " "))})</span>` : ""}</span>
       <span class="badge off">${p.sizing_mode}</span>
     </div>
   `).join("");
 }
 
-async function useTemplate(templateId) {
-  const template = allProfiles.find(p => p.id === templateId);
-  const name = template ? template.name : "";
-  const newName = prompt(`New profile name (duplicating "${name}"):`, name + " (copy)");
-  if (!newName) return;
+// ---------------- Strategy detail ----------------
+
+function renderRulesGrid(s) {
+  return `
+    <div class="mm-grid">
+      <div class="mm-tile on"><div class="mm-tile-label">Risk per trade</div><div class="mm-tile-value">${s.risk.headline}</div></div>
+      <div class="mm-tile ${s.martingale.active ? "on" : ""}"><div class="mm-tile-label">Martingale</div><div class="mm-tile-value">${s.martingale.active ? "Yes - limited" : "No"}</div></div>
+      <div class="mm-tile ${s.compounding.active ? "on" : ""}"><div class="mm-tile-label">Compounding</div><div class="mm-tile-value">${s.compounding.active ? "Yes" : "No"}</div></div>
+      <div class="mm-tile ${s.vault.active ? "on" : ""}"><div class="mm-tile-label">Vault</div><div class="mm-tile-value">${s.vault.active ? s.vault.percent + "% of profit" : "No"}</div></div>
+      <div class="mm-tile ${s.growth_recalc.active ? "on" : ""}" style="grid-column:span 2;"><div class="mm-tile-label">Position size recalculates</div><div class="mm-tile-value">${s.growth_recalc.active ? `Only after +${s.growth_recalc.threshold_percent}% growth above the previous baseline` : "Never - fixed forever"}</div></div>
+    </div>
+  `;
+}
+
+function renderWorkedExample(s) {
+  const w = s.worked_example;
+  let cycleHtml = "";
+  if (w.cycle) {
+    cycleHtml = `<table class="cycle-table"><tr><th>Trade</th>${w.cycle.map(c => `<th>${c.trade}</th>`).join("")}</tr><tr><td>Risk %</td>${w.cycle.map(c => `<td>${c.risk_percent}%</td>`).join("")}</tr><tr><td>Stake</td>${w.cycle.map(c => `<td>$${c.stake.toFixed(2)}</td>`).join("")}</tr></table>`;
+  }
+  if (w.ladder) {
+    cycleHtml = `<table class="cycle-table"><tr><th>Step</th>${w.ladder.map(l => `<th>${l.step}${l.is_max ? " (max)" : ""}</th>`).join("")}</tr><tr><td>Stake</td>${w.ladder.map(l => `<td>$${l.stake.toFixed(2)}</td>`).join("")}</tr></table><p class="muted" style="font-size:12px; margin:8px 0 0;">A win at any step resets you to Step 0. A loss at the max step ends the session rather than increasing further.</p>`;
+  }
+  return `
+    <p style="font-size:12.5px; color:var(--text-dim); margin:0 0 10px;">A mechanical illustration of the rule above, not a performance projection - at a $${w.starting_bankroll.toLocaleString()} bankroll, stake size $${w.stake.toFixed(2)}, assuming an 88% payout:</p>
+    ${cycleHtml}
+    <div class="scenario-pair" style="margin-top:${cycleHtml ? "12px" : "0"};">
+      <div class="scenario-box win"><div class="sc-title">If it wins</div><div class="sc-amount">+$${w.win.profit.toFixed(2)}</div><div style="font-size:12px; color:var(--text-dim);">Balance: $${w.starting_bankroll.toLocaleString()} &rarr; $${w.win.active_after.toLocaleString()}</div>${w.win.vault_amount !== undefined ? `<div style="font-size:11.5px; color:var(--green); margin-top:6px; font-weight:650;">$${w.win.vault_amount.toFixed(2)} moves to Vault immediately</div>` : ""}</div>
+      <div class="scenario-box loss"><div class="sc-title">If it loses</div><div class="sc-amount">-$${Math.abs(w.loss.loss).toFixed(2)}</div><div style="font-size:12px; color:var(--text-dim);">Balance: $${w.starting_bankroll.toLocaleString()} &rarr; $${w.loss.active_after.toLocaleString()}</div>${w.loss.next_step_stake !== undefined ? `<div style="font-size:11.5px; color:var(--yellow); margin-top:6px; font-weight:650;">Next stake rises to $${w.loss.next_step_stake.toFixed(2)}</div>` : ""}</div>
+    </div>
+  `;
+}
+
+function renderTimeline(s) {
+  if (!s.growth_timeline.length) return `<p style="font-size:13px; color:var(--text-dim);">This strategy's stake never changes.</p>`;
+  return s.growth_timeline.map(cp => `
+    <div class="checkpoint-row"><div class="checkpoint-num">${cp.checkpoint}</div><div><div class="cp-trigger">${cp.trigger}</div><div class="cp-action">${cp.action}</div></div></div>
+  `).join("");
+}
+
+async function showStrategyDetail(key) {
+  showView("view-detail");
+  const el = document.getElementById("view-detail");
+  el.innerHTML = `<div class="progress-row">Loading...</div>`;
+  let s;
+  try { s = await fetchJSON(`/api/money-strategies/${key}`); } catch (e) { el.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`; return; }
+  currentStrategy = s;
+  el.innerHTML = `
+    <div class="breadcrumb"><a onclick="showView('view-list')">Money Management Studio</a> / ${escapeHtml(s.name)}</div>
+    <div class="row" style="align-items:flex-start; gap:16px;">
+      <div style="flex:2; min-width:0;">
+        <div class="card">
+          <div class="row" style="gap:10px; margin-bottom:12px;"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span><span class="personality-badge ${personalityClass(s.personality)}">${s.personality}</span></div>
+          <h2 style="margin:0 0 8px;">${s.icon} ${s.name}</h2>
+          <p style="font-size:13.5px; margin:0;">${s.purpose}</p>
+        </div>
+        <div class="card"><h3 style="margin-top:0;">The rules, at a glance</h3>${renderRulesGrid(s)}</div>
+        <div class="card"><h3 style="margin-top:0;">Worked $1,000 example</h3>${renderWorkedExample(s)}</div>
+        <div class="card"><h3 style="margin-top:0;">Growth recalculation timeline</h3>${renderTimeline(s)}
+          <div class="warning-box" style="margin-top:12px;">This recalculation isn't enforced by the live trading engine yet - saving this strategy below uses its base risk (${s.risk.headline}) as a fixed value. Building real cross-session growth-threshold recalculation is tracked as a follow-up.</div>
+        </div>
+        <div class="row" style="gap:16px;">
+          <div class="card" style="flex:1;"><h3 style="margin-top:0;">Pros</h3><ul class="pro-con-list pros">${s.pros.map(p => `<li>${p}</li>`).join("")}</ul></div>
+          <div class="card" style="flex:1;"><h3 style="margin-top:0;">Cons</h3><ul class="pro-con-list cons">${s.cons.map(c => `<li>${c}</li>`).join("")}</ul></div>
+        </div>
+        <div class="card"><h3 style="margin-top:0;">Ideal signal provider types</h3><p style="font-size:13px; margin:0;">${s.ideal_providers}</p></div>
+        <div class="card"><h3 style="margin-top:0;">Frequently asked questions</h3>${s.faq.map(f => `<details class="faq-item"><summary>${f.q}</summary><div class="faq-a">${f.a}</div></details>`).join("")}</div>
+      </div>
+      <div style="flex:1; position:sticky; top:20px;">
+        <div class="card"><h3 style="margin-top:0;">Best for</h3><ul class="plain-list">${s.best_for.map(b => `<li>${b}</li>`).join("")}</ul></div>
+        <div class="card">
+          <h3 style="margin-top:0;">Ready to use this?</h3>
+          <p style="font-size:12px; color:var(--text-dim); margin:0 0 12px;">This is one of AXIM's 4 official strategies - locked, so it always means exactly what's on this page. Nothing is created until you confirm.</p>
+          <button class="primary" style="width:100%; margin-bottom:8px;" onclick="useStrategy('${s.key}')">Use This Strategy</button>
+          <button class="subtle" style="width:100%;" onclick="showBuilder('${s.key}')">Create From This Template</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+async function useStrategy(key) {
+  const fundBankroll = prompt(`Starting bankroll for this profile ($):`, "1000");
+  if (fundBankroll === null) return;
+  const bankroll = parseFloat(fundBankroll) || 1000;
+  await createFromStrategy(key, currentStrategy.name, bankroll);
+}
+
+async function createFromStrategy(key, name, bankroll) {
   try {
-    const created = await fetchJSON(`/api/risk-profiles/${templateId}/duplicate`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: newName }),
+    const created = await fetchJSON(`/api/money-strategies/${key}/create-profile`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, bankroll }),
     });
-    await refreshAll();
-    selectProfile(created.id);
+    alert(`"${created.name}" created. You can select it from any Session's Risk Profile dropdown, or manage it below.`);
+    await loadProfiles();
+    showView("view-list");
   } catch (e) {
-    alert("Failed: " + e.message);
+    alert("Failed to create profile: " + e.message);
   }
 }
 
-function newProfile() {
-  currentProfileId = null;
-  document.getElementById("empty-state").style.display = "none";
-  document.getElementById("editor-panel").style.display = "block";
-  document.getElementById("editor-title").textContent = "New Profile";
-  document.getElementById("delete-profile-btn").style.display = "none";
-  ["p-name", "p-description", "m-ladder", "c-steps"].forEach(id => document.getElementById(id).value = "");
-  document.getElementById("p-bankroll").value = 0;
-  document.getElementById("p-sizing-mode").value = "fixed";
-  document.getElementById("p-fixed-amount").value = 1;
-  document.getElementById("p-percent").value = 1;
-  onSizingModeChange();
+// ---------------- Custom Strategy Builder ----------------
+
+async function showBuilder(baseKey, existingProfileId) {
+  showView("view-builder");
+  const el = document.getElementById("view-builder");
+  el.innerHTML = `<div class="progress-row">Loading...</div>`;
+
+  let base = null, existing = null;
+  if (baseKey) { try { base = await fetchJSON(`/api/money-strategies/${baseKey}`); } catch (e) {} }
+  if (existingProfileId) { try { existing = await fetchJSON(`/api/risk-profiles/${existingProfileId}`); } catch (e) {} }
+
+  const preset = existing ? {
+    name: existing.name, bankroll: existing.bankroll,
+    sizing_mode: existing.sizing_mode, percent: existing.percent_of_bankroll, fixed: existing.fixed_amount,
+    mart_enabled: existing.martingale.enabled, mart_steps: existing.martingale.max_steps, mart_mult: existing.martingale.multiplier, mart_reset: existing.martingale.reset_after_win,
+    vault_enabled: existing.profit_vault.enabled, vault_percent: existing.profit_vault.vault_percent, vault_trigger: existing.profit_vault.trigger_event,
+  } : base ? {
+    name: `${base.name} (Custom)`, bankroll: 1000,
+    sizing_mode: "percent", percent: parseFloat(base.risk.headline) || 1, fixed: 10,
+    mart_enabled: base.martingale.active, mart_steps: 3, mart_mult: 2, mart_reset: true,
+    vault_enabled: base.vault.active, vault_percent: base.vault.percent || 25, vault_trigger: "per_trade",
+  } : {
+    name: "My Custom Strategy", bankroll: 1000,
+    sizing_mode: "percent", percent: 1, fixed: 10,
+    mart_enabled: false, mart_steps: 3, mart_mult: 2, mart_reset: true,
+    vault_enabled: false, vault_percent: 25, vault_trigger: "per_trade",
+  };
+
+  const baseName = base ? base.name : null;
+  const heading = existing ? `Edit "${existing.name}"` : "Custom Strategy Builder";
+
+  el.innerHTML = `
+    <div class="breadcrumb"><a onclick="showView('view-list')">Money Management Studio</a> / ${heading}</div>
+    <div class="page-header"><div><h1 style="margin-bottom:4px;">${heading}</h1><div class="subtitle">${existing ? "Editing your own saved profile." : "AXIM Trader's signature feature - nothing is saved until you confirm" + (baseName ? `, and "${baseName}" itself is never modified.` : ".")}</div></div></div>
+    ${baseName ? `<div class="info-box" style="margin-bottom:16px;">Starting from <b>${baseName}</b>'s rules as a template.</div>` : ""}
+    <div class="row" style="align-items:flex-start; gap:16px;">
+      <div style="flex:2; min-width:0;">
+        <div class="card">
+          <div class="field"><label>Profile name</label><input type="text" id="f-name" value="${escapeHtml(preset.name)}"></div>
+          <div class="field"><label>Bankroll ($)</label><input type="number" id="f-bankroll" step="1" min="1" value="${preset.bankroll}"></div>
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0;">Position sizing</h3>
+          <div class="field"><label>Method</label>
+            <select id="f-sizing-mode">
+              <option value="fixed" ${preset.sizing_mode === "fixed" ? "selected" : ""}>Fixed dollar sizing</option>
+              <option value="percent" ${preset.sizing_mode === "percent" ? "selected" : ""}>Percentage sizing</option>
+              <option value="dynamic" ${preset.sizing_mode === "dynamic" ? "selected" : ""}>Dynamic (recalculates every trade)</option>
+              <option value="kelly" ${preset.sizing_mode === "kelly" ? "selected" : ""}>Kelly sizing</option>
+            </select>
+          </div>
+          <div id="sizing-fixed" class="sizing-sub"><div class="field"><label>Fixed amount ($)</label><input type="number" id="f-fixed" step="1" min="1" value="${preset.fixed || 10}"></div></div>
+          <div id="sizing-percent" class="sizing-sub"><div class="field"><label>Percent of bankroll (%)</label><input type="number" id="f-percent" step="0.1" min="0.1" value="${preset.percent || 1}"></div></div>
+          <div id="sizing-dynamic" class="sizing-sub"><div class="field"><label>Percent of current balance (%)</label><input type="number" id="f-dynamic-percent" step="0.1" min="0.1" value="${preset.percent || 1}"></div></div>
+          <div id="sizing-kelly" class="sizing-sub">
+            <div class="row"><div class="field"><label>Estimated win rate (%)</label><input type="number" id="f-kelly-p" value="55"></div><div class="field"><label>Estimated payout (0-1)</label><input type="number" id="f-kelly-b" step="0.01" value="0.88"></div></div>
+            <div class="field"><label>Kelly fraction</label><input type="number" id="f-kelly-fraction" step="0.05" value="0.5"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Martingale</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-mart-enabled" style="width:auto;" ${preset.mart_enabled ? "checked" : ""}> Enabled</label></div>
+          <div id="mart-fields" style="display:${preset.mart_enabled ? "block" : "none"}; margin-top:10px;">
+            <div class="row">
+              <div class="field"><label>Max steps</label><input type="number" id="f-mart-steps" min="1" max="10" value="${preset.mart_steps || 3}"></div>
+              <div class="field"><label>Multiplier</label><input type="number" id="f-mart-mult" step="0.1" min="1" value="${preset.mart_mult || 2}"></div>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" id="f-mart-reset" style="width:auto;" ${preset.mart_reset !== false ? "checked" : ""}> Reset to base stake after a win</label>
+            <div class="warning-box" id="mart-unlimited-warning" style="display:none;">⚠ A long losing streak with no cap can consume an entire bankroll. Keep max steps low unless you fully understand the exposure - use "Preview Projected Exposure" on the profile after saving to see the worst case in dollars.</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Vault</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-vault-enabled" style="width:auto;" ${preset.vault_enabled ? "checked" : ""}> Enabled</label></div>
+          <div id="vault-fields" style="display:${preset.vault_enabled ? "block" : "none"}; margin-top:10px;">
+            <div class="row">
+              <div class="field"><label>Vault percent (%)</label><input type="number" id="f-vault-percent" step="1" min="1" max="100" value="${preset.vault_percent || 25}"></div>
+              <div class="field"><label>Trigger</label>
+                <select id="f-vault-trigger">
+                  <option value="per_trade" ${preset.vault_trigger === "per_trade" ? "selected" : ""}>Every winning trade, immediately</option>
+                  <option value="every_winning_session" ${preset.vault_trigger === "every_winning_session" ? "selected" : ""}>Every winning session</option>
+                  <option value="milestone_based" ${preset.vault_trigger === "milestone_based" ? "selected" : ""}>Bankroll milestone</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <h3 style="margin-top:0;">Session controls</h3>
+          <div class="row">
+            <div class="field"><label>Daily loss limit ($, 0=off)</label><input type="number" id="f-max-daily-loss" value="0"></div>
+            <div class="field"><label>Profit target ($, 0=off)</label><input type="number" id="f-profit-target" value="0"></div>
+            <div class="field"><label>Max per trade ($, 0=off)</label><input type="number" id="f-max-trade" value="0"></div>
+          </div>
+          <div class="info-box">Emergency Stop always applies immediately, across every strategy including this one - it can never be disabled here.</div>
+        </div>
+      </div>
+      <div style="flex:1; position:sticky; top:20px;">
+        <div class="card">
+          <h3 style="margin-top:0;">Save</h3>
+          <p style="font-size:12px; color:var(--text-dim); margin:0 0 10px;">${existing ? "Updates this profile - your other profiles are untouched." : `Creates a new profile.${baseName ? ` "${baseName}" itself is never modified.` : ""}`}</p>
+          <button class="primary" style="width:100%;" onclick="saveBuilder(${existingProfileId || "null"})">${existing ? "Save Changes" : "Save as New Profile"}</button>
+          <span id="builder-save-status" class="muted" style="display:block; margin-top:8px;"></span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("f-sizing-mode").addEventListener("change", (e) => showSizingSub(e.target.value));
+  showSizingSub(preset.sizing_mode);
+  document.getElementById("f-mart-enabled").addEventListener("change", (e) => {
+    document.getElementById("mart-fields").style.display = e.target.checked ? "block" : "none";
+  });
+  document.getElementById("f-vault-enabled").addEventListener("change", (e) => {
+    document.getElementById("vault-fields").style.display = e.target.checked ? "block" : "none";
+  });
+  const martSteps = document.getElementById("f-mart-steps");
+  const updateWarning = () => { document.getElementById("mart-unlimited-warning").style.display = (parseInt(martSteps.value, 10) > 5) ? "block" : "none"; };
+  martSteps.addEventListener("input", updateWarning);
+  updateWarning();
 }
 
-async function selectProfile(id) {
-  currentProfileId = id;
-  renderProfileList();
-  let p;
-  try {
-    p = await fetchJSON(`/api/risk-profiles/${id}`);
-  } catch (e) {
-    alert("Failed to load profile: " + e.message);
-    return;
-  }
-  document.getElementById("empty-state").style.display = "none";
-  document.getElementById("editor-panel").style.display = "block";
-  document.getElementById("editor-title").textContent = p.name;
-  document.getElementById("delete-profile-btn").style.display = "inline-block";
-
-  document.getElementById("p-name").value = p.name;
-  document.getElementById("p-description").value = p.description || "";
-  document.getElementById("p-bankroll").value = p.bankroll;
-  document.getElementById("p-sizing-mode").value = p.sizing_mode;
-  document.getElementById("p-fixed-amount").value = p.fixed_amount;
-  document.getElementById("p-percent").value = p.percent_of_bankroll;
-  document.getElementById("p-kelly-winrate").value = p.kelly_win_rate_estimate ?? "";
-  document.getElementById("p-kelly-payout").value = p.kelly_payout_estimate ?? "";
-  document.getElementById("p-kelly-fraction").value = p.kelly_fraction_multiplier;
-  document.getElementById("p-max-trade").value = p.max_trade_amount;
-  document.getElementById("p-max-daily-loss").value = p.max_daily_loss;
-  document.getElementById("p-max-session-loss").value = p.max_session_loss;
-  document.getElementById("p-profit-target").value = p.profit_target;
-  document.getElementById("p-max-trades").value = p.max_trades;
-  document.getElementById("p-live-allowed").checked = !!p.live_allowed;
-  onSizingModeChange();
-
-  const m = p.martingale;
-  document.getElementById("m-enabled").checked = !!m.enabled;
-  document.getElementById("m-max-steps").value = m.max_steps;
-  document.getElementById("m-multiplier").value = m.multiplier;
-  document.getElementById("m-max-exposure").value = m.max_total_exposure;
-  document.getElementById("m-ladder").value = m.custom_ladder_json || "";
-  document.getElementById("m-reset-win").checked = !!m.reset_after_win;
-  document.getElementById("m-reset-session").checked = !!m.reset_after_session;
-  document.getElementById("m-same-asset").checked = !!m.same_asset_only;
-  document.getElementById("m-same-source").checked = !!m.same_source_only;
-  document.getElementById("exposure-preview").innerHTML = "";
-
-  const c = p.compounding;
-  document.getElementById("c-mode").value = c.mode;
-  document.getElementById("c-base-risk").value = c.base_risk_percent;
-  document.getElementById("c-max-risk").value = c.max_risk_percent;
-  document.getElementById("c-min-risk").value = c.min_risk_percent;
-  document.getElementById("c-drawdown-reset").value = c.drawdown_reset_percent;
-  document.getElementById("c-steps").value = c.steps_json || "";
-
-  const v = p.profit_vault;
-  document.getElementById("v-enabled").checked = !!v.enabled;
-  document.getElementById("v-percent").value = v.vault_percent;
-  document.getElementById("v-trigger").value = v.trigger_event;
-  document.getElementById("v-milestone").value = v.milestone_amount;
-}
-
-function onSizingModeChange() {
-  const mode = document.getElementById("p-sizing-mode").value;
-  document.querySelectorAll(".sizing-field").forEach(el => {
-    el.classList.toggle("visible", el.dataset.mode.split(" ").includes(mode));
+function showSizingSub(mode) {
+  ["fixed", "percent", "dynamic", "kelly"].forEach(m => {
+    document.getElementById(`sizing-${m}`).classList.toggle("visible", m === mode);
   });
 }
 
-function basicFormValues() {
-  return {
-    name: document.getElementById("p-name").value,
-    description: document.getElementById("p-description").value || null,
-    bankroll: parseFloat(document.getElementById("p-bankroll").value) || 0,
-    sizing_mode: document.getElementById("p-sizing-mode").value,
-    fixed_amount: parseFloat(document.getElementById("p-fixed-amount").value) || 0,
-    percent_of_bankroll: parseFloat(document.getElementById("p-percent").value) || 0,
-    kelly_win_rate_estimate: document.getElementById("p-kelly-winrate").value ? parseFloat(document.getElementById("p-kelly-winrate").value) : null,
-    kelly_payout_estimate: document.getElementById("p-kelly-payout").value ? parseFloat(document.getElementById("p-kelly-payout").value) : null,
-    kelly_fraction_multiplier: parseFloat(document.getElementById("p-kelly-fraction").value) || 0.5,
-    max_trade_amount: parseFloat(document.getElementById("p-max-trade").value) || 0,
-    max_daily_loss: parseFloat(document.getElementById("p-max-daily-loss").value) || 0,
-    max_session_loss: parseFloat(document.getElementById("p-max-session-loss").value) || 0,
-    profit_target: parseFloat(document.getElementById("p-profit-target").value) || 0,
-    max_trades: parseInt(document.getElementById("p-max-trades").value, 10) || 0,
-    live_allowed: document.getElementById("p-live-allowed").checked,
+async function saveBuilder(existingProfileId) {
+  const statusEl = document.getElementById("builder-save-status");
+  const name = document.getElementById("f-name").value.trim();
+  if (!name) { alert("Please give this profile a name."); return; }
+  const sizingMode = document.getElementById("f-sizing-mode").value;
+  const body = {
+    name, bankroll: parseFloat(document.getElementById("f-bankroll").value) || 0,
+    sizing_mode: sizingMode,
+    fixed_amount: parseFloat((document.getElementById("f-fixed") || {}).value) || 1,
+    percent_of_bankroll: parseFloat((document.getElementById(sizingMode === "dynamic" ? "f-dynamic-percent" : "f-percent") || {}).value) || 1,
+    kelly_win_rate_estimate: document.getElementById("f-kelly-p") ? (parseFloat(document.getElementById("f-kelly-p").value) || 0) / 100 : null,
+    kelly_payout_estimate: document.getElementById("f-kelly-b") ? parseFloat(document.getElementById("f-kelly-b").value) || null : null,
+    kelly_fraction_multiplier: document.getElementById("f-kelly-fraction") ? parseFloat(document.getElementById("f-kelly-fraction").value) || 0.5 : 0.5,
+    max_daily_loss: parseFloat(document.getElementById("f-max-daily-loss").value) || 0,
+    profit_target: parseFloat(document.getElementById("f-profit-target").value) || 0,
+    max_trade_amount: parseFloat(document.getElementById("f-max-trade").value) || 0,
   };
-}
-
-async function saveBasic() {
-  const statusEl = document.getElementById("basic-save-status");
-  statusEl.textContent = "saving...";
+  statusEl.textContent = "Saving...";
   try {
-    const body = basicFormValues();
-    if (currentProfileId === null) {
-      const created = await fetchJSON("/api/risk-profiles", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-      });
-      currentProfileId = created.id;
-      await refreshAll();
-      await selectProfile(currentProfileId);
+    let profileId = existingProfileId;
+    if (profileId) {
+      await fetchJSON(`/api/risk-profiles/${profileId}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     } else {
-      await fetchJSON(`/api/risk-profiles/${currentProfileId}`, {
-        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-      });
-      await refreshAll();
+      const created = await fetchJSON(`/api/risk-profiles`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      profileId = created.id;
     }
-    statusEl.textContent = "saved";
-  } catch (e) {
-    statusEl.textContent = "failed: " + e.message;
-  }
-}
-
-async function saveMartingale() {
-  if (currentProfileId === null) { alert("Save Basic Info first to create the profile."); return; }
-  const statusEl = document.getElementById("martingale-save-status");
-  statusEl.textContent = "saving...";
-  try {
-    await fetchJSON(`/api/risk-profiles/${currentProfileId}/martingale`, {
+    const martEnabled = document.getElementById("f-mart-enabled").checked;
+    await fetchJSON(`/api/risk-profiles/${profileId}/martingale`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        enabled: document.getElementById("m-enabled").checked,
-        max_steps: parseInt(document.getElementById("m-max-steps").value, 10) || 0,
-        multiplier: parseFloat(document.getElementById("m-multiplier").value) || 2.0,
-        custom_ladder_json: document.getElementById("m-ladder").value || null,
-        max_total_exposure: parseFloat(document.getElementById("m-max-exposure").value) || 0,
-        reset_after_win: document.getElementById("m-reset-win").checked,
-        reset_after_session: document.getElementById("m-reset-session").checked,
-        same_asset_only: document.getElementById("m-same-asset").checked,
-        same_source_only: document.getElementById("m-same-source").checked,
+        enabled: martEnabled,
+        max_steps: parseInt(document.getElementById("f-mart-steps").value, 10) || 1,
+        multiplier: parseFloat(document.getElementById("f-mart-mult").value) || 2,
+        reset_after_win: document.getElementById("f-mart-reset").checked,
       }),
     });
-    statusEl.textContent = "saved";
-  } catch (e) {
-    statusEl.textContent = "failed: " + e.message;
-  }
-}
-
-async function previewExposure() {
-  if (currentProfileId === null) { alert("Save the profile first."); return; }
-  await saveMartingale();
-  const baseAmount = parseFloat(document.getElementById("p-fixed-amount").value) || 10;
-  try {
-    const result = await fetchJSON(`/api/risk-profiles/${currentProfileId}/projected-exposure?base_amount=${baseAmount}`);
-    const el = document.getElementById("exposure-preview");
-    if (!result.steps.length) { el.innerHTML = '<span class="muted">Martingale is disabled.</span>'; return; }
-    el.innerHTML = result.steps.map((s, i) => `<span class="ladder-step">Step ${i}: $${s}</span>`).join("") +
-      `<span class="ladder-step" style="background:var(--yellow-soft); color:var(--yellow);">Total: $${result.total_exposure}</span>`;
-  } catch (e) {
-    alert("Failed: " + e.message);
-  }
-}
-
-async function saveCompounding() {
-  if (currentProfileId === null) { alert("Save Basic Info first to create the profile."); return; }
-  const statusEl = document.getElementById("compounding-save-status");
-  statusEl.textContent = "saving...";
-  try {
-    await fetchJSON(`/api/risk-profiles/${currentProfileId}/compounding`, {
+    const vaultEnabled = document.getElementById("f-vault-enabled").checked;
+    await fetchJSON(`/api/risk-profiles/${profileId}/vault`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        mode: document.getElementById("c-mode").value,
-        base_risk_percent: parseFloat(document.getElementById("c-base-risk").value) || 0,
-        max_risk_percent: parseFloat(document.getElementById("c-max-risk").value) || 0,
-        min_risk_percent: parseFloat(document.getElementById("c-min-risk").value) || 0,
-        drawdown_reset_percent: parseFloat(document.getElementById("c-drawdown-reset").value) || 0,
-        steps_json: document.getElementById("c-steps").value || null,
+        enabled: vaultEnabled,
+        vault_percent: parseFloat(document.getElementById("f-vault-percent").value) || 25,
+        trigger_event: document.getElementById("f-vault-trigger").value,
       }),
     });
-    statusEl.textContent = "saved";
+    statusEl.textContent = "Saved.";
+    await loadProfiles();
+    setTimeout(() => showView("view-list"), 500);
   } catch (e) {
-    statusEl.textContent = "failed: " + e.message;
-  }
-}
-
-async function saveVault() {
-  if (currentProfileId === null) { alert("Save Basic Info first to create the profile."); return; }
-  const statusEl = document.getElementById("vault-save-status");
-  statusEl.textContent = "saving...";
-  try {
-    await fetchJSON(`/api/risk-profiles/${currentProfileId}/vault`, {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        enabled: document.getElementById("v-enabled").checked,
-        vault_percent: parseFloat(document.getElementById("v-percent").value) || 0,
-        trigger_event: document.getElementById("v-trigger").value,
-        milestone_amount: parseFloat(document.getElementById("v-milestone").value) || 0,
-      }),
-    });
-    statusEl.textContent = "saved";
-  } catch (e) {
-    statusEl.textContent = "failed: " + e.message;
-  }
-}
-
-async function duplicateCurrentProfile() {
-  if (currentProfileId === null) return;
-  const name = prompt("New profile name:");
-  if (!name) return;
-  try {
-    const created = await fetchJSON(`/api/risk-profiles/${currentProfileId}/duplicate`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: name }),
-    });
-    await refreshAll();
-    selectProfile(created.id);
-  } catch (e) {
-    alert("Failed: " + e.message);
-  }
-}
-
-async function exportCurrentProfile() {
-  if (currentProfileId === null) return;
-  try {
-    const data = await fetchJSON(`/api/risk-profiles/${currentProfileId}/export`);
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${data.name.replace(/\s+/g, "_")}.axim-risk-profile.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  } catch (e) {
-    alert("Failed to export: " + e.message);
-  }
-}
-
-async function deleteCurrentProfile() {
-  if (currentProfileId === null) return;
-  if (!confirm("Delete this risk profile? Sessions using it will fall back to default sizing.")) return;
-  try {
-    await fetchJSON(`/api/risk-profiles/${currentProfileId}`, { method: "DELETE" });
-    currentProfileId = null;
-    document.getElementById("editor-panel").style.display = "none";
-    document.getElementById("empty-state").style.display = "block";
-    await refreshAll();
-  } catch (e) {
-    alert("Failed: " + e.message);
+    statusEl.textContent = "Failed: " + e.message;
   }
 }
 
 (async () => {
   const user = await AximShell.init({ active: "money" });
   if (!user) return;
-  refreshAll();
+  await Promise.all([loadStrategies(), loadProfiles()]);
 })();
 </script>
 </body>
