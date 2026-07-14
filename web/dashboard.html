@@ -494,7 +494,7 @@ async function refreshGlobal() {
         return `
           <div class="activity-row">
             <div>
-              <div class="what">${t.asset || "-"} ${t.direction || ""}</div>
+              <div class="what">${escapeHtml(t.asset || "-")} ${escapeHtml(t.direction || "")}</div>
               <div class="when">${timeAgo(t.received_at)}</div>
             </div>
             <div class="${resultClass}" style="font-weight:600; font-size:13.5px;">${resultLabel}</div>

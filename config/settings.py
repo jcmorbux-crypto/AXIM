@@ -93,6 +93,13 @@ ALLOWED_ORIGINS = [
     for origin in os.getenv("ALLOWED_ORIGINS", "").split(",")
     if origin.strip()
 ]
+# FastAPI's default /docs, /redoc, /openapi.json are unauthenticated -
+# anyone who can reach the API at all (any device on the Tailscale
+# network once API_BIND_HOST is opened up) could otherwise browse the
+# full route/schema map, including every admin-only endpoint's exact
+# shape, without logging in. Off by default, matching "no public
+# exposure by default" - a developer debugging locally can opt in.
+ENABLE_API_DOCS = os.getenv("ENABLE_API_DOCS", "false").lower() == "true"
 
 # Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - core/billing.py treats
 # an unset STRIPE_SECRET_KEY as "billing not configured" and disables real

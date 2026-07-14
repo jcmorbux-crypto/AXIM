@@ -376,3 +376,69 @@ ahead on that branch - for a safe blind merge):
 `tests/test_bootstrap_owner_race.py`), adapted to master's actual
 lockout mechanism rather than copied blind. Full suite re-run clean
 after porting.
+
+### Four more security gaps ported forward from the same unmerged branch (FIXED)
+Same audit (`worktree-client-server-realtime-sync`, 42 commits ahead of
+where it diverged) turned up four more real, live gaps on master, none
+hypothetical:
+
+- **Privilege escalation** (`api/admin.py`): `create_user`/`edit_user`
+  validated `role` only against `VALID_ROLES` (which includes `"owner"`)
+  and were gated by `require_admin` (owner OR admin) - `require_owner`
+  existed but was used nowhere. A plain admin could PATCH itself to
+  `owner`, or demote the real owner. Fixed with
+  `_forbid_owner_grant_by_non_owner`/`_forbid_owner_tier_by_non_owner`
+  (the identical shape also existed on the separate `access_tier="owner"`
+  field), blocking both directions while still letting a real owner
+  grant ownership to a successor. 10 new regression tests
+  (`tests/test_admin_privilege_escalation.py`). The same commit's
+  audit-logging additions to `funds_routes.py`/`broker_accounts_routes.py`/
+  `sessions.py`/`backtest_routes.py`/`rules.py` did **not** port cleanly
+  (those files have all changed materially since the Fund/broker-account
+  migration) - not yet re-implemented, tracked as a smaller follow-up.
+- **Stored XSS** (`web/dashboard.html`): the recent-activity renderer
+  interpolated `t.asset`/`t.direction` (raw parsed Telegram signal text)
+  with no `escapeHtml()` at all, unlike every other trade view in the
+  app. Fixed by wrapping both fields. Confirmed a real, unescaped gap on
+  master (the patch's context lines matched master's file exactly before
+  editing).
+- **Attribute-context injection hardening** (`web/risk.html`,
+  `web/strategy_lab.html`, `web/telegram.html`): three `onclick="..."`
+  handlers embedded an untrusted name/label/title inside a double-quoted
+  attribute via `escapeHtml(x).replace(/'/g, "")`. On master specifically
+  this turned out **not** to be live - master's `escapeHtml()` already
+  HTML-encodes `"`/`'` (`.replace(/"/g,"&quot;").replace(/'/g,"&#39;")`),
+  unlike the older version described in the source commit - confirmed by
+  reading master's actual `escapeHtml()` before assuming the bug applied.
+  Ported the refactor anyway (numeric-id lookup from already-fetched
+  in-memory data instead of round-tripping the string through the
+  attribute) since it's strictly safer defense-in-depth and functionally
+  identical, not because master was provably exploitable here.
+- **Missing HTTP security headers** (`api/main.py`): no
+  `X-Frame-Options`/`X-Content-Type-Options`/`Referrer-Policy`/HSTS
+  anywhere - only CORS existed. Most consequential: no
+  `X-Frame-Options` meant nothing stopped AXIM's login/action pages from
+  being framed on an attacker page for clickjacking (Tailscale-only
+  network reach doesn't prevent this - the attacking page just needs to
+  be open in the same browser as an authenticated session). Added one
+  `@app.middleware("http")` applied to every response; HSTS only when
+  the request actually arrived over HTTPS. Verified live against a real
+  running server: headers present on an ordinary JSON response.
+- **Unauthenticated `/docs`, `/redoc`, `/openapi.json`** (`api/main.py`,
+  `config/settings.py`): FastAPI's default interactive docs were live
+  and completely unauthenticated - confirmed live (before the fix) that
+  `GET /openapi.json` with zero auth returned the full 100+-endpoint
+  schema, admin routes included. Added `ENABLE_API_DOCS` (default
+  `false`), wired into `docs_url`/`redoc_url`/`openapi_url`. Verified
+  live both ways against a real running server: all three 404 by
+  default, all three 200 with `ENABLE_API_DOCS=true`.
+
+Full regression suite re-run clean after all four. The remaining
+higher-effort items from the same branch audit - several trading-safety
+race-condition fixes (Emergency Stop/Live-mode gaps, trading-session
+races, Automation Studio double-firing, broker-account double-connect)
+and an entire unbuilt client/server real-time SSE sync feature - are
+tracked separately rather than blind-ported, since master's
+broker-account/session code has been rearchitected since that branch
+diverged (see the Fund/broker-account migration entry above) and each
+needs re-verification against current code, not just a patch apply.

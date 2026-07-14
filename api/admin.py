@@ -80,12 +80,44 @@ def list_users(admin_user=Depends(require_admin)):
     return [public_user(u) for u in database.list_users()]
 
 
+def _forbid_owner_grant_by_non_owner(requested_role, admin_user):
+    """The 'owner' role is meant to be singular/permanent - assigned
+    automatically once, only to the very first account
+    (POST /api/auth/bootstrap-owner), everything else defaults to
+    'user'/'trial'. VALID_ROLES includes 'owner' (an existing owner
+    legitimately needs to be able to grant it to a successor), but
+    create_user/edit_user are both only gated by require_admin (owner OR
+    admin) - so, before this check existed, any plain 'admin' account
+    could grant itself (or anyone) 'owner' through the ordinary
+    user-management endpoint, with no ownership-transfer ceremony and no
+    way for the real owner to have prevented it. A real, verified
+    privilege-escalation path, not a hypothetical one."""
+    if requested_role == "owner" and admin_user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="only an existing Owner can grant the Owner role")
+
+
+def _forbid_owner_tier_by_non_owner(requested_tier, admin_user):
+    """VALID_TIERS also includes 'owner' as an access_tier value (a
+    separate axis from role - see core/database.py's own comment: 'the
+    plan/tier assignment ... kept ready for a future Stripe integration
+    without being wired to one yet'). Not currently read by any
+    enforcement path, unlike role, so this isn't a live exploit today -
+    but it's the exact same unrestricted-'owner'-value shape the role
+    check above closes, and leaving it open only until a future billing
+    integration starts trusting this field would be a foreseeable,
+    avoidable repeat of the same mistake."""
+    if requested_tier == "owner" and admin_user["role"] != "owner":
+        raise HTTPException(status_code=403, detail="only an existing Owner can grant the 'owner' access tier")
+
+
 @router.post("/users")
 def create_user(body: CreateUserRequest, admin_user=Depends(require_admin)):
     if body.role not in VALID_ROLES:
         raise HTTPException(status_code=400, detail=f"invalid role, must be one of {sorted(VALID_ROLES)}")
+    _forbid_owner_grant_by_non_owner(body.role, admin_user)
     if body.access_tier not in VALID_TIERS:
         raise HTTPException(status_code=400, detail=f"invalid access_tier, must be one of {sorted(VALID_TIERS)}")
+    _forbid_owner_tier_by_non_owner(body.access_tier, admin_user)
     if body.access_state not in VALID_STATES:
         raise HTTPException(status_code=400, detail=f"invalid access_state, must be one of {sorted(VALID_STATES)}")
     if database.get_user_by_email(body.email) is not None:
@@ -114,16 +146,26 @@ def get_user_detail(user_id: int, admin_user=Depends(require_admin)):
 
 @router.patch("/users/{user_id}")
 def edit_user(user_id: int, body: EditUserRequest, admin_user=Depends(require_admin)):
-    if database.get_user_by_id(user_id) is None:
+    target = database.get_user_by_id(user_id)
+    if target is None:
         raise HTTPException(status_code=404, detail="user not found")
     updates = {}
     if body.role is not None:
         if body.role not in VALID_ROLES:
             raise HTTPException(status_code=400, detail=f"invalid role, must be one of {sorted(VALID_ROLES)}")
+        _forbid_owner_grant_by_non_owner(body.role, admin_user)
+        if target["role"] == "owner" and body.role != "owner" and admin_user["role"] != "owner":
+            # Same escalation shape in reverse: a plain admin stripping
+            # the real owner's status (without their consent) is just as
+            # real a trust violation as granting it - "full, permanent
+            # control" (the bootstrap flow's own description of what
+            # Owner means) shouldn't be revocable by a lesser role.
+            raise HTTPException(status_code=403, detail="only an existing Owner can change another Owner's role")
         updates["role"] = body.role
     if body.access_tier is not None:
         if body.access_tier not in VALID_TIERS:
             raise HTTPException(status_code=400, detail=f"invalid access_tier, must be one of {sorted(VALID_TIERS)}")
+        _forbid_owner_tier_by_non_owner(body.access_tier, admin_user)
         updates["access_tier"] = body.access_tier
     if body.access_state is not None:
         if body.access_state not in VALID_STATES:
@@ -192,6 +234,7 @@ def set_tier(user_id: int, body: SetTierRequest, admin_user=Depends(require_admi
         raise HTTPException(status_code=404, detail="user not found")
     if body.access_tier not in VALID_TIERS:
         raise HTTPException(status_code=400, detail=f"invalid access_tier, must be one of {sorted(VALID_TIERS)}")
+    _forbid_owner_tier_by_non_owner(body.access_tier, admin_user)
     database.update_user(user_id, access_tier=body.access_tier)
     _log(admin_user, user_id, "set_tier", f"tier={body.access_tier}")
     return public_user(database.get_user_by_id(user_id))

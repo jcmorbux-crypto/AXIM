@@ -54,7 +54,7 @@ from settings import (
     WATCH_CHANNELS, ACCOUNT, MAX_TRADE_AMOUNT, MAX_TRADES_PER_HOUR,
     MAX_CONSECUTIVE_LOSSES, COOLDOWN_AFTER_LOSS_SECONDS,
     DUPLICATE_SIGNAL_WINDOW_SECONDS, MINIMUM_PAYOUT, MAX_DAILY_LOSS,
-    TRADE_AMOUNT, ALLOWED_ORIGINS,
+    TRADE_AMOUNT, ALLOWED_ORIGINS, ENABLE_API_DOCS,
 )
 from logger import get_logger
 
@@ -106,7 +106,17 @@ logger = get_logger("axim.ui", filename="ui.log")
 database.initialize_database()
 database.seed_risk_profile_templates()
 
-app = FastAPI(title="AXIM Trader API")
+# /docs, /redoc, /openapi.json are unauthenticated by FastAPI's own
+# design - off by default (ENABLE_API_DOCS, config/settings.py) so
+# opening API_BIND_HOST up to a Tailscale network doesn't also hand out
+# the full route/schema map, admin endpoints included, to anyone who can
+# merely reach the server without logging in.
+app = FastAPI(
+    title="AXIM Trader API",
+    docs_url="/docs" if ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
+)
 
 # CORS (docs/AXIM_REMOTE_ACCESS.md) - empty ALLOWED_ORIGINS (the default)
 # means no cross-origin browser requests are permitted at all, matching
@@ -133,6 +143,31 @@ if _cors_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+@app.middleware("http")
+async def _security_headers(request: Request, call_next):
+    """Standard defense-in-depth headers on every response - none of
+    this was set anywhere before. X-Frame-Options is the one that
+    matters most here: AXIM's login page controls access to a real,
+    money-moving account, and without it a malicious page could frame
+    AXIM invisibly and trick a logged-in user into clicking what looks
+    like that page's own UI but is actually a real AXIM action
+    (clickjacking) - Tailscale-only network reach doesn't prevent this,
+    since the attacking page just needs to be loaded in the same
+    browser as an authenticated AXIM session, not on the same network.
+    HSTS is only added when the request actually arrived over HTTPS -
+    same reasoning as _request_is_https() elsewhere: asserting it
+    unconditionally over a plain-HTTP local/Tailscale deployment would
+    be actively wrong, not just unnecessary."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "same-origin"
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
 
 app.include_router(auth_module.router)
 app.include_router(admin_module.router)

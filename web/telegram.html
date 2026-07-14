@@ -282,7 +282,7 @@ function renderMySources() {
           </div>
           ${c.source_type === "bot_command" ? botFields(c) : ""}
           <div class="muted" style="font-size:12px; margin-top:8px;">Last signal: ${fmtTime(c.last_signal_at)}</div>
-          <button class="subtle" onclick="event.stopPropagation(); openMessages(${c.id}, '${escapeHtml(c.title || "").replace(/'/g, "")}')">View recent messages</button>
+          <button class="subtle" onclick="event.stopPropagation(); openMessages(${c.id})">View recent messages</button>
         </div>
       </div>
       <div class="stats">
@@ -405,9 +405,10 @@ async function loadPerformance(id) {
   }
 }
 
-async function openMessages(id, title) {
+async function openMessages(id) {
   currentMessagesChannelId = id;
-  document.getElementById("messages-title").textContent = `Recent messages - ${title}`;
+  const channel = allChannels.find(c => c.id === id);
+  document.getElementById("messages-title").textContent = `Recent messages - ${channel ? channel.title : ""}`;
   const listEl = document.getElementById("messages-list");
   listEl.innerHTML = '<div class="empty">Loading...</div>';
   openModal("messages-modal");
