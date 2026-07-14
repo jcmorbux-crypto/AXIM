@@ -12,87 +12,48 @@
 <script src="theme.js"></script>
 <script src="shell.js"></script>
 <script>
-renderShell("strategy", "Compare Strategies", "Pick 2 or 3 to see them side by side.");
+renderShell("strategy", "Compare Strategies", "All 4 official strategies, side by side.");
 
 let allStrategies = [];
-let picked = [];
 
 function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
 }
-function tierColor(level) {
-  return level === "Low" ? "var(--green)" : level === "Medium" ? "#b5750a" : "var(--red)";
-}
 
-function renderPicker() {
-  const content = document.getElementById("page-content");
-  content.innerHTML = `
-    <div class="card">
-      <div class="card-label">Choose up to 3 strategies (${picked.length}/3 selected)</div>
-      <div class="grid">
-        ${allStrategies.map(s => `
-          <div class="strategy-card card-interactive" style="--tier-color:${tierColor(s.risk_level)}; ${picked.includes(s.id) ? "border-color:var(--brand); box-shadow:var(--shadow-lift);" : ""}" data-id="${s.id}">
-            <div class="card-body" style="padding:16px; ${picked.includes(s.id) ? "background:var(--brand-dim);" : ""}">
-              <div class="s-name">${s.name}</div>
-              <div class="s-badges" style="margin-top:6px;"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>${picked.includes(s.id) ? ' <span class="badge badge-flag-on">Selected</span>' : ""}</div>
-            </div>
-          </div>
-        `).join("")}
-      </div>
-      <button class="btn btn-primary" id="compare-btn" style="margin-top:14px;" ${picked.length < 2 ? "disabled" : ""}>Compare ${picked.length} strategies →</button>
-    </div>
-  `;
-  content.querySelectorAll("[data-id]").forEach(card => {
-    card.style.cursor = "pointer";
-    card.onclick = () => {
-      const id = parseInt(card.dataset.id, 10);
-      if (picked.includes(id)) picked = picked.filter(p => p !== id);
-      else if (picked.length < 3) picked.push(id);
-      renderPicker();
-    };
-  });
-  document.getElementById("compare-btn").onclick = renderComparison;
-}
-
-async function renderComparison() {
+async function render() {
   const content = document.getElementById("page-content");
   content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading comparison...</div>`;
-  const details = await Promise.all(picked.map(id => fetchPreview(`/strategies/${id}`)));
   const rows = [
     ["Risk level", d => `<span class="badge ${riskBadgeClass(d.risk_level)}">${d.risk_level}</span>`],
-    ["Risk model", d => d.rules.risk_model],
-    ["Risk per trade", d => d.rules.risk_per_trade],
-    ["Maximum exposure", d => d.rules.max_exposure],
-    ["Uses Martingale?", d => d.uses_martingale ? `Yes (${d.martingale.multiplier}x, ${d.martingale.max_steps} steps)` : "No"],
-    ["Uses Compounding?", d => d.uses_compounding ? d.compounding_mode.replace("_"," ") : "No"],
-    ["Uses Vault?", d => d.uses_vault ? d.vault_percent + "%" : "No"],
-    ["Best for", d => `<span style="font-size:12px;">${d.best_for}</span>`],
-    ["Worst for", d => `<span style="font-size:12px;">${d.worst_for}</span>`],
+    ["Personality", d => d.personality],
+    ["Risk per trade", d => d.risk.headline],
+    ["Martingale?", d => d.martingale.active ? "Yes - limited" : "No"],
+    ["Compounding?", d => d.compounding.active ? "Yes" : "No"],
+    ["Vault?", d => d.vault.active ? d.vault.percent + "% of profit" : "No"],
+    ["Recalculates at", d => d.growth_recalc.active ? `+${d.growth_recalc.threshold_percent}% growth` : "Never"],
+    ["Best for", d => `<span style="font-size:12px;">${d.best_for[0]}</span>`],
   ];
   content.innerHTML = `
-    <button class="btn btn-secondary" id="back-btn" style="margin-bottom:12px;">← Change selection</button>
     <div class="card" style="overflow-x:auto;">
       <table class="compare-table">
-        <thead><tr><th></th>${details.map(d => `<th>${d.name}</th>`).join("")}</tr></thead>
+        <thead><tr><th></th>${allStrategies.map(d => `<th>${d.icon} ${d.name}</th>`).join("")}</tr></thead>
         <tbody>
-          ${rows.map(([label, fn]) => `<tr><th>${label}</th>${details.map(d => `<td>${fn(d)}</td>`).join("")}</tr>`).join("")}
-          <tr><th>Detail</th>${details.map(d => `<td><a href="strategy_detail.html?id=${d.id}">View full page →</a></td>`).join("")}</tr>
+          ${rows.map(([label, fn]) => `<tr><th>${label}</th>${allStrategies.map(d => `<td>${fn(d)}</td>`).join("")}</tr>`).join("")}
+          <tr><th>Detail</th>${allStrategies.map(d => `<td><a href="strategy_detail.html?id=${d.key}">View full page →</a></td>`).join("")}</tr>
         </tbody>
       </table>
     </div>
     <div class="card" style="border-color:var(--brand); border-width:1.5px;">
       <div class="card-label">Want to see how these would have actually performed?</div>
-      <p style="font-size:13px; margin:0 0 12px;">These strategies have no intrinsic ROI or drawdown - pick a Signal Provider to run a real backtest of each one against that provider's actual historical signals.</p>
-      <a class="btn btn-primary" href="provider_analysis.html">Analyze with a Signal Provider &rarr;</a>
+      <p style="font-size:13px; margin:0;">These strategies have no intrinsic ROI or drawdown - Strategy Lab runs real backtests against a Signal Provider's actual historical signals.</p>
     </div>
   `;
-  document.getElementById("back-btn").onclick = renderPicker;
 }
 
 async function load() {
-  const data = await fetchPreview("/strategies/library");
+  const data = await fetchPreview("/strategies");
   allStrategies = data.strategies;
-  renderPicker();
+  render();
 }
 load();
 </script>

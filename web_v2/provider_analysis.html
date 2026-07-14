@@ -101,7 +101,7 @@ async function loadAnalysis(providerId) {
           <tbody>
             ${rows.map(r => `
               <tr style="${r.strategy_id === data.recommended_strategy_id ? 'background:var(--brand-dim);' : ''}">
-                <td>${r.strategy_id === data.recommended_strategy_id ? '&#11088; ' : ''}<a href="strategy_detail.html?id=${r.strategy_id}">${r.strategy_name}</a></td>
+                <td>${r.strategy_id === data.recommended_strategy_id ? '&#11088; ' : ''}${r.strategy_name}</td>
                 <td><span class="badge ${gradeClass(r.grade)}">${r.grade}</span></td>
                 <td>$${r.ending_balance}</td>
                 <td class="${r.roi_percent >= 0 ? 'up' : 'down'}">${r.roi_percent >= 0 ? '+' : ''}${r.roi_percent}%</td>
@@ -119,10 +119,10 @@ async function loadAnalysis(providerId) {
         <div class="card-label">Step 3 of 3 &mdash; Next steps</div>
         <p style="font-size:13px; margin:0 0 12px;">&#11088; Recommended for ${data.provider.title}: <b>${rows.find(r => r.strategy_id === data.recommended_strategy_id)?.strategy_name}</b>, based on this real backtest.</p>
         <div class="row" style="gap:10px;">
-          <a class="btn btn-primary" href="strategy_customize.html?id=${data.recommended_strategy_id}">Customize &amp; Use This Strategy</a>
-          <a class="btn btn-secondary" href="strategy_compare.html">Compare Strategies in Detail</a>
+          <a class="btn btn-primary" href="strategy.html">Choose a Money Management Strategy &rarr;</a>
           <a class="btn btn-secondary" href="portfolio.html">Continue to Fund Creation &rarr;</a>
         </div>
+        <p style="font-size:11.5px; color:var(--ink-faint); margin:12px 0 0;">Real per-provider backtests for AXIM's 4 official Money Management strategies aren't wired up yet - tracked as a follow-up. The results above are real, historical, and unaffected by that; they're just not yet mapped one-to-one onto the 4 official strategy names.</p>
       </div>
     `;
     document.getElementById("back-to-picker").onclick = loadProviderPicker;

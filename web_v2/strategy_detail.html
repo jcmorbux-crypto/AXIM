@@ -6,6 +6,40 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
 <link rel="stylesheet" href="design-system.css">
+<style>
+  .personality-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 800; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
+  .personality-conservative { background: var(--green-bg); color: var(--green); }
+  .personality-balanced { background: #fff4e0; color: #b5750a; }
+  .personality-aggressive { background: var(--red-bg); color: var(--red); }
+  .mm-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 10px; }
+  .mm-tile { background: var(--canvas); border-radius: 10px; padding: 12px; }
+  .mm-tile-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-faint); font-weight: 750; margin-bottom: 4px; }
+  .mm-tile-value { font-size: 13.5px; line-height: 1.4; }
+  .mm-tile.on { background: var(--brand-dim); }
+  .mm-tile.on .mm-tile-label { color: var(--brand); }
+  .checkpoint-row { display: flex; gap: 12px; padding: 12px 0; border-top: 1px solid var(--border); }
+  .checkpoint-row:first-child { border-top: none; }
+  .checkpoint-num { flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; background: var(--brand); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; }
+  .checkpoint-body .cp-trigger { font-weight: 650; font-size: 13px; margin-bottom: 3px; }
+  .checkpoint-body .cp-action { font-size: 12.5px; color: var(--ink-dim); line-height: 1.5; }
+  .cycle-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12.5px; }
+  .cycle-table th, .cycle-table td { text-align: center; padding: 6px 8px; border-bottom: 1px solid var(--border); }
+  .cycle-table th { color: var(--ink-faint); font-weight: 700; font-size: 10.5px; text-transform: uppercase; }
+  .pro-con-list { list-style: none; margin: 0; padding: 0; font-size: 12.5px; line-height: 1.6; }
+  .pro-con-list li { padding: 6px 0 6px 22px; position: relative; }
+  .pro-con-list.pros li::before { content: "✓"; position: absolute; left: 0; color: var(--green); font-weight: 800; }
+  .pro-con-list.cons li::before { content: "✕"; position: absolute; left: 0; color: var(--red); font-weight: 800; }
+  .faq-item { border-top: 1px solid var(--border); padding: 12px 0; }
+  .faq-item:first-child { border-top: none; }
+  .faq-item summary { font-weight: 650; font-size: 13.5px; cursor: pointer; list-style: none; }
+  .faq-item summary::-webkit-details-marker { display: none; }
+  .faq-item summary::before { content: "+"; display: inline-block; width: 16px; color: var(--brand); font-weight: 800; }
+  .faq-item[open] summary::before { content: "−"; }
+  .faq-item .faq-a { font-size: 13px; color: var(--ink-dim); margin: 8px 0 0 16px; line-height: 1.55; }
+  .plain-list { list-style: none; margin: 0; padding: 0; font-size: 12.5px; line-height: 1.6; }
+  .plain-list li { padding: 6px 0; border-top: 1px solid var(--border); }
+  .plain-list li:first-child { border-top: none; }
+</style>
 </head>
 <body>
 <div class="shell" id="shell-root"></div>
@@ -15,153 +49,204 @@
 renderShell("strategy", "", "");
 document.querySelector(".subtitle").insertAdjacentHTML("afterend", `
   <div class="detail-topnav">
-    <a class="back-link" href="strategy.html">&larr; Money Management Studio</a>
-    <div id="prev-next-nav" class="prev-next-nav"></div>
+    <a class="back-link" href="strategy.html">&larr; Back to Money Management Studio</a>
   </div>
 `);
 
 const params = new URLSearchParams(location.search);
-const strategyId = params.get("id");
+const strategyKey = params.get("id");
 
-// Prev/Next browses within whichever catalog the current strategy
-// belongs to: the 6 starters if it's one of them, otherwise the full
-// 27-item Advanced Library. The synthetic "Custom Strategy" entry has
-// no detail page, so it's excluded from both lists.
-async function loadSiblingNav() {
-  const nav = document.getElementById("prev-next-nav");
-  try {
-    const starters = (await fetchPreview("/strategies")).strategies.filter(s => !s.is_custom_entry);
-    const inStarters = starters.some(s => String(s.id) === String(strategyId));
-    const list = inStarters ? starters : (await fetchPreview("/strategies/library")).strategies;
-    const idx = list.findIndex(s => String(s.id) === String(strategyId));
-    if (idx === -1) { nav.innerHTML = ""; return; }
-    const prev = idx > 0 ? list[idx - 1] : null;
-    const next = idx < list.length - 1 ? list[idx + 1] : null;
-    nav.innerHTML = `
-      ${prev ? `<a href="strategy_detail.html?id=${prev.id}">&larr; ${prev.name}</a>` : `<span class="pn-spacer">&larr; ${inStarters ? "Start of the list" : "Start of the library"}</span>`}
-      ${next ? `<a class="pn-next" href="strategy_detail.html?id=${next.id}">${next.name} &rarr;</a>` : `<span class="pn-spacer pn-next">${inStarters ? "End of the list" : "End of the library"} &rarr;</span>`}
-    `;
-  } catch (e) {
-    nav.innerHTML = "";
-  }
+function personalityClass(p) {
+  return p === "Conservative" ? "personality-conservative" : p === "Aggressive" ? "personality-aggressive" : "personality-balanced";
 }
-
 function riskBadgeClass(level) {
   return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
 }
 
-function renderMoneyRules(r) {
-  let html = `<div class="money-rules">
-    <div class="rule-row"><span class="rule-label">Risk per trade</span><span class="rule-value">${r.risk_per_trade}</span></div>
-    <div class="rule-row"><span class="rule-label">Sizing method</span><span class="rule-value">${r.sizing_method}</span></div>
-    <div class="rule-row"><span class="rule-label">Risk model</span><span class="rule-value">${r.risk_model}</span></div>`;
-  if (r.martingale) {
-    html += `<div class="mechanism-block martingale">
-      <div class="mech-title">Martingale (Recovery Rule): ${r.martingale.steps} step(s)</div>
-      Ladder: ${r.martingale.ladder}<br>${r.martingale.reset_rule}<br><b>Maximum exposure: ${r.martingale.max_exposure}</b>
-    </div>`;
+function renderRulesGrid(s) {
+  return `
+    <div class="mm-grid">
+      <div class="mm-tile on">
+        <div class="mm-tile-label">Risk per trade</div>
+        <div class="mm-tile-value">${s.risk.headline}</div>
+      </div>
+      <div class="mm-tile ${s.martingale.active ? "on" : ""}">
+        <div class="mm-tile-label">Martingale</div>
+        <div class="mm-tile-value">${s.martingale.active ? "Yes - limited" : "No"}</div>
+      </div>
+      <div class="mm-tile ${s.compounding.active ? "on" : ""}">
+        <div class="mm-tile-label">Compounding</div>
+        <div class="mm-tile-value">${s.compounding.active ? "Yes" : "No"}</div>
+      </div>
+      <div class="mm-tile ${s.vault.active ? "on" : ""}">
+        <div class="mm-tile-label">Vault</div>
+        <div class="mm-tile-value">${s.vault.active ? s.vault.percent + "% of profit" : "No"}</div>
+      </div>
+      <div class="mm-tile ${s.growth_recalc.active ? "on" : ""}" style="grid-column: span 2;">
+        <div class="mm-tile-label">Position size recalculates</div>
+        <div class="mm-tile-value">${s.growth_recalc.active ? `Only after +${s.growth_recalc.threshold_percent}% growth above the previous baseline` : "Never - fixed forever"}</div>
+      </div>
+    </div>
+  `;
+}
+
+function renderWorkedExample(s) {
+  const w = s.worked_example;
+  let cycleHtml = "";
+  if (w.cycle) {
+    cycleHtml = `
+      <table class="cycle-table">
+        <tr><th>Trade</th>${w.cycle.map(c => `<th>${c.trade}</th>`).join("")}</tr>
+        <tr><td>Risk %</td>${w.cycle.map(c => `<td>${c.risk_percent}%</td>`).join("")}</tr>
+        <tr><td>Stake</td>${w.cycle.map(c => `<td>$${c.stake.toFixed(2)}</td>`).join("")}</tr>
+      </table>
+      <p style="font-size:12px; color:var(--ink-dim); margin:8px 0 0;">This 4-trade cycle repeats for as long as the baseline stays the same.</p>
+    `;
   }
-  if (r.compounding) {
-    html += `<div class="mechanism-block compounding">
-      <div class="mech-title">Compounding (Growth Recalculation Rule) - ${r.compounding.trigger}</div>
-      ${r.compounding.increase_rule}<br>${r.compounding.reset_rule}<br>Maximum risk: ${r.compounding.max_risk_cap}
-    </div>`;
+  let ladderHtml = "";
+  if (w.ladder) {
+    cycleHtml = `
+      <table class="cycle-table">
+        <tr><th>Step</th>${w.ladder.map(l => `<th>${l.step}${l.is_max ? " (max)" : ""}</th>`).join("")}</tr>
+        <tr><td>Stake</td>${w.ladder.map(l => `<td>$${l.stake.toFixed(2)}</td>`).join("")}</tr>
+      </table>
+      <p style="font-size:12px; color:var(--ink-dim); margin:8px 0 0;">A win at any step resets you straight back to Step 0. A loss at the maximum step ends the session rather than increasing further.</p>
+    `;
   }
-  if (r.vault) {
-    html += `<div class="mechanism-block vault"><div class="mech-title">Profit Vault (Vault Rule)</div>Moves ${r.vault.percent} of profit to Protected Balance (${r.vault.trigger})</div>`;
-  }
-  html += `<div class="rule-row"><span class="rule-label">Maximum exposure</span><span class="rule-value">${r.max_exposure}</span></div>
-    <div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${r.profit_target}</span></div>
-    <div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${r.loss_limit}</span></div></div>`;
-  return html;
+  return `
+    <p style="font-size:12.5px; color:var(--ink-dim); margin:0 0 10px;">A mechanical illustration of the rule above, not a performance projection - at a $${w.starting_bankroll.toLocaleString()} bankroll, stake size $${w.stake.toFixed(2)}, assuming an 88% payout:</p>
+    ${cycleHtml}
+    <div class="scenario-pair" style="margin-top:${cycleHtml ? "12px" : "0"};">
+      <div class="scenario-box win">
+        <div class="sc-title">If it wins</div>
+        <div class="sc-amount">+$${w.win.profit.toFixed(2)}</div>
+        <div style="font-size:12px; color:var(--ink-dim);">Balance: $${w.starting_bankroll.toLocaleString()} &rarr; $${w.win.active_after.toLocaleString()}</div>
+        ${w.win.vault_amount !== undefined ? `<div style="font-size:11.5px; color:var(--green); margin-top:6px; font-weight:650;">$${w.win.vault_amount.toFixed(2)} moves to Vault immediately</div>` : ""}
+      </div>
+      <div class="scenario-box loss">
+        <div class="sc-title">If it loses</div>
+        <div class="sc-amount">-$${Math.abs(w.loss.loss).toFixed(2)}</div>
+        <div style="font-size:12px; color:var(--ink-dim);">Balance: $${w.starting_bankroll.toLocaleString()} &rarr; $${w.loss.active_after.toLocaleString()}</div>
+        ${w.loss.next_step_stake !== undefined ? `<div style="font-size:11.5px; color:#b5750a; margin-top:6px; font-weight:650;">Next stake rises to $${w.loss.next_step_stake.toFixed(2)}</div>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderTimeline(s) {
+  if (!s.growth_timeline.length) return `<p style="font-size:13px; color:var(--ink-dim);">This strategy's stake never changes.</p>`;
+  return s.growth_timeline.map(cp => `
+    <div class="checkpoint-row">
+      <div class="checkpoint-num">${cp.checkpoint}</div>
+      <div class="checkpoint-body">
+        <div class="cp-trigger">${cp.trigger}</div>
+        <div class="cp-action">${cp.action}</div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function renderFaq(s) {
+  return s.faq.map(f => `
+    <details class="faq-item">
+      <summary>${f.q}</summary>
+      <div class="faq-a">${f.a}</div>
+    </details>
+  `).join("");
 }
 
 async function loadDetail() {
   const content = document.getElementById("page-content");
   content.innerHTML = `<div class="progress-row"><span class="spinner"></span> Loading strategy...</div>`;
   try {
-    const s = await fetchPreview(`/strategies/${strategyId}`);
-    document.querySelector("h1").textContent = s.name;
-    document.querySelector(".subtitle").textContent = s.description;
+    const s = await fetchPreview(`/strategies/${strategyKey}`);
+    if (s.error) { content.innerHTML = `<div class="card"><div class="card-label">Not found</div>${s.error}. <a href="strategy.html">Back to Money Management Studio</a></div>`; return; }
+
+    document.querySelector("h1").textContent = `${s.icon} ${s.name}`;
+    document.querySelector(".subtitle").textContent = s.tagline;
 
     content.innerHTML = `
       <div class="row" style="align-items:flex-start; gap:16px;">
         <div style="flex:2; min-width:0;">
           <div class="card">
-            <div class="card-label">Plain-English explanation</div>
-            <p style="font-size:13.5px; margin:0 0 8px;">${s.what_it_does}</p>
-            <p style="font-size:13.5px; margin:0;">${s.how_it_works}</p>
-          </div>
-
-          <div class="card">
             <div class="row" style="gap:10px; margin-bottom:12px;">
               <span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span>
-              <span class="badge badge-flag-on">${s.growth_label}</span>
+              <span class="personality-badge ${personalityClass(s.personality)}">${s.personality}</span>
             </div>
-            <div class="card-label">Exact rule configuration</div>
-            ${renderMoneyRules(s.rules)}
+            <div class="card-label">Full explanation</div>
+            <p style="font-size:13.5px; margin:0;">${s.purpose}</p>
           </div>
 
           <div class="card">
-            <div class="card-label">Worked example: your very next trade</div>
-            <p style="font-size:12.5px; color:var(--ink-dim); margin:0 0 10px;">A mechanical illustration of the sizing rule above, not a performance projection - at a $1,000 bankroll, stake size $${s.scenarios.stake}:</p>
-            <div class="scenario-pair">
-              <div class="scenario-box win">
-                <div class="sc-title">If it wins</div>
-                <div class="sc-amount">+$${s.scenarios.win.profit.toFixed(2)}</div>
-                <div style="font-size:12px; color:var(--ink-dim);">Balance: $1,000 &rarr; $${s.scenarios.win.new_balance}</div>
-              </div>
-              <div class="scenario-box loss">
-                <div class="sc-title">If it loses</div>
-                <div class="sc-amount">-$${Math.abs(s.scenarios.loss.loss).toFixed(2)}</div>
-                <div style="font-size:12px; color:var(--ink-dim);">Balance: $1,000 &rarr; $${s.scenarios.loss.new_balance}</div>
-              </div>
-            </div>
+            <div class="card-label">The rules, at a glance</div>
+            ${renderRulesGrid(s)}
           </div>
 
-          <div class="card" style="border-color:var(--brand); border-width:1.5px;">
-            <div class="card-label">Want real performance numbers?</div>
-            <p style="font-size:13px; margin:0 0 12px;">A strategy alone has no ROI, drawdown, or win rate - those only exist once you combine it with a specific Signal Provider's actual historical signals, a starting bankroll, and a broker payout. Select a provider to run a real backtest across every compatible strategy, including this one.</p>
-            <a class="btn btn-primary" href="provider_analysis.html">Analyze with a Signal Provider &rarr;</a>
+          <div class="card">
+            <div class="card-label">Worked $1,000 example</div>
+            ${renderWorkedExample(s)}
+          </div>
+
+          <div class="card">
+            <div class="card-label">Growth recalculation timeline</div>
+            ${renderTimeline(s)}
           </div>
 
           <div class="row" style="gap:16px;">
             <div class="card" style="flex:1;">
-              <div class="card-label">Best for</div>
-              <p style="font-size:13px; margin:0; color:var(--green);">${s.best_for}</p>
+              <div class="card-label">Pros</div>
+              <ul class="pro-con-list pros">${s.pros.map(p => `<li>${p}</li>`).join("")}</ul>
             </div>
             <div class="card" style="flex:1;">
-              <div class="card-label">Worst for</div>
-              <p style="font-size:13px; margin:0; color:var(--red);">${s.worst_for}</p>
+              <div class="card-label">Cons</div>
+              <ul class="pro-con-list cons">${s.cons.map(c => `<li>${c}</li>`).join("")}</ul>
             </div>
+          </div>
+
+          <div class="card">
+            <div class="card-label">Ideal signal provider types</div>
+            <p style="font-size:13px; margin:0;">${s.ideal_providers}</p>
+          </div>
+
+          <div class="card">
+            <div class="card-label">Frequently asked questions</div>
+            ${renderFaq(s)}
+          </div>
+
+          <div class="card" style="border-color:var(--brand); border-width:1.5px;">
+            <div class="card-label">Want real performance numbers?</div>
+            <p style="font-size:13px; margin:0;">A strategy alone has no ROI, drawdown, or win rate - those only exist once combined with a specific Signal Provider's actual historical signals. Strategy Lab runs real backtests, never fabricated numbers.</p>
           </div>
         </div>
 
         <div style="flex:1; position:sticky; top:40px;">
           <div class="card">
+            <div class="card-label">Best for</div>
+            <ul class="plain-list">${s.best_for.map(b => `<li>${b}</li>`).join("")}</ul>
+          </div>
+          <div class="card">
             <div class="card-label">Ready to use this?</div>
-            <p style="font-size:12px; color:var(--ink-dim); margin:0 0 12px;">This template is only a starting point - nothing is created until you confirm.</p>
-            <a class="btn btn-primary" style="width:100%; justify-content:center; margin-bottom:8px;" href="strategy_customize.html?id=${s.id}">Customize &amp; Use</a>
-            <button class="btn btn-secondary" style="width:100%; justify-content:center; margin-bottom:8px;" id="use-default-btn">Use Default</button>
+            <p style="font-size:12px; color:var(--ink-dim); margin:0 0 12px;">This is one of AXIM's 4 official strategies - locked, so it always means exactly what's on this page. Nothing is created until you confirm.</p>
+            <button class="btn btn-primary" style="width:100%; justify-content:center; margin-bottom:8px;" id="use-strategy-btn">Use This Strategy</button>
+            <a class="btn btn-secondary" style="width:100%; justify-content:center; margin-bottom:8px;" href="strategy_customize.html?base=${s.key}">Create From This Template</a>
             <a class="btn btn-secondary" style="width:100%; justify-content:center;" href="strategy_compare.html">Compare</a>
           </div>
         </div>
       </div>
     `;
 
-    document.getElementById("use-default-btn").onclick = () => {
-      alert("Preview only - this button never creates a real profile in this environment. \"Save as New Profile\" (from Customize & Use) is stored locally in this preview only.");
+    document.getElementById("use-strategy-btn").onclick = () => {
+      alert(`Preview only - in the real product, this opens a confirmation step (which Fund, which broker account, starting bankroll) before "${s.name}" is actually assigned. Nothing is created by this button in this preview environment.`);
     };
   } catch (e) {
     content.innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
   }
 }
 
-if (!strategyId) {
+if (!strategyKey) {
   document.getElementById("page-content").innerHTML = `<div class="card">No strategy selected. <a href="strategy.html">Back to Money Management Studio</a></div>`;
 } else {
   loadDetail();
-  loadSiblingNav();
 }
 </script>
 </body>

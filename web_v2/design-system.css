@@ -252,7 +252,7 @@ h1 { font-size: 25px; font-weight: 750; letter-spacing: -0.015em; margin: 0 0 4p
    style (cascade already gives inline styles priority), this just
    supplies the display:flex those inline props need to do anything.
    Confirmed as a real, pre-existing gap: several pages (strategy.html,
-   strategy_wizard.html, strategy_library.html, strategy_detail.html)
+   strategy_wizard.html, strategy_compare.html, strategy_detail.html)
    already relied on class="row" with inline flex:/gap: styles that were
    silently inert without this - block children just stacked instead of
    sitting side by side. */

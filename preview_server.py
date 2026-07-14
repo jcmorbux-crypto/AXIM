@@ -38,6 +38,7 @@ import fund_manager
 import trade_statistics
 import backtest_engine
 import risk_engine  # pure computation module, same one backtest_engine.py itself imports - no DB writes, no execution
+import money_studio_v2
 
 app = FastAPI(title="AXIM Trader V2 Preview (read-only)")
 
@@ -793,51 +794,29 @@ def preview_provider_analysis(channel_id: int):
 
 @app.get("/api/preview/strategies")
 def preview_strategies_starters():
-    """The 6 curated starters - Strategy Studio's default page (never
-    the full 27), per the explicit 'reduce cognitive overload' brief."""
-    profiles = [_get_profile(i) for i in STARTER_STRATEGY_IDS]
-    return {"strategies": [_strategy_summary(p) for p in profiles if p]}
+    """The 4 official, locked Money Management Studio strategies (2026-
+    07-13 redesign - see money_studio_v2.py's module docstring). The
+    old 6-starter + 27-item Advanced Library system is gone entirely,
+    not just hidden - too technical, too many generically-named options,
+    direct product-owner directive."""
+    return {"strategies": [money_studio_v2.strategy_card(s) for s in money_studio_v2.STRATEGIES]}
 
 
-@app.get("/api/preview/strategies/library")
-def preview_strategies_library():
-    """All 27 templates - the Advanced Library, deliberately one click
-    further away than the 6 starters."""
-    profiles = [p for p in database.list_risk_profiles(include_templates=True) if p["is_template"]]
-    return {"strategies": [_strategy_summary(p) for p in profiles]}
-
-
-@app.get("/api/preview/strategies/{strategy_id}")
-def preview_strategy_detail(strategy_id: int):
-    """Full educational detail for one strategy - explains HOW it
-    works, never how well it performed. No backtest runs here and no
-    win_rate is accepted: a strategy alone has no ROI or drawdown,
-    those only exist once combined with a specific signal provider's
-    real historical signals (see /api/preview/provider-analysis/
-    {channel_id}). scenarios is a single deterministic next-trade
-    projection from the strategy's OWN sizing rule (e.g. "2% of $1000
-    = $20") - a mechanical fact about the rule, not a simulated
-    outcome, so it's safe to show here."""
-    profile = _get_profile(strategy_id)
-    if profile is None:
+@app.get("/api/preview/strategies/{strategy_key}")
+def preview_strategy_detail(strategy_key: str):
+    """Full educational detail for one of the 4 official strategies -
+    explains HOW it works, never how well it performed. No backtest
+    runs here: a strategy alone has no ROI or drawdown, those only
+    exist once combined with a specific signal provider's real
+    historical signals (see /api/preview/provider-analysis/{channel_id}
+    - not yet wired to these 4, see money_studio_v2.py's docstring).
+    worked_example/growth_timeline are deterministic mechanical
+    illustrations of the strategy's OWN rules (e.g. "1% of $1,000 =
+    $10"), never a simulated or fabricated performance outcome."""
+    detail = money_studio_v2.strategy_detail(strategy_key)
+    if detail is None:
         return {"error": "strategy not found"}
-    profile = _with_overlay(profile)
-    desc = _describe(profile)
-    rules = _money_rules(profile)
-    scenarios = _single_trade_scenarios(profile)
-    m, c, v = profile["martingale"], profile["compounding"], profile["profit_vault"]
-    return {
-        "id": profile["id"], "name": _display_name(profile), "description": profile["description"],
-        "sizing_mode": profile["sizing_mode"], "percent_of_bankroll": profile.get("percent_of_bankroll"),
-        "uses_martingale": bool(m["enabled"]), "martingale": {"multiplier": m.get("multiplier"), "max_steps": m.get("max_steps")} if m["enabled"] else None,
-        "uses_compounding": c["mode"] != "disabled", "compounding_mode": c["mode"] if c["mode"] != "disabled" else None,
-        "uses_vault": bool(v["enabled"]), "vault_percent": v.get("vault_percent") if v["enabled"] else None,
-        "risk_level": _structural_risk_rating(profile), "growth_label": _structural_growth_label(profile),
-        "rules": rules, "scenarios": scenarios,
-        "who_should_use": desc["best_for"],
-        "is_custom_entry": profile.get("is_custom_entry", False),
-        **desc,
-    }
+    return detail
 
 
 # Static V2 pages - mounted last so /api/preview/* above takes priority.

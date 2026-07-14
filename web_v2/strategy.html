@@ -2,53 +2,72 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Strategy - AXIM Trader</title>
+<title>Money Management Studio - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
 <link rel="stylesheet" href="design-system.css">
+<style>
+  .ms-card-body { display: flex; flex-direction: column; height: 100%; }
+  .ms-rule-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); font-size: 12.5px; }
+  .ms-rule-row:first-of-type { border-top: none; }
+  .ms-rule-label { color: var(--ink-faint); font-weight: 700; text-transform: uppercase; letter-spacing: .03em; font-size: 10.5px; flex-shrink: 0; padding-top: 2px; }
+  .ms-rule-value { text-align: right; color: var(--ink); }
+  .ms-rule-value.off { color: var(--ink-faint); }
+  .ms-rule-value.on { color: var(--brand); font-weight: 650; }
+  .personality-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 800; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; }
+  .personality-conservative { background: var(--green-bg); color: var(--green); }
+  .personality-balanced { background: #fff4e0; color: #b5750a; }
+  .personality-aggressive { background: var(--red-bg); color: var(--red); }
+  .custom-builder-card { border-style: dashed; display: flex; align-items: center; justify-content: center; text-align: center; min-height: 100%; }
+</style>
 </head>
 <body>
 <div class="shell" id="shell-root"></div>
 <script src="theme.js"></script>
 <script src="shell.js"></script>
 <script>
-renderShell("strategy", "Money Management Studio", "Six strategies to start with. Every card shows the real bankroll rules - click one for the full picture. Nothing is created until you say so.");
+renderShell("strategy", "Money Management Studio", "4 official strategies. Every card shows the real rules - risk, martingale, compounding, vault, and when position size recalculates. Nothing is created until you say so.");
 
-function riskBadgeClass(level) {
-  return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high";
-}
-function tierColor(level) {
-  return level === "Low" ? "var(--green)" : level === "Medium" ? "#b5750a" : "var(--red)";
-}
-const GROWTH_ICON = { "Capital Preservation": "\u{1F6E1}️", "Growth": "\u{1F4C8}", "Recovery-Focused": "\u{1F504}", "Predictable": "⚖️" };
-
-// Splits a prose risk_per_trade string into a big hero value + small
-// caption (e.g. "1% of active bankroll" -> "1%" / "of active bankroll")
-// so the card can show risk the way a price ticker shows a number:
-// large and immediate, not buried in a label:value row.
-function splitRiskValue(text) {
-  let m = text.match(/^(\d+(\.\d+)?%)\s+(.*)$/);
-  if (m) return { big: m[1], small: m[3] };
-  m = text.match(/^Fixed (\$\d+(\.\d+)?)\s+(.*)$/);
-  if (m) return { big: m[1], small: m[3] + " (fixed)" };
-  m = text.match(/^Dynamic (\d+(\.\d+)?%)\s+(.*)$/);
-  if (m) return { big: m[1], small: "of balance, recalculated every trade" };
-  return { big: "Dynamic", small: "sizing computed each trade" };
+function personalityClass(p) {
+  return p === "Conservative" ? "personality-conservative" : p === "Aggressive" ? "personality-aggressive" : "personality-balanced";
 }
 
-// Constitution Q1/Q9 still holds - the real number, never a vague
-// label - but presented as compact numeric PILLS instead of full
-// prose sentences, so the card reads in seconds, not paragraphs. The
-// exact ladder/milestone breakdown stays one tap away on the detail
-// page (P2 "math is one click away, never zero").
-function renderMechPills(s) {
-  const r = s.rules;
-  const pills = [];
-  if (r.martingale) pills.push(`<span class="mech-pill martingale">\u{1F504} Recovery <b>max ${r.martingale.max_exposure.replace(' of bankroll','')}</b></span>`);
-  if (r.compounding) pills.push(`<span class="mech-pill compounding">\u{1F4C8} Compounding ${r.compounding.max_risk_cap === "No cap configured" ? "" : `<b>up to ${r.compounding.max_risk_cap}</b>`}</span>`);
-  if (r.vault) pills.push(`<span class="mech-pill vault">\u{1F512} Vault <b>${r.vault.percent}</b></span>`);
-  if (!pills.length) pills.push(`<span class="mech-pill predictable">✓ Fixed stake, never changes</span>`);
-  return pills.join("");
+function ruleRow(label, active, onText, offText) {
+  return `<div class="ms-rule-row"><span class="ms-rule-label">${label}</span><span class="ms-rule-value ${active ? "on" : "off"}">${active ? onText : (offText || "Off")}</span></div>`;
+}
+
+function renderCard(s) {
+  return `
+    <a class="strategy-card card-interactive" href="strategy_detail.html?id=${s.key}" style="--tier-color:${s.risk_level === "Low" ? "var(--green)" : s.risk_level === "Medium" ? "#b5750a" : "var(--red)"};">
+      <div class="card-body ms-card-body">
+        <div class="sec-title">
+          <div class="s-name">${s.icon} ${s.name}</div>
+          <span class="personality-badge ${personalityClass(s.personality)}" style="margin-top:4px;">${s.personality}</span>
+          <div class="s-desc-clamp" style="margin-top:8px;">${s.tagline}</div>
+        </div>
+
+        <div class="sec-hero">
+          <div class="hero-risk-label">Risk per trade</div>
+          <div class="hero-risk-value">${s.risk.headline}</div>
+        </div>
+
+        <div style="flex:1;">
+          ${ruleRow("Martingale", s.martingale.active, "Yes - limited")}
+          ${ruleRow("Compounding", s.compounding.active, "Yes")}
+          ${ruleRow("Vault", s.vault.active, `Yes - ${s.vault.percent}%`)}
+          ${ruleRow("Recalculates at", s.growth_recalc.active, `+${s.growth_recalc.threshold_percent}% growth`)}
+        </div>
+
+        <div class="sec-usecase" style="margin-top:10px;">
+          <div class="usecase-text">${s.best_for[0]}</div>
+        </div>
+
+        <div class="sec-footer">
+          <span class="learn-more-pill">See full details &rarr;</span>
+        </div>
+      </div>
+    </a>
+  `;
 }
 
 async function load() {
@@ -58,64 +77,26 @@ async function load() {
     const data = await fetchPreview("/strategies");
     content.innerHTML = `
       <div class="row" style="margin-bottom:16px; gap:10px;">
-        <a class="btn btn-primary" href="strategy_wizard.html">✨ Find My Strategy</a>
-        <a class="btn btn-secondary" href="strategy_compare.html">Compare Strategies</a>
-        <a class="btn btn-secondary" href="strategy_library.html">Browse Advanced Library →</a>
+        <a class="btn btn-secondary" href="strategy_compare.html">Compare the 4 Strategies</a>
       </div>
       <div class="grid">
-        ${data.strategies.map(s => {
-          if (s.is_custom_entry) {
-            return `
-              <a class="strategy-card card-interactive" href="strategy_customize.html?id=${s.id}" style="border-style:dashed;">
-                <div class="card-body" style="align-items:center; justify-content:center; text-align:center;">
-                  <div style="font-size:30px; margin-bottom:8px; color:var(--ink-faint);">+</div>
-                  <div class="s-name">${s.name}</div>
-                  <div class="s-desc">${s.description}</div>
-                </div>
-              </a>
-            `;
-          }
-          const risk = splitRiskValue(s.rules.risk_per_trade);
-          return `
-          <a class="strategy-card card-interactive" href="strategy_detail.html?id=${s.id}" style="--tier-color:${tierColor(s.risk_level)};">
-            <div class="card-body">
-              <div class="sec-title">
-                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px;">
-                  <div class="s-name">${s.name}</div>
-                  <span title="${s.growth_label}" style="font-size:20px; flex-shrink:0;">${GROWTH_ICON[s.growth_label] || ""}</span>
-                </div>
-                <div class="s-desc-clamp">${s.description}</div>
-              </div>
-
-              <div class="sec-hero">
-                <div class="hero-risk-label">Risk per trade</div>
-                <div class="hero-risk-value">${risk.big}</div>
-                <div class="hero-risk-sub">${risk.small}</div>
-              </div>
-
-              <div class="sec-pills">${renderMechPills(s)}</div>
-
-              <div class="sec-usecase">
-                <div class="usecase-text">${s.who_should_use}</div>
-              </div>
-
-              <div class="sec-footer">
-                <span class="learn-more-pill">Learn More &rarr;</span>
-              </div>
-            </div>
-          </a>
-        `;
-        }).join("")}
+        ${data.strategies.map(renderCard).join("")}
+        <a class="strategy-card card-interactive custom-builder-card" href="strategy_customize.html">
+          <div style="padding:16px;">
+            <div style="font-size:30px; margin-bottom:8px; color:var(--brand);">+</div>
+            <div class="s-name">Custom Strategy Builder</div>
+            <div class="s-desc" style="min-height:0;">Build your own bankroll rules from scratch - AXIM Trader's signature feature.</div>
+          </div>
+        </a>
       </div>
       <div class="card" style="margin-top:16px;">
-        <div class="card-label">Not sure where to start?</div>
-        <p style="font-size:13px; color:var(--ink-dim); margin:0 0 10px;">Answer 4 quick questions and get one clear recommendation - most people decide in under 3 minutes.</p>
-        <a class="btn btn-primary" href="strategy_wizard.html">✨ Find My Strategy</a>
+        <div class="card-label">Not sure which one fits?</div>
+        <p style="font-size:13px; color:var(--ink-dim); margin:0 0 10px;">Every card above tells you exactly how the money is managed - no marketing labels, no performance guesses. Read all 4, or start with Capital Preservation if you're unsure - it's built to be the safest starting point.</p>
       </div>
       <div class="card">
         <div class="card-label">Already have a Signal Provider in mind?</div>
-        <p style="font-size:13px; color:var(--ink-dim); margin:0 0 10px;">These cards explain how each strategy works, not how well it performed - a strategy has no ROI or drawdown on its own. Pick a provider and AXIM runs a real backtest of every compatible strategy against its actual historical signals.</p>
-        <a class="btn btn-secondary" href="provider_analysis.html">Analyze with a Signal Provider &rarr;</a>
+        <p style="font-size:13px; color:var(--ink-dim); margin:0 0 10px;">These cards explain how each strategy works, not how well it performed - a strategy has no ROI or drawdown on its own. Strategy Lab runs real backtests against a provider's actual historical signals.</p>
+        <a class="btn btn-secondary" href="strategy_lab.html">Open Strategy Lab &rarr;</a>
       </div>
     `;
   } catch (e) {

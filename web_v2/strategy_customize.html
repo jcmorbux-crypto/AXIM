@@ -2,220 +2,66 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Customize Strategy - AXIM Trader</title>
+<title>Custom Strategy Builder - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
 <link rel="stylesheet" href="design-system.css">
+<style>
+  .warning-box { background: var(--red-bg); border: 1.5px solid var(--red); border-radius: 10px; padding: 12px 14px; font-size: 12.5px; color: var(--red); font-weight: 600; line-height: 1.5; margin-top: 10px; }
+  .info-box { background: var(--canvas); border-radius: 10px; padding: 12px 14px; font-size: 12.5px; color: var(--ink-dim); line-height: 1.5; }
+</style>
 </head>
 <body>
 <div class="shell" id="shell-root"></div>
 <script src="theme.js"></script>
 <script src="shell.js"></script>
 <script>
-renderShell("strategy", "Customize Strategy", "Nothing is saved until you confirm - and the original starter template is never overwritten.");
+renderShell("strategy", "Custom Strategy Builder", "AXIM Trader's signature feature - build unlimited bankroll rules of your own. Nothing is saved until you confirm, and no official strategy is ever overwritten.");
 document.querySelector(".subtitle").insertAdjacentHTML("afterend", `
   <div class="detail-topnav">
-    <a class="back-link" href="strategy.html">&larr; Money Management Studio</a>
+    <a class="back-link" href="strategy.html">&larr; Back to Money Management Studio</a>
   </div>
 `);
 
 const params = new URLSearchParams(location.search);
-const baseId = params.get("id");
-const STORAGE_KEY = "axim_preview_custom_profiles";
-let mode = "simple";
-let selectedRiskLevel = "balanced";
-let currentBase = null;
+const baseKey = params.get("base");
+const STORAGE_KEY = "axim_preview_custom_profiles_v2";
 
-function loadSaved() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch (e) { return []; }
-}
+function loadSaved() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch (e) { return []; } }
 function saveSaved(list) { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); }
-function fmtMoneyPlain(n) { return "$" + Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
+function fmtMoney(n) { return "$" + Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
 
-// ==================================================================
-// SIMPLE MODE (default) - 3 plain-language risk levels replace the
-// raw config form. Real numbers underneath are unchanged from what
-// Advanced mode would produce, just explained in a sentence instead
-// of a labeled field. Constitution Q1/Q7/Q9.
-// ==================================================================
-const RISK_PRESETS = {
-  conservative: {
-    label: "Conservative", sub: "Protect what you have first", bars: 1,
-    percent_of_bankroll: 1, sizing_mode: "percent", fixed_amount: 10,
-    martingale: { enabled: false },
-    compounding: { enabled: false },
-    vault: { enabled: true, vault_percent: 20, trigger: "every_winning_session" },
-    profit_target: 0, loss_limit: 0, consecutive_loss_limit: 0, max_trades: 0,
-    blurb: "Every trade risks the same small slice of your balance, no matter what happened on the trade before it. Part of your profit is automatically set aside where it can't be lost again.",
-  },
-  balanced: {
-    label: "Balanced", sub: "Steady growth, no loss-chasing", bars: 3,
-    percent_of_bankroll: 2, sizing_mode: "percent", fixed_amount: 10,
-    martingale: { enabled: false },
-    compounding: { enabled: true, trigger: "balance_milestone", milestones: [{ risk_percent: 2.5, profit_amount: 100 }, { risk_percent: 3, profit_amount: 250 }], max_risk_percent: 3.5, drawdown_reset_percent: 0 },
-    vault: { enabled: false },
-    profit_target: 0, loss_limit: 0, consecutive_loss_limit: 0, max_trades: 0,
-    blurb: "Your risk starts small and only increases automatically as your balance actually grows - never as a reaction to a loss.",
-  },
-  aggressive: {
-    label: "Aggressive", sub: "Faster recovery, bigger swings", bars: 5,
-    percent_of_bankroll: 2, sizing_mode: "percent", fixed_amount: 10,
-    martingale: { enabled: true, steps: 2, multiplier: 1.8, reset_after_win: true, custom_ladder: [] },
-    compounding: { enabled: true, trigger: "balance_milestone", milestones: [{ risk_percent: 2.5, profit_amount: 100 }], max_risk_percent: 3, drawdown_reset_percent: 0 },
-    vault: { enabled: false },
-    profit_target: 0, loss_limit: 0, consecutive_loss_limit: 0, max_trades: 0,
-    blurb: "After a loss, your next stake temporarily rises to help recover faster, then resets back to normal the moment you win. Risk also climbs automatically as your balance grows.",
-  },
-};
-
-function meterHTML(filled) {
-  return `<div class="risk-meter">${Array.from({ length: 5 }, (_, i) => `<div class="bar ${i < filled ? "filled" : ""}"></div>`).join("")}</div>`;
-}
-
-function worstCaseSentence(preset, bankroll) {
-  const base = preset.percent_of_bankroll / 100 * bankroll;
-  if (preset.martingale.enabled) {
-    const worst = base * Math.pow(preset.martingale.multiplier, preset.martingale.steps);
-    return `If you lost ${preset.martingale.steps} trades in a row, your next stake would briefly rise to about ${fmtMoneyPlain(worst.toFixed(0))} (from ${fmtMoneyPlain(base.toFixed(0))}), then reset after your next win.`;
+// Maps one of the 4 official strategies' real rules onto this builder's
+// control taxonomy, for "Create From This Template" - a starting point
+// only. Saving here NEVER modifies the original locked strategy.
+function presetFromBase(base) {
+  if (!base) {
+    return { sizing_mode: "percent", percent: 1, fixed: 10, kelly_p: 55, kelly_b: 0.88, kelly_fraction: 0.5,
+      martingale: "off", mart_custom_mult: 2, compounding: "off", comp_every_x: 3, comp_profit_target: 100,
+      vault: "none", vault_custom: 15, growth_threshold: "50", growth_custom: 60,
+      daily_stop_loss: 0, daily_profit_target: 0, session_stop: 0, cooldown_minutes: 0 };
   }
-  if (preset.compounding.enabled) {
-    return `Every trade starts at about ${fmtMoneyPlain(base.toFixed(0))} on a ${fmtMoneyPlain(bankroll)} balance. That never changes because of a loss - it only grows, a little at a time, as your balance grows.`;
-  }
-  return `Every trade risks about ${fmtMoneyPlain(base.toFixed(0))} on a ${fmtMoneyPlain(bankroll)} balance - that stays exactly the same whether you win or lose.`;
-}
-
-function buildSimpleForm(base) {
-  document.getElementById("page-content").innerHTML = `
-    <div class="mode-banner">
-      <span>Simple mode - pick a risk level, we handle the rest.</span>
-      <button class="mode-link" id="to-advanced">Advanced: customize every rule myself &rarr;</button>
-    </div>
-    <div class="row" style="align-items:flex-start; gap:16px;">
-      <div style="flex:2; min-width:0;">
-        <div class="card">
-          <div class="card-label">Profile identity</div>
-          <div class="field">
-            <label>Profile name</label>
-            <input type="text" id="s-name" value="${base.name} (Custom)">
-          </div>
-          <div class="field">
-            <label>Starting bankroll ($)</label>
-            <input type="number" id="s-bankroll" min="1" step="1" value="1000">
-            <div class="hint">Used only to illustrate this profile's rules - your real Fund balance is unaffected.</div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-label">Choose a risk level</div>
-          <div class="risk-level-picker" id="risk-picker">
-            ${Object.entries(RISK_PRESETS).map(([key, p]) => `
-              <div class="risk-level-card" data-key="${key}">
-                <div class="rl-title">${p.label}</div>
-                <div class="rl-sub">${p.sub}</div>
-                ${meterHTML(p.bars)}
-                <div class="rl-detail">${p.blurb}</div>
-              </div>
-            `).join("")}
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-label">Your plan in plain English</div>
-          <div class="plain-summary" id="plain-summary"></div>
-        </div>
-      </div>
-
-      <div style="flex:1; position:sticky; top:40px;">
-        <div class="card">
-          <div class="card-label">Save</div>
-          <p style="font-size:12px; color:var(--ink-dim); margin:0 0 10px;">Saved locally to this preview browser only - never sent to the server, and the "${base.name}" starter template is never modified.</p>
-          <button class="btn btn-primary" style="width:100%; justify-content:center;" id="simple-save-btn">Save as New Profile</button>
-          <div id="simple-save-confirm" style="display:none; margin-top:10px; font-size:12.5px; color:var(--green); font-weight:600;"></div>
-        </div>
-        <div class="card" id="saved-list-card" style="display:none;">
-          <div class="card-label">Saved custom profiles (this preview)</div>
-          <div id="saved-list"></div>
-        </div>
-      </div>
-    </div>
-  `;
-}
-
-function refreshSimpleSummary() {
-  const bankroll = parseFloat(document.getElementById("s-bankroll").value) || 1000;
-  const preset = RISK_PRESETS[selectedRiskLevel];
-  document.querySelectorAll(".risk-level-card").forEach(card => {
-    card.classList.toggle("selected", card.dataset.key === selectedRiskLevel);
-  });
-  const vaultLine = preset.vault.enabled ? ` ${preset.vault.vault_percent}% of every winning session's profit moves automatically into a protected balance.` : "";
-  document.getElementById("plain-summary").innerHTML = `
-    <p>${preset.blurb}${vaultLine}</p>
-    <p>${worstCaseSentence(preset, bankroll)}</p>
-    <p style="color:var(--ink-dim); font-size:12.5px;">No automatic profit target or loss limit is set - you stay in control of when a session ends. Change this any time in Advanced mode.</p>
-  `;
-}
-
-function wireSimpleForm(base) {
-  document.getElementById("risk-picker").querySelectorAll(".risk-level-card").forEach(card => {
-    card.onclick = () => { selectedRiskLevel = card.dataset.key; refreshSimpleSummary(); };
-  });
-  document.getElementById("s-bankroll").oninput = refreshSimpleSummary;
-  document.getElementById("to-advanced").onclick = () => { mode = "advanced"; renderPage(base); };
-  document.getElementById("simple-save-btn").onclick = () => {
-    const name = document.getElementById("s-name").value.trim();
-    if (!name) { alert("Please give this profile a name."); return; }
-    const bankroll = parseFloat(document.getElementById("s-bankroll").value) || 1000;
-    const preset = RISK_PRESETS[selectedRiskLevel];
-    const record = {
-      name, bankroll, sizing_mode: preset.sizing_mode, percent_of_bankroll: preset.percent_of_bankroll,
-      fixed_amount: preset.fixed_amount, min_trade_amount: 0, max_trade_amount: 0,
-      martingale: preset.martingale, compounding: preset.compounding, vault: preset.vault,
-      profit_target: preset.profit_target, loss_limit: preset.loss_limit,
-      consecutive_loss_limit: preset.consecutive_loss_limit, max_trades: preset.max_trades,
-      risk_level_chosen: selectedRiskLevel, based_on: base.name, base_id: base.id, saved_at: new Date().toISOString(),
-    };
-    const list = loadSaved();
-    list.push(record);
-    saveSaved(list);
-    const confirm = document.getElementById("simple-save-confirm");
-    confirm.style.display = "block";
-    confirm.textContent = `Saved "${name}" to this preview browser. "${base.name}" itself is untouched.`;
-    renderSavedList();
+  const map = {
+    capital_preservation: { sizing_mode: "percent", percent: 1, martingale: "off", compounding: "off", vault: "25", growth_threshold: "125" },
+    growth_accelerator: { sizing_mode: "percent", percent: 5, martingale: "off", compounding: "custom", vault: "25", growth_threshold: "125" },
+    alternating_compound: { sizing_mode: "percent", percent: 2.5, martingale: "off", compounding: "custom", vault: "none", growth_threshold: "50" },
+    recovery_ladder: { sizing_mode: "percent", percent: 1, martingale: "2", mart_custom_mult: 2, compounding: "off", vault: "none", growth_threshold: "100" },
   };
-  refreshSimpleSummary();
-  renderSavedList();
+  const m = map[base.key] || {};
+  return {
+    sizing_mode: m.sizing_mode || "percent", percent: m.percent ?? 1, fixed: 10, kelly_p: 55, kelly_b: 0.88, kelly_fraction: 0.5,
+    martingale: m.martingale || "off", mart_custom_mult: m.mart_custom_mult ?? 2,
+    compounding: m.compounding || "off", comp_every_x: 3, comp_profit_target: 100,
+    vault: m.vault || "none", vault_custom: 15,
+    growth_threshold: m.growth_threshold || "50", growth_custom: 60,
+    daily_stop_loss: 0, daily_profit_target: 0, session_stop: 0, cooldown_minutes: 0,
+  };
 }
 
-// ==================================================================
-// ADVANCED MODE (opt-in) - the full field-by-field form for power
-// users. Same behavior as before; only reachable via the link above.
-// ==================================================================
-function ladderRowHTML(value) {
-  return `<div class="ladder-row">
-    <input type="number" step="0.1" min="1" class="ladder-mult" value="${value}">
-    <button type="button" class="row-remove" onclick="this.parentElement.remove(); updateSummary();">&times;</button>
-  </div>`;
-}
-function milestoneRowHTML(risk, amount) {
-  return `<div class="milestone-row">
-    <input type="number" step="0.1" min="0" class="ms-risk" value="${risk}" placeholder="Risk %">
-    <span style="font-size:12px; color:var(--ink-faint);">% at</span>
-    <input type="number" step="1" min="0" class="ms-amount" value="${amount}" placeholder="Profit $">
-    <button type="button" class="row-remove" onclick="this.parentElement.remove(); updateSummary();">&times;</button>
-  </div>`;
-}
-
-function buildAdvancedForm(base) {
-  const r = base.rules || {};
-  const hasMart = base.uses_martingale;
-  const hasComp = base.uses_compounding;
-  const hasVault = base.uses_vault;
-
+function buildForm(base, preset) {
+  const baseName = base ? base.name : null;
   document.getElementById("page-content").innerHTML = `
-    <div class="mode-banner">
-      <span>Advanced mode - every rule is exposed and editable.</span>
-      <button class="mode-link" id="to-simple">&larr; Back to Simple mode</button>
-    </div>
+    ${baseName ? `<div class="info-box" style="margin-bottom:16px;">Starting from <b>${baseName}</b>'s rules as a template. Change anything below - "${baseName}" itself is never modified, and nothing here is saved until you confirm.</div>` : ""}
     <div class="row" style="align-items:flex-start; gap:16px;">
       <div style="flex:2; min-width:0;">
         <form id="custom-form" onsubmit="return false;">
@@ -224,12 +70,12 @@ function buildAdvancedForm(base) {
             <div class="card-label">Profile identity</div>
             <div class="field">
               <label>Profile name</label>
-              <input type="text" id="f-name" value="${base.name} (Custom)">
+              <input type="text" id="f-name" value="${baseName ? baseName + " (Custom)" : "My Custom Strategy"}">
             </div>
             <div class="field">
               <label>Starting bankroll ($)</label>
               <input type="number" id="f-bankroll" min="1" step="1" value="1000">
-              <div class="hint">Used only to illustrate this profile's rules - your real Fund balance is unaffected.</div>
+              <div class="hint">Used only to illustrate this profile's rules below - your real Fund balance is unaffected.</div>
             </div>
           </div>
 
@@ -238,156 +84,137 @@ function buildAdvancedForm(base) {
             <div class="field">
               <label>Method</label>
               <select id="f-sizing-mode">
-                <option value="percent" ${base.sizing_mode !== "fixed" ? "selected" : ""}>Percentage of bankroll</option>
-                <option value="fixed" ${base.sizing_mode === "fixed" ? "selected" : ""}>Fixed dollar amount</option>
+                <option value="fixed" ${preset.sizing_mode === "fixed" ? "selected" : ""}>Fixed dollar sizing</option>
+                <option value="percent" ${preset.sizing_mode === "percent" ? "selected" : ""}>Percentage sizing</option>
+                <option value="kelly" ${preset.sizing_mode === "kelly" ? "selected" : ""}>Kelly sizing</option>
+                <option value="dynamic" ${preset.sizing_mode === "dynamic" ? "selected" : ""}>Dynamic sizing (recalculates every trade)</option>
               </select>
             </div>
-            <div class="field-row">
-              <div class="field">
-                <label>Risk percentage (%)</label>
-                <input type="number" id="f-percent" step="0.1" min="0.1" value="${base.percent_of_bankroll || 2}">
-              </div>
-              <div class="field">
-                <label>Fixed amount ($)</label>
-                <input type="number" id="f-fixed" step="1" min="1" value="${base.fixed_amount || 10}">
-              </div>
-            </div>
-            <div class="field-row">
-              <div class="field">
-                <label>Minimum trade amount ($)</label>
-                <input type="number" id="f-min-trade" step="1" min="0" value="0">
-                <div class="hint">0 = no floor</div>
-              </div>
-              <div class="field">
-                <label>Maximum trade amount ($)</label>
-                <input type="number" id="f-max-trade" step="1" min="0" value="0">
-                <div class="hint">0 = no cap</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="card">
-            <div class="section-toggle">
-              <div><div class="st-text">Martingale (loss recovery)</div><div class="st-sub">Increases stake after a loss, resets on a win</div></div>
-              <label class="switch"><input type="checkbox" id="f-mart-enabled" ${hasMart ? "checked" : ""}><span class="slider"></span></label>
-            </div>
-            <div id="mart-fields" class="mechanism-fields ${hasMart ? "" : "disabled"}">
+            <div id="sizing-fixed" class="sizing-sub"><div class="field"><label>Fixed amount ($)</label><input type="number" id="f-fixed" step="1" min="1" value="${preset.fixed}"></div></div>
+            <div id="sizing-percent" class="sizing-sub"><div class="field"><label>Percent of bankroll (%)</label><input type="number" id="f-percent" step="0.1" min="0.1" value="${preset.percent}"></div></div>
+            <div id="sizing-kelly" class="sizing-sub">
               <div class="field-row">
-                <div class="field">
-                  <label>Steps</label>
-                  <input type="number" id="f-mart-steps" min="1" max="10" value="${(base.martingale && base.martingale.max_steps) || 2}">
-                </div>
-                <div class="field">
-                  <label>Multiplier</label>
-                  <input type="number" id="f-mart-mult" step="0.1" min="1" value="${(base.martingale && base.martingale.multiplier) || 2}">
-                </div>
+                <div class="field"><label>Estimated win rate (%)</label><input type="number" id="f-kelly-p" step="1" min="1" max="99" value="${preset.kelly_p}"></div>
+                <div class="field"><label>Estimated payout (0-1)</label><input type="number" id="f-kelly-b" step="0.01" min="0.01" value="${preset.kelly_b}"></div>
               </div>
-              <div class="checkbox-field field">
-                <input type="checkbox" id="f-mart-reset" checked>
-                <label style="margin:0;" for="f-mart-reset">Reset to base stake after a win</label>
-              </div>
-              <div class="field">
-                <label>Custom ladder (optional - overrides steps/multiplier above)</label>
-                <div id="ladder-rows"></div>
-                <button type="button" class="add-row-btn" id="add-ladder-row">+ Add ladder step</button>
-                <div class="hint">Each value is a multiplier applied to the base stake, e.g. 1, 2, 4.5</div>
-              </div>
+              <div class="field"><label>Kelly fraction (0.5 = half-Kelly, recommended)</label><input type="number" id="f-kelly-fraction" step="0.05" min="0.05" max="1" value="${preset.kelly_fraction}"></div>
+            </div>
+            <div id="sizing-dynamic" class="sizing-sub">
+              <div class="field"><label>Percent of current balance (%)</label><input type="number" id="f-dynamic-percent" step="0.1" min="0.1" value="${preset.percent}"></div>
+              <div class="hint">Recalculated fresh every single trade from your live balance - the only sizing method with no fixed baseline at all.</div>
             </div>
           </div>
 
           <div class="card">
-            <div class="section-toggle">
-              <div><div class="st-text">Compounding (growth)</div><div class="st-sub">Increases risk as your balance grows</div></div>
-              <label class="switch"><input type="checkbox" id="f-comp-enabled" ${hasComp ? "checked" : ""}><span class="slider"></span></label>
+            <div class="card-label">Martingale</div>
+            <div class="field">
+              <label>Recovery steps after a loss</label>
+              <select id="f-martingale">
+                <option value="off" ${preset.martingale === "off" ? "selected" : ""}>Off</option>
+                <option value="1" ${preset.martingale === "1" ? "selected" : ""}>1 step</option>
+                <option value="2" ${preset.martingale === "2" ? "selected" : ""}>2 steps</option>
+                <option value="3" ${preset.martingale === "3" ? "selected" : ""}>3 steps</option>
+                <option value="unlimited" ${preset.martingale === "unlimited" ? "selected" : ""}>Unlimited</option>
+                <option value="custom" ${preset.martingale === "custom" ? "selected" : ""}>Custom multiplier</option>
+              </select>
             </div>
-            <div id="comp-fields" class="mechanism-fields ${hasComp ? "" : "disabled"}">
-              <div class="field">
-                <label>Trigger</label>
-                <select id="f-comp-trigger">
-                  <option value="profit_target">Profit target reached</option>
-                  <option value="balance_milestone" ${base.compounding_mode === "milestone_based" ? "selected" : ""}>Balance milestone reached</option>
-                  <option value="winning_session">End of a winning session</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>Milestones (risk % increases at each profit level)</label>
-                <div id="milestone-rows"></div>
-                <button type="button" class="add-row-btn" id="add-milestone-row">+ Add milestone</button>
-              </div>
-              <div class="field-row">
-                <div class="field">
-                  <label>Maximum risk cap (%)</label>
-                  <input type="number" id="f-comp-maxrisk" step="0.1" min="0" value="3">
-                </div>
-                <div class="field">
-                  <label>Reset drawdown (%, 0 = never auto-reset)</label>
-                  <input type="number" id="f-comp-reset" step="1" min="0" value="0">
-                </div>
-              </div>
+            <div id="mart-mult-field" class="field" style="display:none;">
+              <label>Multiplier per step</label>
+              <input type="number" id="f-mart-mult" step="0.1" min="1" value="${preset.mart_custom_mult}">
+            </div>
+            <div id="mart-unlimited-warning" style="display:none;">
+              <div class="warning-box">⚠ Unlimited martingale has no cap. A losing streak of just 10-12 trades in a row can consume an entire bankroll, no matter how small the base stake is. AXIM strongly recommends a capped option (1-3 steps) instead - Unlimited is available here because you asked for full control, not because it's recommended.</div>
             </div>
           </div>
 
           <div class="card">
-            <div class="section-toggle">
-              <div><div class="st-text">Profit Vault</div><div class="st-sub">Automatically moves a slice of profit to a protected balance</div></div>
-              <label class="switch"><input type="checkbox" id="f-vault-enabled" ${hasVault ? "checked" : ""}><span class="slider"></span></label>
+            <div class="card-label">Compounding</div>
+            <div class="field">
+              <label>When risk increases</label>
+              <select id="f-compounding">
+                <option value="off" ${preset.compounding === "off" ? "selected" : ""}>Off</option>
+                <option value="every_win" ${preset.compounding === "every_win" ? "selected" : ""}>Every win</option>
+                <option value="every_x_wins" ${preset.compounding === "every_x_wins" ? "selected" : ""}>Every X wins</option>
+                <option value="daily" ${preset.compounding === "daily" ? "selected" : ""}>Daily</option>
+                <option value="weekly" ${preset.compounding === "weekly" ? "selected" : ""}>Weekly</option>
+                <option value="profit_target" ${preset.compounding === "profit_target" ? "selected" : ""}>Profit target</option>
+                <option value="custom" ${preset.compounding === "custom" ? "selected" : ""}>Custom</option>
+              </select>
             </div>
-            <div id="vault-fields" class="mechanism-fields ${hasVault ? "" : "disabled"}">
-              <div class="field-row">
-                <div class="field">
-                  <label>Vault percentage (%)</label>
-                  <input type="number" id="f-vault-percent" step="1" min="1" max="100" value="${base.vault_percent || 10}">
-                </div>
-                <div class="field">
-                  <label>Trigger</label>
-                  <select id="f-vault-trigger">
-                    <option value="every_winning_session">Every winning session</option>
-                    <option value="daily_target">Daily profit target hit</option>
-                    <option value="milestone">Balance milestone</option>
-                  </select>
-                </div>
-              </div>
+            <div id="comp-every-x-field" class="field" style="display:none;">
+              <label>X (number of wins)</label>
+              <input type="number" id="f-comp-every-x" step="1" min="2" value="${preset.comp_every_x}">
+            </div>
+            <div id="comp-profit-target-field" class="field" style="display:none;">
+              <label>Profit target ($)</label>
+              <input type="number" id="f-comp-profit-target" step="1" min="1" value="${preset.comp_profit_target}">
+            </div>
+            <div id="comp-custom-field" class="field" style="display:none;">
+              <label>Describe your custom compounding rule</label>
+              <input type="text" id="f-comp-custom-desc" placeholder="e.g. increase risk 0.5% for every $250 of profit">
             </div>
           </div>
 
           <div class="card">
-            <div class="card-label">Stop conditions</div>
+            <div class="card-label">Vault</div>
+            <div class="field">
+              <label>Percent of profit vaulted</label>
+              <select id="f-vault">
+                <option value="none" ${preset.vault === "none" ? "selected" : ""}>None</option>
+                <option value="10" ${preset.vault === "10" ? "selected" : ""}>10%</option>
+                <option value="25" ${preset.vault === "25" ? "selected" : ""}>25%</option>
+                <option value="50" ${preset.vault === "50" ? "selected" : ""}>50%</option>
+                <option value="custom" ${preset.vault === "custom" ? "selected" : ""}>Custom</option>
+              </select>
+            </div>
+            <div id="vault-custom-field" class="field" style="display:none;">
+              <label>Custom vault percent (%)</label>
+              <input type="number" id="f-vault-custom" step="1" min="1" max="100" value="${preset.vault_custom}">
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-label">Growth threshold</div>
+            <div class="field">
+              <label>Position size recalculates once Active Bankroll grows this much above baseline</label>
+              <select id="f-growth-threshold">
+                <option value="25" ${preset.growth_threshold === "25" ? "selected" : ""}>25%</option>
+                <option value="50" ${preset.growth_threshold === "50" ? "selected" : ""}>50%</option>
+                <option value="75" ${preset.growth_threshold === "75" ? "selected" : ""}>75%</option>
+                <option value="100" ${preset.growth_threshold === "100" ? "selected" : ""}>100%</option>
+                <option value="125" ${preset.growth_threshold === "125" ? "selected" : ""}>125%</option>
+                <option value="custom" ${preset.growth_threshold === "custom" ? "selected" : ""}>Custom</option>
+              </select>
+            </div>
+            <div id="growth-custom-field" class="field" style="display:none;">
+              <label>Custom threshold (%)</label>
+              <input type="number" id="f-growth-custom" step="1" min="1" value="${preset.growth_custom}">
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-label">Session controls</div>
             <div class="field-row">
-              <div class="field">
-                <label>Profit target ($, session)</label>
-                <input type="number" id="f-profit-target" step="1" min="0" value="0">
-                <div class="hint">0 = no automatic stop</div>
-              </div>
-              <div class="field">
-                <label>Loss limit ($, session)</label>
-                <input type="number" id="f-loss-limit" step="1" min="0" value="0">
-                <div class="hint">0 = no automatic stop</div>
-              </div>
+              <div class="field"><label>Daily stop loss ($, 0 = off)</label><input type="number" id="f-daily-stop-loss" step="1" min="0" value="${preset.daily_stop_loss}"></div>
+              <div class="field"><label>Daily profit target ($, 0 = off)</label><input type="number" id="f-daily-profit-target" step="1" min="0" value="${preset.daily_profit_target}"></div>
             </div>
             <div class="field-row">
-              <div class="field">
-                <label>Consecutive-loss limit (#)</label>
-                <input type="number" id="f-consec-loss" step="1" min="0" value="0">
-                <div class="hint">0 = no limit</div>
-              </div>
-              <div class="field">
-                <label>Maximum trades (#, session)</label>
-                <input type="number" id="f-max-trades" step="1" min="0" value="0">
-                <div class="hint">0 = no limit</div>
-              </div>
+              <div class="field"><label>Session stop ($, 0 = off)</label><input type="number" id="f-session-stop" step="1" min="0" value="${preset.session_stop}"></div>
+              <div class="field"><label>Cooldown after a loss (minutes, 0 = off)</label><input type="number" id="f-cooldown" step="1" min="0" value="${preset.cooldown_minutes}"></div>
             </div>
+            <div class="info-box">Emergency Stop always applies immediately, across every strategy including this one - it can never be disabled or configured away, here or anywhere else in AXIM.</div>
           </div>
         </form>
       </div>
 
       <div style="flex:1; position:sticky; top:40px;">
         <div class="card">
-          <div class="card-label">Live summary</div>
+          <div class="card-label">Your plan in plain English</div>
           <div id="live-summary" class="money-rules"></div>
         </div>
         <div class="card">
           <div class="card-label">Save</div>
-          <p style="font-size:12px; color:var(--ink-dim); margin:0 0 10px;">Saved locally to this preview browser only - never sent to the server, and the "${base.name}" starter template is never modified.</p>
+          <p style="font-size:12px; color:var(--ink-dim); margin:0 0 10px;">Saved locally to this preview browser only - never sent to the server${baseName ? `, and "${baseName}" itself is never modified` : ""}.</p>
           <button class="btn btn-primary" style="width:100%; justify-content:center;" id="save-btn">Save as New Profile</button>
           <div id="save-confirm" style="display:none; margin-top:10px; font-size:12.5px; color:var(--green); font-weight:600;"></div>
         </div>
@@ -400,155 +227,94 @@ function buildAdvancedForm(base) {
   `;
 }
 
-function currentLadder() {
-  return Array.from(document.querySelectorAll(".ladder-mult")).map(i => parseFloat(i.value) || 1);
-}
-function currentMilestones() {
-  return Array.from(document.querySelectorAll(".milestone-row")).map(row => ({
-    risk_percent: parseFloat(row.querySelector(".ms-risk").value) || 0,
-    profit_amount: parseFloat(row.querySelector(".ms-amount").value) || 0,
-  }));
-}
-
-function computeMaxExposure(sizingMode, percent, fixed, steps, multiplier, ladder) {
-  const mults = ladder.length ? ladder : Array.from({ length: steps + 1 }, (_, i) => Math.pow(multiplier, i));
-  const sum = mults.reduce((a, b) => a + b, 0);
-  if (sizingMode === "fixed") return fmtMoneyPlain((fixed * sum).toFixed(2)) + " total across the ladder";
-  return (percent * sum).toFixed(2) + "% of bankroll at the deepest step";
+function showSizingSub(mode) {
+  ["fixed", "percent", "kelly", "dynamic"].forEach(m => {
+    document.getElementById(`sizing-${m}`).style.display = m === mode ? "block" : "none";
+  });
 }
 
 function gatherForm() {
   const sizingMode = document.getElementById("f-sizing-mode").value;
-  const percent = parseFloat(document.getElementById("f-percent").value) || 0;
-  const fixed = parseFloat(document.getElementById("f-fixed").value) || 0;
-  const martEnabled = document.getElementById("f-mart-enabled").checked;
-  const compEnabled = document.getElementById("f-comp-enabled").checked;
-  const vaultEnabled = document.getElementById("f-vault-enabled").checked;
+  const martingale = document.getElementById("f-martingale").value;
+  const compounding = document.getElementById("f-compounding").value;
+  const vault = document.getElementById("f-vault").value;
+  const growthThreshold = document.getElementById("f-growth-threshold").value;
   return {
     name: document.getElementById("f-name").value.trim(),
     bankroll: parseFloat(document.getElementById("f-bankroll").value) || 1000,
-    sizing_mode: sizingMode, percent_of_bankroll: percent, fixed_amount: fixed,
-    min_trade_amount: parseFloat(document.getElementById("f-min-trade").value) || 0,
-    max_trade_amount: parseFloat(document.getElementById("f-max-trade").value) || 0,
-    martingale: martEnabled ? {
-      enabled: true,
-      steps: parseInt(document.getElementById("f-mart-steps").value) || 1,
-      multiplier: parseFloat(document.getElementById("f-mart-mult").value) || 2,
-      reset_after_win: document.getElementById("f-mart-reset").checked,
-      custom_ladder: currentLadder().length > 1 ? currentLadder() : [],
-    } : { enabled: false },
-    compounding: compEnabled ? {
-      enabled: true,
-      trigger: document.getElementById("f-comp-trigger").value,
-      milestones: currentMilestones(),
-      max_risk_percent: parseFloat(document.getElementById("f-comp-maxrisk").value) || 0,
-      drawdown_reset_percent: parseFloat(document.getElementById("f-comp-reset").value) || 0,
-    } : { enabled: false },
-    vault: vaultEnabled ? {
-      enabled: true,
-      vault_percent: parseFloat(document.getElementById("f-vault-percent").value) || 10,
-      trigger: document.getElementById("f-vault-trigger").value,
-    } : { enabled: false },
-    profit_target: parseFloat(document.getElementById("f-profit-target").value) || 0,
-    loss_limit: parseFloat(document.getElementById("f-loss-limit").value) || 0,
-    consecutive_loss_limit: parseInt(document.getElementById("f-consec-loss").value) || 0,
-    max_trades: parseInt(document.getElementById("f-max-trades").value) || 0,
+    sizing_mode: sizingMode,
+    fixed_amount: parseFloat(document.getElementById("f-fixed").value) || 0,
+    percent_of_bankroll: parseFloat(document.getElementById("f-percent").value) || 0,
+    kelly_win_rate: parseFloat(document.getElementById("f-kelly-p").value) || 0,
+    kelly_payout: parseFloat(document.getElementById("f-kelly-b").value) || 0,
+    kelly_fraction: parseFloat(document.getElementById("f-kelly-fraction").value) || 0.5,
+    dynamic_percent: parseFloat(document.getElementById("f-dynamic-percent").value) || 0,
+    martingale, martingale_multiplier: martingale === "custom" ? (parseFloat(document.getElementById("f-mart-mult").value) || 2) : (martingale === "unlimited" ? null : (parseFloat(martingale) ? 2 : null)),
+    compounding,
+    compounding_every_x: parseInt(document.getElementById("f-comp-every-x").value, 10) || 3,
+    compounding_profit_target: parseFloat(document.getElementById("f-comp-profit-target").value) || 100,
+    compounding_custom_desc: (document.getElementById("f-comp-custom-desc") || {}).value || "",
+    vault, vault_custom_percent: parseFloat(document.getElementById("f-vault-custom").value) || 0,
+    growth_threshold: growthThreshold, growth_custom_percent: parseFloat(document.getElementById("f-growth-custom").value) || 0,
+    daily_stop_loss: parseFloat(document.getElementById("f-daily-stop-loss").value) || 0,
+    daily_profit_target: parseFloat(document.getElementById("f-daily-profit-target").value) || 0,
+    session_stop: parseFloat(document.getElementById("f-session-stop").value) || 0,
+    cooldown_minutes: parseInt(document.getElementById("f-cooldown").value, 10) || 0,
   };
+}
+
+function martingaleLabel(f) {
+  if (f.martingale === "off") return "Off - a loss never changes your next stake.";
+  if (f.martingale === "unlimited") return "Unlimited steps - no cap on how far the ladder can climb.";
+  if (f.martingale === "custom") return `Custom multiplier: ${f.martingale_multiplier}x per step.`;
+  return `${f.martingale} step(s), 2x multiplier per step (default).`;
+}
+function compoundingLabel(f) {
+  const map = { off: "Off - risk never increases.", every_win: "Increases after every win.", daily: "Increases daily.", weekly: "Increases weekly." };
+  if (map[f.compounding]) return map[f.compounding];
+  if (f.compounding === "every_x_wins") return `Increases every ${f.compounding_every_x} wins.`;
+  if (f.compounding === "profit_target") return `Increases once $${f.compounding_profit_target} profit is reached.`;
+  if (f.compounding === "custom") return f.compounding_custom_desc || "Custom rule (not yet described).";
+  return "Off";
+}
+function vaultLabel(f) {
+  if (f.vault === "none") return "No profit is vaulted.";
+  if (f.vault === "custom") return `${f.vault_custom_percent}% of profit vaulted.`;
+  return `${f.vault}% of profit vaulted.`;
+}
+function growthLabel(f) {
+  const pct = f.growth_threshold === "custom" ? f.growth_custom_percent : f.growth_threshold;
+  return `Position size recalculates once Active Bankroll grows +${pct}% above baseline.`;
+}
+function sizingLabel(f) {
+  if (f.sizing_mode === "fixed") return `Fixed $${f.fixed_amount} every trade.`;
+  if (f.sizing_mode === "percent") return `${f.percent_of_bankroll}% of bankroll per trade.`;
+  if (f.sizing_mode === "kelly") return `Kelly sizing (${f.kelly_fraction}x fraction) from an estimated ${f.kelly_win_rate}% win rate / ${f.kelly_payout} payout.`;
+  if (f.sizing_mode === "dynamic") return `${f.dynamic_percent}% of your current balance, recalculated every trade.`;
+  return "";
 }
 
 function updateSummary() {
   const f = gatherForm();
-  let html = `<div class="rule-row"><span class="rule-label">Risk per trade</span><span class="rule-value">${f.sizing_mode === "fixed" ? "$" + f.fixed_amount : f.percent_of_bankroll + "%"}</span></div>
-    <div class="rule-row"><span class="rule-label">Sizing method</span><span class="rule-value">${f.sizing_mode === "fixed" ? "Fixed dollar amount" : "Percentage of bankroll"}</span></div>`;
-  if (f.min_trade_amount > 0) html += `<div class="rule-row"><span class="rule-label">Minimum trade</span><span class="rule-value">$${f.min_trade_amount}</span></div>`;
-  if (f.max_trade_amount > 0) html += `<div class="rule-row"><span class="rule-label">Maximum trade</span><span class="rule-value">$${f.max_trade_amount}</span></div>`;
-
-  if (f.martingale.enabled) {
-    const exposure = computeMaxExposure(f.sizing_mode, f.percent_of_bankroll, f.fixed_amount, f.martingale.steps, f.martingale.multiplier, f.martingale.custom_ladder);
-    html += `<div class="mechanism-block martingale">
-      <div class="mech-title">Martingale: ${f.martingale.steps} step(s)</div>
-      Multiplier ${f.martingale.multiplier}x per step${f.martingale.custom_ladder.length ? " (custom ladder: " + f.martingale.custom_ladder.join(", ") + "x)" : ""}<br>
-      ${f.martingale.reset_after_win ? "Resets after a win" : "Does not auto-reset after a win"}<br>
-      <b>Max exposure: ${exposure}</b>
-    </div>`;
-  }
-  if (f.compounding.enabled) {
-    const msText = f.compounding.milestones.length
-      ? f.compounding.milestones.map(m => `+${m.risk_percent}% at $${m.profit_amount} profit`).join(" -> ")
-      : "No milestones added yet";
-    html += `<div class="mechanism-block compounding">
-      <div class="mech-title">Compounding (${f.compounding.trigger.replace(/_/g, " ")})</div>
-      ${msText}<br>Maximum risk cap: ${f.compounding.max_risk_percent}%
-    </div>`;
-  }
-  if (f.vault.enabled) {
-    html += `<div class="mechanism-block vault">
-      <div class="mech-title">Profit Vault</div>
-      Moves ${f.vault.vault_percent}% of profit to Protected Balance (${f.vault.trigger.replace(/_/g, " ")})
-    </div>`;
-  }
-  html += `<div class="rule-row"><span class="rule-label">Profit target</span><span class="rule-value">${f.profit_target > 0 ? "$" + f.profit_target : "No automatic stop"}</span></div>
-    <div class="rule-row"><span class="rule-label">Loss limit</span><span class="rule-value">${f.loss_limit > 0 ? "$" + f.loss_limit : "No automatic stop"}</span></div>
-    <div class="rule-row"><span class="rule-label">Consecutive-loss limit</span><span class="rule-value">${f.consecutive_loss_limit > 0 ? f.consecutive_loss_limit : "None"}</span></div>
-    <div class="rule-row"><span class="rule-label">Max trades / session</span><span class="rule-value">${f.max_trades > 0 ? f.max_trades : "None"}</span></div>`;
-
+  let html = `
+    <div class="rule-row"><span class="rule-label">Sizing</span><span class="rule-value">${sizingLabel(f)}</span></div>
+    <div class="mechanism-block martingale"><div class="mech-title">Martingale</div>${martingaleLabel(f)}</div>
+    <div class="mechanism-block compounding"><div class="mech-title">Compounding</div>${compoundingLabel(f)}</div>
+    <div class="mechanism-block vault"><div class="mech-title">Vault</div>${vaultLabel(f)}</div>
+    <div class="rule-row"><span class="rule-label">Growth threshold</span><span class="rule-value">${growthLabel(f).replace("Position size recalculates once Active Bankroll grows ", "")}</span></div>
+    <div class="rule-row"><span class="rule-label">Daily stop loss</span><span class="rule-value">${f.daily_stop_loss > 0 ? fmtMoney(f.daily_stop_loss) : "Off"}</span></div>
+    <div class="rule-row"><span class="rule-label">Daily profit target</span><span class="rule-value">${f.daily_profit_target > 0 ? fmtMoney(f.daily_profit_target) : "Off"}</span></div>
+    <div class="rule-row"><span class="rule-label">Session stop</span><span class="rule-value">${f.session_stop > 0 ? fmtMoney(f.session_stop) : "Off"}</span></div>
+    <div class="rule-row"><span class="rule-label">Cooldown after a loss</span><span class="rule-value">${f.cooldown_minutes > 0 ? f.cooldown_minutes + " min" : "Off"}</span></div>
+  `;
   document.getElementById("live-summary").innerHTML = html;
-}
-
-const TOGGLE_IDS = new Set(["f-mart-enabled", "f-comp-enabled", "f-vault-enabled"]);
-function wireLive() {
-  document.querySelectorAll("#custom-form input, #custom-form select").forEach(el => {
-    if (TOGGLE_IDS.has(el.id)) return;
-    el.oninput = updateSummary;
-    el.onchange = updateSummary;
-  });
-  updateSummary();
-}
-
-function wireAdvancedForm(base) {
-  document.getElementById("ladder-rows").innerHTML = ladderRowHTML(1) + ladderRowHTML((base.martingale && base.martingale.multiplier) || 2);
-  document.getElementById("milestone-rows").innerHTML = base.uses_compounding
-    ? milestoneRowHTML(base.percent_of_bankroll || 2, 100) + milestoneRowHTML((base.percent_of_bankroll || 2) + 0.5, 250)
-    : "";
-
-  document.getElementById("add-ladder-row").onclick = () => {
-    document.getElementById("ladder-rows").insertAdjacentHTML("beforeend", ladderRowHTML(2));
-    wireLive();
-  };
-  document.getElementById("add-milestone-row").onclick = () => {
-    document.getElementById("milestone-rows").insertAdjacentHTML("beforeend", milestoneRowHTML(2.5, 100));
-    wireLive();
-  };
-
-  document.getElementById("f-mart-enabled").onchange = (e) => {
-    document.getElementById("mart-fields").classList.toggle("disabled", !e.target.checked);
-    updateSummary();
-  };
-  document.getElementById("f-comp-enabled").onchange = (e) => {
-    document.getElementById("comp-fields").classList.toggle("disabled", !e.target.checked);
-    updateSummary();
-  };
-  document.getElementById("f-vault-enabled").onchange = (e) => {
-    document.getElementById("vault-fields").classList.toggle("disabled", !e.target.checked);
-    updateSummary();
-  };
-
-  document.getElementById("to-simple").onclick = () => { mode = "simple"; renderPage(base); };
-
-  document.getElementById("save-btn").onclick = () => {
-    const f = gatherForm();
-    if (!f.name) { alert("Please give this profile a name."); return; }
-    const list = loadSaved();
-    list.push({ ...f, based_on: base.name, base_id: base.id, saved_at: new Date().toISOString() });
-    saveSaved(list);
-    const confirm = document.getElementById("save-confirm");
-    confirm.style.display = "block";
-    confirm.textContent = `Saved "${f.name}" to this preview browser. "${base.name}" itself is untouched.`;
-    renderSavedList();
-  };
-
-  wireLive();
-  renderSavedList();
+  document.getElementById("mart-mult-field").style.display = f.martingale === "custom" ? "block" : "none";
+  document.getElementById("mart-unlimited-warning").style.display = f.martingale === "unlimited" ? "block" : "none";
+  document.getElementById("comp-every-x-field").style.display = f.compounding === "every_x_wins" ? "block" : "none";
+  document.getElementById("comp-profit-target-field").style.display = f.compounding === "profit_target" ? "block" : "none";
+  document.getElementById("comp-custom-field").style.display = f.compounding === "custom" ? "block" : "none";
+  document.getElementById("vault-custom-field").style.display = f.vault === "custom" ? "block" : "none";
+  document.getElementById("growth-custom-field").style.display = f.growth_threshold === "custom" ? "block" : "none";
 }
 
 function renderSavedList() {
@@ -559,7 +325,7 @@ function renderSavedList() {
   card.style.display = "block";
   document.getElementById("saved-list").innerHTML = list.map((p, i) => `
     <div class="saved-profile-row">
-      <div><div class="sp-name">${p.name}</div><div class="sp-meta">Based on ${p.based_on} - saved ${new Date(p.saved_at).toLocaleString()}</div></div>
+      <div><div class="sp-name">${p.name}</div><div class="sp-meta">${p.based_on ? "Based on " + p.based_on : "Built from scratch"} - saved ${new Date(p.saved_at).toLocaleString()}</div></div>
       <button class="row-remove" title="Remove" onclick="removeSaved(${i})">&times;</button>
     </div>
   `).join("");
@@ -571,21 +337,47 @@ function removeSaved(i) {
   renderSavedList();
 }
 
-function renderPage(base) {
-  if (mode === "simple") { buildSimpleForm(base); wireSimpleForm(base); }
-  else { buildAdvancedForm(base); wireAdvancedForm(base); }
+function wireForm(base) {
+  showSizingSub(document.getElementById("f-sizing-mode").value);
+
+  document.querySelectorAll("#custom-form input, #custom-form select").forEach(el => {
+    el.oninput = updateSummary;
+    el.onchange = updateSummary;
+  });
+
+  // Set AFTER the generic wiring loop above (which also assigns .onchange
+  // to every select, f-sizing-mode included) - an .onchange assignment
+  // replaces the previous one rather than stacking, so this must run
+  // last or the sizing-sub toggle silently never fires.
+  document.getElementById("f-sizing-mode").onchange = (e) => { showSizingSub(e.target.value); updateSummary(); };
+
+  document.getElementById("save-btn").onclick = () => {
+    const f = gatherForm();
+    if (!f.name) { alert("Please give this profile a name."); return; }
+    const list = loadSaved();
+    list.push({ ...f, based_on: base ? base.name : null, base_key: base ? base.key : null, saved_at: new Date().toISOString() });
+    saveSaved(list);
+    const confirm = document.getElementById("save-confirm");
+    confirm.style.display = "block";
+    confirm.textContent = `Saved "${f.name}" to this preview browser.${base ? ` "${base.name}" itself is untouched.` : ""}`;
+    renderSavedList();
+  };
+
+  updateSummary();
+  renderSavedList();
 }
 
 async function init() {
-  let base;
-  try {
-    base = await fetchPreview(`/strategies/${baseId || 9002}`);
-  } catch (e) {
-    document.getElementById("page-content").innerHTML = `<div class="card"><div class="card-label">Error</div>${e.message}</div>`;
-    return;
+  let base = null;
+  if (baseKey) {
+    try {
+      base = await fetchPreview(`/strategies/${baseKey}`);
+      if (base.error) base = null;
+    } catch (e) { base = null; }
   }
-  currentBase = base;
-  renderPage(base);
+  const preset = presetFromBase(base);
+  buildForm(base, preset);
+  wireForm(base);
 }
 init();
 </script>
