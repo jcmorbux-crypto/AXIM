@@ -407,7 +407,14 @@ def evaluate_rule(rule):
     """Evaluates one rule row (as returned by database.get_rule/list_rules)
     and fires its action on a false->true edge. Always records the new
     condition_state via database.record_rule_evaluation, whether or not
-    it fired. Returns True if the action fired."""
+    it fired. Returns True if the action fired.
+
+    Whether this call fires is decided by database.record_rule_evaluation
+    itself (an atomic compare-and-swap on last_condition_state), not by
+    comparing against rule["last_condition_state"] here - that value is a
+    snapshot from whenever the caller fetched this rule row, which can be
+    stale by the time this function runs if another evaluate_all() call
+    is racing this one (see that function's docstring for why)."""
     condition = CONDITION_TYPES.get(rule["condition_type"])
     action = ACTION_TYPES.get(rule["action_type"])
     if condition is None or action is None:
@@ -420,8 +427,7 @@ def evaluate_rule(rule):
         logger.exception("rule_engine: condition evaluation failed for rule %s", rule["id"])
         return False
 
-    fired = condition_now and not rule["last_condition_state"]
-    database.record_rule_evaluation(rule["id"], condition_now, fired)
+    fired = database.record_rule_evaluation(rule["id"], condition_now)
 
     if fired:
         try:
@@ -436,7 +442,15 @@ def evaluate_rule(rule):
 
 def evaluate_all():
     """Evaluates every enabled rule. Called once per trade close from
-    core/session_manager.py's event_bus subscription."""
+    core/session_manager.py's event_bus subscription - once per Fund's
+    own closed trade, not globally serialized, since different Funds can
+    each have their own concurrently-active session (see this module's
+    docstring). Two trades on two different Funds closing within
+    milliseconds of each other can each trigger their own evaluate_all()
+    call, both iterating every enabled rule app-wide at nearly the same
+    moment. evaluate_rule -> database.record_rule_evaluation's atomic
+    compare-and-swap on last_condition_state is what stops a rule from
+    double-firing when that happens, not this function."""
     fired_any = False
     for rule in database.list_rules():
         if not rule["enabled"]:

@@ -104,6 +104,7 @@ class TradeCoordinator:
         # Stage: Risk Manager
         stage_t0 = time.monotonic()
         try:
+            risk_manager.check_not_stopped()
             risk_manager.check_demo_only()
             risk_manager.check_max_trade_amount(amount)
             risk_manager.check_max_trades_per_hour()
@@ -261,12 +262,41 @@ class TradeCoordinator:
                     return await asyncio.to_thread(self._reject, trade_id, violation, time.monotonic() - stage_t0)
                 self._log_stage(trade_id, "trade_confirmation", "passed", time.monotonic() - stage_t0)
 
+                # Re-check emergency_stop/paused here, not just once at the
+                # top of the pipeline - wait_for_trade_confirmation just blocked
+                # on a real human for up to TRADE_CONFIRMATION_TIMEOUT_SECONDS,
+                # long enough for an operator to hit Emergency Stop mid-wait.
+                # Without this, a trade approved before the stop (or still
+                # sitting in confirmation when it was pressed) would proceed
+                # to real execution anyway.
+                stage_t0 = time.monotonic()
+                try:
+                    await asyncio.to_thread(risk_manager.check_not_stopped)
+                except risk_manager.RiskViolation as violation:
+                    await asyncio.to_thread(timeline.persist, database)
+                    return await asyncio.to_thread(self._reject, trade_id, violation, time.monotonic() - stage_t0)
+
                 # Counts toward the session's max_trades the instant we
                 # commit to real execution - not on every signal received,
                 # and not gated behind the outcome (a trade that errors out
                 # after this point still counted as "a trade", same as
                 # trades_count everywhere else in this codebase).
-                await asyncio.to_thread(session_manager.record_trade_started, session_id)
+                #
+                # This is also the actual max_trades enforcement point, not
+                # just a counter: check_session_limits above (line ~126) was
+                # checked before wait_for_trade_confirmation, which can
+                # block on a human for a while - long enough for a second
+                # signal to pass that same check before this one finishes.
+                # record_trade_started's atomic increment is what actually
+                # stops a second trade beyond the cap from reaching the
+                # worker pool below, by raising the same SessionLimitReached
+                # check_session_limits already raises for this condition.
+                stage_t0 = time.monotonic()
+                try:
+                    await asyncio.to_thread(session_manager.record_trade_started, session_id)
+                except session_manager.SessionLimitReached as violation:
+                    await asyncio.to_thread(timeline.persist, database)
+                    return await asyncio.to_thread(self._reject, trade_id, violation, time.monotonic() - stage_t0)
 
                 # Stage: Worker Pool - acquire one of N warm pages. Queues
                 # (FIFO) up to WORKER_ACQUIRE_TIMEOUT_SECONDS if all are busy;

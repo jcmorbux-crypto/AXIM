@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -8,6 +9,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from timeline import timed
 
 DB_FILE = Path("data/axim.db")
+
+# start_trading_session()'s "no other active session on this broker
+# account" check and the INSERT that follows it are two separate DB
+# connections, not one atomic operation - two near-simultaneous
+# POST /api/sessions/start calls (an operator double-clicking Start, two
+# open browser tabs) could both read "no active session" before either
+# had inserted, starting two sessions that independently drive trade
+# execution against one physical broker login. Same bug class, same fix,
+# as api/auth_routes.py's bootstrap_owner() race - a single in-process
+# lock, since AXIM's API always runs as one uvicorn process.
+_start_session_lock = threading.Lock()
 
 _NEW_COLUMNS = {
     "execution_status": "TEXT",
@@ -2164,6 +2176,58 @@ def update_broker_account(account_id, **fields):
 
 
 @timed("database")
+def claim_broker_account_connecting(account_id):
+    """Atomically claims the right to start a connection attempt for this
+    account - the actual enforcement point for "only one connect attempt
+    at a time," not api/broker_accounts_routes.py's preceding read-then-
+    branch (a separate SELECT, an entirely different DB connection, with
+    nothing tying it to the subprocess.Popen()+UPDATE that used to follow
+    it). Two near-simultaneous POST /connect calls for the same account
+    (a double-click on "Connect," or a frontend retry after a slow
+    response - ordinary operator UI use, not an attack) could both read
+    connection_status != "connecting" and both spawn
+    scripts/connect_broker_account.py against the same Chrome profile
+    directory, which Playwright/Chrome profile locking doesn't handle
+    gracefully. This single conditional UPDATE only succeeds for the
+    first caller; returns whether THIS call won and may spawn the
+    connect subprocess."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "UPDATE broker_accounts SET connection_status = 'connecting', updated_at = ? "
+        "WHERE id = ? AND connection_status != 'connecting'",
+        (datetime.now().isoformat(), account_id),
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+@timed("database")
+def finalize_broker_account_connection(account_id, connection_status, **extra_fields):
+    """Writes scripts/connect_broker_account.py's final outcome
+    ("connected" or "error") ONLY IF this account is still in the exact
+    "connecting" state THIS script itself put it in - an operator can
+    click Disconnect while a login attempt is still in progress (the
+    script keeps running in the background; nothing kills it), and
+    without this guard, the script finishing later would silently
+    overwrite that explicit disconnect back to "connected"/"error",
+    undoing the operator's own action. Mirrors
+    claim_broker_account_connecting's atomic-conditional-UPDATE shape,
+    just guarding the other end of the same state machine. Returns
+    whether the write actually happened."""
+    fields = {**extra_fields, "connection_status": connection_status, "updated_at": datetime.now().isoformat()}
+    set_clauses = ", ".join(f"{key} = ?" for key in fields)
+    conn = get_connection()
+    cursor = conn.execute(
+        f"UPDATE broker_accounts SET {set_clauses} WHERE id = ? AND connection_status = 'connecting'",
+        list(fields.values()) + [account_id],
+    )
+    conn.commit()
+    conn.close()
+    return cursor.rowcount > 0
+
+
+@timed("database")
 def assign_broker_account_to_fund(fund_id, broker_account_id, is_primary=True):
     """Attaches a broker account to a fund. Only one broker account may be
     primary per fund today (a fund "distributing trades across multiple
@@ -2387,28 +2451,29 @@ def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss
     resolves the fund's CURRENT primary account dynamically per signal,
     not this stored value, so a mid-session account reassignment can't
     leave trades silently routed by a stale snapshot."""
-    if broker_account_id is not None:
-        if get_active_trading_session_for_broker_account(broker_account_id) is not None:
-            raise ValueError("this broker account already has an active session - stop it before starting another")
-    elif get_active_trading_session() is not None:
-        raise ValueError("a session is already active - stop it before starting another")
     if not channel_ids:
         raise ValueError("a session must have at least one channel")
-    conn = get_connection()
-    now = datetime.now().isoformat()
-    cursor = conn.execute("""
-        INSERT INTO trading_sessions (
-            profile_id, name, channel_ids_json, account_mode, profit_target, loss_limit,
-            max_trades, require_confirmation, status, trades_count, realized_pnl, started_at,
-            risk_profile_id, fund_id, broker_account_id
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?)
-    """, (profile_id, name, json.dumps(channel_ids), account_mode, profit_target, loss_limit,
-          max_trades, 1 if require_confirmation else 0, now, risk_profile_id, fund_id, broker_account_id))
-    conn.commit()
-    session_id = cursor.lastrowid
-    conn.close()
-    return session_id
+    with _start_session_lock:
+        if broker_account_id is not None:
+            if get_active_trading_session_for_broker_account(broker_account_id) is not None:
+                raise ValueError("this broker account already has an active session - stop it before starting another")
+        elif get_active_trading_session() is not None:
+            raise ValueError("a session is already active - stop it before starting another")
+        conn = get_connection()
+        now = datetime.now().isoformat()
+        cursor = conn.execute("""
+            INSERT INTO trading_sessions (
+                profile_id, name, channel_ids_json, account_mode, profit_target, loss_limit,
+                max_trades, require_confirmation, status, trades_count, realized_pnl, started_at,
+                risk_profile_id, fund_id, broker_account_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?)
+        """, (profile_id, name, json.dumps(channel_ids), account_mode, profit_target, loss_limit,
+              max_trades, 1 if require_confirmation else 0, now, risk_profile_id, fund_id, broker_account_id))
+        conn.commit()
+        session_id = cursor.lastrowid
+        conn.close()
+        return session_id
 
 
 @timed("database")
@@ -2456,11 +2521,30 @@ def stop_trading_session(session_id, status, stop_reason=None):
 def record_session_trade(session_id):
     """Increments trades_count - called once a signal actually reaches
     execution (not on reject/ignore), matching "trades completed" as
-    shown in the Trading Sessions UI."""
+    shown in the Trading Sessions UI.
+
+    This is also the actual enforcement point for the session's
+    max_trades cap, not just bookkeeping. session_manager.
+    check_session_limits() is checked once, well before this - and when
+    a session has require_confirmation set, the caller waits on a human
+    in between, a gap wide enough for two signals to both pass that
+    earlier check. The WHERE clause makes the increment itself an atomic
+    compare-and-swap: only the first of two near-simultaneous callers
+    can succeed once trades_count reaches max_trades, in one SQL
+    statement, with no separate read-then-write race. max_trades = 0
+    means unlimited, matching check_session_limits' own convention.
+    Returns True if the trade may proceed, False if the cap was already
+    reached by a concurrent trade - callers must treat False as a
+    rejection, not merely a display-counter quirk."""
     conn = get_connection()
-    conn.execute("UPDATE trading_sessions SET trades_count = trades_count + 1 WHERE id = ?", (session_id,))
+    cursor = conn.execute(
+        "UPDATE trading_sessions SET trades_count = trades_count + 1 "
+        "WHERE id = ? AND (max_trades = 0 OR trades_count < max_trades)",
+        (session_id,),
+    )
     conn.commit()
     conn.close()
+    return cursor.rowcount > 0
 
 
 @timed("database")
@@ -3467,24 +3551,38 @@ def delete_session_rules(session_id):
 
 
 @timed("database")
-def record_rule_evaluation(rule_id, condition_state, fired):
-    """Always updates last_condition_state (the edge-trigger memory);
-    only bumps trigger_count/last_triggered_at when the action actually
-    fired this evaluation."""
+def record_rule_evaluation(rule_id, condition_now):
+    """Records this evaluation's condition reading AND atomically claims
+    the false->true edge-fire in one SQL statement - the actual
+    enforcement point for "a rule fires once per edge," not just
+    bookkeeping. rule_engine.evaluate_all() evaluates every enabled rule
+    app-wide on every trade close, and different Funds can each have
+    their own concurrently-active session - two trades on two different
+    Funds closing within milliseconds of each other both call
+    evaluate_all(), and each reads the rule's pre-evaluation state via
+    a separate database.list_rules() snapshot taken before either has
+    written anything back. Without the WHERE clause below, both could
+    compute "this is a false->true edge" from the same stale read and
+    both fire the action (e.g. double-vaulting the same profit via
+    _act_move_profit_to_vault). Only the evaluation whose UPDATE actually
+    flips last_condition_state from 0 to 1 (rowcount > 0) owns this
+    firing - a racing evaluator's UPDATE matches zero rows once the
+    winner has already committed, and must not fire. Returns whether
+    THIS call should fire the action."""
     conn = get_connection()
-    if fired:
-        conn.execute(
-            "UPDATE rules SET last_condition_state = ?, trigger_count = trigger_count + 1, "
-            "last_triggered_at = ? WHERE id = ?",
-            (1 if condition_state else 0, datetime.now().isoformat(), rule_id),
+    if condition_now:
+        cursor = conn.execute(
+            "UPDATE rules SET last_condition_state = 1, trigger_count = trigger_count + 1, "
+            "last_triggered_at = ? WHERE id = ? AND last_condition_state = 0",
+            (datetime.now().isoformat(), rule_id),
         )
+        fired = cursor.rowcount > 0
     else:
-        conn.execute(
-            "UPDATE rules SET last_condition_state = ? WHERE id = ?",
-            (1 if condition_state else 0, rule_id),
-        )
+        conn.execute("UPDATE rules SET last_condition_state = 0 WHERE id = ?", (rule_id,))
+        fired = False
     conn.commit()
     conn.close()
+    return fired
 
 
 @timed("database")

@@ -92,15 +92,14 @@ def connect_broker_account(account_id: int, user=Depends(require_admin)):
     writes the outcome back to the DB itself once it detects success (or
     a timeout). The UI polls GET /{account_id} for connection_status to
     change, same poll-driven pattern as pending trade confirmations."""
-    account = _get_or_404(account_id)
-    if account["connection_status"] == "connecting":
+    _get_or_404(account_id)
+    if not database.claim_broker_account_connecting(account_id):
         raise HTTPException(status_code=409, detail="a connection attempt is already in progress")
     subprocess.Popen(
         [sys.executable, str(CONNECT_SCRIPT), str(account_id)],
         cwd=str(PROJECT_ROOT),
         creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0,
     )
-    database.update_broker_account(account_id, connection_status="connecting")
     return _with_funds(database.get_broker_account(account_id))
 
 

@@ -84,6 +84,38 @@ class TradingSessionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             database.start_trading_session("Second", [2], "DEMO", broker_account_id=account_id)
 
+    def test_concurrent_starts_on_the_same_broker_account_only_ever_create_one_session(self):
+        """The sequential test above only proves the check works when one
+        call fully finishes before the next starts. start_trading_session's
+        "no active session for this broker account" check and the INSERT
+        that follows it are two separate DB connections - without a lock
+        serializing them, near-simultaneous calls (an operator
+        double-clicking Start, two open browser tabs) could each read "no
+        active session" before either had inserted, starting two sessions
+        that independently drive trade execution against one physical
+        broker login. Proves the fix under real thread concurrency, not
+        just sequential calls."""
+        import threading
+        account_id = database.create_broker_account("Acct A")
+        results = []
+
+        def attempt(i):
+            try:
+                database.start_trading_session(f"Session {i}", [1], "DEMO", broker_account_id=account_id)
+                results.append("ok")
+            except ValueError:
+                results.append("rejected")
+
+        threads = [threading.Thread(target=attempt, args=(i,)) for i in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(results.count("ok"), 1)
+        self.assertEqual(results.count("rejected"), 9)
+        self.assertEqual(len(database.list_active_trading_sessions()), 1)
+
     def test_get_active_trading_session_for_broker_account(self):
         account_a = database.create_broker_account("Acct A")
         account_b = database.create_broker_account("Acct B")

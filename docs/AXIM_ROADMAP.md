@@ -433,12 +433,78 @@ hypothetical:
   live both ways against a real running server: all three 404 by
   default, all three 200 with `ENABLE_API_DOCS=true`.
 
-Full regression suite re-run clean after all four. The remaining
-higher-effort items from the same branch audit - several trading-safety
-race-condition fixes (Emergency Stop/Live-mode gaps, trading-session
-races, Automation Studio double-firing, broker-account double-connect)
-and an entire unbuilt client/server real-time SSE sync feature - are
-tracked separately rather than blind-ported, since master's
-broker-account/session code has been rearchitected since that branch
-diverged (see the Fund/broker-account migration entry above) and each
-needs re-verification against current code, not just a patch apply.
+Full regression suite re-run clean after all four.
+
+### Trading-safety race conditions ported forward from the same branch (FIXED)
+Continuing the same audit, re-verified (not blind-applied) five more
+fixes against master's current, rearchitected broker-account/session
+code:
+
+- **Emergency Stop didn't actually stop sessions (the most severe of
+  this batch)**: two Emergency Stop routes existed -
+  `POST /api/sessions/{id}/emergency-stop` (session-scoped) correctly
+  ended every active session; `POST /api/control/emergency-stop` (the
+  global route, confirmed to be the one `web/dashboard.html`'s
+  prominent "Emergency Stop" button actually calls) only flipped
+  `ui_control_state` flags and left every active session sitting at
+  `status="active"` indefinitely. Confirmed live-on-master before
+  fixing, not assumed. Fixed with a shared
+  `session_manager.end_all_active_sessions()`, now used by both routes
+  so there's no "which button did you press" inconsistency.
+- **A signal already inside the trade pipeline could still execute
+  after Emergency Stop was pressed**: nothing re-checked control state
+  once a signal had already entered `trade_coordinator.py` - a signal
+  sitting in a `require_confirmation` session's human-approval queue
+  (a real, unbounded wait) would sail through untouched, since no risk
+  check looked at control state at all. Fixed with
+  `risk_manager.check_not_stopped()`, checked first in the preflight
+  and re-checked immediately after the confirmation-wait gate. Verified
+  by a real async race test (emergency-stop fired concurrently with a
+  confirmation being approved mid-wait): rejected before reaching the
+  worker pool.
+- **Trading-session start race**: `start_trading_session`'s "no active
+  session on this broker account" check and the INSERT that followed
+  were non-atomic - two near-simultaneous starts (double-click, two
+  tabs) could both pass, leaving two sessions independently driving
+  execution against one broker login. Fixed with an in-process lock.
+- **`require_confirmation` session max-trades cap race**: the cap was
+  checked once, well before the human-confirmation wait - multiple
+  signals arriving close together could all pass that check and all
+  increment an unconditional counter past the configured cap. Fixed by
+  making the increment itself an atomic conditional `UPDATE ... WHERE
+  trades_count < max_trades`.
+- **Automation Studio rules double-firing**: the edge-trigger decision
+  compared against a snapshot read at the start of a separate,
+  earlier DB connection - two Funds' trades closing within
+  milliseconds of each other could each trigger their own evaluation
+  with their own stale snapshot, e.g. double-vaulting the same profit
+  via `_act_move_profit_to_vault`. Fixed by making the edge-trigger
+  claim itself an atomic compare-and-swap.
+- **Broker-account double-connect race**: `POST /{id}/connect` read
+  `connection_status`, then later spawned the login subprocess and
+  wrote the new status as separate steps - a double-click could spawn
+  two login processes against the same Chrome profile directory at
+  once. Fixed with `database.claim_broker_account_connecting`, an
+  atomic conditional claim.
+- **Mid-login disconnect silently undone**: `disconnect_broker_account`
+  never tracked or killed the connect subprocess, so clicking
+  "Disconnect" while a login was still running left that script
+  running - when it later finished, it wrote its outcome
+  unconditionally, silently overwriting the operator's own disconnect.
+  Fixed with `database.finalize_broker_account_connection`, an atomic
+  conditional write that only succeeds if the account is still in the
+  exact `"connecting"` state the script itself started.
+
+29 new/ported regression tests total across this set. Deferred (UX
+polish, not a vulnerability, not ported this pass): the source branch's
+replacement of the Live-mode start confirmation from a bare
+`confirm()`/`prompt()` to a full disclosure modal - `web/sessions.html`
+has diverged enough since that this needs its own pass rather than a
+patch apply. Also still deferred: the audit-logging half of the
+privilege-escalation commit (noted above), and the entire client/server
+real-time SSE sync feature the same branch built - a large feature
+addition, not a bug fix, tracked as a separate follow-up decision
+(build fresh on master's current architecture vs. attempt a real merge)
+rather than piecemeal-ported alongside security/safety fixes.
+
+Full regression suite re-run clean after this batch too.

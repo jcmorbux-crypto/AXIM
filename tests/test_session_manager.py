@@ -103,6 +103,50 @@ class SessionManagerTests(unittest.TestCase):
         self.assertEqual(ctx.exception.rule, "session_max_trades")
         self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_max_trades")
 
+    def test_record_trade_started_raises_once_cap_reached(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", max_trades=1)
+        session_manager.record_trade_started(session_id)  # consumes the only slot
+        with self.assertRaises(session_manager.SessionLimitReached) as ctx:
+            session_manager.record_trade_started(session_id)
+        self.assertEqual(ctx.exception.rule, "session_max_trades")
+        self.assertEqual(database.get_trading_session(session_id)["status"], "stopped_max_trades")
+        self.assertEqual(database.get_trading_session(session_id)["trades_count"], 1)
+
+    def test_record_trade_started_unlimited_when_max_trades_zero(self):
+        session_id = database.start_trading_session("Test", [1], "DEMO", max_trades=0)
+        for _ in range(5):
+            session_manager.record_trade_started(session_id)  # must never raise
+        self.assertEqual(database.get_trading_session(session_id)["trades_count"], 5)
+
+    def test_concurrent_record_trade_started_never_exceeds_max_trades(self):
+        """check_session_limits() is checked once, well before this - and
+        when require_confirmation makes trade_coordinator.py wait on a
+        human in between, that gap can be wide enough for several signals
+        to all pass the earlier check before any of them reaches this
+        call. Proves record_trade_started's atomic increment is the real
+        enforcement point: even with 10 threads racing a session capped
+        at 3 trades, trades_count never exceeds 3."""
+        import threading
+        session_id = database.start_trading_session("Test", [1], "DEMO", max_trades=3)
+        results = []
+
+        def attempt():
+            try:
+                session_manager.record_trade_started(session_id)
+                results.append("ok")
+            except session_manager.SessionLimitReached:
+                results.append("rejected")
+
+        threads = [threading.Thread(target=attempt) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(results.count("ok"), 3)
+        self.assertEqual(results.count("rejected"), 7)
+        self.assertEqual(database.get_trading_session(session_id)["trades_count"], 3)
+
     def test_pending_stake_from_a_different_session_is_not_counted(self):
         session_a = database.start_trading_session("A", [1], "DEMO", loss_limit=20)
         account_b = database.create_broker_account("Acct B")
@@ -154,6 +198,26 @@ class SessionManagerTests(unittest.TestCase):
         session_manager.end_session(session_id, "stopped_manual")
         self.assertIsNone(database.get_rule(rule_id))
         self.assertIsNotNone(database.get_rule(fund_wide_rule_id))
+
+    def test_end_all_active_sessions_stops_every_fund_not_just_one(self):
+        """Emergency Stop must mark EVERY currently active session
+        stopped, not just one Fund's - api/main.py's global
+        POST /api/control/emergency-stop (the route Mission Control's
+        button actually calls) used to only flip control-state flags,
+        leaving every active session stuck showing "active" in the DB."""
+        account_a = database.create_broker_account("Acct A")
+        account_b = database.create_broker_account("Acct B")
+        session_a = database.start_trading_session("A", [1], "DEMO", broker_account_id=account_a)
+        session_b = database.start_trading_session("B", [2], "DEMO", broker_account_id=account_b)
+
+        session_manager.end_all_active_sessions("stopped_emergency", "test")
+
+        self.assertEqual(database.get_trading_session(session_a)["status"], "stopped_emergency")
+        self.assertEqual(database.get_trading_session(session_b)["status"], "stopped_emergency")
+        self.assertEqual(len(database.list_active_trading_sessions()), 0)
+
+    def test_end_all_active_sessions_noop_when_none_active(self):
+        session_manager.end_all_active_sessions("stopped_emergency", "test")  # must not raise
 
     def test_record_trade_started_noop_when_session_id_none(self):
         session_manager.record_trade_started(None)  # must not raise

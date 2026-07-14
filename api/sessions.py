@@ -331,6 +331,5 @@ def emergency_stop_session(session_id: int, user=Depends(get_current_user)):
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
     database.set_control_state(paused=True, emergency_stop=True)
-    for active in database.list_active_trading_sessions():
-        session_manager.end_session(active["id"], "stopped_emergency", f"emergency stop by {user['email']}")
+    session_manager.end_all_active_sessions("stopped_emergency", f"emergency stop by {user['email']}")
     return _with_progress(database.get_trading_session(session_id))

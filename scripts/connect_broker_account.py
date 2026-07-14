@@ -89,18 +89,34 @@ async def connect(account_id):
             await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
         if connected:
-            database.update_broker_account(
-                account_id, connection_status="connected",
+            # Only writes if this account is still in the exact
+            # "connecting" state this script itself started - an
+            # operator can click Disconnect while a login attempt is
+            # still in progress (nothing kills this script), and without
+            # this guard, finishing later would silently overwrite that
+            # explicit disconnect back to "connected".
+            wrote = database.finalize_broker_account_connection(
+                account_id, "connected",
                 last_connected_at=datetime.now().isoformat(),
             )
-            print(f"Broker account {account_id!r} connected successfully.")
-            logger.info("connect_broker_account: account_id=%s connected", account_id)
+            if wrote:
+                print(f"Broker account {account_id!r} connected successfully.")
+                logger.info("connect_broker_account: account_id=%s connected", account_id)
+            else:
+                print(f"Broker account {account_id!r} logged in, but the account was disconnected "
+                      f"from the UI while this window was open - not marking it connected.")
+                logger.info("connect_broker_account: account_id=%s login succeeded but was "
+                            "disconnected from the UI in the meantime - result discarded", account_id)
         else:
-            database.update_broker_account(account_id, connection_status="error")
-            print(f"Broker account {account_id!r} did not reach a logged-in state within "
-                  f"{CONNECT_TIMEOUT_SECONDS}s - marked as error. The window is left open; "
-                  f"you can keep trying and reconnect from the UI once logged in.")
-            logger.warning("connect_broker_account: account_id=%s timed out", account_id)
+            wrote = database.finalize_broker_account_connection(account_id, "error")
+            if wrote:
+                print(f"Broker account {account_id!r} did not reach a logged-in state within "
+                      f"{CONNECT_TIMEOUT_SECONDS}s - marked as error. The window is left open; "
+                      f"you can keep trying and reconnect from the UI once logged in.")
+                logger.warning("connect_broker_account: account_id=%s timed out", account_id)
+            else:
+                logger.info("connect_broker_account: account_id=%s timed out but was already "
+                            "disconnected from the UI - result discarded", account_id)
             # Leave the window open on timeout - don't yank control from an
             # operator who may still be mid-login (slow 2FA, etc).
             return

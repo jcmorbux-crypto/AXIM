@@ -46,6 +46,7 @@ import database
 import telegram_channels
 import process_control
 import risk_manager
+import session_manager
 import trade_statistics
 import timeline_report
 import log_reader
@@ -479,7 +480,16 @@ def emergency_stop(user=Depends(get_current_user)):
     # user must be able to halt trading immediately; requiring admin here
     # would be a safety regression (a non-admin who spots a problem
     # couldn't stop it). Every other mutating control stays admin-only.
+    #
+    # Must also end every active session, not just flip the control-state
+    # flags - a session left status="active" after this is a stale,
+    # misleading record and, more importantly, skips the state that
+    # actually closing a session performs (Profit Vault triggers,
+    # session-scoped rule cleanup). This is the button web/dashboard.html's
+    # Emergency Stop calls - it must produce the exact same end state as
+    # the session-scoped POST /api/sessions/{id}/emergency-stop below.
     database.set_control_state(paused=True, emergency_stop=True)
+    session_manager.end_all_active_sessions("stopped_emergency", f"emergency stop by {user['email']}")
     logger.warning("api: EMERGENCY STOP triggered via UI by %s", user["email"])
     return database.get_control_state()
 

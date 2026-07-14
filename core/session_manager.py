@@ -91,6 +91,21 @@ def end_session(session_id, status, reason=None):
     database.delete_session_rules(session_id)
 
 
+def end_all_active_sessions(status, reason=None):
+    """Emergency Stop must mark EVERY currently active session stopped,
+    not just the DB-row-level control_state flags - a session left
+    "active" after an emergency stop is a stale, misleading record (the
+    UI would still show it as running) and, more importantly, means
+    nothing actually closed out its state (Profit Vault triggers,
+    session-scoped rule cleanup). Used by both the global
+    POST /api/control/emergency-stop and the session-scoped
+    POST /api/sessions/{id}/emergency-stop, so either entry point
+    produces the exact same end state - no "which Emergency Stop button
+    did you press" inconsistency."""
+    for active in database.list_active_trading_sessions():
+        end_session(active["id"], status, reason)
+
+
 def check_session_limits(session_id):
     """No-op if session_id is None (no active session covers this
     signal). Otherwise checks this session's own profit_target/loss_limit/
@@ -169,8 +184,22 @@ def check_session_limits(session_id):
 
 
 def record_trade_started(session_id):
-    if session_id is not None:
-        database.record_session_trade(session_id)
+    """Raises SessionLimitReached - same exception check_session_limits()
+    already raises for this exact condition - if a concurrent trade
+    consumed the session's last available slot between that earlier
+    check and this call. See database.record_session_trade's docstring
+    for why the atomic increment itself, not a separate check, is what
+    actually closes that race."""
+    if session_id is None:
+        return
+    if database.record_session_trade(session_id):
+        return
+    session = database.get_trading_session(session_id)
+    if session is not None and session["status"] == "active":
+        end_session(session_id, "stopped_max_trades",
+                    f"{session['trades_count']} trades reached max {session['max_trades']}")
+    raise SessionLimitReached("session_max_trades",
+                               f"session {session_id} reached its max trades - session stopped")
 
 
 async def wait_for_trade_confirmation(trade_id, session_id, asset, direction, expiry, amount):
