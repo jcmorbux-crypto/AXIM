@@ -3927,6 +3927,21 @@ def revoke_all_sessions(user_id):
 
 
 @timed("database")
+def revoke_other_sessions(user_id, keep_raw_token):
+    """Used after a self-service password change - the same
+    credential-compromise-recovery reasoning as revoke_all_sessions (an
+    attacker holding a stolen session must be kicked out), but scoped to
+    exclude the session actively making the change so the user isn't
+    immediately logged out of their own device."""
+    import auth
+    keep_hash = auth.hash_token(keep_raw_token)
+    conn = get_connection()
+    conn.execute("DELETE FROM auth_sessions WHERE user_id = ? AND token_hash != ?", (user_id, keep_hash))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
 def revoke_session(session_id, user_id=None):
     """Revoke ONE device/session (the 'Connected Devices' panel's per-row
     action) rather than every session for a user. user_id, if given,

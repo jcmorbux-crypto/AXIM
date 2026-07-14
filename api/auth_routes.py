@@ -13,6 +13,7 @@ identically; the header is checked first, cookie is the fallback, so an
 unrelated/expired cookie never shadows a valid token.
 """
 import sys
+import threading
 from pathlib import Path
 
 API_DIR = Path(__file__).resolve().parent
@@ -43,6 +44,16 @@ _VALID_CLIENT_TYPES = {"web", "desktop", "mobile", "tablet", "api"}
 _BLOCKED_ACCESS_STATES = {"disabled", "suspended", "expired"}
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# bootstrap_owner()'s count_users()==0 check and the create_user() that
+# follows it are two separate DB connections/transactions, not one
+# atomic operation - two concurrent first-run requests (e.g. two devices
+# on the Tailscale network racing to set up AXIM at the same moment)
+# could both pass the check before either inserts, minting two owners
+# instead of one. AXIM's API always runs as a single uvicorn process (no
+# --workers), so a plain in-process lock around the check-then-create
+# sequence closes this completely.
+_bootstrap_lock = threading.Lock()
 
 
 def _request_is_https(request: Request) -> bool:
@@ -152,20 +163,20 @@ def bootstrap_owner(body: BootstrapOwnerRequest, response: Response, request: Re
     mint a second owner later. This is the ONE place a real account gets
     created without an existing Owner/Admin approving it - by definition,
     since no admin exists yet."""
-    if database.count_users() > 0:
-        raise HTTPException(status_code=409, detail="an account already exists - use /login")
     if not body.email.strip() or "@" not in body.email:
         raise HTTPException(status_code=400, detail="a valid email is required")
     if len(body.password) < 8:
         raise HTTPException(status_code=400, detail="password must be at least 8 characters")
-
     if body.client_type not in _VALID_CLIENT_TYPES:
         raise HTTPException(status_code=400, detail=f"invalid client_type: {body.client_type!r}")
 
-    user_id = database.create_user(
-        body.email, body.password,
-        role="owner", access_tier="owner", access_state="active",
-    )
+    with _bootstrap_lock:
+        if database.count_users() > 0:
+            raise HTTPException(status_code=409, detail="an account already exists - use /login")
+        user_id = database.create_user(
+            body.email, body.password,
+            role="owner", access_tier="owner", access_state="active",
+        )
     database.update_user(user_id, live_trading_allowed=True)
     database.record_login(user_id)
     raw_token = database.create_session(user_id, expires_hours=REMEMBER_ME_HOURS,
@@ -217,16 +228,36 @@ def me(user=Depends(get_current_user)):
 
 
 @router.post("/change-password")
-def change_password(body: ChangePasswordRequest, user=Depends(get_current_user)):
+def change_password(body: ChangePasswordRequest, user=Depends(get_current_user),
+                     authorization: Optional[str] = Header(default=None),
+                     axim_session: Optional[str] = Cookie(default=None)):
     """Self-service password change - distinct from
     api/admin.py's reset_password (an Owner/Admin resetting SOMEONE
     ELSE'S password without knowing the old one). This always requires
-    the current password first, even for an Owner changing their own."""
+    the current password first, even for an Owner changing their own.
+
+    Same credential-compromise-recovery reasoning as the forgot-password
+    reset flow (which already revokes every session): a stolen session
+    must not survive its own account's password change. Scoped to the
+    session actively making the change (revoke_other_sessions) rather
+    than revoke_all_sessions, so the user isn't logged out of the device
+    they're using right now.
+
+    Brute-force lockout is already covered here for free: this endpoint's
+    current-password check goes through the same
+    database.verify_user_credentials() login() uses, and that function
+    tracks failed_login_attempts/locked_until per-account internally
+    regardless of caller - so a hijacked/stolen session (or a device left
+    logged in) guessing the real password repeatedly trips the exact same
+    lockout /login enforces, with no separate call needed here."""
     if database.verify_user_credentials(user["email"], body.current_password) is None:
         raise HTTPException(status_code=401, detail="current password is incorrect")
     if len(body.new_password) < 8:
         raise HTTPException(status_code=400, detail="new password must be at least 8 characters")
     database.set_user_password(user["id"], body.new_password)
+    raw_token = _extract_bearer_token(authorization) or axim_session
+    if raw_token:
+        database.revoke_other_sessions(user["id"], raw_token)
     return {"status": "password changed"}
 
 

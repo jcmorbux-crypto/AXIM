@@ -341,3 +341,38 @@ and fixing several real defects live rather than in isolated testing:
 a genuine multi-hour soak test running to completion; process supervision
 configuration (Task Scheduler/equivalent) for unattended operation; a
 backup/retention plan for `data/axim.db` and session directories.
+
+### Auth security gap closed: change-password session hijack (FIXED)
+Auditing found that two auth fixes had been designed, implemented, and
+tested on a separate long-diverged worktree branch
+(`worktree-client-server-realtime-sync`) but never made it back to
+master, leaving master's `api/auth_routes.py::change_password` with a
+real, live gap: a stolen/hijacked session could survive the legitimate
+owner changing their own password (unlike `forgot-password`'s reset
+flow, which already revokes every session for the same reasoning).
+Ported forward as two self-contained fixes rather than merging the
+whole 42-commit branch (too diverged - 61 commits ahead on master, 42
+ahead on that branch - for a safe blind merge):
+
+- `core/database.py::revoke_other_sessions(user_id, keep_raw_token)` +
+  `change_password` now calls it on every successful change, scoped to
+  keep the session actively making the change alive.
+- `api/auth_routes.py::bootstrap_owner` closed a real (confirmed via a
+  10-concurrent-request test) non-atomic check-then-create race that
+  could mint more than one Owner account on first run, via an
+  in-process `threading.Lock` (the API runs as a single uvicorn
+  process, so this fully closes it).
+- The source branch's proposed brute-force-lockout fix for
+  `change_password` was **not** ported as originally written - it
+  assumed a `record_failed_login`/`is_account_locked` API that doesn't
+  exist on master. Master already centralizes login lockout inside
+  `database.verify_user_credentials` itself
+  (`failed_login_attempts`/`locked_until`, `LOGIN_LOCKOUT_THRESHOLD`/
+  `LOGIN_LOCKOUT_MINUTES`), so any caller - including
+  `change_password`, unchanged - already gets that protection for free.
+  Confirmed by test, not assumed.
+
+9 new regression tests (`tests/test_change_password_session_revocation.py`,
+`tests/test_bootstrap_owner_race.py`), adapted to master's actual
+lockout mechanism rather than copied blind. Full suite re-run clean
+after porting.
