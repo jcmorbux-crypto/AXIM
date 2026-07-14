@@ -671,6 +671,18 @@ def clear_broker_session(user=Depends(require_admin)):
     return {"status": "cleared"}
 
 
+@app.get("/api/portfolio/growth-curve")
+def portfolio_growth_curve(days: int = 90, user=Depends(get_current_user)):
+    """Real, chronologically-ordered cumulative P/L points across every
+    Fund's closed trades - powers Home's portfolio growth chart. Read-
+    only, reuses database.get_portfolio_growth_curve verbatim (ported
+    from the UI Vision branch) - returns however many real points exist
+    in the window, never padded/interpolated to look like more history
+    than is real."""
+    points = database.get_portfolio_growth_curve(days=days)
+    return {"days": days, "points": points}
+
+
 @app.get("/api/dashboard")
 def dashboard(user=Depends(get_current_user)):
     """Same data core/dashboard_server.py's /api/data has always served

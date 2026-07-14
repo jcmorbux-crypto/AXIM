@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Mission Control - AXIM Trader</title>
+<title>Home - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
 <link rel="stylesheet" href="/web/theme.css">
@@ -69,6 +69,20 @@
   .fund-overview-item.active { border-color: var(--blue); background: var(--blue-soft); }
   .fund-overview-item .name { font-weight: 600; font-size: 13.5px; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; }
   .fund-overview-item .pl { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  /* ---- Portfolio Overview: the approved Home-screen hero - Total
+     Portfolio Value, Today's P/L, Active vs Protected capital split,
+     Active Funds count, and a real growth chart. Sits above everything
+     else on the page, including the per-Fund hero - "primary home-
+     screen focus" per the approved direction, never Recent Activity. ---- */
+  .po-capital-split { display: flex; gap: 28px; text-align: right; }
+  .po-capital-split .stat { display: flex; flex-direction: column; gap: 3px; }
+  .po-capital-split .stat .label { font-size: 12px; color: var(--text-dim); }
+  .po-capital-split .stat .value { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  #pv-chart-wrap { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
+  #pv-chart .pv-line { fill: none; stroke: var(--blue); stroke-width: 2; }
+  #pv-chart .pv-fill { fill: var(--blue-soft); stroke: none; }
+  #pv-chart .pv-empty { fill: var(--text-faint); font-size: 11px; }
 </style>
 </head>
 <body>
@@ -88,6 +102,25 @@
         </select>
         <button class="subtle" onclick="callControl('/api/control/pause')">Pause</button>
         <button class="danger" onclick="confirmEmergencyStop()">Emergency Stop</button>
+      </div>
+    </div>
+
+    <div class="card solid" id="portfolio-overview" style="margin-bottom:24px;">
+      <div class="row" style="justify-content:space-between; align-items:flex-start; margin-bottom:18px;">
+        <div>
+          <div class="fund-hero-name">Total Portfolio Value</div>
+          <div class="fund-hero-value" id="pv-total">-</div>
+          <div class="fund-hero-caption" id="pv-today-pl">&nbsp;</div>
+        </div>
+        <div class="po-capital-split">
+          <div class="stat"><span class="label">Active trading capital</span><span class="value" id="pv-active-capital">-</span></div>
+          <div class="stat"><span class="label">Protected / vaulted</span><span class="value" id="pv-protected-capital">-</span></div>
+          <div class="stat"><span class="label">Active Funds</span><span class="value" id="pv-active-funds">-</span></div>
+        </div>
+      </div>
+      <div id="pv-chart-wrap">
+        <svg id="pv-chart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100px; display:block;"></svg>
+        <div class="muted" id="pv-chart-caption" style="font-size:11.5px; margin-top:6px;">&nbsp;</div>
       </div>
     </div>
 
@@ -508,6 +541,60 @@ async function refreshGlobal() {
     }
 }
 
+// Portfolio-wide summary - sums allFunds's already-fetched balances
+// (fund_manager.get_fund_balances per fund, via /api/funds) rather than
+// a new aggregate endpoint for the capital split, plus /api/dashboard's
+// existing global daily_stats() for today's P/L and the new /api/
+// portfolio/growth-curve for the chart. Independent of the fund
+// selector - always portfolio-wide, per the approved "Total Portfolio
+// Value" / "Active Funds" home-screen requirement.
+function renderGrowthChart(points) {
+  const svg = document.getElementById("pv-chart");
+  const caption = document.getElementById("pv-chart-caption");
+  if (!points.length) {
+    svg.innerHTML = '<text x="10" y="60" class="pv-empty">No closed trades yet in this window - the chart fills in as trades complete.</text>';
+    caption.textContent = "";
+    return;
+  }
+  const W = 600, H = 120, PAD = 4;
+  let cumulative = 0;
+  const series = points.map(p => { cumulative += p.profit_loss; return cumulative; });
+  const min = Math.min(0, ...series), max = Math.max(0, ...series);
+  const range = (max - min) || 1;
+  const xStep = points.length > 1 ? (W - PAD * 2) / (points.length - 1) : 0;
+  const coords = series.map((v, i) => {
+    const x = PAD + i * xStep;
+    const y = H - PAD - ((v - min) / range) * (H - PAD * 2);
+    return [x, y];
+  });
+  const linePath = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const fillPath = `${linePath} L${coords[coords.length - 1][0].toFixed(1)},${H} L${coords[0][0].toFixed(1)},${H} Z`;
+  svg.innerHTML = `<path class="pv-fill" d="${fillPath}"></path><path class="pv-line" d="${linePath}"></path>`;
+  const netText = fmtMoney(cumulative);
+  caption.textContent = `${netText} net across ${points.length} closed trade${points.length === 1 ? "" : "s"}, last 90 days`;
+}
+
+async function loadPortfolioOverview() {
+  try {
+    const [dash, growth] = await Promise.all([
+      fetchJSON("/api/dashboard"),
+      fetchJSON("/api/portfolio/growth-curve?days=90"),
+    ]);
+    const totalValue = allFunds.reduce((sum, f) => sum + (f.balances.total_account_value ?? 0), 0);
+    const activeCapital = allFunds.reduce((sum, f) => sum + (f.balances.trading_balance ?? 0), 0);
+    const protectedCapital = allFunds.reduce((sum, f) => sum + (f.balances.protected_balance ?? 0), 0);
+    document.getElementById("pv-total").textContent = "$" + totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const todayPl = dash.statistics.daily.profit_loss;
+    document.getElementById("pv-today-pl").innerHTML = `Today: <span class="${plClass(todayPl)}">${fmtMoney(todayPl)}</span>`;
+    document.getElementById("pv-active-capital").textContent = "$" + activeCapital.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    document.getElementById("pv-protected-capital").textContent = "$" + protectedCapital.toLocaleString(undefined, { maximumFractionDigits: 2 });
+    document.getElementById("pv-active-funds").textContent = allFunds.length;
+    renderGrowthChart(growth.points);
+  } catch (e) {
+    console.error("loadPortfolioOverview failed:", e);
+  }
+}
+
 async function callControl(path) {
   try {
     await fetchJSON(path, { method: "POST" });
@@ -529,10 +616,12 @@ function confirmEmergencyStop() {
   renderGreeting(currentUser);
   await loadFundSelector();
   loadOnboardingChecklist();
+  loadPortfolioOverview();
   refreshAll();
   setInterval(refreshAll, 5000);
+  setInterval(loadPortfolioOverview, 15000);
   AximShell.subscribeEvents({
-    "trade.closed": { onEvent: refreshAll, onResync: refreshAll },
+    "trade.closed": { onEvent: () => { refreshAll(); loadPortfolioOverview(); }, onResync: () => { refreshAll(); loadPortfolioOverview(); } },
   });
 })();
 </script>
