@@ -61,6 +61,14 @@ class AssignBrokerAccountRequest(BaseModel):
     is_primary: bool = True
 
 
+class CapitalTransferRequest(BaseModel):
+    from_fund_id: Optional[int] = None
+    to_fund_id: Optional[int] = None
+    amount: float
+    broker_account_id: Optional[int] = None
+    note: Optional[str] = None
+
+
 def _get_or_404(fund_id):
     fund = database.get_fund(fund_id)
     if fund is None:
@@ -180,3 +188,30 @@ def get_fund_sessions(fund_id: int, user=Depends(get_current_user)):
 def get_fund_backtests(fund_id: int, user=Depends(get_current_user)):
     _get_or_404(fund_id)
     return database.list_fund_backtest_runs(fund_id)
+
+
+@router.post("/transfer-capital")
+def transfer_capital(body: CapitalTransferRequest, user=Depends(require_admin)):
+    """Moves capital between two Funds, or between a Fund and Reserve
+    (whichever side is omitted) - see core/fund_manager.transfer_capital
+    for the real validation (a fund can't give up more than it currently
+    has, Reserve can't give up more than the broker account actually
+    holds unallocated)."""
+    try:
+        transfer_id = fund_manager.transfer_capital(
+            from_fund_id=body.from_fund_id, to_fund_id=body.to_fund_id, amount=body.amount,
+            broker_account_id=body.broker_account_id, note=body.note, created_by=user["email"],
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {
+        "transfer_id": transfer_id,
+        "from_fund": fund_manager.get_fund_report(body.from_fund_id) if body.from_fund_id else None,
+        "to_fund": fund_manager.get_fund_report(body.to_fund_id) if body.to_fund_id else None,
+    }
+
+
+@router.get("/{fund_id}/transfers")
+def get_fund_transfers(fund_id: int, user=Depends(get_current_user)):
+    _get_or_404(fund_id)
+    return database.list_capital_transfers(fund_id=fund_id)

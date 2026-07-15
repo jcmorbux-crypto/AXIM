@@ -55,6 +55,139 @@ class BalanceComputationTests(FundManagerTestCase):
         self.assertEqual(balances["trading_balance"], 1050)
         self.assertEqual(balances["total_account_value"], 1050)
 
+
+class BrokerAccountReserveTests(FundManagerTestCase):
+    def test_no_observed_balance_returns_none(self):
+        account_id = database.create_broker_account("PO Demo")
+        self.assertIsNone(fund_manager.get_broker_account_reserve(account_id))
+
+    def test_missing_account_returns_none(self):
+        self.assertIsNone(fund_manager.get_broker_account_reserve(999999))
+
+    def test_no_funds_attached_reserve_equals_full_balance(self):
+        account_id = database.create_broker_account("PO Demo")
+        database.update_broker_account(account_id, last_balance=1000)
+        self.assertEqual(fund_manager.get_broker_account_reserve(account_id), 1000)
+
+    def test_reserve_subtracts_every_attached_funds_trading_balance(self):
+        account_id = database.create_broker_account("PO Demo")
+        database.update_broker_account(account_id, last_balance=1000)
+        fund_a = database.create_fund("Tyler VIP", starting_balance=250)
+        fund_b = database.create_fund("Go+", starting_balance=500)
+        database.assign_broker_account_to_fund(fund_a, account_id)
+        database.assign_broker_account_to_fund(fund_b, account_id)
+        self.assertEqual(fund_manager.get_broker_account_reserve(account_id), 250)
+
+    def test_reserve_reflects_a_funds_real_pnl_not_just_starting_balance(self):
+        account_id = database.create_broker_account("PO Demo")
+        database.update_broker_account(account_id, last_balance=1000)
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250)
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        database.update_session_pnl(session_id, 18)
+        self.assertEqual(fund_manager.get_broker_account_reserve(account_id), 732)
+
+
+class CapitalTransferTests(FundManagerTestCase):
+    def _account_with_balance(self, balance):
+        account_id = database.create_broker_account("PO Demo")
+        database.update_broker_account(account_id, last_balance=balance)
+        return account_id
+
+    def test_reserve_to_fund_increases_fund_and_shrinks_reserve(self):
+        account_id = self._account_with_balance(1000)
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250)
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        fund_manager.transfer_capital(to_fund_id=fund_id, amount=100, broker_account_id=account_id)
+        self.assertEqual(fund_manager.get_fund_balances(fund_id)["trading_balance"], 350)
+        self.assertEqual(fund_manager.get_broker_account_reserve(account_id), 650)
+
+    def test_fund_to_reserve_shrinks_fund_and_grows_reserve(self):
+        account_id = self._account_with_balance(1000)
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250)
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        fund_manager.transfer_capital(from_fund_id=fund_id, amount=100)
+        self.assertEqual(fund_manager.get_fund_balances(fund_id)["trading_balance"], 150)
+        self.assertEqual(fund_manager.get_broker_account_reserve(account_id), 850)
+
+    def test_fund_to_fund_moves_capital_between_them_only(self):
+        account_id = self._account_with_balance(1000)
+        fund_a = database.create_fund("Tyler VIP", starting_balance=250)
+        fund_b = database.create_fund("Go+", starting_balance=500)
+        database.assign_broker_account_to_fund(fund_a, account_id)
+        database.assign_broker_account_to_fund(fund_b, account_id)
+        fund_manager.transfer_capital(from_fund_id=fund_a, to_fund_id=fund_b, amount=50)
+        self.assertEqual(fund_manager.get_fund_balances(fund_a)["trading_balance"], 200)
+        self.assertEqual(fund_manager.get_fund_balances(fund_b)["trading_balance"], 550)
+        self.assertEqual(fund_manager.get_broker_account_reserve(account_id), 250)
+
+    def test_a_fund_up_on_pnl_can_move_its_full_current_balance_not_just_starting(self):
+        account_id = self._account_with_balance(1000)
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250)
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        database.update_session_pnl(session_id, 18)
+        # trading_balance is 268 - moving the full 268 must succeed even
+        # though starting_balance alone is only 250.
+        fund_manager.transfer_capital(from_fund_id=fund_id, amount=268)
+        self.assertEqual(fund_manager.get_fund_balances(fund_id)["trading_balance"], 0)
+
+    def test_cannot_move_more_than_a_funds_current_balance(self):
+        database.create_fund("Tyler VIP", starting_balance=250)
+        fund_id = database.list_funds()[0]["id"]
+        with self.assertRaises(fund_manager.CapitalTransferError):
+            fund_manager.transfer_capital(from_fund_id=fund_id, amount=251)
+
+    def test_cannot_move_more_than_reserve_holds(self):
+        account_id = self._account_with_balance(100)
+        fund_id = database.create_fund("Tyler VIP", starting_balance=0)
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        with self.assertRaises(fund_manager.CapitalTransferError):
+            fund_manager.transfer_capital(to_fund_id=fund_id, amount=101, broker_account_id=account_id)
+
+    def test_reserve_side_requires_broker_account_id(self):
+        fund_id = database.create_fund("Tyler VIP", starting_balance=0)
+        with self.assertRaises(fund_manager.CapitalTransferError):
+            fund_manager.transfer_capital(to_fund_id=fund_id, amount=10)
+
+    def test_zero_amount_rejected(self):
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250)
+        with self.assertRaises(fund_manager.CapitalTransferError):
+            fund_manager.transfer_capital(from_fund_id=fund_id, amount=0)
+
+    def test_negative_amount_rejected(self):
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250)
+        with self.assertRaises(fund_manager.CapitalTransferError):
+            fund_manager.transfer_capital(from_fund_id=fund_id, amount=-10)
+
+    def test_no_funds_specified_rejected(self):
+        with self.assertRaises(fund_manager.CapitalTransferError):
+            fund_manager.transfer_capital(amount=10)
+
+    def test_transfer_to_self_rejected(self):
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250)
+        with self.assertRaises(fund_manager.CapitalTransferError):
+            fund_manager.transfer_capital(from_fund_id=fund_id, to_fund_id=fund_id, amount=10)
+
+    def test_unknown_destination_fund_rejected(self):
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250)
+        with self.assertRaises(fund_manager.CapitalTransferError):
+            fund_manager.transfer_capital(from_fund_id=fund_id, to_fund_id=999999, amount=10)
+
+    def test_transfer_is_recorded_in_the_ledger(self):
+        account_id = self._account_with_balance(1000)
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250)
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        fund_manager.transfer_capital(to_fund_id=fund_id, amount=100, broker_account_id=account_id,
+                                       note="initial top-up", created_by="owner@axim.local")
+        transfers = database.list_capital_transfers(fund_id=fund_id)
+        self.assertEqual(len(transfers), 1)
+        self.assertEqual(transfers[0]["amount"], 100)
+        self.assertIsNone(transfers[0]["from_fund_id"])
+        self.assertEqual(transfers[0]["to_fund_id"], fund_id)
+        self.assertEqual(transfers[0]["note"], "initial top-up")
+        self.assertEqual(transfers[0]["created_by"], "owner@axim.local")
+
     def test_vaulted_amount_moves_from_trading_to_protected(self):
         fund_id = database.create_fund("F", starting_balance=1000)
         session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)

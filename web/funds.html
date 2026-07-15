@@ -85,6 +85,21 @@
           <div style="margin-top:10px;"><a href="/broker" style="font-size:12px; color:var(--blue); text-decoration:none;">Manage broker accounts &rarr;</a></div>
         </div>
 
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Capital Allocation</div>
+        <div class="card" style="margin-bottom:18px;">
+          <div class="row" style="justify-content:space-between; align-items:center;">
+            <div class="muted" id="reserve-summary" style="font-size:13px;">Loading...</div>
+            <button class="subtle" onclick="openTransferModal()" id="transfer-btn">Move Capital</button>
+          </div>
+          <div class="stat-caption" style="margin-top:6px; color:var(--text-faint);">
+            One real Pocket Option balance can be split across several Funds for sizing purposes. Moving capital here never touches the broker - it only changes how AXIM divides up what's already there.
+          </div>
+          <table style="margin-top:12px;">
+            <thead><tr><th>When</th><th>Move</th><th>Amount</th><th>Note</th></tr></thead>
+            <tbody id="transfers-body"><tr><td colspan="4" class="empty">No transfers yet.</td></tr></tbody>
+          </table>
+        </div>
+
         <div class="row" style="margin-bottom:18px;">
           <div class="card" style="flex:1;">
             <h3>Performance</h3>
@@ -146,6 +161,32 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="transfer-modal">
+  <div class="modal">
+    <h2 style="margin-top:0;">Move Capital</h2>
+    <div class="field">
+      <label>Move</label>
+      <select id="t-direction" onchange="updateTransferDirectionUI()">
+        <option value="from_reserve">From Reserve into this Fund</option>
+        <option value="to_reserve">From this Fund into Reserve</option>
+        <option value="to_fund">From this Fund to another Fund</option>
+      </select>
+    </div>
+    <div class="field" id="t-target-fund-field" style="display:none;">
+      <label>Destination Fund</label>
+      <select id="t-target-fund"></select>
+    </div>
+    <div class="field"><label>Amount ($)</label><input type="number" id="t-amount" step="0.01" min="0.01"></div>
+    <div class="field"><label>Note (optional)</label><input type="text" id="t-note" placeholder="e.g. initial top-up"></div>
+    <div class="muted" id="t-context" style="font-size:11.5px; margin-bottom:14px;"></div>
+    <div class="row" style="justify-content:flex-end;">
+      <button class="subtle" onclick="closeModal('transfer-modal')">Cancel</button>
+      <button class="primary" onclick="submitTransfer()">Move Capital</button>
+    </div>
+    <span id="transfer-status" class="muted"></span>
+  </div>
+</div>
+
 <script src="/web/theme.js"></script>
 <script src="/web/shell.js"></script>
 <script>
@@ -155,6 +196,7 @@ let allRiskProfiles = [];
 let allSessionProfiles = [];
 let allBrokerAccounts = [];
 let currentFundId = null;
+let currentFundReport = null;
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, { credentials: "same-origin", ...opts });
@@ -221,9 +263,31 @@ async function selectFund(fundId) {
     document.getElementById("rules-summary").textContent = "-";
   }
   document.getElementById("rules-link").href = `/automation?fund=${fundId}`;
+  try {
+    const transfers = await fetchJSON(`/api/funds/${fundId}/transfers`);
+    renderTransfers(transfers);
+  } catch (e) {
+    document.getElementById("transfers-body").innerHTML = `<tr><td colspan="4" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+function renderTransfers(transfers) {
+  const body = document.getElementById("transfers-body");
+  if (!transfers.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No transfers yet.</td></tr>'; return; }
+  body.innerHTML = transfers.map(t => {
+    const fromLabel = t.from_fund_id === null ? "Reserve" : (t.from_fund_id === currentFundId ? "This Fund" : (allFunds.find(f => f.id === t.from_fund_id)?.name || `Fund #${t.from_fund_id}`));
+    const toLabel = t.to_fund_id === null ? "Reserve" : (t.to_fund_id === currentFundId ? "This Fund" : (allFunds.find(f => f.id === t.to_fund_id)?.name || `Fund #${t.to_fund_id}`));
+    return `<tr>
+      <td class="muted">${(t.created_at || "").replace("T", " ").slice(0, 16)}</td>
+      <td>${escapeHtml(fromLabel)} &rarr; ${escapeHtml(toLabel)}</td>
+      <td>${fmtMoney(t.amount)}</td>
+      <td class="muted">${escapeHtml(t.note || "-")}</td>
+    </tr>`;
+  }).join("");
 }
 
 function renderDetail(report) {
+  currentFundReport = report;
   const fund = report.fund;
   document.getElementById("detail-panel").style.display = "block";
   document.getElementById("detail-title").textContent = fund.name;
@@ -253,6 +317,17 @@ function renderDetail(report) {
     allBrokerAccounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)} (${a.mode}, ${a.connection_status})</option>`).join("");
   accountSelect.value = account ? account.id : "";
   document.getElementById("f-live-enabled").checked = !!fund.live_enabled;
+
+  const reserveSummaryEl = document.getElementById("reserve-summary");
+  if (account) {
+    const liveAccount = allBrokerAccounts.find(a => a.id === account.id);
+    const reserve = liveAccount ? liveAccount.reserve : null;
+    reserveSummaryEl.textContent = reserve !== null && reserve !== undefined
+      ? `${fmtMoney(reserve)} unallocated in Reserve on ${account.name}`
+      : `Reserve on ${account.name} is unknown - balance not yet observed.`;
+  } else {
+    reserveSummaryEl.textContent = "Attach a broker account to move capital in or out of Reserve (fund-to-fund transfers don't need one).";
+  }
 
   document.getElementById("d-trades").textContent = report.performance.total_closed;
   document.getElementById("d-winrate").textContent = report.performance.win_rate !== null ? (report.performance.win_rate * 100).toFixed(1) + "%" : "-";
@@ -396,6 +471,70 @@ async function duplicateCurrentFund() {
     await selectFund(result.fund.id);
   } catch (e) {
     alert("Failed: " + e.message);
+  }
+}
+
+function openTransferModal() {
+  document.getElementById("t-direction").value = "from_reserve";
+  document.getElementById("t-amount").value = "";
+  document.getElementById("t-note").value = "";
+  document.getElementById("transfer-status").textContent = "";
+  document.getElementById("t-target-fund").innerHTML = allFunds
+    .filter(f => f.id !== currentFundId)
+    .map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("");
+  updateTransferDirectionUI();
+  openModal("transfer-modal");
+}
+
+function updateTransferDirectionUI() {
+  const dir = document.getElementById("t-direction").value;
+  document.getElementById("t-target-fund-field").style.display = dir === "to_fund" ? "block" : "none";
+  const contextEl = document.getElementById("t-context");
+  const account = currentFundReport && currentFundReport.broker_account;
+  if (dir === "from_reserve") {
+    const liveAccount = account ? allBrokerAccounts.find(a => a.id === account.id) : null;
+    const reserve = liveAccount ? liveAccount.reserve : null;
+    contextEl.textContent = !account ? "This fund has no broker account attached - attach one first."
+      : (reserve !== null && reserve !== undefined ? `Reserve available: ${fmtMoney(reserve)}` : "Reserve balance unknown - not yet observed.");
+  } else {
+    const balance = currentFundReport ? currentFundReport.balances.trading_balance : null;
+    contextEl.textContent = `This fund's available balance: ${fmtMoney(balance)}`;
+  }
+}
+
+async function submitTransfer() {
+  const statusEl = document.getElementById("transfer-status");
+  const dir = document.getElementById("t-direction").value;
+  const amount = parseFloat(document.getElementById("t-amount").value);
+  const note = document.getElementById("t-note").value.trim() || null;
+  if (!amount || amount <= 0) { statusEl.textContent = "Enter an amount greater than 0."; return; }
+
+  const account = currentFundReport && currentFundReport.broker_account;
+  const body = { amount, note };
+  if (dir === "from_reserve") {
+    if (!account) { statusEl.textContent = "This fund has no broker account attached."; return; }
+    body.to_fund_id = currentFundId;
+    body.broker_account_id = account.id;
+  } else if (dir === "to_reserve") {
+    if (!account) { statusEl.textContent = "This fund has no broker account attached."; return; }
+    body.from_fund_id = currentFundId;
+    body.broker_account_id = account.id;
+  } else {
+    const targetId = parseInt(document.getElementById("t-target-fund").value, 10);
+    if (!targetId) { statusEl.textContent = "Choose a destination fund."; return; }
+    body.from_fund_id = currentFundId;
+    body.to_fund_id = targetId;
+  }
+
+  try {
+    await fetchJSON("/api/funds/transfer-capital", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    closeModal("transfer-modal");
+    await refreshAll();
+    await selectFund(currentFundId);
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
   }
 }
 

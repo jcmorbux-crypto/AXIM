@@ -377,6 +377,25 @@ def initialize_database():
     );
     """)
 
+    # Capital Allocation (docs: one real Pocket Option balance, AXIM just
+    # allocates portions of it to Funds for sizing purposes - see
+    # core/fund_manager.py's transfer_capital/get_broker_account_reserve).
+    # An audit trail of every move, not just a mutated number - from/to
+    # NULL means Reserve (the broker account's unallocated balance) on
+    # that side of the transfer.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS fund_capital_transfers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_fund_id INTEGER,
+        to_fund_id INTEGER,
+        broker_account_id INTEGER,
+        amount REAL NOT NULL,
+        note TEXT,
+        created_by TEXT,
+        created_at TEXT
+    );
+    """)
+
     # One row per actual session run. Only one row may have status='active'
     # at a time (enforced in start_trading_session, not a DB constraint -
     # SQLite has no partial unique index short of a trigger, and the
@@ -2407,6 +2426,46 @@ def list_broker_account_funds(broker_account_id):
         """,
         (broker_account_id,),
     ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def record_capital_transfer(from_fund_id, to_fund_id, amount, broker_account_id=None, note=None, created_by=None):
+    """Pure ledger write - core/fund_manager.transfer_capital validates and
+    applies the actual balance change, then calls this to record it. NULL
+    from_fund_id/to_fund_id means that side of the transfer was Reserve."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute(
+        """INSERT INTO fund_capital_transfers
+           (from_fund_id, to_fund_id, broker_account_id, amount, note, created_by, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (from_fund_id, to_fund_id, broker_account_id, amount, note, created_by, now),
+    )
+    transfer_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return transfer_id
+
+
+@timed("database")
+def list_capital_transfers(fund_id=None, limit=100):
+    """Every transfer involving this fund on either side (as source or
+    destination), most recent first - omit fund_id for the full ledger
+    (e.g. a broker-account-level Reserve history view)."""
+    conn = get_connection()
+    if fund_id is not None:
+        rows = conn.execute(
+            """SELECT * FROM fund_capital_transfers
+               WHERE from_fund_id = ? OR to_fund_id = ?
+               ORDER BY id DESC LIMIT ?""",
+            (fund_id, fund_id, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM fund_capital_transfers ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

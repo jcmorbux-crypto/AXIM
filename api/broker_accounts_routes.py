@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import database
+import fund_manager
 from auth_routes import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/broker-accounts", tags=["broker-accounts"])
@@ -50,7 +51,11 @@ def _get_or_404(account_id):
 
 
 def _with_funds(account):
-    return {**account, "funds": database.list_broker_account_funds(account["id"])}
+    return {
+        **account,
+        "funds": database.list_broker_account_funds(account["id"]),
+        "reserve": fund_manager.get_broker_account_reserve(account["id"]),
+    }
 
 
 @router.get("")

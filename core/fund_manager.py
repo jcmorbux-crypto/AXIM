@@ -104,6 +104,91 @@ def list_funds_with_balances(status=None):
     return result
 
 
+def get_broker_account_reserve(broker_account_id):
+    """Unallocated buying power on a broker account: its real observed
+    balance minus every Fund currently attached to it (trading_balance,
+    same vault-aware figure position sizing already uses - a vaulted/
+    protected dollar isn't available to reallocate either).
+
+    Returns None if the account's balance has never been observed yet
+    (broker_accounts.last_balance is NULL) - never fabricated, matching
+    every other real-money figure in this codebase (see
+    api/pocket-option/status's same "None until observed" precedent)."""
+    account = database.get_broker_account(broker_account_id)
+    if account is None or account["last_balance"] is None:
+        return None
+    funds = database.list_broker_account_funds(broker_account_id)
+    allocated = sum(get_fund_balances(f["id"])["trading_balance"] for f in funds)
+    return round(account["last_balance"] - allocated, 2)
+
+
+class CapitalTransferError(ValueError):
+    """Raised for any invalid capital move - insufficient balance, unknown
+    fund, missing broker-account context for a Reserve-side transfer.
+    Subclasses ValueError so existing `except ValueError` call sites
+    (api/main.py's channel-config pattern) catch it without change."""
+
+
+def transfer_capital(from_fund_id=None, to_fund_id=None, amount=0, broker_account_id=None,
+                      note=None, created_by=None):
+    """Moves capital between two Funds, or between a Fund and Reserve
+    (whichever side is None). Never touches the broker - Pocket Option
+    still sees one balance; this only changes how AXIM splits it up for
+    sizing. Adjusts each fund's starting_balance (its own trading_balance
+    formula - starting_balance + realized_pnl - vaulted - reflects the
+    move immediately, same accounting fund_manager already uses
+    everywhere else) and records an audit row via
+    database.record_capital_transfer - never a silent number mutation.
+
+    A Fund can only give up capital it actually still has (checked
+    against trading_balance, its real current worth, not the original
+    starting_balance) - a fund that's up $18 can move up to its full
+    $268, not just its original $250. Pulling from Reserve is capped by
+    get_broker_account_reserve, so a transfer can never invent money the
+    broker account doesn't actually hold."""
+    amount = round(float(amount), 2)
+    if amount <= 0:
+        raise CapitalTransferError("transfer amount must be positive")
+    if from_fund_id is None and to_fund_id is None:
+        raise CapitalTransferError("must specify at least one of from_fund_id/to_fund_id")
+    if from_fund_id is not None and from_fund_id == to_fund_id:
+        raise CapitalTransferError("cannot transfer a fund's capital to itself")
+
+    if from_fund_id is not None:
+        source_balances = get_fund_balances(from_fund_id)
+        if source_balances is None:
+            raise CapitalTransferError(f"fund {from_fund_id} not found")
+        if source_balances["trading_balance"] < amount:
+            raise CapitalTransferError(
+                f"fund {from_fund_id} only has ${source_balances['trading_balance']:.2f} available, "
+                f"cannot move ${amount:.2f}"
+            )
+    else:
+        if broker_account_id is None:
+            raise CapitalTransferError("broker_account_id is required when moving capital out of Reserve")
+        reserve = get_broker_account_reserve(broker_account_id)
+        if reserve is None:
+            raise CapitalTransferError(
+                f"broker account {broker_account_id} has no observed balance yet - Reserve is unknown"
+            )
+        if reserve < amount:
+            raise CapitalTransferError(f"only ${reserve:.2f} available in Reserve, cannot move ${amount:.2f}")
+
+    if to_fund_id is not None and database.get_fund(to_fund_id) is None:
+        raise CapitalTransferError(f"fund {to_fund_id} not found")
+
+    if from_fund_id is not None:
+        source_fund = database.get_fund(from_fund_id)
+        database.update_fund(from_fund_id, starting_balance=round(source_fund["starting_balance"] - amount, 2))
+    if to_fund_id is not None:
+        dest_fund = database.get_fund(to_fund_id)
+        database.update_fund(to_fund_id, starting_balance=round(dest_fund["starting_balance"] + amount, 2))
+
+    return database.record_capital_transfer(
+        from_fund_id, to_fund_id, amount, broker_account_id=broker_account_id, note=note, created_by=created_by,
+    )
+
+
 class FundLimitReached(Exception):
     """Same (rule, reason) shape as session_manager.SessionLimitReached -
     core/session_manager.py's _on_trade_closed handles either
