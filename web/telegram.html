@@ -292,6 +292,8 @@ function renderMySources() {
           ${c.source_type === "bot_command" ? botFields(c) : ""}
           <div class="muted" style="font-size:12px; margin-top:8px;">Last signal: ${fmtTime(c.last_signal_at)}</div>
           <button class="subtle" onclick="event.stopPropagation(); openMessages(${c.id})">View recent messages</button>
+          <button class="subtle" onclick="event.stopPropagation(); analyzeProvider(${c.id}, '${escapeHtml(c.chat_id)}', '${escapeHtml(c.title || "")}')">Analyze This Provider</button>
+          <span class="muted" id="analyze-status-${c.id}" style="font-size:11.5px; display:block; margin-top:4px;"></span>
         </div>
       </div>
       <div class="stats">
@@ -439,6 +441,28 @@ async function loadPerformance(id) {
     plEl.className = "value " + (perf.profit_loss > 0 ? "pos" : (perf.profit_loss < 0 ? "neg" : "muted"));
   } catch (e) {
     winEl.textContent = "-";
+  }
+}
+
+async function analyzeProvider(channelId, chatId, title) {
+  const statusEl = document.getElementById(`analyze-status-${channelId}`);
+  statusEl.textContent = "Analyzing (this can take a minute - fetching history, detecting the signal format, backtesting)...";
+  try {
+    const result = await fetchJSON("/api/provider-onboarding/analyze", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: parseInt(chatId, 10), source_label: title || null }),
+    });
+    if (result.status === "no_history") {
+      statusEl.textContent = "No message history found for this channel.";
+    } else if (result.status === "pattern_not_detected") {
+      statusEl.textContent = `Scanned ${result.message_count} messages - no common signal format recognized. ${result.note}`;
+    } else if (result.status === "no_decided_trades") {
+      statusEl.textContent = `Detected a ${result.pattern} pattern (${(result.coverage * 100).toFixed(0)}% coverage), but ${result.note}`;
+    } else {
+      statusEl.textContent = `Done: ${result.pattern} pattern, ${(result.coverage * 100).toFixed(0)}% coverage, ${result.imported_trades} trades imported and backtested. See Strategy Lab's Provider Recommendations tab for the full recommendation.`;
+    }
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
   }
 }
 

@@ -1090,6 +1090,26 @@ def initialize_database():
         generated_at TEXT
     );
     """)
+    # Phase 2 additions (AXIM_ENGINEERING_JOURNAL.md) - the full recommendation
+    # card spec: net profit/ending balance alongside ROI, longest losing
+    # streak, trading cadence, a documented confidence score/star rating,
+    # and per-allocation session goal/daily stop suggestions. Migrated
+    # inline since capital_recommendations already shipped and holds real
+    # rows - same ALTER-TABLE-if-missing pattern as backtest_metrics above.
+    _NEW_CAPITAL_RECOMMENDATION_COLUMNS = {
+        "net_profit": "REAL",
+        "ending_balance": "REAL",
+        "longest_losing_streak": "INTEGER",
+        "avg_daily_trades": "REAL",
+        "confidence_score": "REAL",
+        "star_rating": "INTEGER",
+        "recommended_session_goal": "REAL",
+        "recommended_daily_stop": "REAL",
+    }
+    capital_recommendation_columns = {row["name"] for row in conn.execute("PRAGMA table_info(capital_recommendations)")}
+    for column, sql_type in _NEW_CAPITAL_RECOMMENDATION_COLUMNS.items():
+        if column not in capital_recommendation_columns:
+            conn.execute(f"ALTER TABLE capital_recommendations ADD COLUMN {column} {sql_type}")
 
     # Auth/access-control layer (docs/AXIM_APP_PLAN.md) - who may log into
     # the control UI at all, separate from the single shared Telegram/
@@ -4783,7 +4803,9 @@ def get_backtest_report(run_id):
 def save_capital_recommendation(source_label, backtest_run_id, best_strategy_id, best_strategy_key,
                                  best_strategy_name, roi_percent, win_rate, max_drawdown_percent,
                                  max_drawdown_amount, minimum_allocation, conservative_allocation,
-                                 suggested_allocation, trades_backtested):
+                                 suggested_allocation, trades_backtested, net_profit=None, ending_balance=None,
+                                 longest_losing_streak=None, avg_daily_trades=None, confidence_score=None,
+                                 star_rating=None, recommended_session_goal=None, recommended_daily_stop=None):
     """Upserts by source_label - regenerating a provider's recommendation
     replaces its previous one rather than accumulating stale history,
     since only the latest evidence-backed number should ever be acted on."""
@@ -4793,8 +4815,10 @@ def save_capital_recommendation(source_label, backtest_run_id, best_strategy_id,
         INSERT INTO capital_recommendations (
             source_label, backtest_run_id, best_strategy_id, best_strategy_key, best_strategy_name,
             roi_percent, win_rate, max_drawdown_percent, max_drawdown_amount,
-            minimum_allocation, conservative_allocation, suggested_allocation, trades_backtested, generated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            minimum_allocation, conservative_allocation, suggested_allocation, trades_backtested,
+            net_profit, ending_balance, longest_losing_streak, avg_daily_trades, confidence_score,
+            star_rating, recommended_session_goal, recommended_daily_stop, generated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_label) DO UPDATE SET
             backtest_run_id=excluded.backtest_run_id, best_strategy_id=excluded.best_strategy_id,
             best_strategy_key=excluded.best_strategy_key, best_strategy_name=excluded.best_strategy_name,
@@ -4802,10 +4826,17 @@ def save_capital_recommendation(source_label, backtest_run_id, best_strategy_id,
             max_drawdown_percent=excluded.max_drawdown_percent, max_drawdown_amount=excluded.max_drawdown_amount,
             minimum_allocation=excluded.minimum_allocation, conservative_allocation=excluded.conservative_allocation,
             suggested_allocation=excluded.suggested_allocation, trades_backtested=excluded.trades_backtested,
+            net_profit=excluded.net_profit, ending_balance=excluded.ending_balance,
+            longest_losing_streak=excluded.longest_losing_streak, avg_daily_trades=excluded.avg_daily_trades,
+            confidence_score=excluded.confidence_score, star_rating=excluded.star_rating,
+            recommended_session_goal=excluded.recommended_session_goal,
+            recommended_daily_stop=excluded.recommended_daily_stop,
             generated_at=excluded.generated_at
     """, (source_label, backtest_run_id, best_strategy_id, best_strategy_key, best_strategy_name,
           roi_percent, win_rate, max_drawdown_percent, max_drawdown_amount,
-          minimum_allocation, conservative_allocation, suggested_allocation, trades_backtested, now))
+          minimum_allocation, conservative_allocation, suggested_allocation, trades_backtested,
+          net_profit, ending_balance, longest_losing_streak, avg_daily_trades, confidence_score,
+          star_rating, recommended_session_goal, recommended_daily_stop, now))
     conn.commit()
     rec_id = conn.execute(
         "SELECT id FROM capital_recommendations WHERE source_label = ?", (source_label,)

@@ -213,4 +213,81 @@ touched. Anyone restarting these services in the future should verify via
 `Get-CimInstance Win32_Process` that the old PID is actually gone before starting a
 new instance, not just trust the Scheduled Task state.
 
+Later the same evening: fixed the exact mismatch above for real (force-killed the
+orphaned PID directly rather than relying on Stop-ScheduledTask, cleaned Chrome,
+started fresh, verified Task Scheduler state and process reality agree) - clean this
+time, no leaked Chrome processes. Also disabled `live_enabled` on a pre-existing,
+dormant Fund ("Tyler Live Trading", created 2026-07-12, untouched since, `live_enabled=1`
+with no live broker account anywhere in the system to justify it) - a deliberate,
+narrow, reversible safety correction, nothing else about the Fund touched.
+
+Delivered a full ground-truth Executive Status Audit on request (git/branch/worktree
+state, every running process, every Fund and recommendation in the real database, the
+complete OPT SIGNALS provider table, feature-by-feature status) - caught two more real
+findings in the process: (1) a stale pre-existing Fund with a live-trading flag set (see
+above), (2) `web/capital_strategies.html` is a DIFFERENT, older ~20-strategy system than
+Money Management Studio - the actual 4-strategy Studio UI lives in `web/risk.html`
+(confirmed only after an initial grep false-negative, since strategy names are populated
+dynamically from the API, never hardcoded in the HTML - corrected before reporting).
+
+---
+
+## 2026-07-15 (continued) — Phase 2: Provider Intelligence Engine (Priority #1)
+
+User declared V1 complete and opened **Phase 2**: build toward a commercial SaaS
+product, not just an admin dashboard, with standing autonomous authorization except
+for live-trading risk / data deletion / credentials-payment-external-accounts /
+fundamental production-behavior changes. Execution order given: Provider Intelligence
+Engine first, then Portfolio Command Center, capital allocation, automatic
+re-analysis, Money Management Studio polish, then commercial SaaS capabilities.
+Branch: `phase2-recommendation-engine` off master.
+
+**Extended the recommendation-card field set** (`core/capital_recommendation.py`,
+`capital_recommendations` table migrated with 8 new columns): net profit, ending
+balance, longest losing streak, average daily trades, a documented confidence score
+(60% sample-size / 40% session-consistency, saturating at 500 trades - an explicit
+heuristic, not a statistic), a derived 1-5 star rating, and a recommended session
+goal/daily stop scaled to the actual suggested allocation (not the backtest's own
+smaller starting bankroll). A losing backtest gets NO session goal at all (None, not a
+fabricated positive number) - the daily stop is still always computed, since downside
+protection is meaningful even for a strategy that lost money on average. Real bug
+caught before shipping: an INSERT statement had 21 `?` placeholders for 22 columns
+(`sqlite3.OperationalError: 21 values for 22 columns`) - caught immediately by the
+test suite, not live. 26 tests, all passing.
+
+**Built the automatic Provider Language Learner** (`core/provider_language_learner.py`)
+- the actual flagship ask: detect a new provider's signal format automatically, without
+a hand-written adapter first. A library of pattern templates encoding the real
+structural shapes found across the 12-provider OPT SIGNALS research corpus (compact
+single-line BUY/SELL, compact HIGH/LOWER, labeled multi-field blocks, two-step
+asset-then-direction messages), each scored against a real message batch, best-scorer
+used if it clears a 10% coverage floor, otherwise honestly reports "no pattern fits"
+rather than force one. **Validated directly against the real 12-provider research
+database** (not synthetic data): 6 of 10 real signal-providers got a detected pattern -
+Daniel FX Trade's auto-detected signal count (154) matched the hand-built adapter's
+count *exactly*; Pocket Option Signals and VIP | Signals came close. Correctly refused
+to detect a pattern for NEBORTRADE and Go+ (the two providers confirmed NOT to be real
+signal sources) and for four complex providers (TYLER VIP CLUB, OTC Pro Trading Robot,
+Martin Trader, Pattern Signals) this v1's pattern library doesn't cover yet - an honest,
+documented limitation, not a hidden gap. 23 tests, all passing.
+
+**Wired it into a real onboarding flow** (`core/provider_onboarding.py`,
+`api/provider_onboarding_routes.py`, a new "Analyze This Provider" button on
+`web/telegram.html`): one action takes a synced channel, fetches history via a new
+`telegram_channels.fetch_channel_raw_history` (returns everything unfiltered, unlike
+the existing `fetch_channel_history` which only keeps what the live per-message parser
+already recognizes), runs the language learner, imports decided trades, auto-backtests
+all 4 official strategies, and generates a capital recommendation - reusing every
+piece already built in Tier 2 rather than duplicating it. Every inconclusive outcome
+("no history," "pattern not detected," "pattern detected but nothing links to a
+result") is a normal returned status, never an exception - matching this project's
+standing "never fabricate confidence" discipline. 4 tests (mocked Telegram fetch, real
+DB-backed orchestration downstream of the mock), all passing.
+
+Deliberately did NOT touch `parsers/signal_parser.py` (the live, real-time, per-message
+parser the Telegram listener uses to actually place trades) - the language learner is
+a separate, batch-mode, analysis-only module, never imported by
+`core/telegram_listener.py`/`core/trade_coordinator.py`/`execution/pocket_executor.py`,
+same isolation discipline the OPT SIGNALS research adapters already established.
+
 ---
