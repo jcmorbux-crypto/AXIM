@@ -178,4 +178,39 @@ invoke the actual fund-creation mutation against the production database unpromp
 that creates a real (if Demo-only) Fund in the user's own account, left for them to
 trigger deliberately via the new Strategy Lab tab.
 
+**Merge and live rollout.** Merged `tier2-capital-allocation-engine` into master
+(`--no-ff`, preserving branch history) after the full suite passed on the branch (833/833).
+Re-ran the full suite on merged master to confirm: 833/833 again. Did NOT push to
+`origin` - that's a repo-visible action beyond what "create commits"/"merge approved
+feature branches" in the standing autonomy grant covers, left for deliberate review.
+
+**Real operational incident found and resolved while bringing the new code live:**
+restarting the "AXIM Listener" Scheduled Task via `Stop-ScheduledTask`/`Start-ScheduledTask`
+does NOT reliably terminate the underlying python.exe process - confirmed directly:
+after several restart attempts, FOUR separate `telegram_listener.py` processes were
+found running concurrently (one dating back to this morning's reboot, PID 12160,
+never actually replaced by any of the "restarts"), all fighting over the same
+Playwright browser profile (`sessions/pocket_browser`), which is what caused the
+repeated "Opening in existing browser session" launch failures - not stale files, not
+Chrome cleanup, but genuinely duplicate live processes. Each failed attempt was also
+independently leaking orphaned chrome.exe processes (~20 accumulated at the worst
+point, on top of the reboot's own leftover batch from the morning audit) faster than
+`scripts/cleanup_axim_chrome.ps1` alone could keep up while duplicate listeners kept
+running. Resolved by force-killing every listener PID directly (`Stop-Process -Force`),
+running the existing cleanup script once against a genuinely process-free state, then
+starting exactly one fresh instance - confirmed via `Get-CimInstance` process listing
+before the final start, not just trusting the Scheduled Task's own reported state.
+Verified stable for 5+ minutes post-restart: clean startup log (demo mode verified,
+6-worker pool built, recovery ran, broker account adopted), exactly one listener
+process, a normal ~15 chrome.exe count, live API healthy and serving the new
+`/api/capital-recommendations` route (401, not 404, confirming registration).
+
+**Worth flagging for future reference, not fixed here (out of Tier 2's scope):**
+`Stop-ScheduledTask` on this Task Scheduler configuration does not appear to guarantee
+the underlying process actually exits before returning - a real gap in the existing
+`scripts/install_scheduled_task.ps1`/restart tooling, separate from anything Tier 2
+touched. Anyone restarting these services in the future should verify via
+`Get-CimInstance Win32_Process` that the old PID is actually gone before starting a
+new instance, not just trust the Scheduled Task state.
+
 ---
