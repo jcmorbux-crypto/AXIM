@@ -92,6 +92,7 @@
       <button class="tab-btn" data-tab="scorecard">Signal Scorecard</button>
       <button class="tab-btn" data-tab="signals">Historical Signals</button>
       <button class="tab-btn" data-tab="history">Past Runs</button>
+      <button class="tab-btn" data-tab="recommendations">Provider Recommendations</button>
     </div>
 
     <!-- ============ RUN BACKTEST ============ -->
@@ -287,6 +288,20 @@
         </div>
       </div>
     </div>
+
+    <!-- ============ PROVIDER RECOMMENDATIONS ============ -->
+    <div class="tab-panel" id="tab-recommendations">
+      <div class="banner warn">
+        These are generated automatically: the 4 official Money Studio strategies are backtested
+        against each monitored provider's real historical signal history, and the best-performing
+        strategy plus a suggested starting capital are shown below. The underlying outcomes are the
+        provider's own reported results from Telegram history - not independently verified against a
+        broker. Past results do not guarantee future results.
+      </div>
+      <div class="compare-grid" id="recommendations-grid">
+        <div class="empty">Loading...</div>
+      </div>
+    </div>
   </main>
 </div>
 
@@ -306,6 +321,33 @@
       <button class="primary" onclick="confirmDeploy()">Deploy</button>
     </div>
     <span id="deploy-status" class="muted"></span>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="create-fund-modal">
+  <div class="modal">
+    <h2 style="margin-top:0;">Create Recommended Demo Fund</h2>
+    <div class="field"><label>Capital allocation</label>
+      <select id="create-fund-tier">
+        <option value="minimum">Minimum - bare survival floor</option>
+        <option value="conservative">Conservative - extra safety margin</option>
+        <option value="suggested" selected>Suggested - comfortable operating room</option>
+      </select>
+    </div>
+    <div class="field"><label>Fund name (optional)</label>
+      <input type="text" id="create-fund-name" placeholder="Auto-named if left blank">
+    </div>
+    <div class="muted" style="font-size:11.5px; margin-bottom:14px;">
+      Creates a brand-new Demo Fund sized at your chosen tier, deployed with the recommended
+      strategy's own backtested profile, and attached to a Demo broker account. If this provider's
+      channel isn't synced into AXIM's Signal Sources yet, the Fund is still created correctly - you'll
+      just need to attach the source manually afterward from the Funds page.
+    </div>
+    <div class="row" style="justify-content:flex-end;">
+      <button class="subtle" onclick="closeModal('create-fund-modal')">Cancel</button>
+      <button class="primary" onclick="confirmCreateRecommendedFund()">Create Fund</button>
+    </div>
+    <span id="create-fund-status" class="muted"></span>
   </div>
 </div>
 
@@ -338,7 +380,65 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   if (e.target.dataset.tab === "signals") { loadImportedSignals(); loadTelegramHistoryChannels(); }
   if (e.target.dataset.tab === "history") loadRunsHistory();
   if (e.target.dataset.tab === "scorecard") loadScorecardSources();
+  if (e.target.dataset.tab === "recommendations") loadRecommendations();
 });
+
+// ---------- Provider Recommendations ----------
+
+let currentRecommendationId = null;
+
+async function loadRecommendations() {
+  const grid = document.getElementById("recommendations-grid");
+  try {
+    const recommendations = await fetchJSON("/api/capital-recommendations");
+    if (recommendations.length === 0) {
+      grid.innerHTML = '<div class="empty">No provider recommendations yet - run scripts/import_provider_research.py to generate them.</div>';
+      return;
+    }
+    grid.innerHTML = recommendations.map(r => `
+      <div class="compare-card">
+        <h4>${escapeHtml(r.source_label)}</h4>
+        <div class="best-for">Best strategy: ${escapeHtml(r.best_strategy_name)}</div>
+        <div class="metric-row"><span class="label">ROI (backtested)</span><span class="value">${r.roi_percent != null ? r.roi_percent.toFixed(1) + "%" : "-"}</span></div>
+        <div class="metric-row"><span class="label">Win rate</span><span class="value">${r.win_rate != null ? (r.win_rate * 100).toFixed(1) + "%" : "-"}</span></div>
+        <div class="metric-row"><span class="label">Max drawdown</span><span class="value">${r.max_drawdown_percent != null ? r.max_drawdown_percent.toFixed(1) + "%" : "-"} (${fmtMoney(-Math.abs(r.max_drawdown_amount || 0))})</span></div>
+        <div class="metric-row"><span class="label">Trades backtested</span><span class="value">${r.trades_backtested ?? "-"}</span></div>
+        <div class="metric-row"><span class="label">Minimum</span><span class="value">${fmtMoney(r.minimum_allocation)}</span></div>
+        <div class="metric-row"><span class="label">Conservative</span><span class="value">${fmtMoney(r.conservative_allocation)}</span></div>
+        <div class="metric-row"><span class="label">Suggested</span><span class="value">${fmtMoney(r.suggested_allocation)}</span></div>
+        <div class="row" style="margin-top:12px;">
+          <button class="primary" style="flex:1;" onclick="openCreateFundModal(${r.id})">Create Recommended Demo Fund</button>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    grid.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+function openCreateFundModal(recommendationId) {
+  currentRecommendationId = recommendationId;
+  document.getElementById("create-fund-status").textContent = "";
+  openModal("create-fund-modal");
+}
+
+async function confirmCreateRecommendedFund() {
+  const tier = document.getElementById("create-fund-tier").value;
+  const fundName = document.getElementById("create-fund-name").value.trim() || null;
+  const statusEl = document.getElementById("create-fund-status");
+  statusEl.textContent = "Creating...";
+  try {
+    const result = await fetchJSON(`/api/capital-recommendations/${currentRecommendationId}/create-demo-fund`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tier, fund_name: fundName }),
+    });
+    statusEl.textContent = result.note
+      ? `Fund created (${fmtMoney(result.allocation_amount)}). ${result.note}`
+      : `Fund created (${fmtMoney(result.allocation_amount)}) and attached to its Signal Source.`;
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
 
 // ---------- Setup ----------
 

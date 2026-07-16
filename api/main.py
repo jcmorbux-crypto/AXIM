@@ -75,6 +75,7 @@ import notifications as notifications_module
 import event_stream_routes as event_stream_module
 import capital_strategies_routes as capital_strategies_module
 import money_studio_routes as money_studio_module
+import capital_recommendation_routes as capital_recommendation_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -107,6 +108,7 @@ logger = get_logger("axim.ui", filename="ui.log")
 
 database.initialize_database()
 database.seed_risk_profile_templates()
+database.seed_money_studio_templates()
 
 # /docs, /redoc, /openapi.json are unauthenticated by FastAPI's own
 # design - off by default (ENABLE_API_DOCS, config/settings.py) so
@@ -187,6 +189,7 @@ app.include_router(notifications_module.router)
 app.include_router(event_stream_module.router)
 app.include_router(capital_strategies_module.router)
 app.include_router(money_studio_module.router)
+app.include_router(capital_recommendation_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 

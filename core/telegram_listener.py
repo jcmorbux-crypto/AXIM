@@ -35,6 +35,7 @@ import database
 import session_manager
 import broker_account_manager
 import event_stream
+import telegram_bot_trigger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -172,6 +173,16 @@ async def handler(event):
     # substring), so a channel seeded from .env without a real chat_id yet
     # still matches.
     channel_row = database.find_channel(chat_id=event.chat_id, username=chat_username, title=chat_title)
+
+    # A Bot Command Channel's messages are only ever valid as a direct
+    # reply to a request core/telegram_bot_trigger.py made - never as an
+    # unprompted passive signal. That module awaits the bot's reply
+    # itself via a conversation-scoped listener (separate from this
+    # global handler); passively processing the same message here too
+    # would double-handle every interactive reply as if it were also a
+    # pushed signal.
+    if channel_row is not None and channel_row.get("source_type") == "bot_command":
+        return
 
     # When a Trading Session covers this channel, IT is the authoritative
     # allow-list for its duration - only its own channels execute,
@@ -411,6 +422,22 @@ async def _test_trade_poll_loop():
         await asyncio.sleep(TEST_TRADE_POLL_INTERVAL_SECONDS)
 
 
+BOT_TRIGGER_SUPERVISOR_INTERVAL_SECONDS = 3
+
+
+async def _bot_trigger_supervisor_loop():
+    """Starts core/telegram_bot_trigger.py's interactive request loop for
+    any active session covering a Bot Command Channel that doesn't
+    already have one running - see that module's supervisor_tick()."""
+    while True:
+        try:
+            if coordinator is not None:
+                await telegram_bot_trigger.supervisor_tick(client, coordinator)
+        except Exception as e:
+            logger.error("telegram_listener: bot trigger supervisor tick failed: %s", e)
+        await asyncio.sleep(BOT_TRIGGER_SUPERVISOR_INTERVAL_SECONDS)
+
+
 async def _startup():
     """(Re)builds the browser/worker-pool stack and runs startup recovery.
     Called both on first launch and after every process-level restart -
@@ -448,6 +475,7 @@ async def _startup():
     asyncio.create_task(_heartbeat_loop())
     asyncio.create_task(_maintenance_loop())
     asyncio.create_task(_test_trade_poll_loop())
+    asyncio.create_task(_bot_trigger_supervisor_loop())
 
 
 async def _shutdown():
