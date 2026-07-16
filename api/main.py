@@ -76,6 +76,7 @@ import event_stream_routes as event_stream_module
 import capital_strategies_routes as capital_strategies_module
 import money_studio_routes as money_studio_module
 import capital_recommendation_routes as capital_recommendation_module
+import provider_onboarding_routes as provider_onboarding_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -190,6 +191,7 @@ app.include_router(event_stream_module.router)
 app.include_router(capital_strategies_module.router)
 app.include_router(money_studio_module.router)
 app.include_router(capital_recommendation_module.router)
+app.include_router(provider_onboarding_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 

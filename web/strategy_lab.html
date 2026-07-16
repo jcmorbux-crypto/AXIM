@@ -70,6 +70,7 @@
   .scorecard-hero { text-align: center; padding: 24px; }
   .scorecard-hero .score { font-size: 48px; font-weight: 700; color: var(--purple); line-height: 1; }
   .scorecard-hero .stars { font-size: 18px; color: var(--gold); margin-top: 6px; letter-spacing: 2px; }
+  .stars { color: var(--gold); letter-spacing: 1px; margin-right: 4px; }
 </style>
 </head>
 <body>
@@ -387,6 +388,11 @@ document.getElementById("tabs").addEventListener("click", (e) => {
 
 let currentRecommendationId = null;
 
+function renderStars(n) {
+  const full = Math.max(0, Math.min(5, Math.round(n || 0)));
+  return "★".repeat(full) + "☆".repeat(5 - full);
+}
+
 async function loadRecommendations() {
   const grid = document.getElementById("recommendations-grid");
   try {
@@ -398,14 +404,23 @@ async function loadRecommendations() {
     grid.innerHTML = recommendations.map(r => `
       <div class="compare-card">
         <h4>${escapeHtml(r.source_label)}</h4>
-        <div class="best-for">Best strategy: ${escapeHtml(r.best_strategy_name)}</div>
+        <div class="best-for">
+          <span class="stars" title="Confidence ${r.confidence_score != null ? r.confidence_score.toFixed(0) + "%" : "-"}">${renderStars(r.star_rating)}</span>
+          ${escapeHtml(r.best_strategy_name)} &middot; Confidence ${r.confidence_score != null ? r.confidence_score.toFixed(0) + "%" : "-"}
+        </div>
         <div class="metric-row"><span class="label">ROI (backtested)</span><span class="value">${r.roi_percent != null ? r.roi_percent.toFixed(1) + "%" : "-"}</span></div>
+        <div class="metric-row"><span class="label">Net profit (backtest)</span><span class="value">${fmtMoney(r.net_profit)}</span></div>
+        <div class="metric-row"><span class="label">Ending balance (backtest)</span><span class="value">${fmtMoney(r.ending_balance)}</span></div>
         <div class="metric-row"><span class="label">Win rate</span><span class="value">${r.win_rate != null ? (r.win_rate * 100).toFixed(1) + "%" : "-"}</span></div>
         <div class="metric-row"><span class="label">Max drawdown</span><span class="value">${r.max_drawdown_percent != null ? r.max_drawdown_percent.toFixed(1) + "%" : "-"} (${fmtMoney(-Math.abs(r.max_drawdown_amount || 0))})</span></div>
+        <div class="metric-row"><span class="label">Longest losing streak</span><span class="value">${r.longest_losing_streak ?? "-"}</span></div>
+        <div class="metric-row"><span class="label">Expected daily trades</span><span class="value">${r.avg_daily_trades ?? "-"}</span></div>
         <div class="metric-row"><span class="label">Trades backtested</span><span class="value">${r.trades_backtested ?? "-"}</span></div>
         <div class="metric-row"><span class="label">Minimum</span><span class="value">${fmtMoney(r.minimum_allocation)}</span></div>
         <div class="metric-row"><span class="label">Conservative</span><span class="value">${fmtMoney(r.conservative_allocation)}</span></div>
         <div class="metric-row"><span class="label">Suggested</span><span class="value">${fmtMoney(r.suggested_allocation)}</span></div>
+        <div class="metric-row"><span class="label">Recommended session goal</span><span class="value">${r.recommended_session_goal != null ? fmtMoney(r.recommended_session_goal) : "n/a - backtest averaged a loss"}</span></div>
+        <div class="metric-row"><span class="label">Recommended daily stop</span><span class="value">${r.recommended_daily_stop != null ? "$" + Number(r.recommended_daily_stop).toFixed(2) : "-"}</span></div>
         <div class="row" style="margin-top:12px;">
           <button class="primary" style="flex:1;" onclick="openCreateFundModal(${r.id})">Create Recommended Demo Fund</button>
         </div>

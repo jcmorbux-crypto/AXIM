@@ -158,6 +158,40 @@ async def fetch_channel_history(chat_id, limit=200, source_label=None):
     return rows, scanned
 
 
+async def fetch_channel_raw_history(chat_id, limit=1000, source_label=None):
+    """Same connection/credential handling as fetch_channel_history, but
+    returns EVERY message's raw text unfiltered (not run through
+    parsers.signal_parser.parse_signal first) - core/
+    provider_language_learner.py needs the full, real batch (including
+    promotional chatter, results, session boilerplate) to detect which
+    structural pattern this provider actually uses, not just the subset
+    the live parser already recognizes. Returns (messages, source_title)
+    where messages is [{"message_id", "text", "date_utc"}, ...] in
+    chronological order (oldest first - the shape the learner and
+    backtest engine both expect, opposite of Telethon's own newest-first
+    iteration)."""
+    limit = min(limit, MAX_HISTORY_SCAN)
+    api_id, api_hash, phone = _telegram_credentials()
+    client = TelegramClient(UI_SESSION_NAME, api_id, api_hash)
+    await client.start(phone=phone)
+    messages = []
+    try:
+        entity = await client.get_entity(chat_id)
+        title = source_label or getattr(entity, "title", None) or getattr(entity, "username", None) or str(chat_id)
+        async for message in client.iter_messages(chat_id, limit=limit):
+            messages.append({
+                "message_id": message.id, "text": message.raw_text or "",
+                "date_utc": (message.date or datetime.now()).isoformat(),
+            })
+    finally:
+        await client.disconnect()
+    messages.reverse()  # Telethon iterates newest-first; the learner/backtest engine expect oldest-first
+    logger.info(
+        "telegram_channels: fetch_channel_raw_history chat_id=%s messages=%d", chat_id, len(messages),
+    )
+    return messages, title
+
+
 if __name__ == "__main__":
     import asyncio
     if hasattr(sys.stdout, "reconfigure"):
