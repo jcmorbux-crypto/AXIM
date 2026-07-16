@@ -4831,6 +4831,18 @@ def get_capital_recommendation(source_label):
 
 
 @timed("database")
+def delete_capital_recommendation(source_label):
+    """Used when a re-generated recommendation for this provider turns
+    out to have no plausible strategy (core/capital_recommendation.py) -
+    a stale prior recommendation must never be left behind looking like
+    it's still current just because nothing new was saved over it."""
+    conn = get_connection()
+    conn.execute("DELETE FROM capital_recommendations WHERE source_label = ?", (source_label,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
 def get_capital_recommendation_by_id(recommendation_id):
     conn = get_connection()
     row = conn.execute("SELECT * FROM capital_recommendations WHERE id = ?", (recommendation_id,)).fetchone()

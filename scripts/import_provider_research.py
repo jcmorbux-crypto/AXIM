@@ -172,7 +172,12 @@ def run_backtest_for_provider(title, import_batch, created_by="provider_research
     import capital_recommendation
     import money_studio
 
-    signals = database.list_imported_signals(import_batch=import_batch, graded_only=True)
+    # list_imported_signals defaults to limit=500 (fine for its usual UI-
+    # listing callers) - explicit high limit here since this count feeds
+    # the recommendation's displayed trades_backtested and must reflect
+    # the provider's real total, not be silently truncated (OTC Pro
+    # Trading Robot alone has 3724 decided trades).
+    signals = database.list_imported_signals(import_batch=import_batch, graded_only=True, limit=100000)
     if not signals:
         return None, None
 

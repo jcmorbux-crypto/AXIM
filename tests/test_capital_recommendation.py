@@ -1,4 +1,5 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -6,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "core"))
 sys.path.insert(0, str(PROJECT_ROOT / "config"))
 
+import database
 import capital_recommendation as rec
 
 
@@ -33,6 +35,27 @@ class PickBestStrategyTests(unittest.TestCase):
 
     def test_returns_none_when_nothing_ranked_yet(self):
         strategies = [{"id": 1, "label": "A", "metrics": {}}]
+        self.assertIsNone(rec.pick_best_strategy(strategies))
+
+    def test_excludes_an_implausible_unbounded_compounding_result(self):
+        # Real finding: Martin Trader's live backtest picked "Alternating
+        # Compound" as rank_overall=1 with an ROI of ~1.4e14% - an
+        # unbounded percent-of-growing-bankroll compounding artifact, not
+        # a real strategy result. Must never be selected just because it
+        # trivially wins the composite rank.
+        strategies = [
+            _strategy(1, "Alternating Compound", rank_overall=1, roi_percent=1.4e14),
+            _strategy(2, "Capital Preservation", rank_overall=2, roi_percent=12.0),
+        ]
+        best = rec.pick_best_strategy(strategies)
+        self.assertEqual(best["id"], 2)
+
+    def test_returns_none_when_every_ranked_strategy_is_implausible(self):
+        strategies = [_strategy(1, "A", rank_overall=1, roi_percent=1e10)]
+        self.assertIsNone(rec.pick_best_strategy(strategies))
+
+    def test_roi_exactly_at_the_ceiling_is_still_excluded(self):
+        strategies = [_strategy(1, "A", rank_overall=1, roi_percent=rec.MAX_PLAUSIBLE_ROI_PERCENT)]
         self.assertIsNone(rec.pick_best_strategy(strategies))
 
 
@@ -87,6 +110,62 @@ class ComputeRecommendationTests(unittest.TestCase):
     def test_returns_none_when_no_strategy_is_ranked(self):
         report = {"run": {"id": 1}, "strategies": []}
         self.assertIsNone(rec.compute_recommendation("X", report, trades_backtested=0))
+
+
+class GenerateRecommendationForProviderTestCase(unittest.TestCase):
+    """DB-backed - covers the real bug found on the first live run
+    against production data: a stale recommendation from an earlier,
+    now-implausible backtest must be deleted, not left behind looking
+    current, when a re-generation finds nothing plausible to replace it
+    with."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def _make_run_with_strategies(self, strategies_metrics):
+        run_id = database.create_backtest_run("Test Run", {"source": "imported"}, 1000.0)
+        for i, metrics in enumerate(strategies_metrics):
+            strategy_id = database.create_backtest_strategy(run_id, None, f"Strategy {i}", {"strategy_key": f"k{i}"})
+            database.save_backtest_metrics(strategy_id, metrics)
+        return run_id
+
+    def test_saves_a_real_recommendation(self):
+        run_id = self._make_run_with_strategies([
+            {"rank_overall": 1, "roi_percent": 20.0, "max_drawdown_percent": 10.0,
+             "max_drawdown_amount": 50.0, "avg_trade_size": 5.0, "win_rate": 0.55},
+        ])
+        rec_id = rec.generate_recommendation_for_provider("Test Provider", run_id, trades_backtested=100)
+        self.assertIsNotNone(rec_id)
+        saved = database.get_capital_recommendation("Test Provider")
+        self.assertIsNotNone(saved)
+        self.assertEqual(saved["backtest_run_id"], run_id)
+
+    def test_a_stale_recommendation_is_deleted_when_regeneration_finds_nothing_plausible(self):
+        # First generation: a plausible strategy exists, gets saved.
+        run_id_1 = self._make_run_with_strategies([
+            {"rank_overall": 1, "roi_percent": 20.0, "max_drawdown_percent": 10.0,
+             "max_drawdown_amount": 50.0, "avg_trade_size": 5.0, "win_rate": 0.55},
+        ])
+        rec.generate_recommendation_for_provider("Martin Trader", run_id_1, trades_backtested=100)
+        self.assertIsNotNone(database.get_capital_recommendation("Martin Trader"))
+
+        # Re-generation (e.g. re-backtest against more data): every
+        # candidate strategy now blows up - must not leave the old,
+        # now-stale recommendation looking current.
+        run_id_2 = self._make_run_with_strategies([
+            {"rank_overall": 1, "roi_percent": 1e14, "max_drawdown_percent": 5.0,
+             "max_drawdown_amount": 1e12, "avg_trade_size": 5.0, "win_rate": 0.93},
+        ])
+        result = rec.generate_recommendation_for_provider("Martin Trader", run_id_2, trades_backtested=1630)
+        self.assertIsNone(result)
+        self.assertIsNone(database.get_capital_recommendation("Martin Trader"))
 
 
 if __name__ == "__main__":
