@@ -137,9 +137,45 @@ reply/parse/route/wait-for-result/stop-at-session-limit loop, using Telethon's
 `client.conversation()` (isolated from the main passive listener), routing every reply
 through the same `broker_account_manager.route_signal()` passive channels use.
 
-**Verification status at handoff:** full test suite re-run queued in background after
-all changes above; scripts/import_provider_research.py run against the real production
-DB (not a test fixture) to produce real recommendation data end-to-end. See the
-Executive Progress Report for final numbers once background jobs complete.
+**Real bug found and fixed via live verification against the actual production
+database (not caught by any test, since tests use realistic-but-modest sample data):**
+running scripts/import_provider_research.py for real produced a genuinely absurd
+recommendation for Martin Trader - "Alternating Compound" ranked #1 with an ROI of
+~1.4x10^14 percent and a suggested allocation of ~$1.5x10^14. Root cause: Martin
+Trader's real backtested win rate is ~93% (a martingale-recovery provider, where most
+chains eventually resolve as a "win"), and a fixed-percent-of-bankroll strategy with no
+profit vault compounds hyperexponentially over 1630 real trades with no cap.
+backtest_engine.rank_strategies' composite score normalizes ROI trivially to 1.0
+regardless of scale, so an inflated-beyond-reason ROI always wins that ranking -
+checked all 4 official strategies against this provider's real data and every single
+one blows up. Fixed in core/capital_recommendation.py: pick_best_strategy now excludes
+any strategy whose ROI exceeds a documented 5000% implausibility ceiling before
+ranking applies; if nothing plausible remains (as for Martin Trader), it returns None -
+no confident recommendation is better than a fabricated one, matching this project's
+standing discipline (Micha Trader/VIP | Signals' flagged win-rate implausibility).
+Also fixed: the stale $1.5x10^14 recommendation row was NOT deleted when regeneration
+found nothing plausible to replace it with (caught by checking the actual database
+after the "fix," not just re-running the pure functions) -
+generate_recommendation_for_provider now deletes a provider's existing recommendation
+in that case. Also fixed a cosmetic-but-misleading trades_backtested count silently
+capped at 500 by list_imported_signals' default limit.
+
+**Current recommendation state, verified against the real production database:**
+OTC Pro Trading Robot (Capital Preservation, ROI -46.78%, suggested $2051.40), TYLER
+VIP CLUB (Recovery Ladder, ROI 95.97%, suggested $2409.08), Pocket Option Signals
+(Recovery Ladder, ROI 234.8%, suggested $2851.40), Daniel FX Trade (Growth
+Accelerator, ROI 46.06%, suggested $2522.20). Martin Trader correctly has NO
+recommendation - a known, honest limitation of applying generic bankroll-management
+strategies to a martingale-recovery provider's real data, not a bug to paper over.
+
+**Verification approach:** every new pure function has unit tests (56 total across the
+Capital Recommendation Engine + Telegram bot port); the one-click Create Recommended
+Demo Fund endpoint was verified via its own DB-backed test suite (8 tests covering the
+full orchestration - Fund creation, strategy deployment, broker-account/source
+attachment, graceful handling of an unsynced channel) plus a direct call against real
+recommendation data to confirm the read path renders correctly. Deliberately did NOT
+invoke the actual fund-creation mutation against the production database unprompted -
+that creates a real (if Demo-only) Fund in the user's own account, left for them to
+trigger deliberately via the new Strategy Lab tab.
 
 ---
