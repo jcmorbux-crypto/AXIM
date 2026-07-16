@@ -383,3 +383,38 @@ not a real bug in the shipped code. Preview instance and its temp directory torn
 afterward - nothing left running, nothing touched in production.
 
 ---
+
+## 2026-07-16 — Phase 2 Priority #4: automatic scheduled provider re-analysis
+
+Every provider's recommendation is no longer a one-time, point-in-time judgment.
+`core/provider_reanalysis.py` re-runs the full onboarding/recommendation pipeline
+(`core/provider_onboarding.py`) for any provider with a real, currently-synced
+Telegram channel, on a daily schedule (`scripts/install_reanalysis_task.ps1`,
+3:00 AM via Windows Task Scheduler, mirroring the existing soak-snapshot task).
+
+- **`classify_change(old, new)`** (pure) decides whether a re-analysis is worth
+  interrupting the owner about: a different best strategy now wins, win rate
+  dropped 5+ percentage points, ROI dropped 10+ percentage points, or every
+  official strategy became implausible on the fresh data. Small drift below
+  those thresholds is treated as normal sample noise and produces no notes.
+- **`reanalyze_all_known_providers()`** walks every existing `capital_recommendations`
+  row, and for each one checks whether it has a real synced channel
+  (`database.find_channel(title=source_label)`). The 5 research-derived static
+  providers (OPT SIGNALS import, no live channel) are skipped with an explicit,
+  reported reason rather than silently re-running analysis against a historical
+  dump that can never produce a different answer - re-analysis is only meaningful
+  where there's live history to actually refresh from. Providers that are
+  reanalyzed and show a meaningful change get the owner notified via
+  `database.create_notification`, visible in the Notification Center.
+- 10 new tests (`tests/test_provider_reanalysis.py`): `classify_change`'s threshold
+  logic (strategy-change, win-rate/ROI deterioration, no-longer-recommended,
+  no-prior-recommendation), and the DB-driving orchestration (skip vs. reanalyze,
+  notify vs. stay silent on a no-op re-analysis). Full suite: 894 tests, OK.
+
+Not yet run in production - the scheduled task installer script exists but hasn't
+been executed, since it needs a live authenticated Telegram session the same way
+`POST /api/channels/sync` does, and installing a new always-on scheduled task is
+exactly the kind of change worth a deliberate, separate call rather than bundling
+it silently into this commit.
+
+---
