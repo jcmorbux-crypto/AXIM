@@ -83,6 +83,31 @@ class ChannelConfigTests(unittest.TestCase):
     def test_find_channel_returns_none_when_no_match(self):
         self.assertIsNone(database.find_channel(chat_id="999", username="nope", title="Nothing"))
 
+    def test_empty_title_channel_never_matches_by_title(self):
+        # Real bug found live: a personal DM contact synced with title=''
+        # (not NULL - a real empty string) matched EVERY title lookup,
+        # because SQLite's INSTR(haystack, '') always returns 1. This
+        # caused core/capital_recommendation_routes.py's
+        # find_channel(title=...) to wrongly attach two unrelated
+        # providers' Funds to the same random empty-titled contact.
+        database.upsert_channel(chat_id="empty-1", username=None, title="", kind="user")
+        found = database.find_channel(title="Anything At All")
+        self.assertIsNone(found)
+
+    def test_empty_title_channel_is_excluded_even_with_a_real_match_present(self):
+        database.upsert_channel(chat_id="empty-2", username=None, title="", kind="user")
+        found = database.find_channel(title="Bot A")
+        self.assertEqual(found["id"], self.channel_id)
+
+    def test_record_channel_signal_seen_does_not_stamp_an_empty_titled_channel(self):
+        # Same real bug, the other call site: an empty-titled channel's
+        # last_signal_at was being stamped on every signal from every
+        # other provider, since it matched any title trivially.
+        database.upsert_channel(chat_id="empty-3", username=None, title="", kind="user")
+        database.record_channel_signal_seen(title="Bot A")
+        empty_channel = next(c for c in database.list_channels() if c["chat_id"] == "empty-3")
+        self.assertIsNone(empty_channel["last_signal_at"])
+
 
 class ChannelMessageTests(unittest.TestCase):
     def setUp(self):

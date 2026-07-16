@@ -1862,7 +1862,7 @@ def record_channel_signal_seen(chat_id=None, username=None, title=None):
         )
     if title:
         conn.execute(
-            "UPDATE ui_channels SET last_signal_at = ? WHERE title IS NOT NULL AND INSTR(LOWER(?), LOWER(title)) > 0",
+            "UPDATE ui_channels SET last_signal_at = ? WHERE title IS NOT NULL AND title != '' AND INSTR(LOWER(?), LOWER(title)) > 0",
             (now, title),
         )
     conn.commit()
@@ -1884,7 +1884,7 @@ def find_channel(chat_id=None, username=None, title=None):
         ).fetchone()
     if row is None and title:
         row = conn.execute(
-            "SELECT * FROM ui_channels WHERE title IS NOT NULL AND INSTR(LOWER(?), LOWER(title)) > 0", (title,)
+            "SELECT * FROM ui_channels WHERE title IS NOT NULL AND title != '' AND INSTR(LOWER(?), LOWER(title)) > 0", (title,)
         ).fetchone()
     conn.close()
     return dict(row) if row else None
