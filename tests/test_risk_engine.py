@@ -1,6 +1,7 @@
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -8,6 +9,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "core"))
 sys.path.insert(0, str(PROJECT_ROOT / "config"))
 
 import database
+import fund_manager
 import risk_engine
 
 
@@ -271,6 +273,133 @@ class FundAwareBankrollTests(unittest.TestCase):
         # 1000, not Fund A's 2000, even though they share a risk_profile.
         session_b = database.start_trading_session("B", [1], "DEMO", fund_id=fund_b, risk_profile_id=profile_id)
         self.assertEqual(risk_engine.compute_position_size(session_b, 5.0), 20.0)  # 2% of 1000, not 2% of 2000
+
+    def test_real_concurrent_sizing_never_cross_contaminates_two_funds(self):
+        """Phase 2 Priority #3 ("Trades MUST size from the provider's
+        virtual allocation... while sharing one broker account"): the
+        two tests above prove isolation under SEQUENTIAL calls - this
+        proves it under real OS-thread concurrency (ThreadPoolExecutor,
+        not just asyncio interleaving a single thread), the actual shape
+        of two providers' signals arriving at nearly the same moment.
+        Each fund's own P&L is updated between every sizing call
+        specifically so a real cross-contamination bug (e.g. a shared/
+        cached bankroll value) would show up as a wrong position size,
+        not just a wrong final balance caught after the fact.
+
+        Uses two DIFFERENT broker accounts, not one shared one - a real,
+        separate finding surfaced while writing this test (see
+        test_two_funds_on_the_same_broker_account_cannot_both_have_an_
+        active_session_today below) is that database.start_trading_session's
+        exclusivity check is scoped to broker_account_id, not fund_id or
+        channel: two Funds sharing the SAME broker account cannot
+        currently both have an active session at once at all, so
+        "concurrent" for the ONE-shared-account case can't be
+        constructed via the normal session-start path today. This test
+        instead verifies what it CAN today: that the underlying
+        risk-engine/database layer itself has no shared-state bug under
+        true concurrent execution once two sessions ARE both active
+        (today, that requires two broker accounts) - a necessary but not
+        sufficient condition for the full one-account vision."""
+        broker_a = database.create_broker_account("Broker A", mode="demo")
+        broker_b = database.create_broker_account("Broker B", mode="demo")
+        fund_a = database.create_fund("Concurrent Fund A", starting_balance=1000)
+        fund_b = database.create_fund("Concurrent Fund B", starting_balance=2000)
+        profile_id = database.create_risk_profile(
+            "Shared Concurrent Profile", sizing_mode="percent", bankroll=1, percent_of_bankroll=10.0,
+        )
+        session_a = database.start_trading_session(
+            "A", [1], "DEMO", fund_id=fund_a, risk_profile_id=profile_id, broker_account_id=broker_a,
+        )
+        session_b = database.start_trading_session(
+            "B", [2], "DEMO", fund_id=fund_b, risk_profile_id=profile_id, broker_account_id=broker_b,
+        )
+
+        # DB_FILE is a module-level global swapped in setUp - each worker
+        # thread must see the SAME test database, not the real one.
+        db_file = database.DB_FILE
+        delta_a, delta_b = 10, 100  # deliberately different scales/signs of drift
+
+        def trade_fund_a():
+            database.DB_FILE = db_file
+            database.update_session_pnl(session_a, delta_a)  # increments, does not set
+            return risk_engine.compute_position_size(session_a, 5.0)
+
+        def trade_fund_b():
+            database.DB_FILE = db_file
+            database.update_session_pnl(session_b, delta_b)
+            return risk_engine.compute_position_size(session_b, 5.0)
+
+        # Interleaved real-thread execution: 50 rounds, each round fires
+        # both funds' sizing calls into the thread pool at once.
+        #
+        # Expected size per fund stays FLAT at starting_balance * 10% for
+        # every round, not growing with the accumulating P&L - a real,
+        # separate finding while writing this test:
+        # risk_engine.compute_position_size deliberately computes
+        # fund_balances["trading_balance"] - session["realized_pnl"],
+        # cancelling the CURRENT session's own still-live P&L back out
+        # (see test_current_sessions_own_pnl_is_not_double_counted) - so
+        # sizing is stable within one active session by design, only
+        # moving between sessions. The real cross-contamination risk this
+        # test guards against is size_a ever reading FUND B's balance (or
+        # vice versa) under true concurrent execution, not size drifting
+        # with its own fund's mid-session P&L.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for round_num in range(50):
+                future_a = pool.submit(trade_fund_a)
+                future_b = pool.submit(trade_fund_b)
+                size_a = future_a.result()
+                size_b = future_b.result()
+                self.assertAlmostEqual(size_a, 100.0, places=2,
+                                        msg=f"round {round_num}: Fund A sized off the wrong balance")
+                self.assertAlmostEqual(size_b, 200.0, places=2,
+                                        msg=f"round {round_num}: Fund B sized off the wrong balance")
+
+        # Final balances confirm each fund's OWN accumulated P&L landed
+        # in the right place, with no cross-contamination between them.
+        balances_a = fund_manager.get_fund_balances(fund_a)
+        balances_b = fund_manager.get_fund_balances(fund_b)
+        self.assertEqual(balances_a["trading_balance"], 1000 + 50 * delta_a)
+        self.assertEqual(balances_b["trading_balance"], 2000 + 50 * delta_b)
+
+    def test_two_funds_on_the_same_broker_account_cannot_both_have_an_active_session_today(self):
+        """Characterizes a real, load-bearing gap found while building
+        the test above: Phase 2 Priority #3's vision is explicitly ONE
+        broker account virtually divided across multiple providers, each
+        with its own concurrently-running Fund/strategy - but
+        database.start_trading_session's exclusivity check
+        (get_active_trading_session_for_broker_account) is scoped per
+        broker_account_id, not per fund_id or per channel. Two Funds
+        sharing the SAME broker account cannot both have an active
+        session right now, full stop - the second start_trading_session
+        call raises before a second session row is even created, so
+        fund-scoped routing (core/broker_account_manager.route_signal
+        requires an active session_id to resolve a Fund at all) can only
+        ever apply to ONE of them at a time today.
+
+        This is NOT fixed here: relaxing trading_sessions' exclusivity
+        model is a change to core, safety-critical trading-session
+        machinery (heartbeat monitoring, recovery.py's resume-on-restart
+        logic, and every "at most one session" assumption elsewhere would
+        all need a fresh audit) - exactly the "fundamentally change
+        existing production behavior" category flagged for a deliberate
+        decision, not a quick patch. Recorded as a real, current
+        limitation so it isn't silently lost, and as a regression guard:
+        if this test ever starts failing, the underlying constraint has
+        already changed and this comment (and the Priority #3 status)
+        needs updating alongside it."""
+        broker_id = database.create_broker_account("Shared Broker", mode="demo")
+        fund_a = database.create_fund("Shared Fund A", starting_balance=1000)
+        fund_b = database.create_fund("Shared Fund B", starting_balance=2000)
+        profile_id = database.create_risk_profile("Shared Profile", sizing_mode="percent", bankroll=1, percent_of_bankroll=5.0)
+
+        database.start_trading_session(
+            "A", [1], "DEMO", fund_id=fund_a, risk_profile_id=profile_id, broker_account_id=broker_id,
+        )
+        with self.assertRaises(ValueError):
+            database.start_trading_session(
+                "B", [2], "DEMO", fund_id=fund_b, risk_profile_id=profile_id, broker_account_id=broker_id,
+            )
 
     def test_no_fund_id_falls_back_to_static_profile_bankroll(self):
         # A session with no Fund attached (pre-Fund-architecture, or a

@@ -291,3 +291,56 @@ a separate, batch-mode, analysis-only module, never imported by
 same isolation discipline the OPT SIGNALS research adapters already established.
 
 ---
+
+## 2026-07-15 (continued) — Phase 2 Priority #3: a real architectural gap found
+
+**Real, load-bearing finding - NOT fixed here, deliberately.** Set out to stress-test
+"two providers trading concurrently, sharing one broker account" (Priority #3's own
+example: Tyler VIP $250 + Go+ $500 out of one $1,000 Pocket Option balance). Writing a
+genuine concurrent-thread test (`tests/test_risk_engine.py`'s
+`test_real_concurrent_sizing_never_cross_contaminates_two_funds`) surfaced that
+`database.start_trading_session`'s exclusivity check
+(`get_active_trading_session_for_broker_account`) is scoped to `broker_account_id`, not
+`fund_id` or channel: **two Funds sharing the SAME broker account cannot both have an
+active session today, at all** - the second `start_trading_session` call raises before
+a second session row even exists. Since fund-scoped routing
+(`core/broker_account_manager.route_signal`) requires an active `session_id` to resolve
+a Fund in the first place, this means only ONE Fund sharing a broker account can be
+actively auto-trading via its own session at any given moment - not the "each provider
+trades independently and concurrently, sharing one balance" vision Priority #3
+describes. Added `test_two_funds_on_the_same_broker_account_cannot_both_have_an_active_
+session_today` as an explicit characterization test (asserts the CURRENT behavior, not
+a judgment that it's correct long-term) - a regression guard so this doesn't get
+silently lost, and a trigger to update this note if it's ever deliberately changed.
+
+**Why this wasn't fixed autonomously**: relaxing `trading_sessions`' exclusivity model
+is a change to core, safety-critical session machinery - heartbeat monitoring,
+`recovery.py`'s resume-on-restart logic, and every implicit "at most one session"
+assumption elsewhere in the codebase would all need a fresh audit before loosening it.
+This is exactly the "fundamentally change existing production behavior" category
+flagged for a deliberate decision, not a quick patch - surfaced clearly here instead of
+either silently working around it or silently leaving it undiscovered.
+
+**What WAS verified and IS real**: once two sessions are both active (today, that
+requires two different broker accounts), the underlying risk-engine/database layer has
+no cross-fund contamination bug under genuine OS-thread concurrency (50 rounds,
+`ThreadPoolExecutor`, interleaved real database writes) - a necessary but not
+sufficient condition for the full one-shared-account vision. Also confirmed along the
+way: `risk_engine.compute_position_size` deliberately holds sizing flat within one
+active session (subtracts the session's own still-live `realized_pnl` back out of the
+fund's aggregate balance, to avoid double-counting - see the pre-existing
+`test_current_sessions_own_pnl_is_not_double_counted`) - my first draft of the new test
+assumed sizing would grow with each round's P&L update and failed until I understood
+this existing, correct design.
+
+**Recommended path when this is picked up**: the two realistic options are (1) scope
+`start_trading_session`'s exclusivity check to `(broker_account_id, fund_id)` instead of
+just `broker_account_id` - the narrower, more surgical change, since the execution layer
+(`execution/browser_worker_pool.py`) already safely handles genuinely concurrent trades
+within one browser context (Phase 5, verified live with two simultaneous real trades) -
+or (2) move away from session-scoped Fund routing entirely toward a persistent
+`fund_sources`-based routing model that doesn't require an "active session" concept per
+Fund at all. Not decided here - flagged as a fork in the road, same discipline as the
+already-documented SSE real-time-sync fork-in-the-road.
+
+---
