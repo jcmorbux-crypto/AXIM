@@ -104,6 +104,78 @@ def list_funds_with_balances(status=None):
     return result
 
 
+def _fund_card(fund, active_sessions_by_fund_id):
+    """One Fund Card's worth of data (Phase 2 Priority #2's Portfolio
+    Command Center spec): provider/allocation/equity/today's P&L/win
+    rate/strategy/session/goal progress/status - every value real,
+    nothing projected. goal_progress_percent is None (not 0) whenever
+    the active session has no profit_target set, so the UI can tell
+    "no goal configured" apart from "0% of the way there"."""
+    balances = get_fund_balances(fund["id"])
+    performance = get_fund_performance(fund["id"])
+    daily = trade_statistics.daily_stats(fund_id=fund["id"])
+    session = active_sessions_by_fund_id.get(fund["id"])
+    risk_profile = database.get_risk_profile(fund["default_risk_profile_id"]) if fund.get("default_risk_profile_id") else None
+    broker_account = database.get_fund_primary_broker_account(fund["id"])
+
+    goal_progress_percent = None
+    if session and session.get("profit_target"):
+        goal_progress_percent = round(min(100, max(0, (session["realized_pnl"] / session["profit_target"]) * 100)), 1)
+
+    return {
+        "id": fund["id"],
+        "name": fund["name"],
+        "status": fund["status"],
+        "allocated_capital": fund["starting_balance"],
+        "current_equity": balances["total_account_value"],
+        "today_pl": daily["profit_loss"],
+        "win_rate": performance["win_rate"],
+        "strategy_name": risk_profile["name"] if risk_profile else None,
+        "session_name": session["name"] if session else None,
+        "goal_progress_percent": goal_progress_percent,
+        "broker_account_name": broker_account["name"] if broker_account else None,
+        "broker_account_status": broker_account["connection_status"] if broker_account else None,
+    }
+
+
+def get_portfolio_overview():
+    """Everything the Portfolio Command Center's top-level stats bar and
+    Fund Cards need in one call. Weekly/monthly figures are the real
+    dollar P&L over that window - deliberately NOT presented as a
+    portfolio-value growth percentage, since AXIM doesn't keep a
+    historical portfolio-value time series to compute one honestly from
+    (Phase 2 mandate: "never invent analytics or statistics"). roi
+    fields are return-on-stake-volume (trade_statistics._summarize's
+    existing definition), not return-on-portfolio-value - labeled
+    accordingly wherever shown."""
+    funds = list_funds_with_balances(status="active")
+    total_portfolio_value = round(sum(f["balances"]["total_account_value"] for f in funds), 2)
+
+    daily = trade_statistics.daily_stats()
+    weekly = trade_statistics.weekly_stats()
+    monthly = trade_statistics.monthly_stats()
+    lifetime = trade_statistics.lifetime_stats()
+
+    open_trades = database.get_open_trades()
+    current_exposure = round(sum(t["trade_amount"] or 0 for t in open_trades), 2)
+
+    active_sessions = database.list_active_trading_sessions()
+    active_sessions_by_fund_id = {s["fund_id"]: s for s in active_sessions if s.get("fund_id") is not None}
+
+    return {
+        "total_portfolio_value": total_portfolio_value,
+        "daily_pl": daily["profit_loss"], "daily_roi": daily["roi"],
+        "weekly_pl": weekly["profit_loss"], "weekly_roi": weekly["roi"],
+        "monthly_pl": monthly["profit_loss"], "monthly_roi": monthly["roi"],
+        "overall_roi": lifetime["roi"], "overall_win_rate": lifetime["win_rate"],
+        "current_exposure": current_exposure,
+        "todays_trades": daily["total_closed"],
+        "active_funds": len(funds),
+        "active_sessions": len(active_sessions),
+        "funds": [_fund_card(f, active_sessions_by_fund_id) for f in funds],
+    }
+
+
 def get_broker_account_reserve(broker_account_id):
     """Unallocated buying power on a broker account: its real observed
     balance minus every Fund currently attached to it (trading_balance,

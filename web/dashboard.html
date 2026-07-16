@@ -82,6 +82,22 @@
   #pv-chart-wrap { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
   #pv-chart .pv-line { fill: none; stroke: var(--blue); stroke-width: 2; }
   #pv-chart .pv-fill { fill: var(--blue-soft); stroke: none; }
+  .po-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
+  .po-stats-grid .stat { display: flex; flex-direction: column; gap: 3px; }
+  .po-stats-grid .stat .label { font-size: 11.5px; color: var(--text-dim); }
+  .po-stats-grid .stat .value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .fund-cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .fund-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; background: var(--bg); box-shadow: var(--shadow-sm); cursor: pointer; text-align: left; }
+  .fund-card.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+  .fund-card .fc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
+  .fund-card .fc-name { font-weight: 650; font-size: 14.5px; }
+  .fund-card .fc-strategy { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+  .fund-card .fc-equity { font-size: 20px; font-weight: 700; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
+  .fund-card .fc-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 4px 0; border-top: 1px solid var(--border); }
+  .fund-card .fc-row .label { color: var(--text-dim); }
+  .fund-card .fc-row .value { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .fund-card .fc-goal-track { height: 5px; border-radius: 3px; background: var(--border); margin-top: 8px; overflow: hidden; }
+  .fund-card .fc-goal-fill { height: 100%; background: var(--green, #1a9e5c); }
   #pv-chart .pv-empty { fill: var(--text-faint); font-size: 11px; }
 </style>
 </head>
@@ -122,6 +138,15 @@
         <svg id="pv-chart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100px; display:block;"></svg>
         <div class="muted" id="pv-chart-caption" style="font-size:11.5px; margin-top:6px;">&nbsp;</div>
       </div>
+      <div class="po-stats-grid" id="pv-extended-stats">
+        <div class="stat"><span class="label">Weekly P/L</span><span class="value" id="pv-weekly-pl">-</span></div>
+        <div class="stat"><span class="label">Monthly P/L</span><span class="value" id="pv-monthly-pl">-</span></div>
+        <div class="stat"><span class="label">Overall ROI</span><span class="value" id="pv-overall-roi">-</span></div>
+        <div class="stat"><span class="label">Overall win rate</span><span class="value" id="pv-overall-winrate">-</span></div>
+        <div class="stat"><span class="label">Current exposure</span><span class="value" id="pv-exposure">-</span></div>
+        <div class="stat"><span class="label">Today's trades</span><span class="value" id="pv-todays-trades">-</span></div>
+        <div class="stat"><span class="label">Active sessions</span><span class="value" id="pv-active-sessions">-</span></div>
+      </div>
     </div>
 
     <div class="card solid" id="onboarding-checklist" style="display:none; margin-bottom:24px;">
@@ -134,7 +159,7 @@
 
     <div class="card solid" id="funds-overview-card" style="margin-bottom:20px; display:none;">
       <h3>Your Funds</h3>
-      <div id="funds-overview-list" class="funds-overview-grid"></div>
+      <div id="funds-overview-list" class="fund-cards-grid"></div>
     </div>
 
     <div class="fund-hero">
@@ -191,6 +216,7 @@
 let currentUser = null;
 let allFunds = [];
 let selectedFundId = "";
+let portfolioOverview = null;
 
 function displayName(email) {
   const local = (email || "").split("@")[0] || "there";
@@ -301,14 +327,30 @@ function escapeHtml(s) { const d = document.createElement("div"); d.textContent 
 function renderFundsOverview() {
   const card = document.getElementById("funds-overview-card");
   if (allFunds.length < 2) { card.style.display = "none"; return; }
+  if (!portfolioOverview) { return; }  // re-called once loadPortfolioOverview resolves
   card.style.display = "block";
-  document.getElementById("funds-overview-list").innerHTML = allFunds.map(f => {
-    const pl = (f.balances.trading_balance ?? 0) - (f.balances.starting_balance ?? 0);
+  document.getElementById("funds-overview-list").innerHTML = portfolioOverview.funds.map(f => {
     const isActive = String(f.id) === String(selectedFundId);
+    const goalBar = f.goal_progress_percent != null
+      ? `<div class="fc-goal-track"><div class="fc-goal-fill" style="width:${Math.min(100, f.goal_progress_percent)}%;"></div></div>
+         <div class="muted" style="font-size:11px; margin-top:3px;">${f.goal_progress_percent.toFixed(0)}% of session goal</div>`
+      : "";
     return `
-      <button type="button" class="fund-overview-item ${isActive ? "active" : ""}" onclick="selectFundFromOverview(${f.id})">
-        <div class="name"><span>${escapeHtml(f.name)}</span>${f.broker_account ? `<span class="badge ${f.broker_account.connection_status === "connected" ? "on" : "off"}" style="font-size:10.5px;">${escapeHtml(f.broker_account.connection_status)}</span>` : ""}</div>
-        <div class="pl ${plClass(pl)}">${fmtMoney(pl)}</div>
+      <button type="button" class="fund-card ${isActive ? "active" : ""}" onclick="selectFundFromOverview(${f.id})">
+        <div class="fc-top">
+          <div>
+            <div class="fc-name">${escapeHtml(f.name)}</div>
+            <div class="fc-strategy">${f.strategy_name ? escapeHtml(f.strategy_name) : "No strategy assigned"}</div>
+          </div>
+          <span class="badge ${f.broker_account_status === "connected" ? "on" : "off"}" style="font-size:10.5px;">${f.broker_account_status ? escapeHtml(f.broker_account_status) : "no broker"}</span>
+        </div>
+        <div class="fc-equity">$${Number(f.current_equity).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+        <div class="fc-row"><span class="label">Allocated capital</span><span class="value">$${Number(f.allocated_capital).toFixed(2)}</span></div>
+        <div class="fc-row"><span class="label">Today's P/L</span><span class="value ${plClass(f.today_pl)}">${fmtMoney(f.today_pl)}</span></div>
+        <div class="fc-row"><span class="label">Win rate</span><span class="value">${f.win_rate != null ? (f.win_rate * 100).toFixed(1) + "%" : "-"}</span></div>
+        <div class="fc-row"><span class="label">Session</span><span class="value">${f.session_name ? escapeHtml(f.session_name) : "None active"}</span></div>
+        <div class="fc-row"><span class="label">Status</span><span class="value">${escapeHtml(f.status)}</span></div>
+        ${goalBar}
       </button>
     `;
   }).join("");
@@ -574,12 +616,20 @@ function renderGrowthChart(points) {
   caption.textContent = `${netText} net across ${points.length} closed trade${points.length === 1 ? "" : "s"}, last 90 days`;
 }
 
+function fmtPercent(n) {
+  if (n === null || n === undefined) return "-";
+  const sign = n > 0 ? "+" : "";
+  return `${sign}${(n * 100).toFixed(1)}%`;
+}
+
 async function loadPortfolioOverview() {
   try {
-    const [dash, growth] = await Promise.all([
+    const [dash, growth, overview] = await Promise.all([
       fetchJSON("/api/dashboard"),
       fetchJSON("/api/portfolio/growth-curve?days=90"),
+      fetchJSON("/api/funds/portfolio-overview"),
     ]);
+    portfolioOverview = overview;
     const totalValue = allFunds.reduce((sum, f) => sum + (f.balances.total_account_value ?? 0), 0);
     const activeCapital = allFunds.reduce((sum, f) => sum + (f.balances.trading_balance ?? 0), 0);
     const protectedCapital = allFunds.reduce((sum, f) => sum + (f.balances.protected_balance ?? 0), 0);
@@ -590,6 +640,19 @@ async function loadPortfolioOverview() {
     document.getElementById("pv-protected-capital").textContent = "$" + protectedCapital.toLocaleString(undefined, { maximumFractionDigits: 2 });
     document.getElementById("pv-active-funds").textContent = allFunds.length;
     renderGrowthChart(growth.points);
+
+    // Extended stats (Phase 2 Priority #2) - weekly/monthly are real
+    // dollar P&L over that window, not a fabricated "growth %" (AXIM
+    // doesn't keep a historical portfolio-value time series to compute
+    // one honestly from). ROI is return-on-stake-volume, labeled as such.
+    document.getElementById("pv-weekly-pl").innerHTML = `<span class="${plClass(overview.weekly_pl)}">${fmtMoney(overview.weekly_pl)}</span>`;
+    document.getElementById("pv-monthly-pl").innerHTML = `<span class="${plClass(overview.monthly_pl)}">${fmtMoney(overview.monthly_pl)}</span>`;
+    document.getElementById("pv-overall-roi").textContent = overview.overall_roi != null ? fmtPercent(overview.overall_roi) + " (of volume traded)" : "-";
+    document.getElementById("pv-overall-winrate").textContent = overview.overall_win_rate != null ? (overview.overall_win_rate * 100).toFixed(1) + "%" : "-";
+    document.getElementById("pv-exposure").textContent = "$" + Number(overview.current_exposure || 0).toFixed(2);
+    document.getElementById("pv-todays-trades").textContent = overview.todays_trades ?? "-";
+    document.getElementById("pv-active-sessions").textContent = overview.active_sessions ?? "-";
+    renderFundsOverview();
   } catch (e) {
     console.error("loadPortfolioOverview failed:", e);
   }

@@ -91,6 +91,14 @@ def create_fund(body: FundCreate, user=Depends(require_admin)):
     return fund_manager.get_fund_report(fund_id)
 
 
+@router.get("/portfolio-overview")
+def portfolio_overview(user=Depends(get_current_user)):
+    """Portfolio Command Center's top-level stats bar + Fund Cards
+    (Phase 2 Priority #2) in one call - registered before /{fund_id} so
+    this literal path is never mistaken for a fund_id."""
+    return fund_manager.get_portfolio_overview()
+
+
 @router.get("/{fund_id}")
 def get_fund(fund_id: int, user=Depends(get_current_user)):
     report = fund_manager.get_fund_report(fund_id)

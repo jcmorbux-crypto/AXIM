@@ -37,10 +37,10 @@ def daily_stats(now=None, fund_id=None):
     return _summarize(rows)
 
 
-def weekly_stats(now=None):
+def weekly_stats(now=None, fund_id=None):
     now = now or datetime.now()
     start = now - timedelta(days=7)
-    rows = database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True)
+    rows = database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True, fund_id=fund_id)
     return _summarize(rows)
 
 
@@ -87,10 +87,10 @@ def full_report():
 _EPOCH = "2000-01-01T00:00:00"
 
 
-def monthly_stats(now=None):
+def monthly_stats(now=None, fund_id=None):
     now = now or datetime.now()
     start = now - timedelta(days=30)
-    return _summarize(database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True))
+    return _summarize(database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True, fund_id=fund_id))
 
 
 def yearly_stats(now=None):

@@ -344,3 +344,42 @@ Fund at all. Not decided here - flagged as a fork in the road, same discipline a
 already-documented SSE real-time-sync fork-in-the-road.
 
 ---
+
+## 2026-07-16 — Phase 2 Priority #2: Portfolio Command Center redesign
+
+Rebuilt `web/dashboard.html`'s top-level stats around real portfolio performance
+(Priority #2's exact spec) rather than the previous engineering-flavored view:
+
+- **New backend**: `core/fund_manager.get_portfolio_overview()` + `GET /api/funds/
+  portfolio-overview` - total portfolio value, weekly/monthly P&L, overall ROI, overall
+  win rate, current exposure (real open trades' stake, from `database.get_open_trades`),
+  today's trades, active Funds/sessions count, and a full Fund Card per active Fund
+  (provider, allocated capital, current equity, today's P&L, win rate, strategy name,
+  active session name, goal progress %, status). Deliberately did NOT present weekly/
+  monthly figures as a "growth %" - AXIM has no historical portfolio-value time series
+  to compute one honestly from, so these are real dollar P&L over that window instead
+  (Phase 2 mandate: "never invent analytics or statistics"). `trade_statistics.
+  weekly_stats`/`monthly_stats` gained an optional `fund_id` param (additive, matching
+  the pattern `daily_stats`/`lifetime_stats` already had) to make this possible.
+- **New frontend**: the old "Your Funds" section was a bare name+P&L mini-list: real
+  Fund Cards now, front and center, formatted per commercial-dashboard conventions
+  (equity as the hero number, everything else in a clean stat table, a goal-progress
+  bar when a session has a real target).
+- 7 new tests (`tests/test_fund_manager.py::PortfolioOverviewTestCase`), all passing.
+
+**Real, live UI verification performed** (not just server-side tests, per this
+project's own "verify the actual UI" discipline): spun up an isolated snapshot-DB
+preview instance (copied `data/axim.db`, port 8092, a temp directory - never touching
+the live production instance or its real users), created a throwaway test account in
+that COPY only, and drove it end-to-end with Playwright: logged in, loaded the
+redesigned dashboard, and screenshotted it. Confirmed live: all 7 new top-level stats
+render correctly with real numbers (Weekly P/L +$4.12, Monthly P/L -$42.82, Overall ROI
+-28.4%, win rate 38.8%, etc.), and all 5 real Funds render as proper cards with every
+required field. Two console errors appeared on the very first page load (401/fetch
+failures) - re-tested by waiting through several of the page's own periodic refresh
+cycles on an already-settled page and got zero errors, confirming the first-load
+errors were a timing artifact of the test script's own rapid post-login navigation,
+not a real bug in the shipped code. Preview instance and its temp directory torn down
+afterward - nothing left running, nothing touched in production.
+
+---

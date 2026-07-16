@@ -277,6 +277,74 @@ class ListFundsWithBalancesTests(FundManagerTestCase):
         self.assertEqual(results[0]["name"], "Active")
 
 
+class PortfolioOverviewTestCase(FundManagerTestCase):
+    """Phase 2 Priority #2: the Portfolio Command Center's data source."""
+
+    def test_totals_reflect_every_active_funds_real_equity(self):
+        database.create_fund("Fund A", starting_balance=1000)
+        database.create_fund("Fund B", starting_balance=500)
+        database.create_fund("Archived Fund", starting_balance=999, status="archived")
+        overview = fund_manager.get_portfolio_overview()
+        self.assertEqual(overview["total_portfolio_value"], 1500.0)
+        self.assertEqual(overview["active_funds"], 2)
+
+    def test_fund_card_has_every_required_field(self):
+        profile_id = database.create_risk_profile("Growth Accelerator", sizing_mode="percent", bankroll=1000, percent_of_bankroll=5.0)
+        fund_id = database.create_fund("Tyler VIP", starting_balance=250, default_risk_profile_id=profile_id)
+        overview = fund_manager.get_portfolio_overview()
+        card = next(f for f in overview["funds"] if f["id"] == fund_id)
+        for field in ("name", "status", "allocated_capital", "current_equity", "today_pl",
+                      "win_rate", "strategy_name", "session_name", "goal_progress_percent"):
+            self.assertIn(field, card)
+        self.assertEqual(card["name"], "Tyler VIP")
+        self.assertEqual(card["allocated_capital"], 250)
+        self.assertEqual(card["strategy_name"], "Growth Accelerator")
+
+    def test_goal_progress_is_none_without_an_active_session_target(self):
+        fund_id = database.create_fund("No Goal Fund", starting_balance=1000)
+        overview = fund_manager.get_portfolio_overview()
+        card = next(f for f in overview["funds"] if f["id"] == fund_id)
+        self.assertIsNone(card["goal_progress_percent"])
+        self.assertIsNone(card["session_name"])
+
+    def test_goal_progress_reflects_a_real_active_session(self):
+        fund_id = database.create_fund("Goal Fund", starting_balance=1000)
+        session_id = database.start_trading_session("Morning Run", [1], "DEMO", fund_id=fund_id, profit_target=100)
+        database.update_session_pnl(session_id, 25)
+        overview = fund_manager.get_portfolio_overview()
+        card = next(f for f in overview["funds"] if f["id"] == fund_id)
+        self.assertEqual(card["session_name"], "Morning Run")
+        self.assertEqual(card["goal_progress_percent"], 25.0)
+
+    def test_todays_pl_only_counts_real_closed_trades_today(self):
+        fund_id = database.create_fund("Trading Fund", starting_balance=1000)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        for result, profit_loss in (("win", 8.5), ("loss", -5.0)):
+            signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test", "trade_amount": 10}
+            trade_id = database.record_signal_received(signal, session_id=session_id, fund_id=fund_id)
+            status = trade_lifecycle.TradeStatus.RESULT_WIN if result == "win" else trade_lifecycle.TradeStatus.RESULT_LOSS
+            database.update_trade_status(trade_id, status, result=result, profit_loss=profit_loss,
+                                          closed_at=datetime.now().isoformat())
+        overview = fund_manager.get_portfolio_overview()
+        card = next(f for f in overview["funds"] if f["id"] == fund_id)
+        self.assertEqual(card["today_pl"], 3.5)
+        self.assertEqual(overview["todays_trades"], 2)
+
+    def test_current_exposure_sums_real_open_trades_only(self):
+        fund_id = database.create_fund("Exposure Fund", starting_balance=1000)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test", "trade_amount": 15}
+        trade_id = database.record_signal_received(signal, session_id=session_id)
+        database.update_trade_status(trade_id, trade_lifecycle.TradeStatus.TRADE_OPENED, trade_amount=15)
+        overview = fund_manager.get_portfolio_overview()
+        self.assertEqual(overview["current_exposure"], 15.0)
+
+    def test_no_funds_at_all_does_not_crash(self):
+        overview = fund_manager.get_portfolio_overview()
+        self.assertEqual(overview["total_portfolio_value"], 0.0)
+        self.assertEqual(overview["funds"], [])
+
+
 class CanTradeTests(FundManagerTestCase):
     """The safety gate api/sessions.py's start_session enforces - "Do not
     let a Fund trade unless it has a valid broker account attached" plus
