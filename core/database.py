@@ -1059,6 +1059,38 @@ def initialize_database():
         if column not in backtest_metrics_columns:
             conn.execute(f"ALTER TABLE backtest_metrics ADD COLUMN {column} {sql_type}")
 
+    # Capital Recommendation Engine (core/capital_recommendation.py) - one
+    # row per provider (source_label), regenerated (replaced, not
+    # appended - UNIQUE(source_label)) each time
+    # scripts/import_provider_research.py or POST /api/capital-
+    # recommendations/generate re-runs. Points back at the specific
+    # backtest_run/backtest_strategy that produced it so the numbers stay
+    # traceable to real evidence, never just conjured. min/conservative/
+    # suggested_allocation are explicit heuristic multiples of that
+    # winning strategy's own real max_drawdown_amount (see
+    # capital_recommendation.py's module docstring for the exact
+    # formula and why) - labeled as heuristics everywhere they're shown,
+    # same discipline as backtest_engine.py's risk_score/best_for_label.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS capital_recommendations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_label TEXT NOT NULL UNIQUE,
+        backtest_run_id INTEGER NOT NULL,
+        best_strategy_id INTEGER NOT NULL,
+        best_strategy_key TEXT,
+        best_strategy_name TEXT,
+        roi_percent REAL,
+        win_rate REAL,
+        max_drawdown_percent REAL,
+        max_drawdown_amount REAL,
+        minimum_allocation REAL,
+        conservative_allocation REAL,
+        suggested_allocation REAL,
+        trades_backtested INTEGER,
+        generated_at TEXT
+    );
+    """)
+
     # Auth/access-control layer (docs/AXIM_APP_PLAN.md) - who may log into
     # the control UI at all, separate from the single shared Telegram/
     # Pocket Option trading connection every user currently sees. role is
@@ -3322,6 +3354,42 @@ _RISK_PROFILE_TEMPLATES = [
 
 
 @timed("database")
+def seed_money_studio_templates():
+    """Populates the 4 official Money Studio strategies (core/money_studio.py)
+    as reusable is_template=True risk_profile rows, using the exact same
+    risk_profile_fields_for() fields "Use This Strategy" saves for a user -
+    a no-op if any strategy_key-tagged template already exists, same
+    one-time-migration pattern as seed_risk_profile_templates. Without
+    this, the 4 official strategies could never be selected in Strategy
+    Lab's risk_profile_ids picker (which only lists is_template rows plus
+    the current user's own) unless a user had already personally
+    instantiated one by hand first - this is what makes automatic,
+    unattended provider backtesting possible."""
+    conn = get_connection()
+    count = conn.execute(
+        "SELECT COUNT(*) AS n FROM risk_profiles WHERE is_template = 1 AND strategy_key IS NOT NULL"
+    ).fetchone()["n"]
+    conn.close()
+    if count > 0:
+        return
+
+    import money_studio
+    for strategy in money_studio.STRATEGIES:
+        key = strategy["key"]
+        create_fields, martingale_fields, vault_fields = money_studio.risk_profile_fields_for(
+            key, strategy["name"], money_studio.STARTING_BANKROLL,
+        )
+        create_fields = dict(create_fields)
+        name = create_fields.pop("name")
+        description = create_fields.pop("description", None)
+        profile_id = create_risk_profile(name, is_template=True, description=description, **create_fields)
+        if martingale_fields:
+            update_martingale_settings(profile_id, **martingale_fields)
+        if vault_fields:
+            update_profit_vault_settings(profile_id, **vault_fields)
+
+
+@timed("database")
 def seed_risk_profile_templates():
     """Populates the 27 starter templates - a no-op if any template
     already exists, same one-time-migration pattern as
@@ -4362,6 +4430,20 @@ def create_imported_signal(source_label, asset, direction, expiry, received_at, 
 
 
 @timed("database")
+def delete_imported_signals_by_batch(import_batch):
+    """Removes every imported_signals row for one import_batch - used by
+    core/provider_research_import.py to make a re-import idempotent
+    (delete this provider's previous research-derived rows before
+    re-inserting, rather than accumulating duplicates on every re-run)."""
+    conn = get_connection()
+    cursor = conn.execute("DELETE FROM imported_signals WHERE import_batch = ?", (import_batch,))
+    conn.commit()
+    deleted = cursor.rowcount
+    conn.close()
+    return deleted
+
+
+@timed("database")
 def list_imported_signals(import_batch=None, graded_only=False, limit=500):
     conn = get_connection()
     query = "SELECT * FROM imported_signals"
@@ -4691,6 +4773,69 @@ def get_backtest_report(run_id):
     for s in strategies:
         s["metrics"] = get_backtest_metrics(s["id"])
     return {"run": run, "strategies": strategies}
+
+
+# ---------------------------------------------------------------------
+# Capital Recommendation Engine - core/capital_recommendation.py
+# ---------------------------------------------------------------------
+
+@timed("database")
+def save_capital_recommendation(source_label, backtest_run_id, best_strategy_id, best_strategy_key,
+                                 best_strategy_name, roi_percent, win_rate, max_drawdown_percent,
+                                 max_drawdown_amount, minimum_allocation, conservative_allocation,
+                                 suggested_allocation, trades_backtested):
+    """Upserts by source_label - regenerating a provider's recommendation
+    replaces its previous one rather than accumulating stale history,
+    since only the latest evidence-backed number should ever be acted on."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    conn.execute("""
+        INSERT INTO capital_recommendations (
+            source_label, backtest_run_id, best_strategy_id, best_strategy_key, best_strategy_name,
+            roi_percent, win_rate, max_drawdown_percent, max_drawdown_amount,
+            minimum_allocation, conservative_allocation, suggested_allocation, trades_backtested, generated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_label) DO UPDATE SET
+            backtest_run_id=excluded.backtest_run_id, best_strategy_id=excluded.best_strategy_id,
+            best_strategy_key=excluded.best_strategy_key, best_strategy_name=excluded.best_strategy_name,
+            roi_percent=excluded.roi_percent, win_rate=excluded.win_rate,
+            max_drawdown_percent=excluded.max_drawdown_percent, max_drawdown_amount=excluded.max_drawdown_amount,
+            minimum_allocation=excluded.minimum_allocation, conservative_allocation=excluded.conservative_allocation,
+            suggested_allocation=excluded.suggested_allocation, trades_backtested=excluded.trades_backtested,
+            generated_at=excluded.generated_at
+    """, (source_label, backtest_run_id, best_strategy_id, best_strategy_key, best_strategy_name,
+          roi_percent, win_rate, max_drawdown_percent, max_drawdown_amount,
+          minimum_allocation, conservative_allocation, suggested_allocation, trades_backtested, now))
+    conn.commit()
+    rec_id = conn.execute(
+        "SELECT id FROM capital_recommendations WHERE source_label = ?", (source_label,)
+    ).fetchone()["id"]
+    conn.close()
+    return rec_id
+
+
+@timed("database")
+def list_capital_recommendations():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM capital_recommendations ORDER BY suggested_allocation DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def get_capital_recommendation(source_label):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM capital_recommendations WHERE source_label = ?", (source_label,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def get_capital_recommendation_by_id(recommendation_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM capital_recommendations WHERE id = ?", (recommendation_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 
 @timed("database")
