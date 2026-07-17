@@ -37,6 +37,8 @@ async def main():
             print(f"  {entry['source_label']!r}: skipped - {entry['note']}")
         elif entry["status"] == "refresh_failed":
             print(f"  {entry['source_label']!r}: {entry['note']}")
+        elif entry["status"] == "error":
+            print(f"  {entry['source_label']!r}: ERROR - {entry['note']}")
         elif entry["changes"]:
             print(f"  {entry['source_label']!r}: RE-ANALYZED, notified owner:")
             for note in entry["changes"]:

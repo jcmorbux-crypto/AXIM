@@ -165,6 +165,40 @@ class ReanalyzeAllKnownProvidersTestCase(unittest.TestCase):
         still_there = database.get_capital_recommendation("Unrecognized Format Provider")
         self.assertEqual(still_there["best_strategy_key"], "capital_preservation")
 
+    def test_one_providers_unexpected_error_does_not_stop_the_rest_of_the_run(self):
+        # This runs unattended overnight - a real failure (a dropped Telegram
+        # connection, a transient error) on one provider must never prevent
+        # every OTHER provider from being re-analyzed that night.
+        database.upsert_channel(chat_id="996", username=None, title="Flaky Provider", kind="channel")
+        database.save_capital_recommendation(
+            source_label="Flaky Provider", backtest_run_id=1, best_strategy_id=1,
+            best_strategy_key="capital_preservation", best_strategy_name="Capital Preservation",
+            roi_percent=20.0, win_rate=0.55, max_drawdown_percent=10.0, max_drawdown_amount=100.0,
+            minimum_allocation=150.0, conservative_allocation=250.0, suggested_allocation=400.0,
+            trades_backtested=100,
+        )
+        database.upsert_channel(chat_id="995", username=None, title="Healthy Provider", kind="channel")
+        database.save_capital_recommendation(
+            source_label="Healthy Provider", backtest_run_id=2, best_strategy_id=2,
+            best_strategy_key="capital_preservation", best_strategy_name="Capital Preservation",
+            roi_percent=20.0, win_rate=0.55, max_drawdown_percent=10.0, max_drawdown_amount=100.0,
+            minimum_allocation=150.0, conservative_allocation=250.0, suggested_allocation=400.0,
+            trades_backtested=100,
+        )
+
+        async def fake_analyze(chat_id, source_label=None, created_by=None):
+            if source_label == "Flaky Provider":
+                raise ConnectionError("Telegram connection dropped")
+            return {"status": "complete", "title": "Healthy Provider"}
+
+        with patch("provider_onboarding.analyze_and_onboard_provider", AsyncMock(side_effect=fake_analyze)):
+            summary = _run(reanalysis.reanalyze_all_known_providers())
+
+        by_label = {entry["source_label"]: entry for entry in summary}
+        self.assertEqual(by_label["Flaky Provider"]["status"], "error")
+        self.assertIn("Telegram connection dropped", by_label["Flaky Provider"]["note"])
+        self.assertEqual(by_label["Healthy Provider"]["status"], "reanalyzed")
+
 
 if __name__ == "__main__":
     unittest.main()

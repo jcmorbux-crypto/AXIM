@@ -109,6 +109,9 @@ async def reanalyze_all_known_providers():
     where the automatic refresh itself failed (their existing
     recommendation stands untouched - never reported as a "change")."""
     import database
+    from logger import get_logger
+
+    logger = get_logger("axim.provider_reanalysis", filename="ui.log")
 
     recommendations = database.list_capital_recommendations()
     owner = database.get_owner_user()
@@ -124,7 +127,19 @@ async def reanalyze_all_known_providers():
             })
             continue
 
-        old_rec, new_rec, notes, refresh_failed = await reanalyze_provider(source_label, int(channel["chat_id"]))
+        # This runs unattended on a nightly schedule - a real failure on one
+        # provider (a dropped Telegram connection, a transient error) must
+        # never take down the rest of that night's providers with it.
+        try:
+            old_rec, new_rec, notes, refresh_failed = await reanalyze_provider(source_label, int(channel["chat_id"]))
+        except Exception as e:
+            logger.error(f"provider_reanalysis: unexpected error re-analyzing {source_label!r}: {e}", exc_info=True)
+            summary.append({
+                "source_label": source_label, "status": "error", "changes": [],
+                "note": f"Unexpected error during re-analysis: {e}. Existing recommendation is untouched.",
+            })
+            continue
+
         if refresh_failed:
             summary.append({
                 "source_label": source_label, "status": "refresh_failed", "changes": [],
