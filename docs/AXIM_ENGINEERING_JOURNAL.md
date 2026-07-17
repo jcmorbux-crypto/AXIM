@@ -691,3 +691,68 @@ out of scope for this specific verification per the user's explicit "finish veri
 this one, then stop."
 
 ---
+
+## 2026-07-16 (continued) — Mission correction: "Complete V1 first"
+
+User issued a large correction: stop treating individual Telegram providers as the
+primary scope (they're examples/test data) and finish V1's actual product
+requirements - multiple Pocket Option accounts (including Live), Fund-to-account
+routing, and a generalized, reusable provider-onboarding pipeline that doesn't need a
+fresh research effort per provider. Standing full autonomy reconfirmed for this work.
+Given the scope (genuinely weeks of normal engineering), tracked it as 4 explicit
+tasks (#23-26) rather than attempting to fake one-shot completion.
+
+**First step: audit what actually exists before building anything new.** This found
+the "multiple broker accounts" requirement already substantially built, contrary to
+the directive's own assumption:
+- `core/broker_account_manager.py` already gives every CONNECTED broker account its
+  own isolated `BrowserWarmupService`/`BrowserWorkerPool`/`TradeCoordinator` - separate
+  `user_data_dir` (no cookie/session sharing), separate execution queue, one account
+  failing to connect never touches another (`stop_all()`'s teardown is best-effort per
+  account).
+- `fund_manager.can_trade` already requires an independent `live_enabled` flag on BOTH
+  the Fund and the broker account, plus the account being connected/active/live-
+  capable, before authorizing live trading - a stale Fund-level flag alone was already
+  provably insufficient (confirmed directly by reading the code, then proven with a
+  new test using the exact historical "Tyler Live Trading" shape).
+- `web/funds.html` already has a working broker-account-assignment picker; `api/
+  broker_accounts_routes.py` already exposes add/connect/disconnect/archive as real
+  web endpoints - `POST /connect` spawns `scripts/connect_broker_account.py`, which
+  opens a real login browser window and writes the result back via polling, not
+  something the user runs from a terminal.
+
+**Fixed the real gaps found**, in two commits:
+
+1. **Alternating Compound's real cycle** (`core/risk_engine.py`, `core/backtest_engine.py`,
+   `core/money_studio.py`) - the directive correctly called out that this strategy's
+   saved profile approximated its 2.5%/5%/2.5%/5% cycle as a flat 3.75% average, since
+   the compounding model only ever stepped risk-percent against cumulative session P&L,
+   never trade count. Added a new `"alternating_cycle"` compounding mode (`trades_count
+   % len(cycle)`, completely ignoring P&L) - no schema migration needed, `mode`/
+   `steps_json` were already generic TEXT columns. `core/backtest_engine.py` already
+   reuses `risk_engine._base_amount` directly (one shared sizing engine for live and
+   backtest, already true before tonight, confirmed by reading the code) - it only
+   needed `trades_count` added to its session state. The already-seeded production
+   template (id=35) was corrected directly, since `seed_money_studio_templates()` is a
+   no-op once templates exist and wouldn't have picked up the fix on its own; every
+   future automatic provider backtest now uses the real cycle, past historical
+   snapshots are untouched. 6 new tests.
+
+2. **Broker Accounts UI polish** (`web/broker.html`, `api/broker_accounts_routes.py`) -
+   the page still framed itself as "your Pocket Option connection" (singular) with a
+   legacy single-account status section sitting above the real multi-account table -
+   relabeled it "AXIM Process & Default Connection" to disambiguate. Added a per-account
+   Edit action (name/mode - the PATCH endpoint already supported it, just no UI),
+   a Last Connected column (data already existed, never displayed), and an active-
+   session indicator per assigned Fund in "Used by" (`has_active_session`, a small
+   addition to `_with_funds`). 4 new tests (including the stale-live-flag proof).
+
+Full suite after both: 945 tests, OK. API restarted to deploy (Python route/engine
+changes, unlike the earlier static-HTML-only fixes) - confirmed root page and
+`/broker` both 200 post-restart.
+
+Remaining from this corrected mission: the Provider Onboarding Wizard (history-window
+selector, preview/validate/correct step before committing an import) - the single
+biggest gap, tracked as task #26, next up.
+
+---
