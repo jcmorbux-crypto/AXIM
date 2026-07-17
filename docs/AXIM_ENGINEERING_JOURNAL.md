@@ -899,3 +899,36 @@ resume`, 6 workers built), and the new `pending_connection_test` table confirmed
 present in the real production database via direct query.
 
 ---
+
+## 2026-07-17 (continued) — Dark mode removed, branding strengthened
+
+Two "approved product decisions" delivered per direct directive, ahead of V1 sign-off.
+
+**Dark mode removed completely.** Deleted `web/theme.js` outright, stripped the
+per-page FOUC-prevention init snippet and its `<script src>` tag from all 19 pages
+that had them, removed the sidebar's theme-toggle markup/JS call
+(`web/shell.js`), and removed the entire dark-mode CSS block plus the now-unused
+`.theme-toggle` rules from `web/theme.css`. Also found and removed a second,
+separate dark-mode block in `axim-desktop/src/styles.css` (the Tauri desktop
+shell's own splash/launcher screen) - the same "one consistent light system"
+requirement applies there too, and it would have been missed by only searching
+`web/`. Verified live in an isolated Playwright preview with the browser's OS
+color scheme forced to dark: every page still resolves to the light palette
+(`--bg:#ffffff`), and the toggle UI is gone everywhere (0 matches for
+`.theme-toggle` across every checked page).
+
+**Branding strengthened.** The previous logo (27px mark, 17px "AXIM", 10.5px dim
+"TRADER") read as a generic small label. Sidebar mark 27px->42px with a subtle
+brand-color shadow; "AXIM" 17px/650->27px/800 (now the dominant element);
+"TRADER" 10.5px->12px/650 with wider tracking (still a clear descriptor, not
+competing). Login/Reset Password/Setup Wizard had 3 separate, inconsistently-
+sized copies of the same pattern - unified and scaled all three. Added a
+compact mobile brand header (a NEW element, not a resize - mobile previously
+showed zero branding at all, just a bottom tab bar). Favicon was already a
+deliberate custom brand mark matching the in-app logo, not a weak placeholder -
+left unchanged. Verified live across desktop (1400px), mobile (390px), and
+login - screenshots reviewed, no overflow, no wrapping.
+
+Full suite: 967 tests, OK (frontend-only, no regression expected or found).
+
+---
