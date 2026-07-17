@@ -5,14 +5,15 @@
 <title>Setup - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="/web/favicon.svg">
-<script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
 <link rel="stylesheet" href="/web/theme.css">
 <style>
   body { min-height: 100vh; }
   .wizard-shell { max-width: 640px; margin: 40px auto; padding: 0 20px; }
-  .wizard-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; }
-  .wizard-logo .mark { width: 32px; height: 32px; background: var(--blue); border-radius: 9px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; }
-  .wizard-logo .name { font-weight: 700; font-size: 18px; }
+  .wizard-logo { display: flex; align-items: center; gap: 14px; margin-bottom: 26px; }
+  .wizard-logo .mark { width: 48px; height: 48px; background: var(--blue); border-radius: 14px; display: flex; align-items: center; justify-content: center; color: white; font-weight: 700; box-shadow: 0 3px 10px rgba(36, 82, 235, 0.3); }
+  .wizard-logo .wordmark { display: flex; flex-direction: column; line-height: 1.05; }
+  .wizard-logo .wordmark-primary { font-weight: 800; font-size: 28px; letter-spacing: -0.02em; color: var(--text); }
+  .wizard-logo .wordmark-secondary { font-weight: 650; font-size: 11.5px; letter-spacing: 0.13em; text-transform: uppercase; color: var(--text-dim); }
   .step-track { display: flex; gap: 6px; margin-bottom: 24px; }
   .step-dot { flex: 1; height: 4px; border-radius: 999px; background: var(--border); }
   .step-dot.done { background: var(--green); }
@@ -28,7 +29,7 @@
 <body>
 
 <div class="wizard-shell">
-  <div class="wizard-logo"><span class="mark"><svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 50 12 L 84 46 L 50 80 L 16 46 Z M 66 30 L 82 46 L 66 62 L 50 46 Z"/></svg></span><span class="name">AXIM Trader Setup</span></div>
+  <div class="wizard-logo"><span class="mark"><svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 50 12 L 84 46 L 50 80 L 16 46 Z M 66 30 L 82 46 L 66 62 L 50 46 Z"/></svg></span><span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">Trader Setup</span></span></div>
   <div class="step-track" id="step-track"></div>
 
   <div class="wizard-card">

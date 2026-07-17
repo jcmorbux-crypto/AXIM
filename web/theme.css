@@ -56,82 +56,6 @@
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* ==============================================================
-   DARK MODE - a fully designed second theme, not an inverted
-   afterthought. Deep charcoal-navy base (never pure black), elevated
-   surfaces via --surface-hover rather than heavier shadows (box-
-   shadows barely read against a dark ground), every accent re-tuned
-   for legibility against a dark background rather than a straight hex
-   invert. Applies automatically from OS preference, or force-set
-   either direction via data-theme (see theme.js) - matches the same
-   approach already validated in the UI Vision branch's design system.
-   Every existing page already renders through these same variable
-   names (--bg/--surface/--text/etc.), so dark mode applies across the
-   whole app the moment this loads - no page HTML changes needed.
-   ============================================================== */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg: #0f1218;
-    --surface: #171b24;
-    --surface-hover: #1e2330;
-    --border: #2a2f3d;
-    --text: #eef0f5;
-    --text-dim: #9296a6;
-    --text-faint: #5f6373;
-    --blue: #6788ff;
-    --blue-hover: #89a3ff;
-    --blue-soft: #1a2340;
-    --green: #2edb92;
-    --green-soft: #123023;
-    --red: #ff5b6b;
-    --red-hover: #ff7a87;
-    --red-soft: #3a1620;
-    --yellow: #ffb84d;
-    --yellow-soft: #3a2a10;
-    --highlight: #caa63d;
-    --overlay: rgba(0, 0, 0, 0.6);
-    --gold: #e8c15a;
-    --gold-soft: #332a12;
-    --gold-border: #4a3c1a;
-    --purple: #b295f7;
-    --purple-soft: #271c42;
-    --purple-border: #3d2f5c;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
-    --shadow-lift: 0 4px 10px rgba(0, 0, 0, 0.35), 0 16px 40px rgba(0, 0, 0, 0.45);
-  }
-}
-:root[data-theme="dark"] {
-  --bg: #0f1218;
-  --surface: #171b24;
-  --surface-hover: #1e2330;
-  --border: #2a2f3d;
-  --text: #eef0f5;
-  --text-dim: #9296a6;
-  --text-faint: #5f6373;
-  --blue: #6788ff;
-  --blue-hover: #89a3ff;
-  --blue-soft: #1a2340;
-  --green: #2edb92;
-  --green-soft: #123023;
-  --red: #ff5b6b;
-  --red-hover: #ff7a87;
-  --red-soft: #3a1620;
-  --yellow: #ffb84d;
-  --yellow-soft: #3a2a10;
-  --highlight: #caa63d;
-  --overlay: rgba(0, 0, 0, 0.6);
-  --gold: #e8c15a;
-  --gold-soft: #332a12;
-  --gold-border: #4a3c1a;
-  --purple: #b295f7;
-  --purple-soft: #271c42;
-  --purple-border: #3d2f5c;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.35);
-  --shadow-lift: 0 4px 10px rgba(0, 0, 0, 0.35), 0 16px 40px rgba(0, 0, 0, 0.45);
-}
-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
 }
@@ -169,36 +93,39 @@ a { color: inherit; }
 .sidebar-logo {
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 6px 10px 26px 10px;
+  gap: 13px;
+  padding: 8px 10px 32px 10px;
   font-weight: 650;
   font-size: 17px;
   letter-spacing: -0.01em;
 }
 
 .sidebar-logo .mark {
-  width: 27px; height: 27px;
+  width: 42px; height: 42px;
   background: var(--blue);
-  border-radius: 8px;
+  border-radius: 12px;
   display: flex; align-items: center; justify-content: center;
   color: white; font-size: 13px; font-weight: 700;
+  box-shadow: 0 2px 6px rgba(36, 82, 235, 0.28);
 }
 
 .sidebar-logo .wordmark {
   display: flex;
   flex-direction: column;
-  line-height: 1.15;
+  line-height: 1.05;
 }
 
 .sidebar-logo .wordmark-primary {
-  font-weight: 650;
-  font-size: 17px;
+  font-weight: 800;
+  font-size: 27px;
+  letter-spacing: -0.02em;
+  color: var(--text);
 }
 
 .sidebar-logo .wordmark-secondary {
-  font-weight: 500;
-  font-size: 10.5px;
-  letter-spacing: 0.04em;
+  font-weight: 650;
+  font-size: 12px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text-dim);
 }
@@ -654,10 +581,30 @@ td.title-cell { white-space: normal; max-width: 320px; }
    - both display:none above this breakpoint so desktop is unaffected. */
 .mobile-nav { display: none; }
 .more-sheet { display: none; }
+.mobile-header { display: none; }
 
 @media (max-width: 900px) {
   .sidebar { display: none; }
-  .main { margin-left: 0; padding: 16px; padding-bottom: 76px; max-width: 100%; }
+  .main { margin-left: 0; padding: 16px; padding-top: 68px; padding-bottom: 76px; max-width: 100%; }
+
+  /* Compact brand header - the sidebar (and its logo) is hidden outright
+     below this breakpoint, so without this, mobile shows NO AXIM Trader
+     branding at all. Deliberately still shows both AXIM and TRADER, just
+     smaller than desktop - a mobile user should never see an
+     unbranded/insignificant wordmark. */
+  .mobile-header {
+    display: flex; align-items: center; gap: 9px;
+    position: fixed; top: 0; left: 0; right: 0; z-index: 210;
+    background: var(--bg); border-bottom: 1px solid var(--border);
+    padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0));
+  }
+  .mobile-header .mark {
+    width: 28px; height: 28px; background: var(--blue); border-radius: 8px;
+    display: flex; align-items: center; justify-content: center; color: white; flex-shrink: 0;
+  }
+  .mobile-header .wordmark { display: flex; align-items: baseline; gap: 5px; line-height: 1; }
+  .mobile-header .wordmark-primary { font-weight: 800; font-size: 17px; letter-spacing: -0.01em; color: var(--text); }
+  .mobile-header .wordmark-secondary { font-weight: 650; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim); }
 
   /* Dense tabular pages (Trade Center, Users, Sessions, etc.) are kept
      as real tables rather than reflowed card-per-row layouts - the
@@ -732,18 +679,6 @@ td.title-cell { white-space: normal; max-width: 320px; }
 .nav-more-list { display: none; padding-left: 4px; }
 .nav-more.open .nav-more-list { display: block; }
 .nav-more-list .nav-item { font-size: 13px; padding: 8px 12px; }
-
-/* Light/Dark/System theme toggle - lives in the sidebar footer above
-   the notification bell and user chip. */
-.theme-toggle-wrap { padding: 0 4px 10px; }
-.theme-toggle { display: flex; gap: 4px; background: var(--bg); border-radius: 10px; padding: 4px; border: 1px solid var(--border); }
-.theme-toggle button {
-  flex: 1; border: none; background: none; padding: 7px 0; border-radius: 7px;
-  font-size: 14px; color: var(--text-faint); cursor: pointer;
-  transition: background 0.12s var(--ease), color 0.12s var(--ease);
-}
-.theme-toggle button.active { background: var(--surface); color: var(--blue); box-shadow: var(--shadow-sm); }
-.theme-toggle button:hover:not(.active) { color: var(--text-dim); }
 
 /* Shared "AXIS" brand loading mark (brand/axis-mark.svg's glyph) - a
    pulsing badge for full-panel/full-page loading moments. Not used for

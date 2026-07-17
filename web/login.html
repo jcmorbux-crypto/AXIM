@@ -5,7 +5,6 @@
 <title>AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="/web/favicon.svg">
-<script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
 <link rel="stylesheet" href="/web/theme.css">
 <style>
   body {
@@ -22,17 +21,18 @@
     padding: 32px 32px 24px 32px;
   }
   .auth-logo {
-    display: flex; align-items: center; gap: 10px;
-    margin-bottom: 22px;
+    display: flex; align-items: center; gap: 14px;
+    margin-bottom: 26px;
   }
   .auth-logo .mark {
-    width: 32px; height: 32px; background: var(--blue); border-radius: 9px;
+    width: 54px; height: 54px; background: var(--blue); border-radius: 15px;
     display: flex; align-items: center; justify-content: center;
     color: white; font-weight: 700; font-size: 15px;
+    box-shadow: 0 3px 10px rgba(36, 82, 235, 0.3);
   }
-  .auth-logo .wordmark { display: flex; flex-direction: column; line-height: 1.15; }
-  .auth-logo .wordmark-primary { font-weight: 700; font-size: 18px; letter-spacing: -0.01em; }
-  .auth-logo .wordmark-secondary { font-weight: 500; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); }
+  .auth-logo .wordmark { display: flex; flex-direction: column; line-height: 1.05; }
+  .auth-logo .wordmark-primary { font-weight: 800; font-size: 32px; letter-spacing: -0.02em; color: var(--text); }
+  .auth-logo .wordmark-secondary { font-weight: 650; font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); }
   h1 { font-size: 18px; margin: 0 0 4px 0; font-weight: 650; }
   .auth-subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 22px; }
   .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); margin-bottom: 16px; }

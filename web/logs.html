@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <title>Logs - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<script>(function(){var t=localStorage.getItem('axim-theme')||'system';if(t!=='system')document.documentElement.setAttribute('data-theme',t);})();</script>
 <link rel="stylesheet" href="/web/theme.css">
 <style>
   .log-row { display: flex; gap: 10px; padding: 7px 4px; border-bottom: 1px solid var(--border); font-size: 12.5px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
@@ -63,8 +62,6 @@
     </div>
   </main>
 </div>
-
-<script src="/web/theme.js"></script>
 <script src="/web/shell.js"></script>
 <script>
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }

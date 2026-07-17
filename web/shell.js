@@ -134,9 +134,6 @@ const AximShell = (() => {
         </div>
       </div>
       <div class="nav-spacer"></div>
-      <div class="theme-toggle-wrap">
-        <div class="theme-toggle" id="theme-toggle-sidebar"></div>
-      </div>
       <div class="sidebar-footer">
         <div class="notif-bell-wrap">
           <button class="notif-bell" id="axim-notif-bell" onclick="AximShell._toggleNotifDropdown()">
@@ -164,7 +161,6 @@ const AximShell = (() => {
         </div>
       </div>
     `;
-    if (typeof initThemeToggle === "function") initThemeToggle("theme-toggle-sidebar");
     renderMobileNav(user, activeKey, isAdmin);
     document.addEventListener("click", (e) => {
       const wrap = document.querySelector(".notif-bell-wrap");
@@ -449,9 +445,17 @@ const AximShell = (() => {
   // (not init() directly) since it needs the same activeKey/isAdmin
   // filtering the desktop sidebar just computed.
   function renderMobileNav(user, activeKey, isAdmin) {
-    document.querySelectorAll(".mobile-nav, .more-sheet").forEach(el => el.remove());
+    document.querySelectorAll(".mobile-header, .mobile-nav, .more-sheet").forEach(el => el.remove());
     const more = MORE_NAV_ITEMS.filter(i => !i.adminOnly || isAdmin);
     const moreActive = more.some(i => i.key === activeKey);
+
+    const mobileHeader = document.createElement("div");
+    mobileHeader.className = "mobile-header";
+    mobileHeader.innerHTML = `
+      <span class="mark">${LOGO_MARK}</span>
+      <span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">Trader</span></span>
+    `;
+    document.body.appendChild(mobileHeader);
 
     const barItems = PRIMARY_NAV_ITEMS.filter(i => MOBILE_NAV_KEYS.includes(i.key)).map(i => `
       <a class="item ${i.key === activeKey ? "active" : ""}" href="${i.href}">${i.icon}<span>${i.label}</span></a>
