@@ -603,3 +603,45 @@ its real unattended failure mode (this fix) - not just built and left untested a
 reality.
 
 ---
+
+## 2026-07-16 (continued) — Real production bug: a zombie session blocking every new session
+
+Kept auditing real production data rather than stopping after the roadmap-complete
+report (per the user's continued "keep working autonomously"). Checked every real Fund
+for the same class of stale-flag issue the earlier Tyler Live Trading correction found
+(`live_enabled=1` with nothing backing it), and found something worse.
+
+Fund #19 ("Primary Fund," archived 2026-07-12) still had `live_enabled=1` - but digging
+into *why* surfaced a much bigger finding: its session #11 was still `status='active'`
+in the database, `ended_at=None`, on `broker_account_id=11` - the system's ONLY real
+broker account ("Pocket Option Demo (Primary)", still connected, still being checked
+today). The fund had been archived on 2026-07-12 without its session ever being
+stopped first. Since `core/database.py`'s `get_active_trading_session()` /
+`get_active_trading_session_for_broker_account()` are unfiltered by fund status,
+**this one zombie session had been blocking `start_trading_session`'s exclusivity
+check - both the global fallback and the real broker-account-scoped check - for 4
+days.** Right now, before this fix, starting a new trading session on ANY Fund would
+have incorrectly failed with "a session is already active - stop it before starting
+another," even though nothing was actually trading. Confirmed nobody had hit it yet
+only because none of the 4 newer Demo Funds created this week had ever had a session
+started (checked directly: zero `trading_sessions` rows for any of them).
+
+- Manually corrected the stale data: stopped session 11 via `database.
+  stop_trading_session` with a full audit-trail `stop_reason` (DEMO mode, 2 trades,
+  -$1.00 realized - no live-money impact), cleared Fund 19's `live_enabled` flag.
+- Fixed the root cause: `api/funds_routes.py`'s `archive_fund` now stops any of the
+  Fund's active sessions and clears `live_enabled` at archive time, so this can't
+  happen again. 4 new regression tests (`tests/test_funds_routes.py`), including one
+  proving an unrelated Fund's active session is left untouched by someone else's
+  archive action.
+- Full suite: 928 tests, OK. Restarted the `AXIM API` scheduled task to deploy the
+  route fix (Python code, unlike the earlier static HTML/JS fixes - verified old PID
+  died, new PID came up, root page 200, `get_active_trading_session()` confirmed
+  `None` post-restart).
+
+This is the most consequential finding of today's autonomous session - a real,
+currently-live blocker on the core trading-session-start path, found only by directly
+auditing production data rather than trusting that "the tests pass" meant the system
+was in a healthy state.
+
+---
