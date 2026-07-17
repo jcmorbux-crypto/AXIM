@@ -72,12 +72,14 @@
     </div>
 
     <div class="card solid full-width">
-      <table>
-        <thead>
-          <tr><th>Name</th><th>Mode</th><th>Connection</th><th>Balance</th><th title="Balance minus every Fund currently attached to this account - what's left unassigned to move into a Fund.">Reserve &#9432;</th><th>Last Connected</th><th>Used by</th><th title="Required (with the Fund's own Live switch and this account's Mode) before any signal can route to a Live cabinet - a Fund not authorized here is rejected, never silently executed on Demo instead. Live trading is not fully available on any account yet - it also needs a verified live cabinet URL configured server-side.">Live &#9432;</th><th></th></tr>
-        </thead>
-        <tbody id="accounts-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
-      </table>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr><th>Name</th><th>Mode</th><th>Connection</th><th>Balance</th><th title="Balance minus every Fund currently attached to this account - what's left unassigned to move into a Fund.">Reserve &#9432;</th><th>Last Connected</th><th>Used by</th><th title="Required (with the Fund's own Live switch and this account's Mode) before any signal can route to a Live cabinet - a Fund not authorized here is rejected, never silently executed on Demo instead. Live trading is not fully available on any account yet - it also needs a verified live cabinet URL configured server-side.">Live &#9432;</th><th></th></tr>
+          </thead>
+          <tbody id="accounts-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
     </div>
   </main>
 </div>
