@@ -66,6 +66,14 @@ class MoneyStudioRoutesTestCase(unittest.TestCase):
         self.assertTrue(vault["enabled"])
         self.assertEqual(vault["vault_percent"], 25)
 
+    def test_create_profile_from_strategy_wires_up_the_real_cycle_for_alternating_compound(self):
+        import json
+        body = routes.CreateFromStrategyRequest(name="Alternating Fund", bankroll=1000.0)
+        created = routes.create_profile_from_strategy("alternating_compound", body, user=_FAKE_USER)
+        compounding = database.get_compounding_settings(created["id"])
+        self.assertEqual(compounding["mode"], "alternating_cycle")
+        self.assertEqual(json.loads(compounding["steps_json"]), [2.5, 5.0, 2.5, 5.0])
+
     def test_create_profile_from_strategy_rejects_an_unknown_key(self):
         from fastapi import HTTPException
         body = routes.CreateFromStrategyRequest(name="Bogus", bankroll=1000.0)

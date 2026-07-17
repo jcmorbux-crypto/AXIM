@@ -45,10 +45,11 @@ def create_profile_from_strategy(strategy_key: str, body: CreateFromStrategyRequ
     """"Use This Strategy" - the ONE write path this router has, and it
     goes through the exact same core/database.py functions the existing
     hand-built risk-profile form already uses (create_risk_profile,
-    update_martingale_settings, update_profit_vault_settings) - not a
-    new mechanism. See core/money_studio.risk_profile_fields_for for
-    exactly what's real vs approximated per strategy."""
-    create_fields, martingale_fields, vault_fields = money_studio.risk_profile_fields_for(
+    update_martingale_settings, update_profit_vault_settings,
+    update_compounding_settings) - not a new mechanism. See
+    core/money_studio.risk_profile_fields_for for exactly what's real vs
+    approximated per strategy."""
+    create_fields, martingale_fields, vault_fields, compounding_fields = money_studio.risk_profile_fields_for(
         strategy_key, body.name, body.bankroll)
     if create_fields is None:
         raise HTTPException(status_code=404, detail="strategy not found")
@@ -59,4 +60,6 @@ def create_profile_from_strategy(strategy_key: str, body: CreateFromStrategyRequ
         database.update_martingale_settings(profile_id, **martingale_fields)
     if vault_fields:
         database.update_profit_vault_settings(profile_id, **vault_fields)
+    if compounding_fields:
+        database.update_compounding_settings(profile_id, **compounding_fields)
     return database.get_risk_profile(profile_id)

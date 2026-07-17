@@ -47,13 +47,31 @@ from logger import get_logger
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 
-def _effective_risk_percent(base_percent, compounding, current_pnl, bankroll):
+def _effective_risk_percent(base_percent, compounding, current_pnl, bankroll, trades_count=0):
     """Applies the compounding profile's profit-milestone steps (and
     drawdown reset) to a base risk percent. All modes besides 'disabled'
-    use the same profit-milestone-step mechanism - see module docstring
-    for the daily/weekly scoping simplification."""
+    and 'alternating_cycle' use the same profit-milestone-step mechanism -
+    see module docstring for the daily/weekly scoping simplification.
+
+    'alternating_cycle' (Money Management Studio's Alternating Compound
+    strategy) is fundamentally different: risk follows the SESSION's own
+    trade count, cycling through steps_json's percents in order and
+    repeating, never reacting to P&L at all - trades_count is the count
+    of trades already completed THIS session before the current one
+    (matches trading_sessions.trades_count's own timing: incremented only
+    once a signal reaches execution, read here before that happens for
+    the current trade), so trade 1 gets steps_json[0], trade 2 gets
+    steps_json[1], and so on, wrapping via modulo. Real, exact cycling -
+    not the flat average-percent approximation this strategy used before
+    risk_engine gained this mode."""
     if compounding is None or compounding["mode"] == "disabled":
         return base_percent
+
+    if compounding["mode"] == "alternating_cycle":
+        cycle = json.loads(compounding["steps_json"]) if compounding["steps_json"] else []
+        if not cycle:
+            return base_percent
+        return cycle[trades_count % len(cycle)]
 
     effective = base_percent
     steps = json.loads(compounding["steps_json"]) if compounding["steps_json"] else []
@@ -85,16 +103,17 @@ def _base_amount(profile, session, record_events=True):
     mode = profile["sizing_mode"]
     bankroll = profile["bankroll"]
     current_pnl = session["realized_pnl"]
+    trades_count = session.get("trades_count", 0)
 
     if mode == "fixed":
         return profile["fixed_amount"]
 
     if mode == "percent":
-        percent = _effective_risk_percent(profile["percent_of_bankroll"], profile["compounding"], current_pnl, bankroll)
+        percent = _effective_risk_percent(profile["percent_of_bankroll"], profile["compounding"], current_pnl, bankroll, trades_count)
         return bankroll * (percent / 100.0) if bankroll > 0 else profile["fixed_amount"]
 
     if mode == "dynamic":
-        percent = _effective_risk_percent(profile["percent_of_bankroll"], profile["compounding"], current_pnl, bankroll)
+        percent = _effective_risk_percent(profile["percent_of_bankroll"], profile["compounding"], current_pnl, bankroll, trades_count)
         current_bankroll = bankroll + current_pnl
         return current_bankroll * (percent / 100.0) if current_bankroll > 0 else profile["fixed_amount"]
 

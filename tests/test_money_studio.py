@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -107,38 +108,44 @@ class RecoveryLadderMathTests(unittest.TestCase):
 
 class RiskProfileFieldsForTests(unittest.TestCase):
     def test_unknown_strategy_returns_all_none(self):
-        create, martingale, vault = money_studio.risk_profile_fields_for("not_real", "x", 1000.0)
+        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("not_real", "x", 1000.0)
         self.assertIsNone(create)
         self.assertIsNone(martingale)
         self.assertIsNone(vault)
+        self.assertIsNone(compounding)
 
     def test_capital_preservation_maps_to_1_percent_and_a_vault_no_martingale(self):
-        create, martingale, vault = money_studio.risk_profile_fields_for("capital_preservation", "My Fund", 1000.0)
+        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("capital_preservation", "My Fund", 1000.0)
         self.assertEqual(create["percent_of_bankroll"], 1.0)
         self.assertEqual(create["strategy_key"], "capital_preservation")
         self.assertIsNone(martingale)
         self.assertEqual(vault, {"enabled": True, "vault_percent": 25, "trigger_event": "per_trade"})
+        self.assertIsNone(compounding)
 
     def test_growth_accelerator_maps_to_5_percent_and_a_vault_no_martingale(self):
-        create, martingale, vault = money_studio.risk_profile_fields_for("growth_accelerator", "My Fund", 1000.0)
+        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("growth_accelerator", "My Fund", 1000.0)
         self.assertEqual(create["percent_of_bankroll"], 5.0)
         self.assertIsNone(martingale)
         self.assertIsNotNone(vault)
+        self.assertIsNone(compounding)
 
-    def test_alternating_compound_maps_to_the_flat_average_no_vault_no_martingale(self):
-        create, martingale, vault = money_studio.risk_profile_fields_for("alternating_compound", "My Fund", 1000.0)
-        self.assertEqual(create["percent_of_bankroll"], 3.75)
+    def test_alternating_compound_maps_to_a_real_alternating_cycle_no_vault_no_martingale(self):
+        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("alternating_compound", "My Fund", 1000.0)
+        self.assertEqual(create["percent_of_bankroll"], 2.5)  # trade 1's percent, the cycle's own first step
         self.assertIsNone(martingale)
         self.assertIsNone(vault)
+        self.assertEqual(compounding["mode"], "alternating_cycle")
+        self.assertEqual(json.loads(compounding["steps_json"]), [2.5, 5.0, 2.5, 5.0])
 
     def test_recovery_ladder_maps_to_1_percent_with_real_martingale_no_vault(self):
-        create, martingale, vault = money_studio.risk_profile_fields_for("recovery_ladder", "My Fund", 1000.0)
+        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("recovery_ladder", "My Fund", 1000.0)
         self.assertEqual(create["percent_of_bankroll"], 1.0)
         self.assertEqual(martingale, {
             "enabled": True, "max_steps": money_studio.DEFAULT_RECOVERY_MAX_STEPS,
             "multiplier": money_studio.DEFAULT_RECOVERY_MULTIPLIER, "reset_after_win": True,
         })
         self.assertIsNone(vault)
+        self.assertIsNone(compounding)
 
 
 if __name__ == "__main__":

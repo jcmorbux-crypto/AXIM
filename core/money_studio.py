@@ -24,23 +24,24 @@ performance projection.
 **Real-engine mapping - stated plainly, not glossed over.** See
 risk_profile_fields_for() below for the exact fields each strategy
 saves as. Sizing (fixed/percent), Martingale (steps/multiplier/reset-
-on-win), and Vault ("per_trade" trigger - a real, already-existing,
+on-win), Vault ("per_trade" trigger - a real, already-existing,
 already-tested mechanism, core/capital_strategies.py's
-per_trade_vault_skim) all map FAITHFULLY - the saved profile really
+per_trade_vault_skim), and Alternating Compound's real trade-by-trade
+2.5%/5% cycle (core/risk_engine.py's compounding mode
+"alternating_cycle", keyed off the session's own trades_count, not an
+averaged approximation) all map FAITHFULLY - the saved profile really
 does behave the way its detail page describes. One mechanic does NOT
 exist in the real engine and is not faked: growth-threshold
 recalculation (resetting the sizing baseline once Active Bankroll
 crosses +125%/+100%/+50% above the previous baseline) has no
 equivalent in core/risk_engine.py's compounding model today, which
-only steps risk-percent against a SESSION's own realized_pnl via
-profile.compounding.steps_json, not a persistent cross-session
-baseline. Building that is real, separate backend work - tracked as a
-follow-up, not silently faked. Alternating Compound's real saved
-profile uses a single fixed 3.75% (the average of its 2.5%/5%
-alternating cycle) for the same reason - the real engine has no
-per-trade-count alternating sizing mode. Both gaps are disclosed
-directly on the strategy detail page, not just in this comment.
+only steps risk-percent against a SESSION's own realized_pnl or trade
+count, not a persistent cross-session baseline. Building that is real,
+separate backend work - tracked as a follow-up, not silently faked -
+and is disclosed directly on the strategy detail page, not just here.
 """
+
+import json
 
 STARTING_BANKROLL = 1000.0
 PAYOUT_PERCENT = 88  # matches preview_server.py's DEFAULT_SCENARIO_PAYOUT - AXIM's real observed historical average
@@ -371,9 +372,10 @@ def strategy_detail(key):
 
 def risk_profile_fields_for(key, name, bankroll):
     """Returns (create_fields, martingale_fields_or_None,
-    vault_fields_or_None) for POST /api/risk-profiles + its martingale/
-    vault PATCH sub-endpoints. create_fields always includes
-    strategy_key so the saved profile can show "Based on <Strategy>"."""
+    vault_fields_or_None, compounding_fields_or_None) for POST
+    /api/risk-profiles + its martingale/vault/compounding PATCH sub-
+    endpoints. create_fields always includes strategy_key so the saved
+    profile can show "Based on <Strategy>"."""
     if key == "capital_preservation":
         create = {
             "name": name, "bankroll": bankroll, "sizing_mode": "percent",
@@ -381,7 +383,7 @@ def risk_profile_fields_for(key, name, bankroll):
             "description": "Based on Capital Preservation - 1% risk per trade, 25% of every winning trade's profit vaulted immediately.",
         }
         vault = {"enabled": True, "vault_percent": 25, "trigger_event": "per_trade"}
-        return create, None, vault
+        return create, None, vault, None
 
     if key == "growth_accelerator":
         create = {
@@ -390,15 +392,16 @@ def risk_profile_fields_for(key, name, bankroll):
             "description": "Based on Growth Accelerator - 5% risk per trade, 25% of every winning trade's profit vaulted immediately.",
         }
         vault = {"enabled": True, "vault_percent": 25, "trigger_event": "per_trade"}
-        return create, None, vault
+        return create, None, vault, None
 
     if key == "alternating_compound":
         create = {
             "name": name, "bankroll": bankroll, "sizing_mode": "percent",
-            "percent_of_bankroll": 3.75, "strategy_key": key,
-            "description": "Based on Alternating Compound - approximated as a flat 3.75% (the average of its real 2.5%/5% alternating cycle, which the live engine doesn't yet support trade-by-trade).",
+            "percent_of_bankroll": _ALT_CYCLE_PERCENTS[0], "strategy_key": key,
+            "description": "Based on Alternating Compound - the real 4-trade 2.5%/5%/2.5%/5% cycle, keyed off this session's own trade count (not an averaged approximation).",
         }
-        return create, None, None
+        compounding = {"mode": "alternating_cycle", "steps_json": json.dumps(_ALT_CYCLE_PERCENTS)}
+        return create, None, None, compounding
 
     if key == "recovery_ladder":
         create = {
@@ -410,6 +413,6 @@ def risk_profile_fields_for(key, name, bankroll):
             "enabled": True, "max_steps": DEFAULT_RECOVERY_MAX_STEPS,
             "multiplier": DEFAULT_RECOVERY_MULTIPLIER, "reset_after_win": True,
         }
-        return create, martingale, None
+        return create, martingale, None, None
 
-    return None, None, None
+    return None, None, None, None

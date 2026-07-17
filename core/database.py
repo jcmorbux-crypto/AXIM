@@ -3396,7 +3396,7 @@ def seed_money_studio_templates():
     import money_studio
     for strategy in money_studio.STRATEGIES:
         key = strategy["key"]
-        create_fields, martingale_fields, vault_fields = money_studio.risk_profile_fields_for(
+        create_fields, martingale_fields, vault_fields, compounding_fields = money_studio.risk_profile_fields_for(
             key, strategy["name"], money_studio.STARTING_BANKROLL,
         )
         create_fields = dict(create_fields)
@@ -3407,6 +3407,8 @@ def seed_money_studio_templates():
             update_martingale_settings(profile_id, **martingale_fields)
         if vault_fields:
             update_profit_vault_settings(profile_id, **vault_fields)
+        if compounding_fields:
+            update_compounding_settings(profile_id, **compounding_fields)
 
 
 @timed("database")

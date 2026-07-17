@@ -149,6 +149,43 @@ class MartingaleSimulationTests(unittest.TestCase):
         self.assertEqual(metrics["max_martingale_step_used"], 4)
 
 
+class AlternatingCycleSimulationTests(unittest.TestCase):
+    """Money Management Studio's Alternating Compound, replayed through
+    the SAME shared risk_engine._base_amount the live path uses (see
+    module docstring) - proves the real trade-by-trade 2.5%/5% cycle,
+    not the old averaged-percent approximation, holds in backtests too."""
+
+    def _alternating_profile(self, bankroll=1000, cycle=(2.5, 5.0, 2.5, 5.0)):
+        import json
+        profile = _fixed_profile(fixed_amount=10)
+        profile["sizing_mode"] = "percent"
+        profile["bankroll"] = bankroll
+        profile["percent_of_bankroll"] = cycle[0]
+        profile["compounding"] = {
+            "mode": "alternating_cycle", "steps_json": json.dumps(list(cycle)),
+            "drawdown_reset_percent": 0, "max_risk_percent": 0, "min_risk_percent": 0,
+        }
+        return profile
+
+    def test_stake_follows_the_cycle_by_trade_count_not_pnl(self):
+        pool = [
+            _signal("2026-01-01T10:00:00", "loss"), _signal("2026-01-01T10:05:00", "win"),
+            _signal("2026-01-01T10:10:00", "loss"), _signal("2026-01-01T10:15:00", "win"),
+            _signal("2026-01-01T10:20:00", "loss"),  # wraps back to the start of the cycle
+        ]
+        result = backtest_engine.simulate_strategy(pool, self._alternating_profile(), 1000)
+        amounts = [t["trade_amount"] for t in result["trades"]]
+        self.assertEqual(amounts, [25.0, 50.0, 25.0, 50.0, 25.0])
+
+    def test_a_losing_streak_does_not_disrupt_the_cycle(self):
+        # The whole point: unlike martingale or milestone-based
+        # compounding, wins/losses never change which step comes next.
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "loss") for i in range(4)]
+        result = backtest_engine.simulate_strategy(pool, self._alternating_profile(), 1000)
+        amounts = [t["trade_amount"] for t in result["trades"]]
+        self.assertEqual(amounts, [25.0, 50.0, 25.0, 50.0])
+
+
 class VaultSimulationTests(unittest.TestCase):
     def test_milestone_based_skim(self):
         profile = _fixed_profile(fixed_amount=10)

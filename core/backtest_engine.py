@@ -290,7 +290,7 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
 
         session_state = {
             "realized_pnl": 0.0, "current_martingale_step": 0, "current_momentum_step": 0,
-            "consecutive_losses": 0,
+            "consecutive_losses": 0, "trades_count": 0,
         }
         session_vaulted = 0.0
         session_trades = []
@@ -356,6 +356,7 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
                 profit_loss = 0.0
 
             session_state["realized_pnl"] += profit_loss
+            session_state["trades_count"] += 1
             ended_at = signal["timestamp"]
 
             # Martingale/Momentum step advancement and Empire's ladder

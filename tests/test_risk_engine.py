@@ -151,6 +151,43 @@ class ComputePositionSizeTests(unittest.TestCase):
         database.update_session_pnl(self.session_id, -150)  # net -90, -9% drawdown of 1000
         self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 20.0)  # back to base 2%
 
+    def test_alternating_cycle_follows_the_real_trade_by_trade_pattern(self):
+        # Money Management Studio's Alternating Compound: 2.5%, 5%, 2.5%,
+        # 5%, repeating - keyed off the session's OWN trade count, never
+        # an averaged approximation. Advances trades_count via
+        # record_session_trade between reads, exactly like a real live
+        # session would as each signal reaches execution.
+        import json
+        profile_id = database.create_risk_profile("Alternating Test", sizing_mode="percent",
+                                                    bankroll=1000, percent_of_bankroll=2.5)
+        database.update_compounding_settings(
+            profile_id, mode="alternating_cycle", steps_json=json.dumps([2.5, 5.0, 2.5, 5.0]),
+        )
+        database.set_session_risk_profile(self.session_id, profile_id)
+
+        expected_percents = [2.5, 5.0, 2.5, 5.0, 2.5]  # 5th trade wraps back to the start
+        for expected_percent in expected_percents:
+            amount = risk_engine.compute_position_size(self.session_id, 5.0)
+            self.assertEqual(amount, 1000 * expected_percent / 100.0)
+            database.record_session_trade(self.session_id)
+
+    def test_alternating_cycle_ignores_session_pnl_entirely(self):
+        # The whole point of this mode: unlike milestone_based, a losing
+        # or winning session must never change which cycle step comes
+        # next - only the trade count does.
+        import json
+        profile_id = database.create_risk_profile("Alternating PnL Test", sizing_mode="percent",
+                                                    bankroll=1000, percent_of_bankroll=2.5)
+        database.update_compounding_settings(
+            profile_id, mode="alternating_cycle", steps_json=json.dumps([2.5, 5.0]),
+        )
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, -400)  # a deep drawdown - should change nothing
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 25.0)  # still 2.5%
+        database.record_session_trade(self.session_id)
+        database.update_session_pnl(self.session_id, 900)  # a big win - should still change nothing
+        self.assertEqual(risk_engine.compute_position_size(self.session_id, 5.0), 50.0)  # still 5%, trade 2
+
 
 class MissingSettingsRowBackfillTests(unittest.TestCase):
     """A real production crash: risk_profile_id=29 predated the
