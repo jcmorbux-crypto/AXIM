@@ -51,9 +51,12 @@ def _get_or_404(account_id):
 
 
 def _with_funds(account):
+    funds = database.list_broker_account_funds(account["id"])
+    for f in funds:
+        f["has_active_session"] = database.get_active_trading_session_for_fund(f["id"]) is not None
     return {
         **account,
-        "funds": database.list_broker_account_funds(account["id"]),
+        "funds": funds,
         "reserve": fund_manager.get_broker_account_reserve(account["id"]),
     }
 

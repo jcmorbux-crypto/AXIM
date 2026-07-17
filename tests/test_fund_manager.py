@@ -362,6 +362,19 @@ class CanTradeTests(FundManagerTestCase):
         self.assertIn("Broker account not connected", reason)
         self.assertFalse(can_go_live)
 
+    def test_a_stale_live_enabled_flag_with_no_broker_account_can_never_authorize_live_trading(self):
+        # The exact real-world shape found in production 2026-07-16: a
+        # Fund ("Tyler Live Trading") had live_enabled=1 left over with no
+        # broker account attached at all. A stale DB flag must never be
+        # sufficient authorization by itself - can_trade must reject the
+        # Fund entirely (no broker account means it can't trade at all,
+        # live or otherwise), regardless of what live_enabled says.
+        fund_id = database.create_fund("Stale Live Flag Fund", live_enabled=True)
+        allowed, reason, can_go_live = fund_manager.can_trade(fund_id)
+        self.assertFalse(allowed)
+        self.assertFalse(can_go_live)
+        self.assertIn("Broker account not connected", reason)
+
     def test_broker_account_attached_but_not_connected(self):
         fund_id = database.create_fund("F1")
         account_id = database.create_broker_account("Acc1")

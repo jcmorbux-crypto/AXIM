@@ -14,13 +14,16 @@
     <div class="page-header">
       <div>
         <h1>Broker</h1>
-        <div class="subtitle">Your Pocket Option connection.</div>
+        <div class="subtitle">Your Pocket Option broker accounts, and AXIM's own process/default connection.</div>
       </div>
     </div>
 
     <div id="live-warning" class="banner danger" style="display:none;">
-      This account is connected in LIVE mode - real money is at risk. Handle Reconnect/Clear Session with care.
+      The default connection is running in LIVE mode - real money is at risk. Handle Reconnect/Clear Session with care.
     </div>
+
+    <h2 style="margin-bottom:2px;">AXIM Process &amp; Default Connection</h2>
+    <div class="subtitle" style="margin-bottom:14px;">Whether AXIM itself is running, and the legacy default connection used for channels not attached to a specific Fund. For a specific Fund's own broker account, see Broker Accounts below.</div>
 
     <div class="status-line">
       <span id="conn-dot" class="dot off"></span>
@@ -32,7 +35,7 @@
 
     <div class="grid">
       <div class="card solid">
-        <h3>Account Mode</h3>
+        <h3>Default Account Mode</h3>
         <div class="stat-value-lg"><span class="badge" id="account-mode">-</span></div>
       </div>
       <div class="card solid">
@@ -71,9 +74,9 @@
     <div class="card solid full-width">
       <table>
         <thead>
-          <tr><th>Name</th><th>Mode</th><th>Connection</th><th>Balance</th><th title="Balance minus every Fund currently attached to this account - what's left unassigned to move into a Fund.">Reserve &#9432;</th><th>Used by</th><th title="Required (with the Fund's own Live switch and this account's Mode) before any signal can route to a Live cabinet - a Fund not authorized here is rejected, never silently executed on Demo instead. Live trading is not fully available on any account yet - it also needs a verified live cabinet URL configured server-side.">Live &#9432;</th><th></th></tr>
+          <tr><th>Name</th><th>Mode</th><th>Connection</th><th>Balance</th><th title="Balance minus every Fund currently attached to this account - what's left unassigned to move into a Fund.">Reserve &#9432;</th><th>Last Connected</th><th>Used by</th><th title="Required (with the Fund's own Live switch and this account's Mode) before any signal can route to a Live cabinet - a Fund not authorized here is rejected, never silently executed on Demo instead. Live trading is not fully available on any account yet - it also needs a verified live cabinet URL configured server-side.">Live &#9432;</th><th></th></tr>
         </thead>
-        <tbody id="accounts-body"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+        <tbody id="accounts-body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
       </table>
     </div>
   </main>
@@ -97,6 +100,27 @@
       <button class="primary" onclick="createAccount()">Create</button>
     </div>
     <span id="add-account-status" class="muted"></span>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="edit-account-modal">
+  <div class="modal">
+    <h2 style="margin-top:0;">Edit Broker Account</h2>
+    <input type="hidden" id="edit-acc-id">
+    <div class="field"><label>Name</label><input type="text" id="edit-acc-name"></div>
+    <div class="field">
+      <label>Mode</label>
+      <select id="edit-acc-mode">
+        <option value="demo">Demo only</option>
+        <option value="live">Live only</option>
+        <option value="both">Both (demo + live)</option>
+      </select>
+    </div>
+    <div class="row" style="justify-content:flex-end;">
+      <button class="subtle" onclick="closeModal('edit-account-modal')">Cancel</button>
+      <button class="primary" onclick="saveAccountEdit()">Save</button>
+    </div>
+    <span id="edit-account-status" class="muted"></span>
   </div>
 </div>
 
@@ -224,17 +248,20 @@ const CONNECTION_BADGE = {
   connected: "on", connecting: "warn", disconnected: "off", error: "danger",
 };
 
+let lastLoadedAccounts = [];
+
 async function refreshAccounts() {
   const body = document.getElementById("accounts-body");
   let accounts;
   try {
     accounts = await fetchJSON("/api/broker-accounts");
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="8" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="9" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
     return;
   }
+  lastLoadedAccounts = accounts;
   if (!accounts.length) {
-    body.innerHTML = '<tr><td colspan="8" class="empty">No broker accounts yet - add one to attach it to a Fund.</td></tr>';
+    body.innerHTML = '<tr><td colspan="9" class="empty">No broker accounts yet - add one to attach it to a Fund.</td></tr>';
     return;
   }
   body.innerHTML = accounts.map(a => `
@@ -244,7 +271,8 @@ async function refreshAccounts() {
       <td><span class="badge ${CONNECTION_BADGE[a.connection_status] || "off"}">${a.connection_status}</span></td>
       <td>${a.last_balance !== null && a.last_balance !== undefined ? "$" + Number(a.last_balance).toFixed(2) : "-"}</td>
       <td>${a.reserve !== null && a.reserve !== undefined ? "$" + Number(a.reserve).toFixed(2) : "-"}</td>
-      <td class="muted">${a.funds.length ? a.funds.map(f => escapeHtml(f.name)).join(", ") : "-"}</td>
+      <td class="muted">${a.last_connected_at ? new Date(a.last_connected_at).toLocaleString() : "-"}</td>
+      <td class="muted">${a.funds.length ? a.funds.map(f => escapeHtml(f.name) + (f.has_active_session ? " (session running)" : "")).join(", ") : "-"}</td>
       <td>
         <input type="checkbox" style="width:auto;" ${a.live_enabled ? "checked" : ""} onchange="toggleLive(${a.id}, this.checked)">
       </td>
@@ -252,10 +280,38 @@ async function refreshAccounts() {
         ${a.connection_status === "connected"
           ? `<button class="subtle" onclick="disconnectAccount(${a.id})">Disconnect</button>`
           : `<button class="subtle" onclick="connectAccount(${a.id})" ${a.connection_status === "connecting" ? "disabled" : ""}>${a.connection_status === "connecting" ? "Connecting..." : "Connect"}</button>`}
+        <button class="subtle" onclick="openEditAccountModal(${a.id})">Edit</button>
         <button class="subtle" onclick="archiveAccount(${a.id})">Archive</button>
       </td>
     </tr>
   `).join("");
+}
+
+function openEditAccountModal(id) {
+  const account = lastLoadedAccounts.find(a => a.id === id);
+  if (!account) return;
+  document.getElementById("edit-acc-id").value = id;
+  document.getElementById("edit-acc-name").value = account.name;
+  document.getElementById("edit-acc-mode").value = account.mode;
+  document.getElementById("edit-account-status").textContent = "";
+  openModal("edit-account-modal");
+}
+
+async function saveAccountEdit() {
+  const id = document.getElementById("edit-acc-id").value;
+  const statusEl = document.getElementById("edit-account-status");
+  const name = document.getElementById("edit-acc-name").value.trim();
+  if (!name) { statusEl.textContent = "Name is required."; return; }
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, mode: document.getElementById("edit-acc-mode").value }),
+    });
+    closeModal("edit-account-modal");
+    await refreshAccounts();
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
 }
 
 function openAddAccountModal() {
