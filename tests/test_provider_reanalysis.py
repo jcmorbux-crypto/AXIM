@@ -137,6 +137,34 @@ class ReanalyzeAllKnownProvidersTestCase(unittest.TestCase):
         self.assertEqual(summary[0]["changes"], [])
         self.assertEqual(database.list_notifications(self.owner_id), [])
 
+    def test_an_automation_refresh_failure_never_looks_like_a_change(self):
+        # Real production finding: a provider whose format the language learner
+        # doesn't recognize (e.g. TYLER VIP CLUB) still has a perfectly valid
+        # existing recommendation from its original hand-built-adapter import.
+        # Re-analysis failing to auto-detect the format again must never be
+        # reported (or notified) as if the recommendation itself got worse.
+        database.upsert_channel(chat_id="997", username=None, title="Unrecognized Format Provider", kind="channel")
+        database.save_capital_recommendation(
+            source_label="Unrecognized Format Provider", backtest_run_id=1, best_strategy_id=1,
+            best_strategy_key="capital_preservation", best_strategy_name="Capital Preservation",
+            roi_percent=20.0, win_rate=0.55, max_drawdown_percent=10.0, max_drawdown_amount=100.0,
+            minimum_allocation=150.0, conservative_allocation=250.0, suggested_allocation=400.0,
+            trades_backtested=100,
+        )
+
+        async def fake_analyze(chat_id, source_label=None, created_by=None):
+            return {"status": "pattern_not_detected", "note": "No common signal format was automatically recognized."}
+
+        with patch("provider_onboarding.analyze_and_onboard_provider", AsyncMock(side_effect=fake_analyze)):
+            summary = _run(reanalysis.reanalyze_all_known_providers())
+
+        self.assertEqual(summary[0]["status"], "refresh_failed")
+        self.assertEqual(summary[0]["changes"], [])
+        self.assertEqual(database.list_notifications(self.owner_id), [])
+        # The original recommendation must be completely untouched.
+        still_there = database.get_capital_recommendation("Unrecognized Format Provider")
+        self.assertEqual(still_there["best_strategy_key"], "capital_preservation")
+
 
 if __name__ == "__main__":
     unittest.main()

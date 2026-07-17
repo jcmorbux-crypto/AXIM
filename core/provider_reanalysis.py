@@ -72,10 +72,14 @@ def classify_change(old_recommendation, new_recommendation):
 async def reanalyze_provider(source_label, chat_id):
     """Re-runs the full onboarding pipeline for one already-known
     provider using its current, live Telegram history, and returns
-    (old_recommendation, new_recommendation_or_marker, change_notes).
-    new_recommendation_or_marker is {"_no_recommendation": True} if the
-    re-analysis found no plausible strategy this time (a real, reportable
-    outcome, not a failure)."""
+    (old_recommendation, new_recommendation_or_marker, change_notes,
+    refresh_failed). refresh_failed=True means the AUTOMATION could not
+    complete (e.g. this provider's format still isn't one the language
+    learner recognizes) - the existing recommendation is untouched and
+    still valid, so this is never itself a "change" worth notifying the
+    owner about. Conflating "we couldn't refresh this" with "this
+    provider got worse" would train the owner to ignore real
+    deterioration alerts."""
     import database
     import provider_onboarding
 
@@ -83,15 +87,13 @@ async def reanalyze_provider(source_label, chat_id):
     result = await provider_onboarding.analyze_and_onboard_provider(chat_id, source_label=source_label)
 
     if result["status"] != "complete":
-        return old_recommendation, {"_no_recommendation": True, "_status": result["status"]}, (
-            [f"Re-analysis could not complete: {result.get('note', result['status'])}"] if old_recommendation else []
-        )
+        return old_recommendation, {"_no_recommendation": True, "_status": result["status"]}, [], True
 
     new_recommendation = database.get_capital_recommendation(source_label)
     if new_recommendation is None:
         new_recommendation = {"_no_recommendation": True}
     notes = classify_change(old_recommendation, new_recommendation)
-    return old_recommendation, new_recommendation, notes
+    return old_recommendation, new_recommendation, notes, False
 
 
 async def reanalyze_all_known_providers():
@@ -103,7 +105,9 @@ async def reanalyze_all_known_providers():
     summary list, one entry per provider considered, so a caller
     (the scheduled script, or a future admin-triggered endpoint) can log
     or display exactly what happened - including providers skipped
-    because they have no live channel to refresh from."""
+    because they have no live channel to refresh from, and providers
+    where the automatic refresh itself failed (their existing
+    recommendation stands untouched - never reported as a "change")."""
     import database
 
     recommendations = database.list_capital_recommendations()
@@ -120,7 +124,14 @@ async def reanalyze_all_known_providers():
             })
             continue
 
-        old_rec, new_rec, notes = await reanalyze_provider(source_label, int(channel["chat_id"]))
+        old_rec, new_rec, notes, refresh_failed = await reanalyze_provider(source_label, int(channel["chat_id"]))
+        if refresh_failed:
+            summary.append({
+                "source_label": source_label, "status": "refresh_failed", "changes": [],
+                "note": f"Automatic refresh could not complete ({new_rec.get('_status')}) - existing recommendation is untouched.",
+            })
+            continue
+
         entry = {"source_label": source_label, "status": "reanalyzed", "changes": notes}
         summary.append(entry)
 
