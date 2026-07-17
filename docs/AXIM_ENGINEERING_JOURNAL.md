@@ -549,3 +549,31 @@ deterioration alerts.
   Full suite: 923 tests, OK.
 
 ---
+
+## 2026-07-16 (continued) — Trade History unreachable from any nav link
+
+User confirmed continued full autonomy again ("keep working autonomously, ping me if
+you hit a real blocker"). Kept scanning for real, safe work rather than declaring done
+after the roadmap-complete report: cross-checked every page `api/main.py` serves
+against every nav/page-to-page link in the app (the same technique that found the
+orphaned Capital Strategies page earlier today).
+
+Found `web/trades.html` - a real, unique Trade History detail view (per-trade
+screenshots, raw signal message, full stage timeline; nothing else in the app
+duplicates it) - had zero links pointing to it anywhere. `web/shell.js`'s
+2026-07-14 nav-IA-reorg comment claimed it was "kept reachable via a link from
+Performance," but that link had never actually been added - a real product gap
+that had gone unnoticed since the reorg, not a deliberate removal like Capital
+Strategies was.
+
+- Added a "View Trade History" link to `web/performance.html`'s header.
+- Corrected the same stale `shell.js` comment, which also still implied Capital
+  Strategies was "kept reachable via a link from Money Management Studio" - false as
+  of this morning's cleanup; that page was superseded outright by the Money Studio
+  redesign and removed, not relocated.
+- Verified live against the running production server directly (HTML/JS are served
+  straight from disk, no API restart needed): `curl` confirmed the new link renders
+  on `/performance` and `/trades` still returns 200.
+- Full suite: 923 tests, OK.
+
+---
