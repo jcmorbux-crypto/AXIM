@@ -504,4 +504,48 @@ built or silently skipped.
 Production check after today's changes: API root (`http://127.0.0.1:8090/`) returns
 200, full test suite green (922 tests). Nothing regressed.
 
+Restarted the `AXIM API` scheduled task (`Stop-ScheduledTask` + `Start-ScheduledTask`,
+verified the old PID actually died first per the known Stop-ScheduledTask gap) so
+today's accumulated Phase 2 work is actually live in production, not just committed.
+Confirmed post-restart: root page 200, the removed `/capital-strategies` route now
+correctly 404s, `/api/money-strategies` 401s (exists, requires auth). Listener left
+untouched - nothing it depends on changed today.
+
+User handed over full end-of-day autonomy ("keep working autonomously, ping me if you
+hit a real blocker") after the above was reported as roadmap-complete. Continued
+rather than stopping.
+
+---
+
+## 2026-07-16 (continued) — Priority #4 fix: false-positive re-analysis notifications
+
+Rather than leave `scripts/reanalyze_all_providers.py` merely unit-tested, ran it for
+real against live data - `core/telegram_channels.py`'s `fetch_channel_raw_history` uses
+its own dedicated `axim_ui_session` Telethon session (already authenticated from
+earlier onboarding work), confirmed independent of the live listener's own session, so
+this was safe to run without touching production trading.
+
+That real run found a genuine bug: 2 of the 4 providers with a live channel (TYLER VIP
+CLUB, Pocket Option Signals) have signal formats the auto language-learner still can't
+recognize - a known, already-disclosed limitation, not something new. But
+`reanalyze_provider` treated that automation failure as if it were a real change,
+sending the owner a notification worded like the provider's recommendation had gotten
+worse, when nothing about the provider actually changed - only the automatic refresh
+itself failed. Left uncorrected, this would have trained the owner to distrust real
+deterioration alerts.
+
+- Fixed: `reanalyze_provider` now returns an explicit `refresh_failed` flag, kept
+  separate from `classify_change`'s real change notes. A failed automatic refresh is
+  now visible in the run summary (for logs/a future admin view) but never sent as an
+  owner notification, since the existing recommendation is completely untouched.
+- Manually deleted the 2 erroneous notifications (ids 13, 14) the buggy first run had
+  already written to the real production database, then re-ran the corrected script
+  against the same live data and confirmed: zero new notifications, both
+  recommendations byte-for-byte unchanged.
+- Installed `scripts/install_reanalysis_task.ps1` as a real Windows Scheduled Task
+  (`AXIM Provider Reanalysis`, confirmed next run Fri 2026-07-17 3:00 AM) - Priority #4
+  is now actually scheduled and running, not just built and left dormant.
+- 1 new regression test (`test_an_automation_refresh_failure_never_looks_like_a_change`).
+  Full suite: 923 tests, OK.
+
 ---
