@@ -418,3 +418,40 @@ exactly the kind of change worth a deliberate, separate call rather than bundlin
 it silently into this commit.
 
 ---
+
+## 2026-07-16 (continued) — Phase 2 Priority #6: Money Management Studio audit
+
+User handed over full autonomous engineering mode before stepping away for the day
+(standing authorization: everything except live-trading risk, credentials/payment/
+external accounts, irreversible data loss, or destructive ops outside the AXIM repos).
+Continuing straight through the Phase 2 execution order without pausing for check-ins.
+
+Audited `core/money_studio.py` + `web/risk.html` against the Priority #5 spec (exact
+risk %, martingale, vault, growth-recalc thresholds per strategy) line by line: it
+already matched exactly, including the honest, already-documented gaps (growth-
+threshold recalculation and Alternating Compound's true per-trade cycle have no
+real `core/risk_engine.py` equivalent yet, disclosed both in code comments and on the
+strategy detail page rather than faked). The frontend already had the full commercial
+UI - pros/cons, FAQ, worked examples, growth timeline, Custom Strategy Builder - from
+the prior `ui-vision-upgrade` work. The actual gap was test coverage: neither the pure
+math (worked examples, growth timelines, recovery-ladder steps) nor
+`api/money_studio_routes.py`'s 3 endpoints had direct unit tests before today.
+
+- Added `tests/test_money_studio.py` (18 tests: strategy cards/detail shape, exact
+  dollar math for all 4 strategies' worked examples and growth-checkpoint timelines,
+  `risk_profile_fields_for`'s real-engine field mapping for every strategy).
+- Added `tests/test_money_studio_routes.py` (7 tests: list/detail/create-profile
+  endpoints, including that "Use This Strategy" really wires up martingale/vault
+  settings on the saved profile).
+- Found and removed a real product-quality risk while auditing: `web/capital_strategies.html`,
+  a leftover ~20-strategy catalog page from before the "4 official strategies" redesign
+  (commit `6e8866a`), was still being served at `GET /capital-strategies` in
+  `api/main.py` - unreachable from any nav/shell link (confirmed via repo-wide grep),
+  but still live in production. Anyone who found the URL would see a contradictory,
+  superseded strategy system next to the real Money Management Studio. Removed the
+  page and its route. `core/capital_strategies.py` (the engine underneath, which still
+  powers the real, tested `per_trade_vault_skim` vault mechanism Money Studio's Vault
+  strategies use) and its API router/tests are untouched - only the dead page is gone.
+- Full suite: 922 tests, OK.
+
+---
