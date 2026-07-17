@@ -645,3 +645,49 @@ auditing production data rather than trusting that "the tests pass" meant the sy
 was in a healthy state.
 
 ---
+
+## 2026-07-16 (continued) — TYLER VIP CLUB gets a real named pattern
+
+User checked in mid-session ("tell me exactly what you're doing right now") while this
+was in progress - answered directly (file, feature, why it's not critical-path, ETA,
+next step, blocker status) and was told to finish verifying this one piece, then stop.
+Recorded here for completeness before stopping as instructed.
+
+TYLER VIP CLUB (a real, currently-synced provider) had been reporting
+`pattern_not_detected` on every automatic re-analysis attempt - its real vocabulary
+("BUY/SELL NOW X (OTC)" signals, "WIN"/"Bad luck" results, "Raise your stake"/"Go back
+to the initial trade size" recovery instructions) doesn't fit any of
+`core/provider_language_learner.py`'s generic reusable templates. "Bad luck" in
+particular isn't in `_classify_result_token`'s generic loss vocabulary at all.
+
+Rather than write new speculative parsing logic, ported the already-validated hand-
+built adapter from the OPT SIGNALS research branch
+(`research/parser/adapters/tyler_vip_club.py` - grounded in an exhaustive read of that
+provider's real 2906-message dump by the original research effort, not guessed) into a
+new named pattern, `"tyler_vip_flow"`, added to the existing template-scoring system
+alongside the generic ones. Provider-specific by design - its coverage on the other
+providers' real corpora should stay near zero, which the new test suite explicitly
+verifies (`test_detect_pattern_identifies_a_tyler_like_batch` asserts every other
+template scores exactly 0.0 on Tyler-style text).
+
+**Verified against the real channel's actual current history before committing**, not
+just synthetic test fixtures: fetched TYLER VIP CLUB's live 2000-message history via
+the same `axim_ui_session` used earlier today, confirmed `detect_pattern` now correctly
+identifies `"tyler_vip_flow"` at 20.94% coverage (well above the 10% viability
+threshold), and ran the full `analyze_and_onboard_provider` pipeline end-to-end: 323
+real decided trades imported, a real backtest run, a real recommendation generated with
+sane numbers (44.9% ROI, 54.2% win rate). A test-call mismatch (passing a slightly
+different `source_label` string than the real channel title) briefly created a stray
+duplicate `capital_recommendations` row in production - caught immediately, removed via
+`database.delete_capital_recommendation`, confirmed only the original row remains and
+zero notifications fired as a side effect.
+
+8 new regression tests. Full suite: 936 tests, OK.
+
+Deliberately not attempted tonight: the same port for Pocket Option Signals (the other
+provider stuck on `refresh_failed`) - a natural, well-scoped next step using the exact
+same technique (its hand-built adapter also already exists in the research branch), but
+out of scope for this specific verification per the user's explicit "finish verifying
+this one, then stop."
+
+---
