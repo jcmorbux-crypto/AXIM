@@ -819,3 +819,37 @@ explicitly against the directive's exact wording rather than assuming full overl
 spec) remains a genuinely separate, larger initiative.
 
 ---
+
+## 2026-07-17 (continued) — Live browser verification, one real bug found and fixed
+
+Before reporting the corrected V1-completion mission's work as done, verified it had
+actually been visually checked in a real browser, not just reasoned about from reading
+code - the directive explicitly warns against exactly that ("Do not call this complete
+merely because... mocked tests pass").
+
+Spun up an isolated preview server (copied `data/axim.db` to a temp file, monkey-
+patched `database.DB_FILE` before import, ran on port 8092 - never touching the real
+production database or its running process) and created a throwaway login in that
+copy only. Used Playwright to log in and drive both changed pages for real:
+
+- **Broker Accounts page**: confirmed the "AXIM Process & Default Connection" heading,
+  the new "Last Connected" column, and the Edit action all render against the 2 real
+  broker accounts in the data - opened the Edit modal and confirmed it pre-filled the
+  real account's real name/mode correctly.
+- **Found and fixed a real bug**: the new Last Connected column pushed the table wide
+  enough that its rightmost columns visually broke out of the card boundary at normal
+  desktop widths - the existing horizontal-scroll fix for wide tables only applied at
+  mobile widths. Wrapped the table in its own `overflow-x:auto` container. Re-verified
+  the fix with a second screenshot.
+- **Telegram page's onboarding wizard**: opened the wizard modal on a real channel,
+  confirmed the history-window selector (defaulting to "Last 30 days") and Preview
+  button render correctly.
+- Zero console errors on either changed page (2 errors did appear, both attributed to
+  `dashboard.js:refreshGlobal` - the same known post-login navigation timing artifact
+  documented in the earlier Portfolio Command Center verification, not a new issue).
+
+Preview server and its temp DB copy torn down afterward - nothing left running,
+nothing touched in production. The table-overflow fix (HTML/CSS only) is already live
+in production since static files serve directly from disk.
+
+---
