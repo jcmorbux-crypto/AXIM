@@ -123,8 +123,20 @@ def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
 
 @router.post("/{fund_id}/archive")
 def archive_fund(fund_id: int, user=Depends(require_admin)):
+    """Archiving a Fund must not leave it with a dangling "active"
+    session (found live in production 2026-07-16: an archived Fund's
+    forgotten active session silently occupied its broker account's
+    exclusivity slot for 4 days, since nothing had stopped it). Also
+    clears live_enabled - there's no reason an archived Fund should
+    retain live-trading authorization."""
     _get_or_404(fund_id)
-    database.update_fund(fund_id, status="archived")
+    active_session = database.get_active_trading_session_for_fund(fund_id)
+    if active_session is not None:
+        database.stop_trading_session(
+            active_session["id"], "stopped_manual",
+            stop_reason="Fund archived while this session was still active.",
+        )
+    database.update_fund(fund_id, status="archived", live_enabled=False)
     return fund_manager.get_fund_report(fund_id)
 
 
