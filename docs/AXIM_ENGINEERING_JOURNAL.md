@@ -577,3 +577,29 @@ Strategies was.
 - Full suite: 923 tests, OK.
 
 ---
+
+## 2026-07-16 (continued) — Priority #4 hardening: one provider can't take down the rest
+
+Since `scripts/reanalyze_all_providers.py` now actually runs unattended every night at
+3 AM (installed earlier today), re-checked its failure handling with that in mind, not
+just its happy path. Found `reanalyze_all_known_providers()`'s per-provider loop had no
+try/except around `reanalyze_provider` - and `core/provider_onboarding.py`'s own
+docstring is explicit that it deliberately lets a *real* failure (a dropped Telegram
+connection, not just an inconclusive "pattern not detected" result) propagate rather
+than swallowing it. Left as-is, one provider hitting a genuine connection error at 3 AM
+would have crashed the whole run and silently skipped every remaining provider that
+night, with nothing but an uncaught traceback to show for it.
+
+- Wrapped each provider's reanalysis in a try/except, logged via `core/logger.py`, and
+  reported as a new `"error"` summary status - same treatment as `refresh_failed`
+  (existing recommendation untouched, no misleading notification) - so the loop
+  continues to the next provider instead of aborting.
+- 1 new regression test proving a flaky provider's exception doesn't stop a healthy
+  provider in the same run from being reanalyzed. Full suite: 924 tests, OK.
+
+This closes out today's Priority #4 work: built, then actually exercised against live
+data (which found and fixed the false-positive-notification bug), then hardened for
+its real unattended failure mode (this fix) - not just built and left untested against
+reality.
+
+---
