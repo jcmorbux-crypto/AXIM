@@ -111,6 +111,36 @@ def connect_broker_account(account_id: int, user=Depends(require_admin)):
     return _with_funds(database.get_broker_account(account_id))
 
 
+@router.post("/{account_id}/test-connection")
+def test_broker_account_connection(account_id: int, user=Depends(require_admin)):
+    """Distinct from both /connect (the full login flow) and the
+    Broker page's "Run a Test Trade" (places a real Demo trade) - this
+    verifies an ALREADY-connected account's session is genuinely still
+    responsive, by reading its real balance, without ever submitting an
+    order. Same fire-and-forget + poll pattern as /connect: this process
+    never touches the browser directly - core/telegram_listener.py's own
+    poll loop (which owns every account's live browser context) picks up
+    the request and writes the result back."""
+    account = _get_or_404(account_id)
+    if account["connection_status"] != "connected":
+        raise HTTPException(
+            status_code=409,
+            detail=f"account is {account['connection_status']!r}, not connected - use Connect first",
+        )
+    try:
+        database.request_connection_test(account_id, requested_by=user["email"])
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {"status": "pending"}
+
+
+@router.get("/{account_id}/test-connection")
+def get_broker_account_connection_test(account_id: int, user=Depends(get_current_user)):
+    _get_or_404(account_id)
+    result = database.get_connection_test(account_id)
+    return result or {"status": "none"}
+
+
 @router.post("/{account_id}/disconnect")
 def disconnect_broker_account(account_id: int, user=Depends(require_admin)):
     """Marks the account disconnected. Does not delete its persistent

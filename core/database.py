@@ -772,6 +772,29 @@ def initialize_database():
     if "session_id" not in test_trade_columns:
         conn.execute("ALTER TABLE pending_test_trade ADD COLUMN session_id INTEGER")
 
+    # Per-account "Test Connection" request queue (Broker Accounts page) -
+    # deliberately a SEPARATE table from pending_test_trade, not a reuse
+    # of it: pending_test_trade is a singleton (one test trade for the
+    # whole app at a time) and PLACES A REAL DEMO TRADE; this is keyed by
+    # broker_account_id (multiple accounts can each have their own test
+    # in flight at once) and only ever reads that account's balance -
+    # never routes anything through a coordinator, never submits an
+    # order. Same cross-process request/poll pattern: the API process
+    # writes a pending row, core/telegram_listener.py's own poll loop
+    # (which already owns every account's live browser context via
+    # core/broker_account_manager.py) picks it up and writes the result
+    # back.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS pending_connection_test (
+        broker_account_id INTEGER PRIMARY KEY,
+        status TEXT DEFAULT 'none',
+        requested_by TEXT,
+        requested_at TEXT,
+        result_json TEXT,
+        completed_at TEXT
+    );
+    """)
+
     # Live-mode trade confirmation gate (docs/AXIM_APP_PLAN.md) - when a
     # session has require_confirmation set AND its account_mode is LIVE,
     # core/trade_coordinator.py writes a row here and BLOCKS (polling,
@@ -3615,6 +3638,78 @@ def fail_test_trade(error_message):
     conn.execute(
         "UPDATE pending_test_trade SET status = 'error', result_json = ?, completed_at = ? WHERE id = 1",
         (json.dumps({"error": error_message}), datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def request_connection_test(broker_account_id, requested_by):
+    """Raises ValueError if a test is already pending for THIS account -
+    unlike pending_test_trade, a different account is free to have its
+    own test running at the same time (see module docstring)."""
+    conn = get_connection()
+    current = conn.execute(
+        "SELECT status FROM pending_connection_test WHERE broker_account_id = ?", (broker_account_id,),
+    ).fetchone()
+    if current and current["status"] == "pending":
+        conn.close()
+        raise ValueError("a connection test is already pending for this account")
+    conn.execute(
+        """
+        INSERT INTO pending_connection_test (broker_account_id, status, requested_by, requested_at, result_json, completed_at)
+        VALUES (?, 'pending', ?, ?, NULL, NULL)
+        ON CONFLICT(broker_account_id) DO UPDATE SET
+            status = 'pending', requested_by = excluded.requested_by, requested_at = excluded.requested_at,
+            result_json = NULL, completed_at = NULL
+        """,
+        (broker_account_id, requested_by, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_connection_test(broker_account_id):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM pending_connection_test WHERE broker_account_id = ?", (broker_account_id,),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    d = dict(row)
+    d["result"] = json.loads(d["result_json"]) if d["result_json"] else None
+    return d
+
+
+@timed("database")
+def list_pending_connection_tests():
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM pending_connection_test WHERE status = 'pending'",
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def complete_connection_test(broker_account_id, result):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE pending_connection_test SET status = 'completed', result_json = ?, completed_at = ? WHERE broker_account_id = ?",
+        (json.dumps(result), datetime.now().isoformat(), broker_account_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def fail_connection_test(broker_account_id, error_message):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE pending_connection_test SET status = 'error', result_json = ?, completed_at = ? WHERE broker_account_id = ?",
+        (json.dumps({"error": error_message}), datetime.now().isoformat(), broker_account_id),
     )
     conn.commit()
     conn.close()

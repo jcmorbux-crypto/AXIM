@@ -422,6 +422,41 @@ async def _test_trade_poll_loop():
         await asyncio.sleep(TEST_TRADE_POLL_INTERVAL_SECONDS)
 
 
+CONNECTION_TEST_POLL_INTERVAL_SECONDS = 3
+
+
+async def _connection_test_poll_loop():
+    """Broker Accounts page's "Test Connection" button (distinct from
+    both "Connect" - the full login flow - and "Run a Test Trade" -
+    which places a real Demo trade) - verifies a broker account's
+    already-established connection is genuinely still responsive by
+    reading its real balance, through the SAME per-account browser
+    context core/broker_account_manager.py already owns. Never routes
+    anything through a coordinator, never submits an order - "connection
+    verification that does not submit an order" is the whole point.
+    Keyed by broker_account_id (unlike the singleton pending_test_trade),
+    so more than one account can have a test in flight at once."""
+    while True:
+        try:
+            for pending in database.list_pending_connection_tests():
+                account_id = pending["broker_account_id"]
+                try:
+                    entry = await broker_account_manager.get_or_build_account_context(account_id)
+                    page = await entry["warmup"].get_page()
+                    balance = await pocket_dom.read_balance(page)
+                    if balance is not None:
+                        database.complete_connection_test(account_id, {"balance": balance})
+                    else:
+                        database.fail_connection_test(account_id, "connected, but could not read a balance from the page")
+                except broker_account_manager.AccountUnavailable as e:
+                    database.fail_connection_test(account_id, e.reason)
+                except Exception as e:
+                    database.fail_connection_test(account_id, str(e))
+        except Exception as e:
+            logger.error("telegram_listener: connection test poll failed: %s", e)
+        await asyncio.sleep(CONNECTION_TEST_POLL_INTERVAL_SECONDS)
+
+
 BOT_TRIGGER_SUPERVISOR_INTERVAL_SECONDS = 3
 
 
@@ -475,6 +510,7 @@ async def _startup():
     asyncio.create_task(_heartbeat_loop())
     asyncio.create_task(_maintenance_loop())
     asyncio.create_task(_test_trade_poll_loop())
+    asyncio.create_task(_connection_test_poll_loop())
     asyncio.create_task(_bot_trigger_supervisor_loop())
 
 

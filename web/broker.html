@@ -282,11 +282,42 @@ async function refreshAccounts() {
         ${a.connection_status === "connected"
           ? `<button class="subtle" onclick="disconnectAccount(${a.id})">Disconnect</button>`
           : `<button class="subtle" onclick="connectAccount(${a.id})" ${a.connection_status === "connecting" ? "disabled" : ""}>${a.connection_status === "connecting" ? "Connecting..." : "Connect"}</button>`}
+        ${a.connection_status === "connected"
+          ? `<button class="subtle" id="test-conn-btn-${a.id}" onclick="testConnection(${a.id})">Test Connection</button>`
+          : ""}
         <button class="subtle" onclick="openEditAccountModal(${a.id})">Edit</button>
         <button class="subtle" onclick="archiveAccount(${a.id})">Archive</button>
       </td>
     </tr>
   `).join("");
+}
+
+async function testConnection(id) {
+  const btn = document.getElementById(`test-conn-btn-${id}`);
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Testing...";
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}/test-connection`, { method: "POST" });
+    for (let i = 0; i < 20; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const status = await fetchJSON(`/api/broker-accounts/${id}/test-connection`);
+      if (status.status === "completed") {
+        alert(`Connection healthy - balance: $${status.result.balance}`);
+        return;
+      }
+      if (status.status === "error") {
+        alert(`Connection test failed: ${status.result.error}`);
+        return;
+      }
+    }
+    alert("Timed out waiting for a result.");
+  } catch (e) {
+    alert("Failed: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
 }
 
 function openEditAccountModal(id) {

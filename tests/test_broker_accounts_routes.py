@@ -54,5 +54,58 @@ class WithFundsActiveSessionTestCase(unittest.TestCase):
         self.assertEqual(result["funds"], [])
 
 
+class TestConnectionRouteTestCase(unittest.TestCase):
+    """Distinct from both /connect (the full login flow) and the Broker
+    page's Test Trade (places a real Demo trade) - verifies an already-
+    connected account's session is genuinely still responsive without
+    ever submitting an order. Actual verification happens in
+    core/telegram_listener.py's poll loop (a separate process); this
+    covers the API layer's request/status surface."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.account_id = database.create_broker_account("Test Account", mode="demo")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_disconnected_account_is_rejected_with_a_clear_reason(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            routes.test_broker_account_connection(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("not connected", ctx.exception.detail)
+
+    def test_connected_account_can_be_tested_and_polled(self):
+        database.update_broker_account(self.account_id, connection_status="connected")
+        result = routes.test_broker_account_connection(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(result["status"], "pending")
+
+        status = routes.get_broker_account_connection_test(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(status["status"], "pending")
+
+        database.complete_connection_test(self.account_id, {"balance": 500.0})
+        status = routes.get_broker_account_connection_test(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["result"]["balance"], 500.0)
+
+    def test_cannot_start_a_second_test_while_one_is_already_pending(self):
+        from fastapi import HTTPException
+        database.update_broker_account(self.account_id, connection_status="connected")
+        routes.test_broker_account_connection(self.account_id, user=_FAKE_ADMIN)
+        with self.assertRaises(HTTPException) as ctx:
+            routes.test_broker_account_connection(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(ctx.exception.status_code, 409)
+
+    def test_no_test_ever_requested_reports_status_none(self):
+        database.update_broker_account(self.account_id, connection_status="connected")
+        status = routes.get_broker_account_connection_test(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(status["status"], "none")
+
+
 if __name__ == "__main__":
     unittest.main()
