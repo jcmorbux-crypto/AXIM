@@ -160,5 +160,77 @@ class AnalyzeProviderTests(unittest.TestCase):
         self.assertIsNone(learner.analyze_provider(messages))
 
 
+class TylerVipFlowTests(unittest.TestCase):
+    """TYLER VIP CLUB's real vocabulary ("BUY/SELL NOW X (OTC)" signals,
+    "WIN"/"Bad luck" results - neither generic result word) ported from
+    the OPT SIGNALS research branch's hand-built adapter, which was
+    grounded in an exhaustive read of that provider's real message dump.
+    Verified live against the real channel's actual current history
+    (20.94% coverage, 338 signal records, 323 decided results,
+    end-to-end through core/provider_onboarding.py) before adding this
+    offline regression coverage."""
+
+    def test_buy_now_signal_is_parsed(self):
+        parsed = learner._tyler_parse_signal("BUY NOW EUR/USD (OTC)")
+        self.assertEqual(parsed["direction"], "BUY")
+        self.assertEqual(parsed["asset"], "EUR/USD")
+        self.assertEqual(parsed["expiry"], "2 Minutes")
+
+    def test_sell_now_signal_is_parsed(self):
+        parsed = learner._tyler_parse_signal("SELL NOW GBP/JPY (OTC)")
+        self.assertEqual(parsed["direction"], "SELL")
+        self.assertEqual(parsed["asset"], "GBP/JPY")
+
+    def test_crypto_asset_name_is_trusted_verbatim(self):
+        # Not a currency pair - _resolve_pair won't match it, so the raw
+        # source text is trusted as-is (matches the ported adapter's own
+        # documented behavior for non-forex assets).
+        parsed = learner._tyler_parse_signal("BUY NOW Bitcoin (OTC)")
+        self.assertEqual(parsed["asset"], "Bitcoin")
+
+    def test_bad_luck_is_a_loss_not_recognized_by_the_generic_classifier(self):
+        # The whole reason this needs its own named pattern: "Bad luck"
+        # contains none of _classify_result_token's generic loss words.
+        self.assertIsNone(learner._classify_result_token("Bad luck"))
+        self.assertTrue(learner._tyler_is_loss("Bad luck"))
+
+    def test_plain_win_is_a_win(self):
+        self.assertTrue(learner._tyler_is_win("WIN"))
+        self.assertTrue(learner._tyler_is_win("WIN\nDouble profit!"))
+
+    def test_recovery_instruction_lines_are_neither_signal_nor_result(self):
+        self.assertIsNone(learner._tyler_parse_signal("Raise your stake x2.2"))
+        self.assertFalse(learner._tyler_is_win("Go back to the initial trade size"))
+        self.assertFalse(learner._tyler_is_loss("Go back to the initial trade size"))
+
+    def test_detect_pattern_identifies_a_tyler_like_batch(self):
+        messages = _messages(
+            (1, "Next pair: EUR/USD (OTC)\nTrade time: 2⃣"),
+            (2, "BUY NOW EUR/USD (OTC)"), (3, "WIN"),
+            (4, "SELL NOW GBP/JPY (OTC)"), (5, "Bad luck"),
+            (6, "Raise your stake x2"),
+            (7, "BUY NOW AUD/CAD (OTC)"), (8, "WIN\nDouble profit!"),
+        )
+        detection = learner.detect_pattern(messages)
+        self.assertIsNotNone(detection)
+        self.assertEqual(detection["pattern"], "tyler_vip_flow")
+        # None of the generic reusable templates should fire on this
+        # provider-specific vocabulary - confirms adding this named
+        # pattern carries no regression risk for the others.
+        for name, score in detection["all_scores"].items():
+            if name != "tyler_vip_flow":
+                self.assertEqual(score, 0.0, f"{name} unexpectedly matched Tyler-style text")
+
+    def test_parse_with_pattern_end_to_end(self):
+        messages = _messages(
+            (1, "BUY NOW EUR/USD (OTC)"), (2, "WIN"),
+            (3, "SELL NOW GBP/JPY (OTC)"), (4, "Bad luck"),
+        )
+        signals, links = learner.parse_with_pattern("tyler_vip_flow", messages)
+        self.assertEqual(len(signals), 2)
+        results = [l["result"] for l in links]
+        self.assertEqual(results, ["win", "loss"])
+
+
 if __name__ == "__main__":
     unittest.main()

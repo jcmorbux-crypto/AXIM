@@ -129,6 +129,101 @@ def _direction_from_word(word):
     return None
 
 
+# ---------------------------------------------------------------------
+# TYLER VIP CLUB named pattern - ported from the OPT SIGNALS research
+# branch's hand-built adapter (research/parser/adapters/tyler_vip_club.py),
+# which was grounded in an exhaustive read of that provider's full 2906-
+# message dump, not guessed. That provider's real vocabulary ("BUY/SELL
+# NOW X (OTC)" signals, "WIN"/"Bad luck" results, "Raise your stake"/"Go
+# back to the initial trade size" recovery instructions) doesn't fit any
+# of the generic templates above - "Bad luck" in particular isn't in
+# _classify_result_token's generic loss vocabulary at all. Unlike the
+# generic templates (reusable shapes seen across multiple providers),
+# this one is intentionally provider-specific: its coverage on OTHER
+# providers' real corpora should stay near zero (this exact phrasing
+# doesn't appear elsewhere), so adding it here is safe alongside the
+# existing templates, not a source of regression risk for them.
+# ---------------------------------------------------------------------
+
+_TYLER_SIGNAL_RE = re.compile(r"\b(BUY|SELL)\s+NOW\b.*?([A-Za-z][A-Za-z0-9 /]*?)\s*\(OTC\)", re.IGNORECASE)
+_TYLER_RAISE_STAKE_RE = re.compile(r"Raise your stake", re.IGNORECASE)
+_TYLER_RESET_STAKE_RE = re.compile(r"Go back to the initial trade size", re.IGNORECASE)
+# Every "Trade time:" line in the full research dump used this exact
+# duration (confirmed by exhaustive correlation, not decoded from the
+# obscured keycap-emoji glyphs themselves - see the ported adapter's own
+# docstring for the full reasoning). Fixed here on that same basis.
+_TYLER_FIXED_EXPIRY = "2 Minutes"
+
+
+def _tyler_is_win(norm_text):
+    first_line = norm_text.strip().split("\n", 1)[0].strip().upper()
+    return first_line in ("WIN", "✅ WIN")
+
+
+def _tyler_is_loss(norm_text):
+    first_line = norm_text.strip().split("\n", 1)[0].strip().upper()
+    return "BAD LUCK" in first_line
+
+
+def _tyler_parse_signal(text):
+    m = _TYLER_SIGNAL_RE.search(text)
+    if m is None:
+        return None
+    direction = _direction_from_word(m.group(1))
+    raw_asset = m.group(2).strip()
+    pair = _resolve_pair(raw_asset)
+    asset = pair or raw_asset  # trust the source verbatim for crypto/other non-forex names
+    return {"asset": asset, "direction": direction, "expiry": _TYLER_FIXED_EXPIRY}
+
+
+def _score_tyler_vip_flow(messages):
+    total = sum(1 for m in messages if _normalize(m.get("text")))
+    if not total:
+        return 0.0
+    hits = sum(1 for m in messages if _tyler_parse_signal(_normalize(m.get("text"))))
+    return hits / total
+
+
+def _parse_tyler_vip_flow(messages):
+    signal_records = []
+    result_links = []
+    pending = None  # (message_id, record)
+
+    for m in messages:
+        text = _normalize(m.get("text"))
+        if not text:
+            continue
+
+        if _TYLER_RAISE_STAKE_RE.search(text) or _TYLER_RESET_STAKE_RE.search(text):
+            continue  # recovery-instruction lines - not a signal, not a result
+
+        if _tyler_is_win(text) or _tyler_is_loss(text):
+            result = "win" if _tyler_is_win(text) else "loss"
+            if pending is not None:
+                result_links.append({
+                    "signal_message_id": pending[0], "result_message_id": m["message_id"], "result": result,
+                })
+                pending = None
+            continue
+
+        parsed = _tyler_parse_signal(text)
+        if parsed is None:
+            continue  # promo/testimonial/schedule/prep text - not forced into a fake record
+
+        if pending is not None:
+            result_links.append({"signal_message_id": pending[0], "result_message_id": None, "result": "unresolved"})
+        record = {
+            "source_message_id": m["message_id"], "normalized_asset": parsed["asset"],
+            "direction": parsed["direction"], "expiry": parsed["expiry"], "confidence": 0.7,
+        }
+        signal_records.append(record)
+        pending = (m["message_id"], record)
+
+    if pending is not None:
+        result_links.append({"signal_message_id": pending[0], "result_message_id": None, "result": "unresolved"})
+    return signal_records, result_links
+
+
 def _try_compact_buysell(line):
     m = _COMPACT_BUYSELL_RE.match(line.strip())
     if not m:
@@ -254,6 +349,7 @@ def detect_pattern(messages):
         coverage = _score_single_message_template(fn, messages, use_whole_text=use_whole)
         candidates.append((name, coverage))
     candidates.append(("two_step_asset_then_direction", _score_two_step_pattern(messages)))
+    candidates.append(("tyler_vip_flow", _score_tyler_vip_flow(messages)))
 
     best_name, best_coverage = max(candidates, key=lambda c: c[1])
     if best_coverage < MIN_VIABLE_COVERAGE:
@@ -273,6 +369,8 @@ def parse_with_pattern(pattern_name, messages):
     own calibration)."""
     if pattern_name == "two_step_asset_then_direction":
         return _parse_two_step(messages)
+    if pattern_name == "tyler_vip_flow":
+        return _parse_tyler_vip_flow(messages)
     fn = dict(_SINGLE_MESSAGE_TEMPLATES)[pattern_name]
     use_whole = (pattern_name == "labeled_block")
     return _parse_single_message(fn, messages, use_whole_text=use_whole, confidence=0.75)
