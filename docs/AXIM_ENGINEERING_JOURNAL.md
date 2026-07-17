@@ -932,3 +932,50 @@ login - screenshots reviewed, no overflow, no wrapping.
 Full suite: 967 tests, OK (frontend-only, no regression expected or found).
 
 ---
+
+## 2026-07-17 (continued) — Smart Channel Search replaces static dropdowns
+
+Third and last of tonight's "additional UI corrections." Every static `<select>` for
+picking a channel/provider ("Apply a channel...", "Select a channel...") is replaced
+by one reusable, ranked, status-aware search component.
+
+- `core/database.py`'s new `search_channels(query, limit, include_historical_sources)`
+  ranks by title/username/chat_id (exact > starts-with > contains > subsequence-match
+  for typo tolerance - verified live: "tylr vip" still finds "Tyler VIP Club" against
+  real production data), tags each result `available`/`needs_setup`/`connected`
+  (connected requires a real `capital_recommendations` row, not just being added).
+  `include_historical_sources` also covers Strategy Lab's research-imported static
+  providers - a genuinely broader domain than real synced channels that a channel-only
+  search would have silently dropped.
+- `web/smart_channel_search.js`: one mountable component
+  (`SmartChannelSearch.mount(containerId, options)`), entirely backend-driven (never
+  relies on whatever loaded when the page opened). Recently-used tracked client-side
+  via localStorage, scoped per integration point.
+- Replaced all 4 concrete static dropdowns found: Signal Inspection's channel picker,
+  Parsing Rules' "Apply to channel", Strategy Lab's backtest provider filter, and its
+  historical-import channel picker.
+- Copy cleanup: "Apply to channel" -> "Select a Telegram channel", plus direct
+  placeholders throughout.
+
+**Deliberately not retrofitted**: Provider onboarding already has its own good "click a
+channel card in My Sources" flow (tonight's earlier Provider Onboarding Wizard) - left
+as-is rather than force a different, already-verified UI into this component just for
+uniformity. Fund creation / Provider assignment have no existing channel selector to
+replace at all - adding one would be new scope, named honestly as a follow-up rather
+than forced in.
+
+13 new backend tests. **Verified live** in an isolated Playwright preview (DB copy,
+never touching production): partial-name search, username search, keyboard selection
+(ArrowDown+Enter), empty state, Escape-to-close, both Strategy Lab integrations, on
+both desktop (1400px) and mobile (390px). One real timing-artifact false alarm during
+verification (a 1.5s wait was too short for the preview server's cold-start latency,
+making the backtest filter APPEAR unmounted) - confirmed with a longer wait and a
+direct manual re-invocation that the code was correct all along, not a real bug; not
+present in production, which has been warm and running for hours. Full suite:
+980 tests, OK. API restarted to deploy; confirmed root/search-endpoint/inspector page
+all responding correctly post-restart.
+
+This closes out all three "additional UI corrections" (dark mode removal, branding,
+Smart Channel Search) required before V1 sign-off.
+
+---
