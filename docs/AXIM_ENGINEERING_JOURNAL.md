@@ -455,3 +455,53 @@ math (worked examples, growth timelines, recovery-ladder steps) nor
 - Full suite: 922 tests, OK.
 
 ---
+
+## 2026-07-16 (continued) — Phase 2 Priority #7: commercial SaaS readiness assessment
+
+This task is explicitly an assessment, not a build ticket, so it's reported as one.
+Audited what already exists vs. what's genuinely missing, and *why* the missing
+pieces aren't something to build blind under full autonomy:
+
+**Already commercial-grade, confirmed by reading the actual code (not assumed):**
+- **Onboarding**: `web/wizard.html` is a full 8-step first-run flow (Owner Account,
+  Telegram, Pocket Option, Risk Profile, Channels, Session, Demo Test, Ready) - not a
+  stub, a real guided setup.
+- **Pricing/plan display**: `web/billing.html` + `core/billing.py`'s `PRICING_PLANS`
+  render a real plan-comparison page (Free/Trial/Basic/Professional/Elite/Enterprise),
+  correctly showing an honest "not connected to a live payment provider yet" banner
+  rather than a fake "Subscribe" button that would silently do nothing.
+- **Billing scaffold**: Stripe Checkout session creation + webhook handling
+  (`core/billing.py`) is fully written and tested (`tests/test_billing.py`), gated
+  behind `is_configured()` - it goes live the moment real `STRIPE_SECRET_KEY`/
+  `STRIPE_WEBHOOK_SECRET` values are added to `.env`. Nothing left to build here
+  without those credentials, which only the user can supply (an explicit stop
+  condition, not a gap in the code).
+
+**Genuinely missing - and deliberately not built without a product-direction call:**
+- **Referral system**: does not exist anywhere in the codebase. Investigated whether
+  it's safe to add unilaterally and concluded it isn't yet, for an architectural
+  reason, not a laziness one: `core/database.py` has no tenant/organization concept
+  at all - every account creation goes through `api/admin.py`'s admin-only
+  `create_user`, and the standing product default ([[project-axim-default-assumptions]])
+  is Tailscale-only private access with "no public ports/IP/domain by default." A
+  referral system implies either (a) public self-serve signup, which contradicts that
+  standing default and would itself require a DNS/hosting decision (an explicit stop
+  condition), or (b) some other shape nobody has defined yet. Building a speculative
+  multi-tenant referral/signup architecture on a guess would risk real wasted work if
+  the actual commercial model turns out to be "each customer runs their own private
+  install" rather than a shared hosted product - this is category-4 territory
+  ("changes the core product vision"), not a routine engineering decision.
+- **Public self-serve signup**: same reasoning - blocked by the standing private-network
+  default, not by missing code.
+
+**Verdict**: Phase 2's roadmap items #1 through #6 (Provider Intelligence Engine
+through Money Management Studio) are complete and tested. Item #7's buildable,
+credential-free pieces (onboarding, pricing display) were already done. What remains
+undone is either blocked on user-supplied credentials or is a product-direction
+decision worth a real conversation, not a guess - flagged here rather than silently
+built or silently skipped.
+
+Production check after today's changes: API root (`http://127.0.0.1:8090/`) returns
+200, full test suite green (922 tests). Nothing regressed.
+
+---
