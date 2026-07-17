@@ -308,11 +308,6 @@ def risk_page():
     return _serve("risk.html")
 
 
-@app.get("/capital-strategies")
-def capital_strategies_page():
-    return _serve("capital_strategies.html")
-
-
 @app.get("/trades")
 def trades_page():
     return _serve("trades.html")
