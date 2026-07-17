@@ -756,3 +756,66 @@ selector, preview/validate/correct step before committing an import) - the singl
 biggest gap, tracked as task #26, next up.
 
 ---
+
+## 2026-07-17 — Provider Onboarding Wizard: history window + preview/correct
+
+Replaced the old single "Analyze This Provider" black-box button (fetch + detect +
+import + backtest + recommend, all atomic, no way to review anything first) with a
+real preview-then-commit workflow.
+
+- `core/telegram_channels.fetch_channel_raw_history` gained an optional `days` param
+  (7/14/30/60/90, default 30) - an early break once a Telethon message (iterated
+  newest-first) is older than the cutoff, still capped by the existing message-count
+  limit either way.
+- `core/provider_onboarding.preview_provider(chat_id, days)` runs the exact same
+  fetch+detect pipeline `analyze_and_onboard_provider` does, but returns a sample of up
+  to 30 parsed signal/result pairs (original message text, parsed asset/direction/
+  expiry, confidence, warnings) WITHOUT writing anything to the database.
+  `analyze_and_onboard_provider` gained `excluded_message_ids` - signals a reviewer
+  unchecks in the preview are dropped from the committed import.
+- New `POST /api/provider-onboarding/preview` route; `.../analyze` extended with
+  `days` + `excluded_message_ids`.
+- `web/telegram.html`'s "Analyze This Provider" button now opens a real wizard modal:
+  history-window selector -> Preview (sample table, per-row exclude checkboxes,
+  confidence, warnings) -> Import, Backtest & Recommend. Steps 5-7 of the spec
+  (backtest/compare/recommend/create-fund) already existed via Strategy Lab's Provider
+  Recommendations tab - reused, not rebuilt.
+
+**Honest scope note, stated directly rather than glossed over**: this excludes bad
+matches from the commit; it does NOT yet let a reviewer correct a wrong asset/
+direction and have AXIM re-learn the provider's pattern from that correction. A
+genuinely editable, database-stored parsing-rule system (the wizard spec's "hybrid"
+ask: universal parser + database-driven provider rules + configurable pattern
+definitions) is real, separate follow-up work - not built tonight, not claimed as
+built. The pattern library remains code-based templates in
+`core/provider_language_learner.py`.
+
+14 new tests. Full suite: 955 tests, OK. **Verified live against real data** before
+committing: `preview_provider` against TYLER VIP CLUB's real channel (2000 messages,
+`tyler_vip_flow` pattern, 30 sample trades, 323 total decided trades) - confirmed
+`imported_signals` count identical before and after (323/323, preview genuinely writes
+nothing). Separately confirmed the `days` cutoff itself actually filters: a 30-day
+window hit the 2000-message cap on this high-volume channel (oldest message 21 days
+back), while a 1-day window correctly returned only 103 messages, all from the last
+24 hours - proving the cutoff logic works, not just passed through inertly.
+
+Restarted the `AXIM API` scheduled task to deploy (Python route/engine changes).
+Confirmed post-restart: root page 200, `/telegram` 200, new preview endpoint 401
+(exists, requires auth). Noticed the Telegram listener had also restarted cleanly
+around the same time (new PID, clean startup log, no errors) - unrelated to this
+work, not a crash.
+
+This closes out the corrected V1-completion mission's 4 tracked tasks (#23-26).
+Remaining, assessed honestly: (1) a handful of smaller Broker Accounts spec items not
+yet built (a distinct "Test Connection" action separate from "Connect", explicit
+per-account rate/session limits, a per-account Emergency Stop distinct from the
+existing global one) - real gaps, smaller in scope than what's been closed tonight;
+(2) "Real-Time Forward Analysis" (compare recent vs. historical performance, flag
+format/confidence changes, recalculate on a schedule) is already substantially covered
+by tonight's earlier Priority #4 work (`core/provider_reanalysis.py` + the nightly
+scheduled task), not something built fresh under this directive - worth confirming
+explicitly against the directive's exact wording rather than assuming full overlap;
+(3) the database-driven editable parsing-profile architecture (Step 3 of the wizard
+spec) remains a genuinely separate, larger initiative.
+
+---
