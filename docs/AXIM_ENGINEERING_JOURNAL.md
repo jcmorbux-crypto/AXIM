@@ -853,3 +853,49 @@ nothing touched in production. The table-overflow fix (HTML/CSS only) is already
 in production since static files serve directly from disk.
 
 ---
+
+## 2026-07-17 (continued) — Test Connection: a distinct no-order health check
+
+Per direct request after the V1-completion report: built the "Test Connection"
+action the report had flagged as a known gap. The directive requires it twice -
+Broker Accounts' required action list, and Live Account Safety's explicit
+"connection verification that does not submit an order."
+
+Before this, only two options existed: `/connect` (the full login flow - a real
+browser window for a human to sign in through) and the Broker page's "Run a Test
+Trade" (places a real Demo trade). Neither is "verify an already-connected account is
+still healthy, without placing anything."
+
+- New `pending_connection_test` table - deliberately separate from the existing
+  singleton `pending_test_trade` (which places a real trade and only supports one
+  request app-wide): keyed by `broker_account_id`, so multiple accounts can each have
+  their own test in flight at once.
+- `core/telegram_listener.py`'s new `_connection_test_poll_loop` (same cross-process
+  request/poll pattern the Test Trade feature already established, since the API
+  process never touches a browser directly) only ever reads that account's real
+  balance through its already-owned browser context
+  (`core/broker_account_manager.py`) - never routes anything through a coordinator,
+  never submits an order.
+- `POST /{account_id}/test-connection` rejects an account that isn't already
+  `connection_status=connected` - this verifies an established session, it isn't a
+  substitute for `/connect`. `GET .../test-connection` polls for the result.
+- `web/broker.html`: a "Test Connection" button appears only on already-connected
+  accounts, polls every 2s for up to 40s, reports the real balance or a clear error.
+
+**Verified live** in a fresh isolated Playwright preview (new DB copy, never touching
+production) before committing: the button rendered for exactly the 1 connected
+account and was correctly absent for the disconnected one; clicking it fired a real
+POST (200) and the polling GETs also returned 200, confirming the request/poll cycle
+works end-to-end at the API level. 12 new tests (8 DB-layer, 4 route-layer). Full
+suite: 967 tests, OK.
+
+Restarted BOTH the `AXIM API` and `AXIM Listener` scheduled tasks to deploy (this is
+the first change tonight touching `telegram_listener.py` itself, not just the API
+process). Hit the same documented `Stop-ScheduledTask` gap as before - the API died
+cleanly, but the listener needed a direct `Stop-Process -Force` (confirmed via PID
+before/after). `scripts/cleanup_axim_chrome.ps1` found no orphaned AXIM-profile Chrome
+processes to clean up. Fresh start confirmed clean (`recovery: no pending trades to
+resume`, 6 workers built), and the new `pending_connection_test` table confirmed
+present in the real production database via direct query.
+
+---
