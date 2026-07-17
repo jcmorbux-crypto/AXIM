@@ -122,6 +122,52 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="onboard-wizard-modal">
+  <div class="modal" style="width:760px; max-width:95vw;">
+    <h2 style="margin-top:0;" id="wizard-title">Add Signal Provider</h2>
+    <div class="muted" style="font-size:12.5px; margin-bottom:14px;">Step 1: choose how much history to analyze. Step 2: review exactly what AXIM parsed before anything is imported. Step 3: backtest and create a Fund.</div>
+
+    <div class="row" style="align-items:flex-end; margin-bottom:14px;">
+      <div class="field" style="margin:0;">
+        <label>History window</label>
+        <select id="wizard-days">
+          <option value="7">Last 7 days</option>
+          <option value="14">Last 14 days</option>
+          <option value="30" selected>Last 30 days</option>
+          <option value="60">Last 60 days</option>
+          <option value="90">Last 90 days</option>
+        </select>
+      </div>
+      <button class="primary" onclick="wizardRunPreview()" id="wizard-preview-btn">Preview</button>
+      <span id="wizard-preview-status" class="muted"></span>
+    </div>
+
+    <div id="wizard-preview-results" style="display:none;">
+      <div class="card solid" style="margin-bottom:14px;">
+        <div class="stat-row"><span class="stat-label">Messages scanned</span><span class="stat-value" id="wizard-message-count">-</span></div>
+        <div class="stat-row"><span class="stat-label">Signal pattern detected</span><span class="stat-value" id="wizard-pattern">-</span></div>
+        <div class="stat-row"><span class="stat-label">Detection coverage</span><span class="stat-value" id="wizard-coverage">-</span></div>
+        <div class="stat-row"><span class="stat-label">Decided trades found</span><span class="stat-value" id="wizard-trade-count">-</span></div>
+      </div>
+      <div class="muted" style="font-size:12px; margin-bottom:8px;">Uncheck any row below that looks wrong - it will be excluded from the import. Showing up to 30 sample trades.</div>
+      <div style="max-height:340px; overflow-y:auto; border:1px solid var(--border); border-radius:var(--radius-sm);">
+        <table style="font-size:12px;">
+          <thead><tr><th style="width:28px;"></th><th>Original message</th><th>Parsed</th><th>Result</th><th>Confidence</th></tr></thead>
+          <tbody id="wizard-sample-body"></tbody>
+        </table>
+      </div>
+      <div class="row" style="justify-content:flex-end; margin-top:14px;">
+        <button class="primary" onclick="wizardCommit()" id="wizard-commit-btn">Import, Backtest &amp; Recommend</button>
+      </div>
+      <div id="wizard-commit-status" class="muted" style="margin-top:8px;"></div>
+    </div>
+
+    <div class="row" style="justify-content:flex-end; margin-top:14px;">
+      <button class="subtle" onclick="closeModal('onboard-wizard-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <script src="/web/theme.js"></script>
 <script src="/web/shell.js"></script>
 <script>
@@ -292,8 +338,7 @@ function renderMySources() {
           ${c.source_type === "bot_command" ? botFields(c) : ""}
           <div class="muted" style="font-size:12px; margin-top:8px;">Last signal: ${fmtTime(c.last_signal_at)}</div>
           <button class="subtle" onclick="event.stopPropagation(); openMessages(${c.id})">View recent messages</button>
-          <button class="subtle" onclick="event.stopPropagation(); analyzeProvider(${c.id}, '${escapeHtml(c.chat_id)}', '${escapeHtml(c.title || "")}')">Analyze This Provider</button>
-          <span class="muted" id="analyze-status-${c.id}" style="font-size:11.5px; display:block; margin-top:4px;"></span>
+          <button class="subtle" onclick="event.stopPropagation(); openOnboardWizard(${c.id}, '${escapeHtml(c.chat_id)}', '${escapeHtml(c.title || "")}')">Analyze This Provider</button>
         </div>
       </div>
       <div class="stats">
@@ -444,25 +489,94 @@ async function loadPerformance(id) {
   }
 }
 
-async function analyzeProvider(channelId, chatId, title) {
-  const statusEl = document.getElementById(`analyze-status-${channelId}`);
-  statusEl.textContent = "Analyzing (this can take a minute - fetching history, detecting the signal format, backtesting)...";
+let wizardChatId = null;
+let wizardSourceLabel = null;
+let wizardSample = [];
+
+function openOnboardWizard(channelId, chatId, title) {
+  wizardChatId = parseInt(chatId, 10);
+  wizardSourceLabel = title || null;
+  wizardSample = [];
+  document.getElementById("wizard-title").textContent = `Add Signal Provider - ${title || chatId}`;
+  document.getElementById("wizard-days").value = "30";
+  document.getElementById("wizard-preview-status").textContent = "";
+  document.getElementById("wizard-commit-status").textContent = "";
+  document.getElementById("wizard-preview-results").style.display = "none";
+  openModal("onboard-wizard-modal");
+}
+
+function wizardStatusNote(result) {
+  if (result.status === "no_history") return "No message history found for this channel.";
+  if (result.status === "pattern_not_detected") return `Scanned ${result.message_count} messages - no common signal format recognized. ${result.note}`;
+  if (result.status === "no_decided_trades") return `Detected a ${result.pattern} pattern (${(result.coverage * 100).toFixed(0)}% coverage), but ${result.note}`;
+  return null;
+}
+
+async function wizardRunPreview() {
+  const statusEl = document.getElementById("wizard-preview-status");
+  const btn = document.getElementById("wizard-preview-btn");
+  const days = parseInt(document.getElementById("wizard-days").value, 10);
+  document.getElementById("wizard-preview-results").style.display = "none";
+  document.getElementById("wizard-commit-status").textContent = "";
+  statusEl.textContent = "Fetching history and detecting the signal format (this can take a minute)...";
+  btn.disabled = true;
+  try {
+    const result = await fetchJSON("/api/provider-onboarding/preview", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: wizardChatId, source_label: wizardSourceLabel, days }),
+    });
+    const note = wizardStatusNote(result);
+    if (note) {
+      statusEl.textContent = note;
+      return;
+    }
+    statusEl.textContent = "";
+    wizardSample = result.sample;
+    document.getElementById("wizard-message-count").textContent = result.message_count;
+    document.getElementById("wizard-pattern").textContent = result.pattern;
+    document.getElementById("wizard-coverage").textContent = (result.coverage * 100).toFixed(0) + "%";
+    document.getElementById("wizard-trade-count").textContent = result.total_decided_trades;
+    document.getElementById("wizard-sample-body").innerHTML = result.sample.map((s, i) => `
+      <tr>
+        <td><input type="checkbox" checked style="width:auto;" id="wizard-row-${i}" data-signal-id="${s.signal_message_id}"></td>
+        <td>
+          <div>${escapeHtml((s.raw_signal_text || "").slice(0, 120))}</div>
+          ${s.raw_result_text ? `<div class="muted" style="font-size:11px;">${escapeHtml(s.raw_result_text.slice(0, 60))}</div>` : ""}
+        </td>
+        <td>${escapeHtml(s.parsed_asset || "-")} ${escapeHtml(s.parsed_direction || "")} ${escapeHtml(s.parsed_expiry || "")}</td>
+        <td>${s.matched_result}</td>
+        <td>${s.confidence != null ? (s.confidence * 100).toFixed(0) + "%" : "-"}${s.warnings.length ? `<div class="muted" style="font-size:10.5px; color:var(--red);">${s.warnings.map(escapeHtml).join("; ")}</div>` : ""}</td>
+      </tr>
+    `).join("");
+    document.getElementById("wizard-preview-results").style.display = "block";
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function wizardCommit() {
+  const statusEl = document.getElementById("wizard-commit-status");
+  const btn = document.getElementById("wizard-commit-btn");
+  const days = parseInt(document.getElementById("wizard-days").value, 10);
+  const excluded = wizardSample
+    .map((s, i) => ({ id: s.signal_message_id, checked: document.getElementById(`wizard-row-${i}`).checked }))
+    .filter(r => !r.checked)
+    .map(r => r.id);
+  btn.disabled = true;
+  statusEl.textContent = "Importing, backtesting every official strategy, and generating a recommendation...";
   try {
     const result = await fetchJSON("/api/provider-onboarding/analyze", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: parseInt(chatId, 10), source_label: title || null }),
+      body: JSON.stringify({ chat_id: wizardChatId, source_label: wizardSourceLabel, days, excluded_message_ids: excluded }),
     });
-    if (result.status === "no_history") {
-      statusEl.textContent = "No message history found for this channel.";
-    } else if (result.status === "pattern_not_detected") {
-      statusEl.textContent = `Scanned ${result.message_count} messages - no common signal format recognized. ${result.note}`;
-    } else if (result.status === "no_decided_trades") {
-      statusEl.textContent = `Detected a ${result.pattern} pattern (${(result.coverage * 100).toFixed(0)}% coverage), but ${result.note}`;
-    } else {
-      statusEl.textContent = `Done: ${result.pattern} pattern, ${(result.coverage * 100).toFixed(0)}% coverage, ${result.imported_trades} trades imported and backtested. See Strategy Lab's Provider Recommendations tab for the full recommendation.`;
-    }
+    const note = wizardStatusNote(result);
+    statusEl.textContent = note || `Done: ${result.imported_trades} trades imported and backtested. See Strategy Lab's Provider Recommendations tab to compare strategies and create a Fund.`;
   } catch (e) {
     statusEl.textContent = "Failed: " + e.message;
+  } finally {
+    btn.disabled = false;
   }
 }
 

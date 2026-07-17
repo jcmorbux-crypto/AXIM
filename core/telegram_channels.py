@@ -16,7 +16,7 @@ pocket_executor, or risk_manager.
 """
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -158,7 +158,7 @@ async def fetch_channel_history(chat_id, limit=200, source_label=None):
     return rows, scanned
 
 
-async def fetch_channel_raw_history(chat_id, limit=1000, source_label=None):
+async def fetch_channel_raw_history(chat_id, limit=1000, source_label=None, days=None):
     """Same connection/credential handling as fetch_channel_history, but
     returns EVERY message's raw text unfiltered (not run through
     parsers.signal_parser.parse_signal first) - core/
@@ -169,8 +169,16 @@ async def fetch_channel_raw_history(chat_id, limit=1000, source_label=None):
     where messages is [{"message_id", "text", "date_utc"}, ...] in
     chronological order (oldest first - the shape the learner and
     backtest engine both expect, opposite of Telethon's own newest-first
-    iteration)."""
+    iteration).
+
+    days, if given (the Provider Onboarding Wizard's history-window
+    selector - 7/14/30/60/90, default 30), stops scanning once a message
+    is older than that many days back - Telethon iterates newest-first,
+    so this is a simple early break, not a second pass. Still capped by
+    limit/MAX_HISTORY_SCAN either way, whichever is hit first - a very
+    high-volume channel over 90 days shouldn't scan unboundedly."""
     limit = min(limit, MAX_HISTORY_SCAN)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)) if days else None
     api_id, api_hash, phone = _telegram_credentials()
     client = TelegramClient(UI_SESSION_NAME, api_id, api_hash)
     await client.start(phone=phone)
@@ -179,15 +187,18 @@ async def fetch_channel_raw_history(chat_id, limit=1000, source_label=None):
         entity = await client.get_entity(chat_id)
         title = source_label or getattr(entity, "title", None) or getattr(entity, "username", None) or str(chat_id)
         async for message in client.iter_messages(chat_id, limit=limit):
+            message_date = message.date or datetime.now(timezone.utc)
+            if cutoff is not None and message_date < cutoff:
+                break
             messages.append({
                 "message_id": message.id, "text": message.raw_text or "",
-                "date_utc": (message.date or datetime.now()).isoformat(),
+                "date_utc": message_date.isoformat(),
             })
     finally:
         await client.disconnect()
     messages.reverse()  # Telethon iterates newest-first; the learner/backtest engine expect oldest-first
     logger.info(
-        "telegram_channels: fetch_channel_raw_history chat_id=%s messages=%d", chat_id, len(messages),
+        "telegram_channels: fetch_channel_raw_history chat_id=%s messages=%d days=%s", chat_id, len(messages), days,
     )
     return messages, title
 

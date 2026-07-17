@@ -87,6 +87,74 @@ class ProviderOnboardingTestCase(unittest.TestCase):
         imported = database.list_imported_signals(import_batch="auto_onboard_123", graded_only=True, limit=100)
         self.assertEqual(len(imported), 3)
 
+    def test_excluding_a_signal_message_id_drops_it_from_the_committed_import(self):
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            # message_id 1 is the first signal (GBP/CAD) - excluding it should
+            # leave only the other 2 decided trades committed.
+            result = _run(provider_onboarding.analyze_and_onboard_provider(chat_id=123, excluded_message_ids={1}))
+        self.assertEqual(result["imported_trades"], 2)
+        imported = database.list_imported_signals(import_batch="auto_onboard_123", graded_only=True, limit=100)
+        self.assertEqual(len(imported), 2)
+        self.assertNotIn("GBP/CAD", [s["asset"] for s in imported])
+
+
+class PreviewProviderTestCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_preview_never_writes_to_the_database(self):
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            result = _run(provider_onboarding.preview_provider(chat_id=123))
+        self.assertEqual(result["status"], "complete")
+        self.assertEqual(result["sample_count"], 3)
+        self.assertEqual(result["total_decided_trades"], 3)
+        # No imported_signals, no backtest_run - this is a preview, not a commit.
+        imported = database.list_imported_signals(import_batch="auto_onboard_123", graded_only=True, limit=100)
+        self.assertEqual(len(imported), 0)
+
+    def test_preview_sample_includes_original_text_and_parsed_fields(self):
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            result = _run(provider_onboarding.preview_provider(chat_id=123))
+        first = result["sample"][0]
+        self.assertEqual(first["raw_signal_text"], "GBP/CAD HIGH ⬆️ 15 MIN")
+        self.assertEqual(first["raw_result_text"], "✅✅✅")
+        self.assertEqual(first["parsed_asset"], "GBP/CAD")
+        self.assertEqual(first["parsed_direction"], "BUY")
+        self.assertEqual(first["matched_result"], "win")
+        self.assertEqual(first["warnings"], [])
+
+    def test_preview_passes_through_the_days_window(self):
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            _run(provider_onboarding.preview_provider(chat_id=123, days=7))
+        fake_fetch.assert_awaited_once()
+        self.assertEqual(fake_fetch.call_args.kwargs.get("days"), 7)
+
+    def test_preview_no_history(self):
+        fake_fetch = AsyncMock(return_value=([], "Empty Channel"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            result = _run(provider_onboarding.preview_provider(chat_id=456))
+        self.assertEqual(result["status"], "no_history")
+
+    def test_preview_unrecognized_format(self):
+        messages = [
+            {"message_id": 1, "text": "Welcome to our channel!", "date_utc": "2026-01-01T00:00:00"},
+        ]
+        fake_fetch = AsyncMock(return_value=(messages, "Chatty Channel"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            result = _run(provider_onboarding.preview_provider(chat_id=789))
+        self.assertEqual(result["status"], "pattern_not_detected")
+
 
 if __name__ == "__main__":
     unittest.main()
