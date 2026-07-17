@@ -56,12 +56,19 @@ const AximShell = (() => {
   // under "More" (progressive disclosure - matches the same grouping
   // already validated in the UI Vision branch). URLs deliberately
   // unchanged from before this reorg (only labels/grouping moved) so
-  // existing bookmarks/deep-links keep working. Capital Strategies,
-  // Trade History, and Billing aren't in the approved nav list at all
-  // (primary or "More") - kept reachable via a link from a related page
-  // (Money Management Studio, Performance, Settings respectively)
-  // instead of removed outright, per "do not remove existing working
-  // capabilities."
+  // existing bookmarks/deep-links keep working. Trade History and
+  // Billing aren't in the approved nav list at all (primary or "More") -
+  // reachable via a link from a related page instead (Performance links
+  // to /trades, Settings/Users link to /billing) per "do not remove
+  // existing working capabilities." (2026-07-16: the Performance ->
+  // Trade History link had never actually been added despite this
+  // comment's original intent - fixed. Capital Strategies is no longer
+  // part of this list at all: that whole page was a leftover ~20-strategy
+  // catalog from before the "4 official strategies" Money Management
+  // Studio redesign (2026-07-13 product-owner directive, commit 6e8866a)
+  // superseded and REPLACED it outright, not merely relocated it - so it
+  // was removed, along with its dead GET /capital-strategies route, not
+  // just unlinked.)
   const PRIMARY_NAV_ITEMS = [
     { key: "dashboard", label: "Home", href: "/dashboard", icon: ICONS.dashboard },
     { key: "sessions", label: "Sessions", href: "/sessions", icon: ICONS.sessions },
