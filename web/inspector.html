@@ -27,8 +27,8 @@
     <div class="grid">
       <div class="card">
         <h3>Load a recent message</h3>
-        <div class="field"><label>Channel</label>
-          <select id="channel-picker" onchange="loadChannelMessages()"><option value="">Select a channel...</option></select>
+        <div class="field"><label>Select a Telegram channel</label>
+          <div id="channel-search"></div>
         </div>
         <div id="recent-messages-list" class="muted">Pick a channel to see its recent messages.</div>
       </div>
@@ -66,8 +66,8 @@
     <div class="card full-width">
       <h3>Parsing Rules</h3>
       <div class="muted" style="margin-bottom:12px;">A rule is a find/replace applied to a channel's raw messages BEFORE the parser sees them - useful for channels with unusual label spelling.</div>
-      <div class="field"><label>Apply to channel</label>
-        <select id="rule-channel-picker" onchange="loadRules()"><option value="">Select a channel...</option></select>
+      <div class="field"><label>Select a Telegram channel</label>
+        <div id="rule-channel-search"></div>
       </div>
       <div class="row" style="margin-bottom:12px;">
         <input type="text" id="rule-find" placeholder="Find pattern (regex), e.g. Signal:\s*" style="width:260px;">
@@ -80,8 +80,8 @@
   </main>
 </div>
 <script src="/web/shell.js"></script>
+<script src="/web/smart_channel_search.js"></script>
 <script>
-let allChannels = [];
 let lastParsedInput = "";
 let lastParsedResult = null;
 
@@ -97,21 +97,20 @@ async function fetchJSON(url, opts) {
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
 
-async function loadChannelPickers() {
-  try {
-    allChannels = await fetchJSON("/api/channels");
-    const options = allChannels.map(c => `<option value="${c.id}">${escapeHtml(c.title || c.username || c.id)}</option>`).join("");
-    document.getElementById("channel-picker").innerHTML = '<option value="">Select a channel...</option>' + options;
-    document.getElementById("rule-channel-picker").innerHTML = '<option value="">Select a channel...</option>' + options;
-  } catch (e) {
-    const failed = `<option value="">Failed to load channels</option>`;
-    document.getElementById("channel-picker").innerHTML = failed;
-    document.getElementById("rule-channel-picker").innerHTML = failed;
-  }
+function initChannelSearches() {
+  SmartChannelSearch.mount("channel-search", {
+    placeholder: "Search for a signal provider...",
+    recentKey: "inspector-signals",
+    onSelect: (channel) => loadChannelMessages(channel.id),
+  });
+  SmartChannelSearch.mount("rule-channel-search", {
+    placeholder: "Search for a signal provider...",
+    recentKey: "inspector-rules",
+    onSelect: (channel) => loadRules(channel.id),
+  });
 }
 
-async function loadChannelMessages() {
-  const id = document.getElementById("channel-picker").value;
+async function loadChannelMessages(id) {
   const listEl = document.getElementById("recent-messages-list");
   if (!id) { listEl.innerHTML = "Pick a channel to see its recent messages."; return; }
   listEl.innerHTML = "Loading...";
@@ -174,8 +173,11 @@ async function approveDecision(approved) {
   // Signal Inspector's job of showing what the parser actually does.
 }
 
-async function loadRules() {
-  const id = document.getElementById("rule-channel-picker").value;
+let currentRuleChannelId = null;
+
+async function loadRules(id) {
+  if (id !== undefined) currentRuleChannelId = id;
+  id = currentRuleChannelId;
   const listEl = document.getElementById("rules-list");
   if (!id) { listEl.innerHTML = "Select a channel to see its saved rules."; return; }
   listEl.innerHTML = "Loading...";
@@ -200,8 +202,8 @@ async function loadRules() {
 }
 
 async function createRule() {
-  const id = document.getElementById("rule-channel-picker").value;
-  if (!id) { alert("Pick a channel first."); return; }
+  const id = currentRuleChannelId;
+  if (!id) { alert("Search for and select a channel first."); return; }
   const find = document.getElementById("rule-find").value;
   const replace = document.getElementById("rule-replace").value;
   const name = document.getElementById("rule-name").value;
@@ -244,7 +246,7 @@ async function deleteRule(ruleId) {
 (async () => {
   const user = await AximShell.init({ active: "inspector" });
   if (!user) return;
-  loadChannelPickers();
+  initChannelSearches();
 })();
 </script>
 </body>

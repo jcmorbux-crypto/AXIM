@@ -1839,6 +1839,121 @@ def list_channels():
     return [dict(row) for row in rows]
 
 
+def _channel_status(channel):
+    """Smart Channel Search's 3-way status: 'available' (visible via
+    Telegram sync, not yet added to My Sources), 'needs_setup' (added,
+    but never analyzed/onboarded - no capital_recommendations row for
+    it yet), or 'connected' (added AND has a real recommendation/parsing
+    profile on file). Matches by title against capital_recommendations.
+    source_label - the same loose text-key relationship the rest of the
+    Provider Intelligence Engine already uses (not a real foreign key),
+    so a title mismatch (e.g. an emoji-prefix difference) can under-
+    report 'connected' as 'needs_setup' - an honest limitation of the
+    existing data model, not new here."""
+    if not channel["enabled"]:
+        return "available"
+    if channel["title"] and get_capital_recommendation(channel["title"]):
+        return "connected"
+    return "needs_setup"
+
+
+_FUZZY_SUBSEQUENCE_CACHE_LIMIT = 64
+
+
+def _is_subsequence(query, text):
+    """True if every character of query appears in text in order (not
+    necessarily contiguous) - a lightweight tolerance for typos/word-
+    reordering without a full edit-distance implementation. "tylr vip"
+    matches "tyler vip club", "vipclub" matches "vip club", etc."""
+    it = iter(text)
+    return all(ch in it for ch in query)
+
+
+def _match_score(query, channel):
+    """Higher is more relevant; 0 means "doesn't match, exclude it".
+    Checked against title, username, and chat_id, each independently -
+    a channel's best-matching field wins. Deliberately simple, stated
+    tiers rather than a black-box similarity float, so search behavior
+    stays predictable and explainable."""
+    if not query:
+        return 1  # empty query matches everything, ranked purely by the caller's own ordering
+    q = query.strip().lower()
+    best = 0
+    for field in (channel.get("title"), channel.get("username"), channel.get("chat_id")):
+        if not field:
+            continue
+        text = str(field).strip().lower()
+        if text == q:
+            best = max(best, 100)
+        elif text.startswith(q):
+            best = max(best, 80)
+        elif q in text:
+            best = max(best, 60)
+        elif _is_subsequence(q, text):
+            best = max(best, 30)
+    return best
+
+
+@timed("database")
+def search_channels(query="", limit=20, include_historical_sources=False):
+    """Smart Channel Search's backend - ranks every synced channel
+    against query (title/username/chat_id, tolerant of partial words
+    and minor typos via subsequence matching - see _match_score) and
+    returns the top `limit`. An empty query returns the most relevant
+    DEFAULT ordering (enabled/connected first, then most recently
+    active) rather than every channel alphabetically, since that's what
+    a user sees before they've typed anything. Each result includes
+    `status` ('available'/'needs_setup'/'connected') so the UI can show
+    the right next action without a second round-trip.
+
+    include_historical_sources also searches list_historical_signal_sources()'s
+    distinct source labels (Strategy Lab's backtest filter spans a wider
+    domain than real synced channels - it includes the research-imported
+    static providers, e.g. OTC Pro Trading Robot, that have real
+    historical backtest data but were never a live Telegram dialog) -
+    each becomes a synthetic result (id=None, status="connected", since
+    real backtest data exists for it) unless a real channel with the
+    same title already covers it."""
+    def _recency_key(channel):
+        # Negated so ascending sort (alongside -score, which is also
+        # negated-to-ascend) still puts the MOST recent activity first -
+        # one consistent ascending sort, no mixed directions to juggle.
+        if not channel["last_signal_at"]:
+            return 0.0
+        try:
+            return -datetime.fromisoformat(channel["last_signal_at"]).timestamp()
+        except ValueError:
+            return 0.0
+
+    channels = list_channels()
+    scored = []
+    seen_titles = set()
+    for channel in channels:
+        score = _match_score(query, channel)
+        seen_titles.add((channel.get("title") or "").strip().lower())
+        if score <= 0:
+            continue
+        channel = dict(channel)
+        channel["status"] = _channel_status(channel)
+        scored.append((score, channel))
+
+    if include_historical_sources:
+        for label in list_historical_signal_sources():
+            if (label or "").strip().lower() in seen_titles:
+                continue  # already represented by a real synced channel
+            pseudo = {
+                "id": None, "chat_id": None, "title": label, "username": None,
+                "enabled": True, "last_signal_at": None, "status": "connected",
+            }
+            score = _match_score(query, pseudo)
+            if score > 0:
+                scored.append((score, pseudo))
+
+    scored.sort(key=lambda pair: (-pair[0], 0 if pair[1]["enabled"] else 1, _recency_key(pair[1])))
+    result = [c for _, c in scored][:limit]
+    return result
+
+
 @timed("database")
 def get_channel(channel_id):
     conn = get_connection()

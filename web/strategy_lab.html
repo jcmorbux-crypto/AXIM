@@ -109,8 +109,10 @@
                 <option value="imported">Imported only</option>
               </select>
             </div>
-            <div class="field" style="flex:1;"><label>Channel (optional)</label>
-              <select id="r-channel"><option value="">All channels</option></select>
+            <div class="field" style="flex:1;">
+              <label>Filter to one provider (optional)</label>
+              <div id="r-channel-search"></div>
+              <button type="button" class="subtle" id="r-channel-clear" style="margin-top:6px; display:none;" onclick="clearBacktestChannelFilter()">Clear (use all channels)</button>
             </div>
           </div>
           <div class="row">
@@ -254,8 +256,8 @@
         <div class="card solid">
           <h3>Import from Telegram History</h3>
           <div class="stat-caption" style="margin-bottom:10px;">Scans real past messages from a channel your account can already see and imports whatever parses as a signal. Results/payouts are never known from the message alone - grade imported signals manually afterward, same as a CSV row with no result column.</div>
-          <div class="field"><label>Channel</label>
-            <select id="tg-history-channel"><option value="">Loading channels...</option></select>
+          <div class="field"><label>Select a Telegram channel</label>
+            <div id="tg-history-channel-search"></div>
           </div>
           <div class="field"><label>Messages to scan (most recent first)</label>
             <input type="number" id="tg-history-limit" value="200" min="1" max="2000">
@@ -351,6 +353,7 @@
   </div>
 </div>
 <script src="/web/shell.js"></script>
+<script src="/web/smart_channel_search.js"></script>
 <script>
 let allProfiles = [];
 let currentRunId = null;
@@ -375,7 +378,7 @@ document.getElementById("tabs").addEventListener("click", (e) => {
   if (!e.target.dataset.tab) return;
   document.querySelectorAll(".tab-btn").forEach(b => b.classList.toggle("active", b === e.target));
   document.querySelectorAll(".tab-panel").forEach(p => p.classList.toggle("active", p.id === "tab-" + e.target.dataset.tab));
-  if (e.target.dataset.tab === "signals") { loadImportedSignals(); loadTelegramHistoryChannels(); }
+  if (e.target.dataset.tab === "signals") { loadImportedSignals(); initTelegramHistoryChannelSearch(); }
   if (e.target.dataset.tab === "history") loadRunsHistory();
   if (e.target.dataset.tab === "scorecard") loadScorecardSources();
   if (e.target.dataset.tab === "recommendations") loadRecommendations();
@@ -454,23 +457,36 @@ async function confirmCreateRecommendedFund() {
 
 // ---------- Setup ----------
 
+let selectedBacktestChannelTitle = null;
+let backtestChannelSearch = null;
+
 async function loadSetupData() {
   try {
-    const [profiles, sources] = await Promise.all([
-      fetchJSON("/api/risk-profiles"),
-      fetchJSON("/api/backtest/sources"),
-    ]);
+    const profiles = await fetchJSON("/api/risk-profiles");
     allProfiles = profiles;
 
     document.getElementById("strategy-checklist").innerHTML = profiles.map(p => `
       <label><input type="checkbox" value="${p.id}" ${p.is_template ? "" : "checked"}> ${escapeHtml(p.name)}${p.is_template ? " <span class=\"faint\">(template)</span>" : ""}</label>
     `).join("") || '<div class="empty">No risk profiles yet - create one in Money Management Studio first.</div>';
 
-    const channelSelect = document.getElementById("r-channel");
-    channelSelect.innerHTML = '<option value="">All channels</option>' + sources.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
+    backtestChannelSearch = SmartChannelSearch.mount("r-channel-search", {
+      placeholder: "Search connected Telegram sources...",
+      recentKey: "backtest-filter",
+      includeHistoricalSources: true,
+      onSelect: (channel) => {
+        selectedBacktestChannelTitle = channel.title;
+        document.getElementById("r-channel-clear").style.display = "inline-block";
+      },
+    });
   } catch (e) {
     document.getElementById("strategy-checklist").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+function clearBacktestChannelFilter() {
+  selectedBacktestChannelTitle = null;
+  document.getElementById("r-channel-clear").style.display = "none";
+  if (backtestChannelSearch) backtestChannelSearch.clear();
 }
 
 async function runBacktest() {
@@ -481,7 +497,7 @@ async function runBacktest() {
   const body = {
     name,
     source: document.getElementById("r-source").value,
-    channel_filter: document.getElementById("r-channel").value ? [document.getElementById("r-channel").value] : null,
+    channel_filter: selectedBacktestChannelTitle ? [selectedBacktestChannelTitle] : null,
     date_from: document.getElementById("r-date-from").value || null,
     date_to: document.getElementById("r-date-to").value || null,
     starting_bankroll: parseFloat(document.getElementById("r-bankroll").value) || 1000,
@@ -947,25 +963,19 @@ async function importSignalFile() {
   }
 }
 
-async function loadTelegramHistoryChannels() {
-  const select = document.getElementById("tg-history-channel");
-  try {
-    const channels = await fetchJSON("/api/channels");
-    if (!channels.length) {
-      select.innerHTML = '<option value="">No channels synced yet - visit Signal Sources first</option>';
-      return;
-    }
-    select.innerHTML = channels.map(c =>
-      `<option value="${c.chat_id}">${escapeHtml(c.title || c.username || c.chat_id)}</option>`
-    ).join("");
-  } catch (e) {
-    select.innerHTML = '<option value="">Failed to load channels</option>';
-  }
+let selectedHistoryChatId = null;
+
+function initTelegramHistoryChannelSearch() {
+  SmartChannelSearch.mount("tg-history-channel-search", {
+    placeholder: "Select a Telegram channel...",
+    recentKey: "historical-import",
+    onSelect: (channel) => { selectedHistoryChatId = channel.chat_id; },
+  });
 }
 
 async function importTelegramHistory() {
   const statusEl = document.getElementById("tg-history-status");
-  const chatId = document.getElementById("tg-history-channel").value;
+  const chatId = selectedHistoryChatId;
   const limit = parseInt(document.getElementById("tg-history-limit").value, 10) || 200;
   if (!chatId) { statusEl.textContent = "Choose a channel first."; return; }
   statusEl.textContent = "Scanning real message history - this can take a moment...";

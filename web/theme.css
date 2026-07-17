@@ -422,6 +422,55 @@ button.subtle:hover { background: var(--surface); color: var(--text); }
 .badge.gold { background: var(--gold-soft); color: var(--gold); }
 .badge.ai { background: var(--purple-soft); color: var(--purple); }
 
+/* ---- Smart Channel Search (web/smart_channel_search.js) - the one
+   reusable channel/provider picker shared across Signal Inspection,
+   Parsing Rules, Provider onboarding, historical import, backtesting,
+   Fund creation, and provider assignment, replacing every page's own
+   static <select>. ---- */
+
+.smart-channel-search { position: relative; width: 100%; }
+
+.scs-input {
+  width: 100%; padding: 9px 12px; font-size: 13.5px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--bg); color: var(--text);
+}
+.scs-input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+
+.scs-results {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 60;
+  background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lift);
+  max-height: 320px; overflow-y: auto;
+}
+
+.scs-section-label {
+  padding: 8px 12px 4px; font-size: 10.5px; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint);
+}
+
+.scs-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 12px; cursor: pointer; border-top: 1px solid var(--border);
+}
+.scs-item:first-child { border-top: none; }
+.scs-item:hover, .scs-item.active { background: var(--surface); }
+.scs-item-title { font-size: 13.5px; font-weight: 600; }
+.scs-item-meta { font-size: 11.5px; color: var(--text-dim); margin-top: 1px; }
+
+.scs-empty { padding: 16px 12px; font-size: 13px; color: var(--text-dim); text-align: center; }
+
+.scs-selected {
+  align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+.scs-selected .scs-item-main { flex: 1; min-width: 0; }
+
+@media (max-width: 900px) {
+  .scs-results { max-height: 60vh; }
+}
+
 /* ---- Motion: subtle, never gimmicky - a card lifting slightly on
    hover, a status dot breathing while something is genuinely live,
    numbers transitioning smoothly when they change. Every transition

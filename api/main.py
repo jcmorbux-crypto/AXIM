@@ -377,6 +377,18 @@ def list_channels(user=Depends(get_current_user)):
     return database.list_channels()
 
 
+@app.get("/api/channels/search")
+def search_channels(q: str = "", limit: int = 20, include_historical_sources: bool = False, user=Depends(get_current_user)):
+    """Smart Channel Search's backend (web/smart_channel_search.js) -
+    ranked, status-aware channel search shared across Signal Inspection,
+    Parsing Rules, Provider onboarding, historical import, backtesting,
+    and any other channel/provider picker, instead of each page loading
+    every channel into a static <select>. include_historical_sources
+    also covers Strategy Lab's research-imported static providers (real
+    backtest data, never a live Telegram dialog)."""
+    return database.search_channels(q, limit=limit, include_historical_sources=include_historical_sources)
+
+
 @app.post("/api/channels/sync")
 async def sync_channels(user=Depends(require_admin)):
     """Triggers a real Telethon dialog fetch via the dedicated UI session
