@@ -1343,3 +1343,64 @@ prune, hide, or delete unilaterally without knowing what they'd want kept visibl
 Flagged here for a real product conversation rather than guessed at.
 
 ---
+
+## 2026-07-18 (continued) — Audited the unmerged worktree-client-server-realtime-sync branch: a real scare, resolved as a false alarm
+
+Checked all branches/worktrees for pending work not yet in master (the same technique
+that found real uncommitted research work at the very start of this session).
+`worktree-client-server-realtime-sync` stood out: **45+ commits ahead of master**,
+including commit messages naming serious-sounding security issues - "Fix privilege
+escalation: a plain admin could grant itself the Owner role," "Fix stored XSS,"
+"Fix session hijack: self-service password change didn't revoke other sessions," "Add
+login brute-force lockout," "Add standard HTTP security headers." At face value, this
+looked like a large body of critical, unshipped security work sitting on a forgotten
+branch while production ran without it - worth stopping everything else to verify.
+
+**Investigated systematically before assuming the worst.** The branch diverged from
+master 132 commits back (`git merge-base`) - old, but that alone doesn't mean its
+fixes are missing; master could have absorbed the same substance independently.
+Checked 7 of the most serious-sounding commits directly against current master's real
+code, not just commit message titles:
+
+1. Privilege escalation (owner-role self-grant) - `api/admin.py`'s
+   `_forbid_owner_grant_by_non_owner` **already present**.
+2. HTTP security headers (X-Frame-Options, nosniff, HSTS) - **already present** in
+   `api/main.py`.
+3. `/docs`, `/redoc`, `/openapi.json` gated behind `ENABLE_API_DOCS` - **already
+   present** in `api/main.py`.
+4. Password-change session revocation (`revoke_other_sessions`) - **already present**
+   in `api/auth_routes.py`.
+5. Broker-account double-connect race (`claim_broker_account_connecting`, an atomic
+   conditional UPDATE) - **already present** in `core/database.py`, called from
+   `api/broker_accounts_routes.py`.
+6. Automation Studio rule double-firing race (`record_rule_evaluation`'s atomic
+   compare-and-swap on `last_condition_state`) - **already present** in
+   `core/database.py`, with the exact same reasoning in its docstring.
+7. Stored XSS on Dashboard's Recent Activity (`escapeHtml(t.asset...)`,
+   `escapeHtml(t.direction...)`) - **already present** in `web/dashboard.html`,
+   identical line shape to the branch's own diff.
+
+**7 for 7.** Every substantial, security-relevant fix checked is already live in
+master's current code, several with matching docstring language suggesting the fix
+was carried over deliberately (cherry-picked or independently re-derived) at some
+earlier point not visible in this session's own history. This is NOT a hidden gap -
+it's a stale branch whose real content has already been absorbed into master through
+a different path.
+
+**One genuinely open item found**: `c4315c2 "Give the signal parser a dedicated
+logger"` - `parsers/signal_parser.py` in current master has no logger of its own
+(confirmed: no `get_logger` import, matches what was read directly earlier tonight
+while fixing the OTC Pro Trading Robot sequence). Real, but purely cosmetic/
+diagnostic - not a correctness or safety issue, not pursued further tonight.
+
+**Not attempted**: merging this branch. Given 132 commits of drift and confirmed
+substantial redundancy, a real merge would mean resolving conflicts against work that
+mostly no longer needs doing, for uncertain remaining value (the ~35 commits not
+individually checked). The `core/rule_engine.py`-based Automation Studio backend this
+branch uses also appears architecturally superseded by what's now `api/main.py`'s
+`/api/rules` routes (per today's earlier Automation Studio audit) - a sign the branch
+predates a later restructuring, not just individual bug fixes.
+
+**Recommendation, not acted on**: this branch (and its `.claude/worktrees/
+client-server-realtime-sync` local worktree) look safe to delete once confirmed - but
+branch/worktree deletion is left for deliberate review rather than done here.
