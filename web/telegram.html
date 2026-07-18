@@ -32,14 +32,6 @@
   .source-config { background: var(--surface); border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 10px; display: none; }
   .source-config.open { display: block; }
 
-  /* ---- Add Sources: search-as-you-type over channels not yet
-     followed, replacing "dump every Telegram channel in a table". ---- */
-  .add-source-results { max-height: 260px; overflow-y: auto; margin-top: 10px; }
-  .add-source-row {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 9px 4px; border-bottom: 1px solid var(--border); font-size: 13.5px;
-  }
-  .add-source-row:last-child { border-bottom: none; }
 </style>
 </head>
 <body>
@@ -76,8 +68,8 @@
 
     <div class="card solid full-width">
       <h3>Add a Source</h3>
-      <input type="text" id="add-source-search" placeholder="Search all your Telegram chats by name or @username..." oninput="renderAddSourceResults()">
-      <div class="add-source-results" id="add-source-results"></div>
+      <div class="subtitle" style="margin-bottom:10px;">Searches your OPT SIGNALS Telegram folder by default - use "Search all your Telegram chats" below to widen.</div>
+      <div id="add-source-search"></div>
     </div>
   </main>
 </div>
@@ -166,6 +158,7 @@
     </div>
   </div>
 </div>
+<script src="/web/smart_channel_search.js"></script>
 <script src="/web/shell.js"></script>
 <script>
 let allChannels = [];
@@ -291,7 +284,6 @@ async function refreshChannels() {
   try {
     allChannels = await fetchJSON("/api/channels");
     renderMySources();
-    renderAddSourceResults();
   } catch (e) {
     document.getElementById("my-sources-list").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
   }
@@ -353,28 +345,22 @@ function toggleConfig(event, id) {
   if (el) el.classList.toggle("open");
 }
 
-function renderAddSourceResults() {
-  const query = document.getElementById("add-source-search").value.trim().toLowerCase();
-  const resultsEl = document.getElementById("add-source-results");
-  const candidates = allChannels.filter(c => !c.enabled);
-  const matches = query
-    ? candidates.filter(c => (c.title || "").toLowerCase().includes(query) || (c.username || "").toLowerCase().includes(query))
-    : candidates.slice(0, 8);
-  if (!matches.length) {
-    resultsEl.innerHTML = query
-      ? '<div class="empty" style="padding:10px 4px;">No matching chats found.</div>'
-      : (candidates.length === 0 ? '<div class="empty" style="padding:10px 4px;">You\'re following every synced chat.</div>' : "");
-    return;
-  }
-  resultsEl.innerHTML = matches.map(c => `
-    <div class="add-source-row">
-      <div>
-        <span style="font-weight:550;">${escapeHtml(c.title || "(no title)")}</span>
-        <span class="muted">${c.username ? " @" + escapeHtml(c.username) : ""}</span>
-      </div>
-      <button class="primary" onclick="toggleChannel(${c.id}, true).then(refreshChannels)">+ Add</button>
-    </div>
-  `).join("");
+let addSourceSearch = null;
+
+function initAddSourceSearch() {
+  addSourceSearch = SmartChannelSearch.mount("add-source-search", {
+    placeholder: "Search for a signal provider...",
+    recentKey: "telegram-add-source",
+    onSelect: async (channel) => {
+      if (!channel.enabled) {
+        await toggleChannel(channel.id, true);
+        await refreshChannels();
+      }
+      // Reset immediately so adding several sources in a row doesn't
+      // require re-navigating away from a "selected" single result.
+      if (addSourceSearch) addSourceSearch.clear();
+    },
+  });
 }
 
 function botFields(c) {
@@ -606,6 +592,7 @@ async function openMessages(id) {
   if (!user) return;
   refreshConnectionStatus();
   refreshChannels();
+  initAddSourceSearch();
   setInterval(refreshConnectionStatus, 15000);
 })();
 </script>
