@@ -91,6 +91,18 @@ def end_session(session_id, status, reason=None):
     database.delete_session_rules(session_id)
 
 
+def end_active_session_for_broker_account(broker_account_id, status, reason=None):
+    """Per-account Emergency Stop's equivalent of end_all_active_sessions -
+    scoped to just this account's own active session (exclusivity is
+    already per-broker-account, so there's at most one to end) rather
+    than every session across every account. Used by POST
+    /api/broker-accounts/{id}/emergency-stop - a problem on one account
+    must never force every other account's Fund to stop trading too."""
+    active = database.get_active_trading_session_for_broker_account(broker_account_id)
+    if active is not None:
+        end_session(active["id"], status, reason)
+
+
 def end_all_active_sessions(status, reason=None):
     """Emergency Stop must mark EVERY currently active session stopped,
     not just the DB-row-level control_state flags - a session left

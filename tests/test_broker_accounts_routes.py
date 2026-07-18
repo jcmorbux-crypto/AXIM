@@ -107,5 +107,54 @@ class TestConnectionRouteTestCase(unittest.TestCase):
         self.assertEqual(status["status"], "none")
 
 
+class EmergencyStopRouteTestCase(unittest.TestCase):
+    """Per-account Emergency Stop - independent of both the global one
+    and every OTHER account's own switch."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.account_id = database.create_broker_account("Test Account", mode="demo")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_emergency_stop_sets_the_flag_and_records_who(self):
+        result = routes.emergency_stop_broker_account(self.account_id, user=_FAKE_ADMIN)
+        self.assertTrue(result["emergency_stopped"])
+        self.assertEqual(result["emergency_stopped_by"], _FAKE_ADMIN["email"])
+        self.assertIsNotNone(result["emergency_stopped_at"])
+
+    def test_clear_emergency_stop_resets_the_flag(self):
+        routes.emergency_stop_broker_account(self.account_id, user=_FAKE_ADMIN)
+        result = routes.clear_broker_account_emergency_stop(self.account_id, user=_FAKE_ADMIN)
+        self.assertFalse(result["emergency_stopped"])
+
+    def test_emergency_stop_ends_this_accounts_own_active_session(self):
+        fund_id = database.create_fund("Test Fund")
+        database.assign_broker_account_to_fund(fund_id, self.account_id)
+        session_id = database.start_trading_session(
+            "Test Fund - Live Signals", [1], "DEMO", fund_id=fund_id, broker_account_id=self.account_id,
+        )
+        routes.emergency_stop_broker_account(self.account_id, user=_FAKE_ADMIN)
+        stopped = database.get_trading_session(session_id)
+        self.assertEqual(stopped["status"], "stopped_emergency")
+        self.assertIsNotNone(stopped["ended_at"])
+
+    def test_emergency_stop_does_not_touch_a_different_accounts_session(self):
+        other_account_id = database.create_broker_account("Other Account", mode="demo")
+        fund_id = database.create_fund("Other Fund")
+        database.assign_broker_account_to_fund(fund_id, other_account_id)
+        session_id = database.start_trading_session(
+            "Other Fund - Live Signals", [1], "DEMO", fund_id=fund_id, broker_account_id=other_account_id,
+        )
+        routes.emergency_stop_broker_account(self.account_id, user=_FAKE_ADMIN)
+        still_active = database.get_trading_session(session_id)
+        self.assertEqual(still_active["status"], "active")
+
+
 if __name__ == "__main__":
     unittest.main()

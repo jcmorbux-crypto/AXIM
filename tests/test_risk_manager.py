@@ -159,6 +159,30 @@ class RiskManagerTests(unittest.TestCase):
         database.set_control_state(emergency_stop=False)
         risk_manager.check_not_stopped()
 
+    def test_not_stopped_passes_when_no_broker_account_id_given(self):
+        account_id = database.create_broker_account("Acc1")
+        database.update_broker_account(account_id, emergency_stopped=True)
+        risk_manager.check_not_stopped()  # no account_id - this account's stop doesn't apply
+
+    def test_not_stopped_raises_on_a_stopped_broker_account(self):
+        account_id = database.create_broker_account("Acc1")
+        database.update_broker_account(account_id, emergency_stopped=True)
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_not_stopped(account_id)
+        self.assertEqual(ctx.exception.rule, "account_emergency_stop")
+
+    def test_not_stopped_passes_for_a_different_unaffected_account(self):
+        stopped_id = database.create_broker_account("Stopped Acc")
+        other_id = database.create_broker_account("Other Acc")
+        database.update_broker_account(stopped_id, emergency_stopped=True)
+        risk_manager.check_not_stopped(other_id)  # must not raise - a different account's stop
+
+    def test_not_stopped_passes_again_after_clearing_a_broker_account_stop(self):
+        account_id = database.create_broker_account("Acc1")
+        database.update_broker_account(account_id, emergency_stopped=True)
+        database.update_broker_account(account_id, emergency_stopped=False)
+        risk_manager.check_not_stopped(account_id)
+
     def test_minimum_payout_below_threshold(self):
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_minimum_payout(risk_manager.MINIMUM_PAYOUT - 1)

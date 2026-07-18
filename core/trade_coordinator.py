@@ -67,7 +67,7 @@ class TradeCoordinator:
             trade_id, stage, status, elapsed, reason,
         )
 
-    def _run_preflight_checks(self, trade_id, amount, session_id, asset, direction, expiry, sent_at, timeline):
+    def _run_preflight_checks(self, trade_id, amount, session_id, asset, direction, expiry, sent_at, timeline, broker_account_id=None):
         """The Validation/Risk Manager/Session limits/Duplicate Detection
         stages, extracted verbatim from handle_signal so they can run via
         asyncio.to_thread instead of directly on the event loop thread -
@@ -104,7 +104,7 @@ class TradeCoordinator:
         # Stage: Risk Manager
         stage_t0 = time.monotonic()
         try:
-            risk_manager.check_not_stopped()
+            risk_manager.check_not_stopped(broker_account_id)
             risk_manager.check_demo_only()
             risk_manager.check_max_trade_amount(amount)
             risk_manager.check_max_trades_per_hour()
@@ -195,7 +195,7 @@ class TradeCoordinator:
             try:
                 outcome, payload = await asyncio.to_thread(
                     self._run_preflight_checks, trade_id, amount, session_id, asset, direction, expiry,
-                    sent_at, timeline,
+                    sent_at, timeline, broker_account_id,
                 )
                 if outcome == "stale":
                     await self.event_bus.publish("signal.ignored", {"trade_id": trade_id, "reason": "stale_signal"})
@@ -271,7 +271,7 @@ class TradeCoordinator:
                 # to real execution anyway.
                 stage_t0 = time.monotonic()
                 try:
-                    await asyncio.to_thread(risk_manager.check_not_stopped)
+                    await asyncio.to_thread(risk_manager.check_not_stopped, broker_account_id)
                 except risk_manager.RiskViolation as violation:
                     await asyncio.to_thread(timeline.persist, database)
                     return await asyncio.to_thread(self._reject, trade_id, violation, time.monotonic() - stage_t0)

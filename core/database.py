@@ -359,6 +359,22 @@ def initialize_database():
     );
     """)
 
+    # Per-account Emergency Stop (distinct from the global control_state
+    # flags) - a Fund on Account A shouldn't have to halt every OTHER
+    # account too just because Account A needs to stop right now, and
+    # vice versa. Migrated inline since broker_accounts already ships
+    # with real rows - same ALTER-TABLE-if-missing pattern used
+    # elsewhere in this function.
+    _NEW_BROKER_ACCOUNT_COLUMNS = {
+        "emergency_stopped": "INTEGER NOT NULL DEFAULT 0",
+        "emergency_stopped_at": "TEXT",
+        "emergency_stopped_by": "TEXT",
+    }
+    broker_account_columns = {row["name"] for row in conn.execute("PRAGMA table_info(broker_accounts)")}
+    for column, sql_type in _NEW_BROKER_ACCOUNT_COLUMNS.items():
+        if column not in broker_account_columns:
+            conn.execute(f"ALTER TABLE broker_accounts ADD COLUMN {column} {sql_type}")
+
     # A fund's attachment to a real broker_accounts row. Modeled as a join
     # table (not a plain broker_account_id FK on funds) because the
     # product spec explicitly calls for future "distribute trades across
@@ -2411,6 +2427,7 @@ def list_fund_backtest_runs(fund_id, limit=50):
 _BROKER_ACCOUNT_FIELDS = {
     "name", "mode", "live_enabled", "user_data_dir", "connection_status",
     "last_connected_at", "last_balance", "last_balance_checked_at", "status",
+    "emergency_stopped", "emergency_stopped_at", "emergency_stopped_by",
 }
 _VALID_BROKER_ACCOUNT_MODES = {"demo", "live", "both"}
 _VALID_BROKER_ACCOUNT_STATUSES = {"active", "disabled", "archived"}

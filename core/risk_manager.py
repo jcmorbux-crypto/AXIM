@@ -45,7 +45,7 @@ def check_demo_only():
         raise RiskViolation("demo_only", f"ACCOUNT is {ACCOUNT!r}, not DEMO - refusing to execute")
 
 
-def check_not_stopped():
+def check_not_stopped(broker_account_id=None):
     """core/telegram_listener.py's handler already checks emergency_stop
     before EVER calling trade_coordinator.handle_signal() for a brand-new
     incoming message - but nothing re-checked it once a signal was
@@ -57,12 +57,26 @@ def check_not_stopped():
     the operator had already hit Stop. Called first in trade_coordinator's
     preflight (before any other check) AND re-checked immediately before
     worker-pool acquisition, the two points separated by the pipeline's
-    only genuinely long, unbounded waits."""
+    only genuinely long, unbounded waits.
+
+    broker_account_id, when this signal is routed to a specific multi-
+    broker-account Fund, ALSO checks that account's own Emergency Stop -
+    independent of the global one, so a problem on one account can be
+    halted without forcing every other account's Fund to stop too, and
+    the global Emergency Stop still halts everything regardless of which
+    account a signal is routed to."""
     state = database.get_control_state()
     if state.get("emergency_stop"):
         raise RiskViolation("emergency_stop", "emergency stop is active - refusing to execute")
     if state.get("paused"):
         raise RiskViolation("paused", "trading is paused - refusing to execute")
+    if broker_account_id is not None:
+        account = database.get_broker_account(broker_account_id)
+        if account is not None and account["emergency_stopped"]:
+            raise RiskViolation(
+                "account_emergency_stop",
+                f"emergency stop is active on broker account {account['name']!r} - refusing to execute",
+            )
 
 
 def check_max_trade_amount(amount):

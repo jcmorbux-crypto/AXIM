@@ -10,6 +10,7 @@ only ever talks to through the database).
 """
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 API_DIR = Path(__file__).resolve().parent
@@ -24,6 +25,7 @@ from pydantic import BaseModel
 
 import database
 import fund_manager
+import session_manager
 from auth_routes import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/broker-accounts", tags=["broker-accounts"])
@@ -139,6 +141,35 @@ def get_broker_account_connection_test(account_id: int, user=Depends(get_current
     _get_or_404(account_id)
     result = database.get_connection_test(account_id)
     return result or {"status": "none"}
+
+
+@router.post("/{account_id}/emergency-stop")
+def emergency_stop_broker_account(account_id: int, user=Depends(get_current_user)):
+    """Per-account Emergency Stop - deliberately just get_current_user,
+    not require_admin, matching the global Emergency Stop's own reasoning
+    (api/main.py's emergency_stop route): ANY logged-in user must be able
+    to halt trading on an account immediately. Independent of the global
+    Emergency Stop and every OTHER account's own switch - halting one
+    account's runaway Fund must never force every other account to stop
+    too. Ends this account's own active session (if any) the same way
+    the global Emergency Stop ends every session - a session left
+    "active" after this would be a stale, misleading record."""
+    _get_or_404(account_id)
+    database.update_broker_account(
+        account_id, emergency_stopped=True,
+        emergency_stopped_at=datetime.now().isoformat(), emergency_stopped_by=user["email"],
+    )
+    session_manager.end_active_session_for_broker_account(
+        account_id, "stopped_emergency", f"emergency stop by {user['email']}",
+    )
+    return _with_funds(database.get_broker_account(account_id))
+
+
+@router.post("/{account_id}/clear-emergency-stop")
+def clear_broker_account_emergency_stop(account_id: int, user=Depends(require_admin)):
+    _get_or_404(account_id)
+    database.update_broker_account(account_id, emergency_stopped=False)
+    return _with_funds(database.get_broker_account(account_id))
 
 
 @router.post("/{account_id}/disconnect")

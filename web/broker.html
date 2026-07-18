@@ -265,7 +265,7 @@ async function refreshAccounts() {
   }
   body.innerHTML = accounts.map(a => `
     <tr>
-      <td>${escapeHtml(a.name)}</td>
+      <td>${escapeHtml(a.name)} ${a.emergency_stopped ? '<span class="badge danger">Stopped</span>' : ""}</td>
       <td><span class="badge off">${a.mode}</span></td>
       <td><span class="badge ${CONNECTION_BADGE[a.connection_status] || "off"}">${a.connection_status}</span></td>
       <td>${a.last_balance !== null && a.last_balance !== undefined ? "$" + Number(a.last_balance).toFixed(2) : "-"}</td>
@@ -282,6 +282,9 @@ async function refreshAccounts() {
         ${a.connection_status === "connected"
           ? `<button class="subtle" id="test-conn-btn-${a.id}" onclick="testConnection(${a.id})">Test Connection</button>`
           : ""}
+        ${a.emergency_stopped
+          ? `<button class="subtle" onclick="clearAccountEmergencyStop(${a.id})">Resume Account</button>`
+          : `<button class="danger" onclick="emergencyStopAccount(${a.id})">Emergency Stop</button>`}
         <button class="subtle" onclick="openEditAccountModal(${a.id})">Edit</button>
         <button class="subtle" onclick="archiveAccount(${a.id})">Archive</button>
       </td>
@@ -419,6 +422,25 @@ async function toggleLive(id, checked) {
   } catch (e) {
     alert("Failed: " + e.message);
     await refreshAccounts();
+  }
+}
+
+async function emergencyStopAccount(id) {
+  if (!confirm("Emergency Stop this account? Its own active session (if any) will be stopped immediately, and no new trades will route through it until you resume it. Other accounts are not affected.")) return;
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}/emergency-stop`, { method: "POST" });
+    await refreshAccounts();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function clearAccountEmergencyStop(id) {
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}/clear-emergency-stop`, { method: "POST" });
+    await refreshAccounts();
+  } catch (e) {
+    alert("Failed: " + e.message);
   }
 }
 

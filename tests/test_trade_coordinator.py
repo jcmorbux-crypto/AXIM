@@ -129,6 +129,30 @@ class TradeCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["rule"], "emergency_stop")
         self.assertEqual(pool.released, [])
 
+    def test_broker_account_emergency_stop_rejects_before_worker_pool(self):
+        """Same enforcement point as the global Emergency Stop, but scoped
+        to one broker account - a signal routed to a stopped account must
+        be rejected even though the global switch was never touched."""
+        trade_coordinator.PREVIEW_ONLY = True
+        account_id = database.create_broker_account("Stopped Account")
+        database.update_broker_account(account_id, emergency_stopped=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal(), broker_account_id=account_id))
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["rule"], "account_emergency_stop")
+        self.assertEqual(pool.released, [])
+
+    def test_a_different_accounts_signal_is_unaffected_by_another_accounts_stop(self):
+        trade_coordinator.PREVIEW_ONLY = True
+        stopped_id = database.create_broker_account("Stopped Account")
+        other_id = database.create_broker_account("Other Account")
+        database.update_broker_account(stopped_id, emergency_stopped=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal(), broker_account_id=other_id))
+        self.assertNotEqual(result.get("rule"), "account_emergency_stop")
+
     def test_paused_rejects_before_worker_pool(self):
         trade_coordinator.PREVIEW_ONLY = True
         database.set_control_state(paused=True)
