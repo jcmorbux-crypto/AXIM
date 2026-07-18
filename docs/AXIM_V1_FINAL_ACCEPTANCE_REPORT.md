@@ -178,9 +178,43 @@ is shown) even though the tab itself wasn't removed.
 5. Is Emergency Stop verified to actually persist server-side and block trading? **YES** (verified live, both banner state and `/api/status`)
 6. Is the global Pause control now a genuine, reversible toggle? **YES** (fixed and verified live this pass)
 7. Does Users/Logs/Help/Settings provide real, working functionality rather than incomplete stubs? **YES** (verified live; none required removal from navigation)
-8. Is the OTC Pro Trading Robot real-time multi-message sequence now working? **YES** (verified against real fetched channel history; not yet re-verified live against a newly-enabled channel in production, since it isn't enabled)
-9. Is the live per-message signal parser free of the emoji-normalization gap found this session? **YES** for the cases tested; a systematic sweep of every other live/synced channel's message format for the same class of issue was **NOT** performed
+8. Is the OTC Pro Trading Robot real-time multi-message sequence now working? **YES** — and this was under-claimed in the original version of this report (corrected below): a sibling channel using the identical message format, "Pro Trading Robot" (chat_id 1515679451, distinct from "OTC Pro Trading Robot" chat_id 1851061994), turned out to already be enabled and actively demo-trading in production. Checked directly against real post-fix production signal data (see Addendum) and confirmed the fix is working correctly on live traffic, not just historical replay.
+9. Is the live per-message signal parser free of the emoji-normalization gap found this session? **YES** for the cases tested, now including real live post-deploy traffic (see Addendum); a systematic sweep of every other live/synced channel's message format for the same class of issue was **NOT** performed
 10. Were all changes made during this audit verified against real backend state (not just UI appearance)? **YES** for every finding listed above
 11. Was every single interactive control on every page individually exercised in this pass? **NO** — see Honest Limitations above; this was a representative, not exhaustive, pass
 12. Was the live Telegram listener or live Pocket Option browser session used or modified during this audit? **NO** — preview environment only, production processes untouched
 13. **REAL-MONEY TRADE EXECUTED DURING DEVELOPMENT: NO**
+
+## Addendum (added after initial publication): a claim in this report was wrong
+
+This report originally stated the OTC Pro Trading Robot fix "cannot trigger a new
+live/demo trade until an operator deliberately enables it," checked only against
+chat_id 1851061994 ("OTC Pro Trading Robot"). That check was correct for that specific
+channel, but incomplete: a **sibling channel** using the exact same message format,
+literally named "Pro Trading Robot" (chat_id 1515679451, no "OTC" prefix), was already
+enabled and already attached to an active Demo session (session 12, Fund 25, broker
+account 11 — `Pocket Option Demo (Primary)`, `mode=demo`, `live_enabled=0`) before this
+fix was written. This was found by checking `database.get_enabled_channels()` directly
+against the real production database after publishing this report, not caught during
+the audit itself — a gap in the audit's own thoroughness, disclosed here rather than
+quietly left uncorrected.
+
+**What actually happened, checked directly against the real post-deploy production
+database and `logs/lifecycle.log`**: since the fix deployed, this channel's messages
+have been parsing correctly for the first time (asset/direction/expiry all populated,
+confirmed from real logged signal payloads) — and the existing `max_trades_per_hour`
+risk-manager circuit breaker (limit 10) has been correctly rejecting nearly every one
+of them, because this channel produces far more valid signals per hour than the
+configured limit allows. Every single rejection in the log is `stage=max_trades_per_hour
+status=rejected`, not a real execution error. **Zero trades from this channel actually
+executed** — the safety system worked exactly as intended, and the account is Demo
+throughout, so there was no financial consequence either way. Verdict 13 above
+(no real-money trade executed) remains true and unaffected.
+
+This is left as a positive finding, not treated as something requiring a further code
+change: the rate limiter doing its job under a real burst of newly-recognized signals is
+the system behaving correctly, not a bug. It is being flagged for the operator's
+awareness because a currently-configured `max_trades_per_hour=10` limit is now the
+binding constraint on this specific channel following the parser fix, which is an
+operational fact worth knowing, not an engineering defect to autonomously "fix" by
+changing a limit the operator configured deliberately.
