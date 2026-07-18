@@ -5,6 +5,14 @@
 <title>Broker - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
+<style>
+  /* A Fund's "Used by" list can genuinely name every attached Fund
+     (real accounts have had 7+) - left unconstrained this alone pushed
+     the whole table past 2600px wide, burying the Edit/Archive/Connect
+     actions off the right edge of any normal desktop viewport. Truncate
+     with the full list still available via the native title tooltip. */
+  .used-by-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
 </head>
 <body>
 
@@ -271,7 +279,7 @@ async function refreshAccounts() {
       <td>${a.last_balance !== null && a.last_balance !== undefined ? "$" + Number(a.last_balance).toFixed(2) : "-"}</td>
       <td>${a.reserve !== null && a.reserve !== undefined ? "$" + Number(a.reserve).toFixed(2) : "-"}</td>
       <td class="muted">${a.last_connected_at ? new Date(a.last_connected_at).toLocaleString() : "-"}</td>
-      <td class="muted">${a.funds.length ? a.funds.map(f => escapeHtml(f.name) + (f.has_active_session ? " (session running)" : "")).join(", ") : "-"}</td>
+      <td class="muted used-by-cell" title="${a.funds.length ? escapeHtml(a.funds.map(f => f.name + (f.has_active_session ? " (session running)" : "")).join(", ")) : ""}">${a.funds.length ? escapeHtml(a.funds.map(f => f.name + (f.has_active_session ? " (session running)" : "")).join(", ")) : "-"}</td>
       <td>
         <input type="checkbox" style="width:auto;" ${a.live_enabled ? "checked" : ""} onchange="toggleLive(${a.id}, this.checked)">
       </td>
