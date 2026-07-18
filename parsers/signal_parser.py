@@ -1,4 +1,39 @@
 import re
+import unicodedata
+
+# Two adjacent regional-indicator symbols form a flag emoji (e.g. the EU
+# flag before "EUR"). Some real providers (confirmed live: OTC Pro Trading
+# Robot) put one directly between the "/" and the second currency code
+# ("CAD/\U0001F1EF\U0001F1F5 JPY OTC"), which breaks the plain
+# ([A-Z]{3})/([A-Z]{3}) pair regex outright - not a cosmetic issue, a
+# silent parse failure on a real, currently-shipping message shape.
+# Ported from research/parser/layer1_normalize.py (already proven safe
+# there against the full OPT SIGNALS provider corpus) rather than
+# reimplemented - strips pairs specifically, not the whole Unicode range,
+# so a lone regional indicator that's actually part of something else
+# isn't eaten. Never removes or alters anything that could change a
+# message's MEANING (direction words, numbers, asset codes untouched).
+_FLAG_PAIR_RE = re.compile(r"[\U0001F1E6-\U0001F1FF]{2}")
+_KEYCAP_RE = re.compile(r"([0-9])️?⃣")
+_TEN_KEYCAP_RE = re.compile(r"\U0001F51F")
+_NBSP_RE = re.compile(r"[  ]")
+
+
+def _normalize(text):
+    """Provider-agnostic decoration cleanup applied before any parsing -
+    see _FLAG_PAIR_RE comment. Safe to apply universally: every
+    substitution here removes visual noise that carries no signal
+    information beyond what the surrounding text already states."""
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKC", text)
+    t = _NBSP_RE.sub(" ", t)
+    t = _KEYCAP_RE.sub(r"\1", t)
+    t = _TEN_KEYCAP_RE.sub("10", t)
+    t = _FLAG_PAIR_RE.sub("", t)
+    t = re.sub(r"[ \t]+", " ", t)
+    return t.strip()
+
 
 # ISO 4217 3-letter currency codes. Used to validate both halves of a
 # concatenated asset pair (e.g. "NZDJPY") before accepting it as an asset -
@@ -63,7 +98,7 @@ def _normalize_labeled_forex(raw_value):
     upper = raw_value.upper().strip()
     otc = bool(re.search(r"\bOTC\b", upper))
     pair_match = (
-        _find_valid_pair(r"\b([A-Z]{3})/([A-Z]{3})\b", upper)
+        _find_valid_pair(r"\b([A-Z]{3})\s*/\s*([A-Z]{3})\b", upper)
         or _find_valid_pair(r"\b([A-Z]{3})([A-Z]{3})\b", upper)
     )
     if not pair_match:
@@ -72,10 +107,19 @@ def _normalize_labeled_forex(raw_value):
     return f"{asset} OTC" if otc else asset
 
 
-def parse_signal(message):
+def parse_signal(message, carried_asset=None):
+    """carried_asset: a fallback asset (already in "EUR/USD" or "EUR/USD OTC"
+    form) to use ONLY if this specific message contains no asset of its
+    own. Some real providers (confirmed live: OTC Pro Trading Robot) split
+    a single trade across two messages - a "Preparing trading asset X"
+    announcement, then a separate entry message with direction+expiry but
+    no asset at all - see parse_asset_announcement(). Never overrides an
+    asset actually found in the message; every other source's behavior is
+    completely unchanged when this is omitted."""
     if not message:
         return None
 
+    message = _normalize(message)
     signal = {}
 
     # Labeled formats take priority - checked against the original message
@@ -104,7 +148,7 @@ def parse_signal(message):
         # Stock: Intel OTC
         # NZDJPY OTC (concatenated pair, no slash - normalized to NZD/JPY OTC)
         stock_match = re.search(r"\bSTOCK:\s*([A-Z0-9 ]+?\s+OTC)\b", text)
-        slash_match = _find_valid_pair(r"\b([A-Z]{3})/([A-Z]{3})\b(\s*OTC)?", text)
+        slash_match = _find_valid_pair(r"\b([A-Z]{3})\s*/\s*([A-Z]{3})\b(\s*OTC)?", text)
         concat_match = _find_valid_pair(r"\b([A-Z]{3})([A-Z]{3})\b(\s*OTC)?", text)
 
         if stock_match:
@@ -117,6 +161,8 @@ def parse_signal(message):
                 asset = f"{asset} OTC"
 
             signal["asset"] = asset
+        elif carried_asset:
+            signal["asset"] = carried_asset
         else:
             return None
 
@@ -166,6 +212,38 @@ def parse_signal(message):
     signal["raw_message"] = message
 
     return signal
+
+
+_ASSET_ANNOUNCEMENT_RE = re.compile(r"\bPreparing trading asset\b", re.IGNORECASE)
+
+
+def parse_asset_announcement(message):
+    """Some real providers (confirmed live: OTC Pro Trading Robot) send a
+    standalone "Preparing trading asset EUR/JPY OTC ..." message before
+    the actual entry, and the entry message itself ("Summary: BUY OPTION
+    ... Expiration time: 3 MINUTES ...") never repeats the asset at all -
+    two messages, one trade. This is NOT itself a tradeable signal (no
+    direction/expiry) - it only tells the caller which asset to carry
+    forward into the next call to parse_signal(..., carried_asset=...)
+    for this channel. Returns the normalized asset string, or None if
+    this message isn't one of these announcements or has no recognizable
+    asset in it."""
+    if not message:
+        return None
+    text = _normalize(message)
+    if not _ASSET_ANNOUNCEMENT_RE.search(text):
+        return None
+    upper = text.upper()
+    pair = (
+        _find_valid_pair(r"\b([A-Z]{3})\s*/\s*([A-Z]{3})\b", upper)
+        or _find_valid_pair(r"\b([A-Z]{3})([A-Z]{3})\b", upper)
+    )
+    if not pair:
+        return None
+    asset = f"{pair.group(1)}/{pair.group(2)}"
+    if re.search(r"\bOTC\b", upper):
+        asset += " OTC"
+    return asset
 
 
 def apply_expiry_fallback(signal, default_expiry):

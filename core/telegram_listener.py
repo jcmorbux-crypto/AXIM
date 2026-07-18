@@ -21,7 +21,7 @@ sys.path.insert(0, "execution")
 sys.path.insert(0, "core")
 sys.path.insert(0, "config")
 
-from signal_parser import parse_signal, apply_signal_rules, apply_expiry_fallback
+from signal_parser import parse_signal, apply_signal_rules, apply_expiry_fallback, parse_asset_announcement
 from trade_coordinator import TradeCoordinator
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
@@ -122,6 +122,39 @@ def channel_allowed(chat_title, chat_username=None):
             return True
 
     return False
+
+
+# Some real providers (confirmed live: OTC Pro Trading Robot) split one
+# trade across two separate Telegram messages - a standalone "Preparing
+# trading asset X" announcement, then a later entry message with
+# direction/expiry but no asset repeated at all. Keyed by chat_id so
+# concurrently-active channels never cross-contaminate each other's
+# pending asset. In-memory only (not persisted) - a process restart
+# losing an in-flight announcement just means that one entry message is
+# treated as unparseable, same fail-closed behavior as if the asset was
+# never announced, not a corrupted trade.
+_carried_assets_by_channel = {}
+
+# Real gap observed live between a "Preparing trading asset" message and
+# its paired entry message: consistently ~60 seconds. 5 minutes is a
+# generous safety margin against Telegram delivery jitter while still
+# refusing to combine an entry with a stale, unrelated earlier
+# announcement from the same channel.
+_CARRIED_ASSET_STALE_AFTER_SECONDS = 300
+
+
+def _remember_asset_announcement(chat_id, asset):
+    _carried_assets_by_channel[chat_id] = (asset, time.monotonic())
+
+
+def _get_carried_asset(chat_id):
+    entry = _carried_assets_by_channel.get(chat_id)
+    if entry is None:
+        return None
+    asset, seen_at = entry
+    if time.monotonic() - seen_at > _CARRIED_ASSET_STALE_AFTER_SECONDS:
+        return None
+    return asset
 
 
 def _debug_safe(text):
@@ -235,7 +268,20 @@ async def handler(event):
         if rules:
             message_text = apply_signal_rules(message_text, rules)
 
-    signal = parse_signal(message_text)
+    # A standalone asset announcement (e.g. OTC Pro Trading Robot's
+    # "Preparing trading asset X") is never itself a tradeable signal -
+    # remember it for this channel's next message and stop here, rather
+    # than falling through to parse_signal (which would correctly reject
+    # it anyway for having no direction, but exiting early keeps the
+    # debug log/print output honest about what this message actually was).
+    announced_asset = parse_asset_announcement(message_text)
+    if announced_asset:
+        _remember_asset_announcement(event.chat_id, announced_asset)
+        print(f"[ASSET ANNOUNCED] {_debug_safe(chat_title)!r} announced {announced_asset!r} - "
+              f"carrying it forward for this channel's next entry message.")
+        return
+
+    signal = parse_signal(message_text, carried_asset=_get_carried_asset(event.chat_id))
     timeline.mark("signal_parsed")
 
     if signal and signal["expiry"] == "Unknown" and channel_row and channel_row.get("default_expiry"):

@@ -5,7 +5,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "parsers"))
 
-from signal_parser import parse_signal, apply_signal_rules, apply_expiry_fallback
+from signal_parser import parse_signal, apply_signal_rules, apply_expiry_fallback, parse_asset_announcement
 
 
 class SignalParserTests(unittest.TestCase):
@@ -140,6 +140,83 @@ class SignalParserTests(unittest.TestCase):
             with self.subTest(label=label):
                 signal = parse_signal(f"{label}: Toncoin OTC\nSignal: BUY\nExpiration: M1")
                 self.assertEqual(signal["asset"], "Toncoin OTC")
+
+
+class FlagEmojiNormalizationTests(unittest.TestCase):
+    """Real messages fetched live from OTC Pro Trading Robot (chat_id
+    1851061994) put a flag emoji directly between the "/" and the second
+    currency code - confirmed to silently break the plain slash-pair
+    regex before this fix. These use the exact real message text."""
+
+    def test_flag_emoji_between_slash_and_second_code_still_parses(self):
+        # "📈 Result: Safe OPTION  BUY 🟢⬆️ (x2 BET)   🇨🇦CAD/🇯🇵 JPY OTC  Opening price: 115.87"
+        message = (
+            "\U0001F4C8 Result: Safe OPTION  BUY \U0001F7E2⬆️ (x2 BET)   "
+            "\U0001F1E8\U0001F1E6CAD/\U0001F1EF\U0001F1F5 JPY OTC  Opening price: 115.87"
+        )
+        signal = parse_signal(message)
+        self.assertIsNotNone(signal)
+        self.assertEqual(signal["asset"], "CAD/JPY OTC")
+        self.assertEqual(signal["direction"], "BUY")
+
+    def test_flag_emoji_around_slash_forex_label_still_parses(self):
+        message = "\U0001F1EA\U0001F1FAEUR/\U0001F1EF\U0001F1F5 JPY OTC BUY M3"
+        signal = parse_signal(message)
+        self.assertEqual(signal["asset"], "EUR/JPY OTC")
+
+    def test_keycap_digit_normalizes_to_plain_digit(self):
+        signal = parse_signal("EUR/USD OTC BUY M5️⃣")
+        self.assertIsNotNone(signal)
+
+
+class ParseAssetAnnouncementTests(unittest.TestCase):
+    """OTC Pro Trading Robot (confirmed live) sends the asset in its own
+    standalone message before the actual entry - the entry message never
+    repeats it. parse_asset_announcement() extracts that carried asset."""
+
+    def test_real_preparing_message_extracts_asset(self):
+        message = (
+            "Preparing trading asset \U0001F1EA\U0001F1FA EUR/\U0001F1EF\U0001F1F5 JPY OTC "
+            "Robot has started peforming analysis \U0001F680"
+        )
+        self.assertEqual(parse_asset_announcement(message), "EUR/JPY OTC")
+
+    def test_non_announcement_message_returns_none(self):
+        self.assertIsNone(parse_asset_announcement("EUR/USD OTC BUY M5"))
+
+    def test_announcement_with_no_recognizable_asset_returns_none(self):
+        self.assertIsNone(parse_asset_announcement("Preparing trading asset for the next round"))
+
+    def test_empty_message_returns_none(self):
+        self.assertIsNone(parse_asset_announcement(""))
+        self.assertIsNone(parse_asset_announcement(None))
+
+
+class CarriedAssetTests(unittest.TestCase):
+    """parse_signal(..., carried_asset=...) - the real OTC Pro Trading
+    Robot entry message ("Summary: BUY OPTION ... Expiration time: 3
+    MINUTES ...") never states its own asset at all, confirmed live."""
+
+    ENTRY_MESSAGE = (
+        "\U0001F4B9 Summary:  BUY OPTION \U0001F7E2⬆️ ⏰ Expiration time:  3 MINUTES  "
+        "\U0001F4CA Opening price: 185.4"
+    )
+
+    def test_entry_without_asset_and_no_carried_asset_returns_none(self):
+        self.assertIsNone(parse_signal(self.ENTRY_MESSAGE))
+
+    def test_entry_without_asset_uses_carried_asset(self):
+        signal = parse_signal(self.ENTRY_MESSAGE, carried_asset="EUR/JPY OTC")
+        self.assertEqual(signal["asset"], "EUR/JPY OTC")
+        self.assertEqual(signal["direction"], "BUY")
+        self.assertEqual(signal["expiry"], "3 Minute")
+
+    def test_carried_asset_never_overrides_a_real_asset_in_the_message(self):
+        signal = parse_signal("EUR/USD OTC BUY M5", carried_asset="GBP/JPY OTC")
+        self.assertEqual(signal["asset"], "EUR/USD OTC")
+
+    def test_carried_asset_ignored_when_message_has_no_direction_either(self):
+        self.assertIsNone(parse_signal("just chatter, no trade here", carried_asset="EUR/USD OTC"))
 
 
 class ApplySignalRulesTests(unittest.TestCase):
