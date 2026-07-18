@@ -50,14 +50,21 @@ UI_SESSION_NAME = os.getenv("UI_SESSION_NAME", "axim_ui_session")
 DEFAULT_SYNC_FOLDER = os.getenv("TELEGRAM_SYNC_FOLDER", "OPT SIGNALS")
 
 
-async def _find_folder_id(client, folder_name):
-    """Returns the Telegram dialog-filter (folder) id whose title matches
+async def _find_folder(client, folder_name):
+    """Returns the full Telegram DialogFilter object whose title matches
     folder_name (case-insensitive, whitespace-trimmed), or None if the
     account has no such folder. A DialogFilter's title is a
     TextWithEntities object in current Telethon/MTProto, not a plain
     string - .text is the actual folder name. Some filter types
     (DialogFilterDefault, the "All Chats" pseudo-folder) have no real
-    title/id at all and are safely skipped rather than raising."""
+    title at all and are safely skipped rather than raising.
+
+    Returns the whole filter, not just its id: confirmed live against a
+    real account that TelegramClient.iter_dialogs(folder=...) does NOT
+    accept a DialogFilter id (it raises FolderIdInvalidError - that
+    parameter only understands the legacy Archived pseudo-folder).
+    A folder's real membership is its pinned_peers/include_peers/
+    exclude_peers plus category flags, evaluated by _dialog_in_folder."""
     try:
         response = await client(functions.messages.GetDialogFiltersRequest())
     except Exception as e:
@@ -66,10 +73,49 @@ async def _find_folder_id(client, folder_name):
     for f in getattr(response, "filters", []):
         title_obj = getattr(f, "title", None)
         title_text = getattr(title_obj, "text", None) if title_obj is not None else None
-        folder_id = getattr(f, "id", None)
-        if title_text and folder_id is not None and title_text.strip().lower() == folder_name.strip().lower():
-            return folder_id
+        if title_text and title_text.strip().lower() == folder_name.strip().lower():
+            return f
     return None
+
+
+def _peer_id(peer):
+    """InputPeerChannel/InputPeerChat/InputPeerUser each carry the bare
+    entity id under a different attribute name - this is the same id
+    Telethon exposes as dialog.entity.id (unlike dialog.id, which is the
+    "marked" id with a -100 prefix for channels)."""
+    return getattr(peer, "channel_id", None) or getattr(peer, "chat_id", None) or getattr(peer, "user_id", None)
+
+
+def _dialog_in_folder(dialog, dialog_filter):
+    """Pure - mirrors Telegram's own DialogFilter membership rules:
+    explicit pinned_peers/include_peers always count (minus
+    exclude_peers), plus whichever category flags the folder has turned
+    on (groups/broadcasts/bots/contacts/non_contacts). The real "OPT
+    SIGNALS" folder found live uses only explicit peers with every
+    category flag off, but a fresh/differently-configured install's
+    folder might rely on the category flags instead, so both are honored
+    rather than only the common case."""
+    entity_id = getattr(dialog.entity, "id", None)
+    exclude_ids = {_peer_id(p) for p in (dialog_filter.exclude_peers or [])}
+    if entity_id in exclude_ids:
+        return False
+    include_ids = {_peer_id(p) for p in list(dialog_filter.pinned_peers or []) + list(dialog_filter.include_peers or [])}
+    if entity_id in include_ids:
+        return True
+    if dialog_filter.groups and dialog.is_group:
+        return True
+    if dialog_filter.broadcasts and dialog.is_channel and not dialog.is_group:
+        return True
+    is_bot = bool(getattr(dialog.entity, "bot", False))
+    if dialog_filter.bots and is_bot:
+        return True
+    if dialog.is_user and not is_bot:
+        is_contact = bool(getattr(dialog.entity, "contact", False))
+        if dialog_filter.contacts and is_contact:
+            return True
+        if dialog_filter.non_contacts and not is_contact:
+            return True
+    return False
 
 
 def _telegram_credentials():
@@ -121,15 +167,17 @@ async def sync_dialogs(folder_name=DEFAULT_SYNC_FOLDER):
     await client.start(phone=phone)
     count = 0
     try:
-        folder_id = None
+        dialog_filter = None
         if folder_name:
-            folder_id = await _find_folder_id(client, folder_name)
-            if folder_id is None:
+            dialog_filter = await _find_folder(client, folder_name)
+            if dialog_filter is None:
                 logger.warning(
                     "telegram_channels: folder '%s' not found - syncing all dialogs instead",
                     folder_name,
                 )
-        async for dialog in client.iter_dialogs(folder=folder_id):
+        async for dialog in client.iter_dialogs():
+            if dialog_filter is not None and not _dialog_in_folder(dialog, dialog_filter):
+                continue
             username = getattr(dialog.entity, "username", None)
             title = dialog.name or ""
             database.upsert_channel(
