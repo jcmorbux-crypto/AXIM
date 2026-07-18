@@ -1058,3 +1058,82 @@ alone actually killed the process (confirmed via `Get-CimInstance` before starti
 again), unlike the documented earlier gap. Confirmed post-restart: root page 200.
 
 ---
+
+## 2026-07-17 (continued) — OPT SIGNALS folder sync: the first fix was wrong, live-verified correction
+
+The prior entry's "not yet verified against the real account" caveat turned out to be
+load-bearing. Doing that verification found `iter_dialogs(folder=folder_id)` raises
+`FolderIdInvalidError` against a real custom Dialog Filter id - confirmed live against
+the real account's actual "OPT SIGNALS" folder (id 7). Telethon's `folder=` parameter
+only understands the legacy Archived pseudo-folder; it was never going to work for a
+real named folder tab at all, in any account.
+
+Root cause: a Telegram "folder" (the tabs at the top of the app) is a `DialogFilter` -
+membership is its `pinned_peers`/`include_peers`/`exclude_peers` peer lists plus
+optional category flags (`groups`/`broadcasts`/`bots`/`contacts`/`non_contacts`), not
+an id `iter_dialogs` can filter by. Rewrote `_find_folder_id` into `_find_folder`
+(returns the whole filter object) and added `_dialog_in_folder(dialog, dialog_filter)`
+(pure - evaluates real membership), called while iterating every dialog rather than
+asking the server to pre-filter. **Verified live**: correctly returns exactly the 14
+known OPT SIGNALS providers from the research corpus, matching the corpus's own
+provider list byte-for-byte. 21 tests (up from 17 - added direct `_dialog_in_folder`
+coverage for pinned/include/exclude peers and every category flag). Full suite: 1009
+tests, OK.
+
+This is the second time this session a "confirmed live" claim in an early draft turned
+out to only mean "the lookup itself was tested live," not "the full feature was proven
+against real behavior" - worth remembering that those are different claims before
+writing either one down as done.
+
+---
+
+## 2026-07-17 (continued) — OTC Pro Trading Robot: making the named multi-message sequence actually work
+
+The FINAL V1 PRODUCT DIRECTIVE explicitly named this provider's "prep message -> chart
+image -> final direction/expiration" sequence as required to work in real time. Investigated
+by fetching this provider's real, current message history (never enabled/synced into
+`ui_channels`, so completely safe to investigate without risking a live trade) and found
+two distinct, real bugs on the actual message shape it sends - not the shape assumed
+from the directive's own description:
+
+1. **No emoji/decoration normalization in the live parser at all.** The research branch's
+   `layer1_normalize.py` already solved this (proven across the full 12-provider corpus)
+   but was never ported to the live, real-time `parsers/signal_parser.py`. This provider
+   puts a flag emoji directly between "/" and the second currency code
+   (`CAD/🇯🇵 JPY OTC`) - confirmed live this silently broke the plain slash-pair regex on
+   a message that otherwise stated a complete asset+direction (a recovery re-entry
+   message). Ported the normalization and widened both slash-pair regexes to tolerate the
+   whitespace left after stripping a flag pair.
+2. **A genuine two-message trade, not a three-part sequence.** Real primary entries are a
+   standalone "Preparing trading asset X" announcement (no direction/expiry at all) followed
+   by a separate "Summary: BUY/SELL OPTION ... Expiration time: ..." message that never
+   repeats the asset. `parse_signal` gained an optional `carried_asset` fallback (only used
+   when the message itself has no asset - never overrides a real one, so every other
+   provider's behavior is byte-for-byte unchanged), and a new `parse_asset_announcement()`
+   extracts the asset from the standalone announcement. `telegram_listener.py` wires this
+   up with a small per-channel in-memory carried-asset map (5-minute staleness window - the
+   real gap observed live between the two messages is a very consistent ~60 seconds).
+
+**Verified end-to-end against real fetched history** (not synthetic fixtures): replayed 60
+of the channel's actual real messages through the exact handler logic (announcement ->
+remember asset -> entry -> combine) and correctly reconstructed 26 tradeable signals -
+recovery re-entries (which already carry their own asset inline) and terminal
+result/announcement messages correctly produced no signal. **Confirmed safe to ship**:
+this channel is not in `.env` `WATCH_CHANNELS` and has never been synced into
+`ui_channels`, so it isn't attached to any Fund or session - this fix cannot trigger a new
+live or demo trade until an operator deliberately enables the channel.
+
+47 new tests across `test_signal_parser.py` (flag-emoji normalization, `parse_asset_
+announcement`, `carried_asset` fallback behavior and its non-override guarantee).
+`telegram_listener.py`'s own small state-management helpers weren't given a dedicated
+test file, matching this module's existing convention - it creates a real `TelegramClient`
+at import time and has never been unit-tested directly; its logic is a thin, simple
+wrapper (dict get/set with a time check) around the now-thoroughly-tested pure parser
+functions. Full suite: 1020 tests, OK.
+
+This closes out the last concrete, explicitly-named gap from the FINAL V1 PRODUCT
+DIRECTIVE's provider-specific requirements. What remains from that directive is the
+much larger mandated browser-driven Truthful Feature Audit across every nav page - not
+started as a systematic pass yet, next up.
+
+---
