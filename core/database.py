@@ -92,8 +92,14 @@ _NEW_FUND_COLUMNS = {
 # see core/capital_strategies.py and core/capital_strategies_catalog.py.
 # NULL for every pre-existing profile - a profile with no strategy_key is
 # just a plain custom profile, exactly as before this feature existed.
+# archived_at (Money Management Studio's "My Strategies" section,
+# 2026-07-18 directive) mirrors funds.archived_at exactly - NULL means
+# active, a real timestamp means archived. Same reason funds uses a
+# timestamp rather than a bare boolean: "when" is real, useful history,
+# not just a flag.
 _NEW_RISK_PROFILE_COLUMNS = {
     "strategy_key": "TEXT",
+    "archived_at": "TEXT",
 }
 
 
@@ -624,6 +630,58 @@ def initialize_database():
     );
     """)
 
+    # Daily Compounding - the 5th official Money Management Studio
+    # strategy (2026-07-18 product directive). Genuinely different from
+    # every other sizing_mode: risk/profit-target/loss-limit are all
+    # fractions of the FUND's starting balance for a given CALENDAR DAY
+    # (in the fund's own configured timezone), recalculated once at the
+    # day boundary rather than per-trade or per-session - see
+    # core/daily_compounding.py for the actual day-boundary math, shared
+    # verbatim between live execution (core/risk_engine.py) and
+    # core/backtest_engine.py so the two can never silently diverge.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS daily_compounding_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        risk_percent REAL DEFAULT 1.0,
+        risk_fixed_amount REAL,
+        profit_target_percent REAL DEFAULT 50.0,
+        profit_target_fixed_amount REAL,
+        loss_limit_percent REAL DEFAULT 25.0,
+        loss_limit_fixed_amount REAL,
+        timezone TEXT DEFAULT 'UTC',
+        max_trades_per_day INTEGER DEFAULT 0,
+        max_concurrent_trades INTEGER DEFAULT 0,
+        cooldown_after_loss_seconds INTEGER DEFAULT 0,
+        consecutive_loss_stop INTEGER DEFAULT 0,
+        vault_enabled INTEGER DEFAULT 0,
+        vault_percent_on_target REAL DEFAULT 0,
+        stop_after_target INTEGER DEFAULT 1,
+        stop_after_loss_limit INTEGER DEFAULT 1
+    );
+    """)
+
+    # One row per (fund, calendar day in that fund's daily_compounding
+    # timezone) - the ONLY thing about a trading day that genuinely needs
+    # to be persisted rather than computed fresh: the fund's trading
+    # balance AT THE MOMENT the day started, frozen so risk/target/limit
+    # stay fixed all day even as the balance itself moves with each
+    # trade. Everything else (today's realized P/L, whether a stop
+    # threshold has been crossed) is derived fresh from the signals table
+    # every time, matching core/fund_manager.py's own "compute, don't
+    # cache" convention - see core/daily_compounding.py.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS fund_daily_starting_balance (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fund_id INTEGER NOT NULL,
+        trading_date TEXT NOT NULL,
+        starting_balance REAL NOT NULL,
+        created_at TEXT,
+        UNIQUE(fund_id, trading_date)
+    );
+    """)
+
     # Fortress (tm) Phase 2 - principal protection. protected_principal is
     # set once realized_pnl crosses protection_threshold (0 = not yet
     # protected) and, once set, never decreases - matches the spec's "the
@@ -680,6 +738,7 @@ def initialize_database():
         "martingale_settings", "compounding_settings", "profit_vault_settings",
         "apex_ascension_settings", "drawdown_protection_settings", "cashflow_settings",
         "strike_settings", "momentum_settings", "fortress_settings", "empire_settings",
+        "daily_compounding_settings",
     ):
         conn.execute(f"""
             INSERT INTO {settings_table} (risk_profile_id)
@@ -1093,6 +1152,14 @@ def initialize_database():
         "recovery_factor": "REAL",
         "max_drawdown_amount": "REAL",
         "volatility": "REAL",
+        # Daily Compounding reporting (2026-07-18 product directive) -
+        # see core/backtest_engine.py's compute_metrics for what these
+        # mean for every OTHER sizing mode (always 0/None).
+        "days_profit_target_hit": "INTEGER",
+        "days_loss_limit_hit": "INTEGER",
+        "avg_daily_pnl": "REAL",
+        "daily_target_hit_rate": "REAL",
+        "daily_loss_limit_hit_rate": "REAL",
     }
     backtest_metrics_columns = {row["name"] for row in conn.execute("PRAGMA table_info(backtest_metrics)")}
     for column, sql_type in _NEW_BACKTEST_METRICS_COLUMNS.items():
@@ -2797,6 +2864,25 @@ def list_active_trading_sessions():
 
 
 @timed("database")
+def list_funds_using_risk_profile(risk_profile_id):
+    """Which Funds currently point at this risk profile as their own
+    default (default_risk_profile_id) - for api/risk_engine_routes.py's
+    delete safety check ("delete safely" per the Money Management Studio
+    product directive), same "who's still using this" guard as broker
+    account archival (api/broker_accounts_routes.py's archive_broker_
+    account). A session's OWN risk_profile_id (trading_sessions.
+    risk_profile_id, set at session-start time) is checked separately by
+    the caller via get_active_trading_session_for_fund-style lookups -
+    this only covers the Fund-level default."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, name FROM funds WHERE default_risk_profile_id = ?", (risk_profile_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
 def get_active_trading_session_for_broker_account(broker_account_id):
     if broker_account_id is None:
         return None
@@ -3021,6 +3107,14 @@ _EMPIRE_FIELDS = {
     "enabled", "starting_amount", "target_amount", "num_levels", "levels_json",
     "failure_behavior", "checkpoint_level", "current_level",
 }
+_DAILY_COMPOUNDING_FIELDS = {
+    "enabled", "risk_percent", "risk_fixed_amount",
+    "profit_target_percent", "profit_target_fixed_amount",
+    "loss_limit_percent", "loss_limit_fixed_amount", "timezone",
+    "max_trades_per_day", "max_concurrent_trades", "cooldown_after_loss_seconds",
+    "consecutive_loss_stop", "vault_enabled", "vault_percent_on_target",
+    "stop_after_target", "stop_after_loss_limit",
+}
 
 
 def _risk_profile_row_to_dict(row):
@@ -3035,6 +3129,7 @@ def _risk_profile_row_to_dict(row):
     d["momentum"] = get_momentum_settings(d["id"])
     d["fortress"] = get_fortress_settings(d["id"])
     d["empire"] = get_empire_settings(d["id"])
+    d["daily_compounding"] = get_daily_compounding_settings(d["id"])
     return d
 
 
@@ -3060,6 +3155,7 @@ def create_risk_profile(name, is_template=False, description=None, **fields):
     conn.execute("INSERT INTO momentum_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.execute("INSERT INTO fortress_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.execute("INSERT INTO empire_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO daily_compounding_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.commit()
     conn.close()
     return profile_id
@@ -3074,12 +3170,17 @@ def get_risk_profile(profile_id):
 
 
 @timed("database")
-def list_risk_profiles(include_templates=True):
+def list_risk_profiles(include_templates=True, include_archived=False):
     conn = get_connection()
+    archived_clause = "" if include_archived else "AND archived_at IS NULL"
     if include_templates:
-        rows = conn.execute("SELECT * FROM risk_profiles ORDER BY is_template, name").fetchall()
+        rows = conn.execute(
+            f"SELECT * FROM risk_profiles WHERE 1=1 {archived_clause} ORDER BY is_template, name"
+        ).fetchall()
     else:
-        rows = conn.execute("SELECT * FROM risk_profiles WHERE is_template = 0 ORDER BY name").fetchall()
+        rows = conn.execute(
+            f"SELECT * FROM risk_profiles WHERE is_template = 0 {archived_clause} ORDER BY name"
+        ).fetchall()
     conn.close()
     return [_risk_profile_row_to_dict(r) for r in rows]
 
@@ -3113,7 +3214,24 @@ def delete_risk_profile(profile_id):
     conn.execute("DELETE FROM momentum_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM fortress_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM empire_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM daily_compounding_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM risk_profiles WHERE id = ?", (profile_id,))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def archive_risk_profile(profile_id):
+    conn = get_connection()
+    conn.execute("UPDATE risk_profiles SET archived_at = ? WHERE id = ?", (datetime.now().isoformat(), profile_id))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def unarchive_risk_profile(profile_id):
+    conn = get_connection()
+    conn.execute("UPDATE risk_profiles SET archived_at = NULL WHERE id = ?", (profile_id,))
     conn.commit()
     conn.close()
 
@@ -3153,6 +3271,7 @@ def create_risk_profile_from_snapshot(new_name, snapshot):
     update_momentum_settings(new_id, **{k: snapshot["momentum"][k] for k in _MOMENTUM_FIELDS})
     update_fortress_settings(new_id, **{k: snapshot["fortress"][k] for k in _FORTRESS_FIELDS})
     update_empire_settings(new_id, **{k: snapshot["empire"][k] for k in _EMPIRE_FIELDS})
+    update_daily_compounding_settings(new_id, **{k: snapshot["daily_compounding"][k] for k in _DAILY_COMPOUNDING_FIELDS})
     return new_id
 
 
@@ -3177,6 +3296,7 @@ def export_risk_profile(profile_id):
         "momentum": {k: profile["momentum"][k] for k in _MOMENTUM_FIELDS},
         "fortress": {k: profile["fortress"][k] for k in _FORTRESS_FIELDS},
         "empire": {k: profile["empire"][k] for k in _EMPIRE_FIELDS},
+        "daily_compounding": {k: profile["daily_compounding"][k] for k in _DAILY_COMPOUNDING_FIELDS},
     }
 
 
@@ -3205,6 +3325,8 @@ def import_risk_profile(data, name=None):
         update_fortress_settings(new_id, **data["fortress"])
     if data.get("empire"):
         update_empire_settings(new_id, **data["empire"])
+    if data.get("daily_compounding"):
+        update_daily_compounding_settings(new_id, **data["daily_compounding"])
     return new_id
 
 
@@ -3490,6 +3612,100 @@ def update_empire_settings(risk_profile_id, **fields):
 
 
 @timed("database")
+def get_daily_compounding_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM daily_compounding_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_daily_compounding_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _DAILY_COMPOUNDING_FIELDS:
+            raise ValueError(f"Unknown Daily Compounding field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE daily_compounding_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_or_create_fund_daily_starting_balance(fund_id, trading_date, starting_balance_fn):
+    """The one persisted fact a trading day needs: the fund's trading
+    balance AT THE MOMENT the day started, frozen for the rest of that
+    calendar day (in the fund's own configured timezone) so Daily
+    Compounding's risk/target/limit never drift as the balance itself
+    moves with each trade. starting_balance_fn is only called (and only
+    written) the FIRST time this (fund_id, trading_date) pair is seen -
+    every later call this same day just reads the frozen value back,
+    even if the fund's real balance has since moved. Race-safe: a UNIQUE
+    constraint on (fund_id, trading_date) means a losing concurrent
+    INSERT is simply discarded (INSERT OR IGNORE) and the winner's row is
+    read back, rather than two trades on the same first-signal-of-the-day
+    computing two different starting balances."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT starting_balance FROM fund_daily_starting_balance WHERE fund_id = ? AND trading_date = ?",
+        (fund_id, trading_date),
+    ).fetchone()
+    if row is not None:
+        conn.close()
+        return row["starting_balance"]
+
+    starting_balance = starting_balance_fn()
+    conn.execute(
+        "INSERT OR IGNORE INTO fund_daily_starting_balance (fund_id, trading_date, starting_balance, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (fund_id, trading_date, starting_balance, datetime.now().isoformat()),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT starting_balance FROM fund_daily_starting_balance WHERE fund_id = ? AND trading_date = ?",
+        (fund_id, trading_date),
+    ).fetchone()
+    conn.close()
+    return row["starting_balance"]
+
+
+@timed("database")
+def get_fund_realized_pnl_since(fund_id, since_iso):
+    """Fund-scoped counterpart of get_realized_pnl_since, for Daily
+    Compounding's day-boundary profit-target/loss-limit check - signals.
+    fund_id is stamped directly on every trade (core/trade_coordinator.py),
+    so this needs no join through trading_sessions."""
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT SUM(profit_loss) AS total FROM signals
+        WHERE fund_id = ? AND closed_at >= ? AND profit_loss IS NOT NULL
+    """, (fund_id, since_iso)).fetchone()
+    conn.close()
+    return row["total"] if row["total"] is not None else 0.0
+
+
+@timed("database")
+def get_fund_pending_stake_since(fund_id, since_iso):
+    """Fund-scoped, time-windowed counterpart of get_fund_pending_stake -
+    Daily Compounding's pessimistic pre-signal check treats every
+    currently-open trade placed today as a worst-case loss of its full
+    stake, same reasoning as get_pending_stake_since/get_session_pending_
+    stake elsewhere in this module."""
+    conn = get_connection()
+    placeholders = ", ".join("?" for _ in _PENDING_TRADE_STATUSES)
+    row = conn.execute(
+        f"SELECT SUM(trade_amount) AS total FROM signals "
+        f"WHERE fund_id = ? AND received_at >= ? AND execution_status IN ({placeholders})",
+        (fund_id, since_iso, *_PENDING_TRADE_STATUSES),
+    ).fetchone()
+    conn.close()
+    return row["total"] or 0.0
+
+
+@timed("database")
 def set_session_risk_profile(session_id, risk_profile_id):
     conn = get_connection()
     conn.execute("UPDATE trading_sessions SET risk_profile_id = ? WHERE id = ?", (risk_profile_id, session_id))
@@ -3579,12 +3795,12 @@ _RISK_PROFILE_TEMPLATES = [
 
 @timed("database")
 def seed_money_studio_templates():
-    """Populates the 4 official Money Studio strategies (core/money_studio.py)
+    """Populates the 5 official Money Studio strategies (core/money_studio.py)
     as reusable is_template=True risk_profile rows, using the exact same
     risk_profile_fields_for() fields "Use This Strategy" saves for a user -
     a no-op if any strategy_key-tagged template already exists, same
     one-time-migration pattern as seed_risk_profile_templates. Without
-    this, the 4 official strategies could never be selected in Strategy
+    this, the 5 official strategies could never be selected in Strategy
     Lab's risk_profile_ids picker (which only lists is_template rows plus
     the current user's own) unless a user had already personally
     instantiated one by hand first - this is what makes automatic,
@@ -3600,8 +3816,8 @@ def seed_money_studio_templates():
     import money_studio
     for strategy in money_studio.STRATEGIES:
         key = strategy["key"]
-        create_fields, martingale_fields, vault_fields, compounding_fields = money_studio.risk_profile_fields_for(
-            key, strategy["name"], money_studio.STARTING_BANKROLL,
+        create_fields, martingale_fields, vault_fields, compounding_fields, daily_compounding_fields = (
+            money_studio.risk_profile_fields_for(key, strategy["name"], money_studio.STARTING_BANKROLL)
         )
         create_fields = dict(create_fields)
         name = create_fields.pop("name")
@@ -3613,6 +3829,8 @@ def seed_money_studio_templates():
             update_profit_vault_settings(profile_id, **vault_fields)
         if compounding_fields:
             update_compounding_settings(profile_id, **compounding_fields)
+        if daily_compounding_fields:
+            update_daily_compounding_settings(profile_id, **daily_compounding_fields)
 
 
 @timed("database")

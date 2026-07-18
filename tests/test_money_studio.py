@@ -13,9 +13,12 @@ import money_studio
 class StrategyCardTests(unittest.TestCase):
     def test_every_official_strategy_produces_a_card(self):
         cards = [money_studio.strategy_card(s) for s in money_studio.STRATEGIES]
-        self.assertEqual(len(cards), 4)
+        self.assertEqual(len(cards), 5)
         keys = {c["key"] for c in cards}
-        self.assertEqual(keys, {"capital_preservation", "growth_accelerator", "alternating_compound", "recovery_ladder"})
+        self.assertEqual(keys, {
+            "capital_preservation", "growth_accelerator", "alternating_compound",
+            "recovery_ladder", "daily_compounding",
+        })
 
     def test_card_never_leaks_the_internal_function_fields(self):
         card = money_studio.strategy_card(money_studio.CAPITAL_PRESERVATION)
@@ -108,37 +111,41 @@ class RecoveryLadderMathTests(unittest.TestCase):
 
 class RiskProfileFieldsForTests(unittest.TestCase):
     def test_unknown_strategy_returns_all_none(self):
-        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("not_real", "x", 1000.0)
+        create, martingale, vault, compounding, daily = money_studio.risk_profile_fields_for("not_real", "x", 1000.0)
         self.assertIsNone(create)
         self.assertIsNone(martingale)
         self.assertIsNone(vault)
         self.assertIsNone(compounding)
+        self.assertIsNone(daily)
 
     def test_capital_preservation_maps_to_1_percent_and_a_vault_no_martingale(self):
-        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("capital_preservation", "My Fund", 1000.0)
+        create, martingale, vault, compounding, daily = money_studio.risk_profile_fields_for("capital_preservation", "My Fund", 1000.0)
         self.assertEqual(create["percent_of_bankroll"], 1.0)
         self.assertEqual(create["strategy_key"], "capital_preservation")
         self.assertIsNone(martingale)
         self.assertEqual(vault, {"enabled": True, "vault_percent": 25, "trigger_event": "per_trade"})
         self.assertIsNone(compounding)
+        self.assertIsNone(daily)
 
     def test_growth_accelerator_maps_to_5_percent_and_a_vault_no_martingale(self):
-        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("growth_accelerator", "My Fund", 1000.0)
+        create, martingale, vault, compounding, daily = money_studio.risk_profile_fields_for("growth_accelerator", "My Fund", 1000.0)
         self.assertEqual(create["percent_of_bankroll"], 5.0)
         self.assertIsNone(martingale)
         self.assertIsNotNone(vault)
         self.assertIsNone(compounding)
+        self.assertIsNone(daily)
 
     def test_alternating_compound_maps_to_a_real_alternating_cycle_no_vault_no_martingale(self):
-        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("alternating_compound", "My Fund", 1000.0)
+        create, martingale, vault, compounding, daily = money_studio.risk_profile_fields_for("alternating_compound", "My Fund", 1000.0)
         self.assertEqual(create["percent_of_bankroll"], 2.5)  # trade 1's percent, the cycle's own first step
         self.assertIsNone(martingale)
         self.assertIsNone(vault)
         self.assertEqual(compounding["mode"], "alternating_cycle")
         self.assertEqual(json.loads(compounding["steps_json"]), [2.5, 5.0, 2.5, 5.0])
+        self.assertIsNone(daily)
 
     def test_recovery_ladder_maps_to_1_percent_with_real_martingale_no_vault(self):
-        create, martingale, vault, compounding = money_studio.risk_profile_fields_for("recovery_ladder", "My Fund", 1000.0)
+        create, martingale, vault, compounding, daily = money_studio.risk_profile_fields_for("recovery_ladder", "My Fund", 1000.0)
         self.assertEqual(create["percent_of_bankroll"], 1.0)
         self.assertEqual(martingale, {
             "enabled": True, "max_steps": money_studio.DEFAULT_RECOVERY_MAX_STEPS,
@@ -146,6 +153,40 @@ class RiskProfileFieldsForTests(unittest.TestCase):
         })
         self.assertIsNone(vault)
         self.assertIsNone(compounding)
+        self.assertIsNone(daily)
+
+    def test_daily_compounding_maps_to_the_daily_compounding_sizing_mode(self):
+        create, martingale, vault, compounding, daily = money_studio.risk_profile_fields_for("daily_compounding", "My Fund", 1000.0)
+        self.assertEqual(create["sizing_mode"], "daily_compounding")
+        self.assertEqual(create["strategy_key"], "daily_compounding")
+        self.assertIsNone(martingale)
+        self.assertIsNone(vault)
+        self.assertIsNone(compounding)
+        self.assertEqual(daily, {
+            "enabled": True, "risk_percent": money_studio.DAILY_COMPOUNDING_RISK_PERCENT,
+            "profit_target_percent": money_studio.DAILY_COMPOUNDING_PROFIT_TARGET_PERCENT,
+            "loss_limit_percent": money_studio.DAILY_COMPOUNDING_LOSS_LIMIT_PERCENT,
+            "timezone": "UTC", "stop_after_target": True, "stop_after_loss_limit": True,
+        })
+
+
+class DailyCompoundingMathTests(unittest.TestCase):
+    def test_stake_is_1_percent_of_bankroll(self):
+        example = money_studio._daily_compounding_worked_example(1000.0)
+        self.assertEqual(example["stake"], 10.0)
+
+    def test_daily_profit_target_is_50_percent(self):
+        example = money_studio._daily_compounding_worked_example(1000.0)
+        self.assertEqual(example["daily_profit_target"], 500.0)
+
+    def test_daily_loss_limit_is_25_percent(self):
+        example = money_studio._daily_compounding_worked_example(1000.0)
+        self.assertEqual(example["daily_loss_limit"], 250.0)
+
+    def test_timeline_describes_a_calendar_reset_not_a_growth_checkpoint(self):
+        timeline = money_studio._daily_compounding_timeline(1000.0)
+        self.assertEqual(len(timeline), 1)
+        self.assertIn("trading day", timeline[0]["trigger"])
 
 
 if __name__ == "__main__":

@@ -6,34 +6,59 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
-  .ms-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 14px; }
+  /* Symmetrical strategy cards (2026-07-18 product directive): every
+     zone below has a FIXED (not min-, not auto-) height, so a shorter
+     tagline/rule value never lets a card's divider/risk-value/rule-rows
+     sit at a different Y offset than its neighbors - grid's own default
+     row-stretch only equalizes the CARD's total height, not internal
+     content alignment, so that alone isn't enough. */
+  .ms-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 980px) { .ms-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 620px) { .ms-grid { grid-template-columns: 1fr; } }
   .ms-card {
     background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 16px; cursor: pointer; display: flex; flex-direction: column;
     transition: border-color 0.15s var(--ease), transform 0.15s var(--ease), box-shadow 0.15s var(--ease);
   }
   .ms-card:hover { border-color: var(--blue); transform: translateY(-2px); box-shadow: var(--shadow); }
-  .ms-card .name { font-weight: 650; font-size: 16px; margin-bottom: 2px; }
-  .ms-card .tagline { color: var(--text-dim); font-size: 12.5px; margin-bottom: 10px; }
-  .personality-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 750; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; margin-bottom: 10px; align-self: flex-start; }
+  .ms-card-title {
+    height: 22px; line-height: 22px; font-weight: 650; font-size: 16px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ms-card-tagline {
+    height: 34px; margin: 4px 0 10px; color: var(--text-dim); font-size: 12.5px; line-height: 17px;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .ms-card-badge-row { height: 24px; margin-bottom: 10px; }
+  .personality-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; font-weight: 750; padding: 3px 10px; border-radius: 999px; text-transform: uppercase; letter-spacing: .03em; }
   .personality-conservative { background: var(--green-soft); color: var(--green); }
   .personality-balanced { background: var(--yellow-soft); color: var(--yellow); }
   .personality-aggressive { background: var(--red-soft); color: var(--red); }
-  .ms-hero { padding: 10px 0; margin: 8px 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+  .ms-hero {
+    height: 60px; box-sizing: border-box; padding: 10px 0; margin-bottom: 8px;
+    border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  }
   .ms-hero-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint); font-weight: 700; }
-  .ms-hero-value { font-size: 22px; font-weight: 750; margin-top: 2px; }
-  .ms-rule-row { display: flex; justify-content: space-between; padding: 5px 0; font-size: 12.5px; }
+  .ms-hero-value {
+    font-size: 20px; font-weight: 750; margin-top: 2px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .ms-rules { display: flex; flex-direction: column; }
+  .ms-rule-row { display: flex; justify-content: space-between; align-items: center; height: 27px; font-size: 12.5px; }
   .ms-rule-row .l { color: var(--text-faint); font-weight: 650; text-transform: uppercase; font-size: 10.5px; }
+  .ms-rule-row .v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60%; text-align: right; }
   .ms-rule-row .v.on { color: var(--blue); font-weight: 650; }
   .ms-rule-row .v.off { color: var(--text-faint); }
-  .ms-custom-tile { border-style: dashed; align-items: center; justify-content: center; text-align: center; }
-  .ms-custom-tile .plus { font-size: 30px; color: var(--blue); margin-bottom: 8px; }
+  .ms-custom-tile { border-style: dashed; }
+  .ms-custom-tile:hover { border-color: var(--blue); }
+  .ms-custom-tile .ms-card-title { color: var(--blue); }
   .profile-list-item {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer;
+    display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;
+    padding: 10px 12px; border-radius: var(--radius-sm);
     transition: background 0.12s var(--ease);
   }
   .profile-list-item:hover { background: var(--surface); }
+  .profile-list-item + .profile-list-item { border-top: 1px solid var(--border); }
   .breadcrumb { font-size: 12.5px; color: var(--text-dim); margin-bottom: 14px; }
   .breadcrumb a { color: var(--blue); cursor: pointer; text-decoration: none; }
   .breadcrumb a:hover { text-decoration: underline; }
@@ -84,16 +109,18 @@
       <div class="page-header">
         <div>
           <h1>Money Management Studio <a href="/guide#sec-risk-engine" class="help-link" title="Help: Money Management Studio">?</a></h1>
-          <div class="subtitle">4 official strategies plus a Custom Strategy Builder. Every card shows the real rules - nothing is created until you say so.</div>
+          <div class="subtitle">5 official strategies plus a Custom Strategy Builder. Every card shows the real rules - nothing is created until you say so.</div>
         </div>
       </div>
       <div class="ms-grid" id="strategy-grid" style="margin-bottom:28px;"></div>
 
-      <div class="page-header" style="margin-top:8px;">
-        <div><h2 style="margin:0;">My Profiles</h2><div class="subtitle" style="margin-bottom:0;">Profiles you've created from a strategy or built from scratch.</div></div>
-      </div>
-      <div class="card solid" id="profiles-card">
-        <div id="profiles-list" class="muted">Loading...</div>
+      <div id="my-strategies-section" style="display:none;">
+        <div class="page-header" style="margin-top:8px;">
+          <div><h2 style="margin:0;">My Strategies</h2><div class="subtitle" style="margin-bottom:0;">Strategies you've created from an official strategy or built from scratch.</div></div>
+        </div>
+        <div class="card solid" id="strategies-card">
+          <div id="strategies-list"></div>
+        </div>
       </div>
     </div>
 
@@ -144,25 +171,36 @@ function ruleRow(label, active, onText) {
   return `<div class="ms-rule-row"><span class="l">${label}</span><span class="v ${active ? "on" : "off"}">${active ? onText : "Off"}</span></div>`;
 }
 
+function recalcLabel(growthRecalc) {
+  return growthRecalc.custom_label || `+${growthRecalc.threshold_percent}% growth`;
+}
+
 function renderStrategyGrid(strategies) {
   document.getElementById("strategy-grid").innerHTML = strategies.map(s => `
     <div class="ms-card" onclick="showStrategyDetail('${s.key}')">
-      <div class="row" style="justify-content:space-between; align-items:flex-start;">
-        <div class="name">${s.icon} ${s.name}</div>
+      <div class="ms-card-title" title="${escapeHtml(s.name)}">${escapeHtml(s.name)}</div>
+      <div class="ms-card-tagline">${escapeHtml(s.tagline)}</div>
+      <div class="ms-card-badge-row"><span class="personality-badge ${personalityClass(s.personality)}">${s.personality}</span></div>
+      <div class="ms-hero"><div class="ms-hero-label">Risk per trade</div><div class="ms-hero-value" title="${escapeHtml(s.risk.headline)}">${escapeHtml(s.risk.headline)}</div></div>
+      <div class="ms-rules">
+        ${ruleRow("Martingale", s.martingale.active, "Yes - limited")}
+        ${ruleRow("Compounding", s.compounding.active, s.compounding.custom_label || "Yes")}
+        ${ruleRow("Vault", s.vault.active, s.vault.percent ? `Yes - ${s.vault.percent}%` : "Optional")}
+        ${ruleRow("Recalculates at", s.growth_recalc.active, recalcLabel(s.growth_recalc))}
       </div>
-      <div class="tagline">${escapeHtml(s.tagline)}</div>
-      <span class="personality-badge ${personalityClass(s.personality)}">${s.personality}</span>
-      <div class="ms-hero"><div class="ms-hero-label">Risk per trade</div><div class="ms-hero-value">${s.risk.headline}</div></div>
-      ${ruleRow("Martingale", s.martingale.active, "Yes - limited")}
-      ${ruleRow("Compounding", s.compounding.active, "Yes")}
-      ${ruleRow("Vault", s.vault.active, `Yes - ${s.vault.percent}%`)}
-      ${ruleRow("Recalculates at", s.growth_recalc.active, `+${s.growth_recalc.threshold_percent}% growth`)}
     </div>
   `).join("") + `
     <div class="ms-card ms-custom-tile" onclick="showBuilder(null)">
-      <div class="plus">+</div>
-      <div class="name">Custom Strategy Builder</div>
-      <div class="tagline">Build your own bankroll rules from scratch.</div>
+      <div class="ms-card-title">+ Custom Strategy Builder</div>
+      <div class="ms-card-tagline">Build your own bankroll rules from scratch - every dial is yours to set.</div>
+      <div class="ms-card-badge-row"><span class="personality-badge personality-balanced">Custom</span></div>
+      <div class="ms-hero"><div class="ms-hero-label">Risk per trade</div><div class="ms-hero-value">Configurable</div></div>
+      <div class="ms-rules">
+        ${ruleRow("Martingale", true, "Optional")}
+        ${ruleRow("Compounding", true, "Optional")}
+        ${ruleRow("Vault", true, "Optional")}
+        ${ruleRow("Recalculates at", true, "Your choice")}
+      </div>
     </div>
   `;
 }
@@ -173,23 +211,69 @@ async function loadStrategies() {
 }
 
 async function loadProfiles() {
-  const listEl = document.getElementById("profiles-list");
+  const sectionEl = document.getElementById("my-strategies-section");
+  const listEl = document.getElementById("strategies-list");
   try {
     allProfiles = await fetchJSON("/api/risk-profiles?include_templates=false");
   } catch (e) {
+    sectionEl.style.display = "block";
     listEl.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
     return;
   }
+  // Only show the whole section when at least one real custom strategy
+  // exists - never an empty "My Strategies" shell (product directive).
   if (!allProfiles.length) {
-    listEl.innerHTML = '<div class="empty">No profiles yet - use one of the 4 strategies above, or build your own.</div>';
+    sectionEl.style.display = "none";
+    listEl.innerHTML = "";
     return;
   }
+  sectionEl.style.display = "block";
   listEl.innerHTML = allProfiles.map(p => `
-    <div class="profile-list-item" onclick="showBuilder(null, ${p.id})">
-      <span title="${escapeHtml(p.name)}">${escapeHtml(displayProfileName(p.name))}${p.strategy_key ? ` <span class="muted" style="font-size:11.5px;">(based on ${escapeHtml(p.strategy_key.replace(/_/g, " "))})</span>` : ""}</span>
-      <span class="badge off">${p.sizing_mode}</span>
+    <div class="profile-list-item">
+      <span onclick="showBuilder(null, ${p.id})" style="cursor:pointer;" title="${escapeHtml(p.name)}">${escapeHtml(displayProfileName(p.name))}${p.strategy_key ? ` <span class="muted" style="font-size:11.5px;">(based on ${escapeHtml(p.strategy_key.replace(/_/g, " "))})</span>` : ""}</span>
+      <div class="row" style="gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+        <span class="badge off">${p.sizing_mode}</span>
+        <button class="subtle" style="font-size:11px; padding:3px 8px;" onclick="event.stopPropagation(); duplicateStrategy(${p.id}, '${escapeHtml(p.name)}')">Duplicate</button>
+        <a class="subtle" style="font-size:11px; padding:3px 8px; text-decoration:none;" href="/funds">Assign to Fund</a>
+        <a class="subtle" style="font-size:11px; padding:3px 8px; text-decoration:none;" href="/strategy-lab">Backtest</a>
+        <button class="subtle" style="font-size:11px; padding:3px 8px;" onclick="event.stopPropagation(); archiveStrategy(${p.id}, '${escapeHtml(p.name)}')">Archive</button>
+        <button class="danger" style="font-size:11px; padding:3px 8px;" onclick="event.stopPropagation(); deleteStrategy(${p.id}, '${escapeHtml(p.name)}')">Delete</button>
+      </div>
     </div>
   `).join("");
+}
+
+async function duplicateStrategy(profileId, currentName) {
+  const newName = prompt("Name for the duplicate:", `${currentName} (Copy)`);
+  if (!newName) return;
+  try {
+    await fetchJSON(`/api/risk-profiles/${profileId}/duplicate`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: newName }),
+    });
+    await loadProfiles();
+  } catch (e) {
+    alert("Failed to duplicate: " + e.message);
+  }
+}
+
+async function archiveStrategy(profileId, name) {
+  if (!confirm(`Archive "${name}"? It will no longer appear here, and stays out of every Session/Fund picker until unarchived.`)) return;
+  try {
+    await fetchJSON(`/api/risk-profiles/${profileId}/archive`, { method: "POST" });
+    await loadProfiles();
+  } catch (e) {
+    alert("Failed to archive: " + e.message);
+  }
+}
+
+async function deleteStrategy(profileId, name) {
+  if (!confirm(`Permanently delete "${name}"? This cannot be undone.`)) return;
+  try {
+    await fetchJSON(`/api/risk-profiles/${profileId}`, { method: "DELETE" });
+    await loadProfiles();
+  } catch (e) {
+    alert("Failed to delete: " + e.message);
+  }
 }
 
 // ---------------- Strategy detail ----------------
@@ -201,7 +285,7 @@ function renderRulesGrid(s) {
       <div class="mm-tile ${s.martingale.active ? "on" : ""}"><div class="mm-tile-label">Martingale</div><div class="mm-tile-value">${s.martingale.active ? "Yes - limited" : "No"}</div></div>
       <div class="mm-tile ${s.compounding.active ? "on" : ""}"><div class="mm-tile-label">Compounding</div><div class="mm-tile-value">${s.compounding.active ? "Yes" : "No"}</div></div>
       <div class="mm-tile ${s.vault.active ? "on" : ""}"><div class="mm-tile-label">Vault</div><div class="mm-tile-value">${s.vault.active ? s.vault.percent + "% of profit" : "No"}</div></div>
-      <div class="mm-tile ${s.growth_recalc.active ? "on" : ""}" style="grid-column:span 2;"><div class="mm-tile-label">Position size recalculates</div><div class="mm-tile-value">${s.growth_recalc.active ? `Only after +${s.growth_recalc.threshold_percent}% growth above the previous baseline` : "Never - fixed forever"}</div></div>
+      <div class="mm-tile ${s.growth_recalc.active ? "on" : ""}" style="grid-column:span 2;"><div class="mm-tile-label">Position size recalculates</div><div class="mm-tile-value">${s.growth_recalc.active ? (s.growth_recalc.custom_label ? `Only at the ${s.growth_recalc.custom_label.toLowerCase()}` : `Only after +${s.growth_recalc.threshold_percent}% growth above the previous baseline`) : "Never - fixed forever"}</div></div>
     </div>
   `;
 }
@@ -215,8 +299,15 @@ function renderWorkedExample(s) {
   if (w.ladder) {
     cycleHtml = `<table class="cycle-table"><tr><th>Step</th>${w.ladder.map(l => `<th>${l.step}${l.is_max ? " (max)" : ""}</th>`).join("")}</tr><tr><td>Stake</td>${w.ladder.map(l => `<td>$${l.stake.toFixed(2)}</td>`).join("")}</tr></table><p class="muted" style="font-size:12px; margin:8px 0 0;">A win at any step resets you to Step 0. A loss at the max step ends the session rather than increasing further.</p>`;
   }
+  const dailyLimitsHtml = (w.daily_profit_target !== undefined) ? `
+    <div class="mm-grid" style="margin-bottom:12px;">
+      <div class="mm-tile on"><div class="mm-tile-label">Daily profit target</div><div class="mm-tile-value">$${w.daily_profit_target.toFixed(2)}</div></div>
+      <div class="mm-tile on"><div class="mm-tile-label">Daily loss limit</div><div class="mm-tile-value">$${w.daily_loss_limit.toFixed(2)}</div></div>
+    </div>
+  ` : "";
   return `
     <p style="font-size:12.5px; color:var(--text-dim); margin:0 0 10px;">A mechanical illustration of the rule above, not a performance projection - at a $${w.starting_bankroll.toLocaleString()} bankroll, stake size $${w.stake.toFixed(2)}, assuming an 88% payout:</p>
+    ${dailyLimitsHtml}
     ${cycleHtml}
     <div class="scenario-pair" style="margin-top:${cycleHtml ? "12px" : "0"};">
       <div class="scenario-box win"><div class="sc-title">If it wins</div><div class="sc-amount">+$${w.win.profit.toFixed(2)}</div><div style="font-size:12px; color:var(--text-dim);">Balance: $${w.starting_bankroll.toLocaleString()} &rarr; $${w.win.active_after.toLocaleString()}</div>${w.win.vault_amount !== undefined ? `<div style="font-size:11.5px; color:var(--green); margin-top:6px; font-weight:650;">$${w.win.vault_amount.toFixed(2)} moves to Vault immediately</div>` : ""}</div>
@@ -245,7 +336,7 @@ async function showStrategyDetail(key) {
       <div style="flex:2; min-width:0;">
         <div class="card">
           <div class="row" style="gap:10px; margin-bottom:12px;"><span class="badge ${riskBadgeClass(s.risk_level)}">${s.risk_level} risk</span><span class="personality-badge ${personalityClass(s.personality)}">${s.personality}</span></div>
-          <h2 style="margin:0 0 8px;">${s.icon} ${s.name}</h2>
+          <h2 style="margin:0 0 8px;">${escapeHtml(s.name)}</h2>
           <p style="font-size:13.5px; margin:0;">${s.purpose}</p>
         </div>
         <div class="card"><h3 style="margin-top:0;">The rules, at a glance</h3>${renderRulesGrid(s)}</div>
@@ -286,11 +377,11 @@ async function createFromStrategy(key, name, bankroll) {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name, bankroll }),
     });
-    alert(`"${created.name}" created. You can select it from any Session's Risk Profile dropdown, or manage it below.`);
+    alert(`"${created.name}" created. You can select it from any Session's Money Management dropdown, or manage it under My Strategies below.`);
     await loadProfiles();
     showView("view-list");
   } catch (e) {
-    alert("Failed to create profile: " + e.message);
+    alert("Failed to create strategy: " + e.message);
   }
 }
 
@@ -306,6 +397,15 @@ async function showBuilder(baseKey, existingProfileId) {
   if (existingProfileId) { try { existing = await fetchJSON(`/api/risk-profiles/${existingProfileId}`); } catch (e) {} }
 
   const compSteps = existing && existing.compounding.steps_json ? JSON.parse(existing.compounding.steps_json) : [];
+  const dailyDefaults = {
+    daily_risk_percent: 1, daily_risk_fixed: null,
+    daily_profit_target_percent: 50, daily_profit_target_fixed: null,
+    daily_loss_limit_percent: 25, daily_loss_limit_fixed: null,
+    daily_timezone: "UTC", daily_max_trades_per_day: 0, daily_max_concurrent_trades: 0,
+    daily_cooldown_after_loss: 0, daily_consecutive_loss_stop: 0,
+    daily_stop_after_target: true, daily_stop_after_loss_limit: true,
+    daily_vault_enabled: false, daily_vault_percent_on_target: 0,
+  };
   const preset = existing ? {
     name: existing.name, bankroll: existing.bankroll,
     sizing_mode: existing.sizing_mode, percent: existing.percent_of_bankroll, fixed: existing.fixed_amount,
@@ -313,18 +413,28 @@ async function showBuilder(baseKey, existingProfileId) {
     vault_enabled: existing.profit_vault.enabled, vault_percent: existing.profit_vault.vault_percent, vault_trigger: existing.profit_vault.trigger_event,
     comp_mode: existing.compounding.mode, comp_steps: compSteps,
     comp_drawdown: existing.compounding.drawdown_reset_percent, comp_max: existing.compounding.max_risk_percent, comp_min: existing.compounding.min_risk_percent,
+    daily_risk_percent: existing.daily_compounding.risk_percent, daily_risk_fixed: existing.daily_compounding.risk_fixed_amount,
+    daily_profit_target_percent: existing.daily_compounding.profit_target_percent, daily_profit_target_fixed: existing.daily_compounding.profit_target_fixed_amount,
+    daily_loss_limit_percent: existing.daily_compounding.loss_limit_percent, daily_loss_limit_fixed: existing.daily_compounding.loss_limit_fixed_amount,
+    daily_timezone: existing.daily_compounding.timezone,
+    daily_max_trades_per_day: existing.daily_compounding.max_trades_per_day, daily_max_concurrent_trades: existing.daily_compounding.max_concurrent_trades,
+    daily_cooldown_after_loss: existing.daily_compounding.cooldown_after_loss_seconds, daily_consecutive_loss_stop: existing.daily_compounding.consecutive_loss_stop,
+    daily_stop_after_target: !!existing.daily_compounding.stop_after_target, daily_stop_after_loss_limit: !!existing.daily_compounding.stop_after_loss_limit,
+    daily_vault_enabled: !!existing.daily_compounding.vault_enabled, daily_vault_percent_on_target: existing.daily_compounding.vault_percent_on_target,
   } : base ? {
     name: `${base.name} (Custom)`, bankroll: 1000,
-    sizing_mode: "percent", percent: parseFloat(base.risk.headline) || 1, fixed: 10,
+    sizing_mode: base.key === "daily_compounding" ? "daily_compounding" : "percent", percent: parseFloat(base.risk.headline) || 1, fixed: 10,
     mart_enabled: base.martingale.active, mart_steps: 3, mart_mult: 2, mart_reset: true,
     vault_enabled: base.vault.active, vault_percent: base.vault.percent || 25, vault_trigger: "per_trade",
     comp_mode: "disabled", comp_steps: [], comp_drawdown: 0, comp_max: 0, comp_min: 0,
+    ...dailyDefaults,
   } : {
     name: "My Custom Strategy", bankroll: 1000,
     sizing_mode: "percent", percent: 1, fixed: 10,
     mart_enabled: false, mart_steps: 3, mart_mult: 2, mart_reset: true,
     vault_enabled: false, vault_percent: 25, vault_trigger: "per_trade",
     comp_mode: "disabled", comp_steps: [], comp_drawdown: 0, comp_max: 0, comp_min: 0,
+    ...dailyDefaults,
   };
   const compCycleText = preset.comp_mode === "alternating_cycle" ? preset.comp_steps.join(", ") : "";
 
@@ -333,12 +443,12 @@ async function showBuilder(baseKey, existingProfileId) {
 
   el.innerHTML = `
     <div class="breadcrumb"><a onclick="showView('view-list')">Money Management Studio</a> / ${heading}</div>
-    <div class="page-header"><div><h1 style="margin-bottom:4px;">${heading}</h1><div class="subtitle">${existing ? "Editing your own saved profile." : "AXIM Trader's signature feature - nothing is saved until you confirm" + (baseName ? `, and "${baseName}" itself is never modified.` : ".")}</div></div></div>
+    <div class="page-header"><div><h1 style="margin-bottom:4px;">${heading}</h1><div class="subtitle">${existing ? "Editing your own saved strategy." : "AXIM Trader's signature feature - nothing is saved until you confirm" + (baseName ? `, and "${baseName}" itself is never modified.` : ".")}</div></div></div>
     ${baseName ? `<div class="info-box" style="margin-bottom:16px;">Starting from <b>${baseName}</b>'s rules as a template.</div>` : ""}
     <div class="row" style="align-items:flex-start; gap:16px;">
       <div style="flex:2; min-width:0;">
         <div class="card">
-          <div class="field"><label>Profile name</label><input type="text" id="f-name" value="${escapeHtml(preset.name)}"></div>
+          <div class="field"><label>Strategy name</label><input type="text" id="f-name" value="${escapeHtml(preset.name)}"></div>
           <div class="field"><label>Bankroll ($)</label><input type="number" id="f-bankroll" step="1" min="1" value="${preset.bankroll}"></div>
         </div>
         <div class="card">
@@ -349,15 +459,48 @@ async function showBuilder(baseKey, existingProfileId) {
               <option value="percent" ${preset.sizing_mode === "percent" ? "selected" : ""}>Percentage sizing</option>
               <option value="dynamic" ${preset.sizing_mode === "dynamic" ? "selected" : ""}>Dynamic (recalculates every trade)</option>
               <option value="kelly" ${preset.sizing_mode === "kelly" ? "selected" : ""}>Kelly sizing</option>
+              <option value="daily_compounding" ${preset.sizing_mode === "daily_compounding" ? "selected" : ""}>Daily Compounding (recalculates once per trading day)</option>
             </select>
           </div>
           <div id="sizing-fixed" class="sizing-sub"><div class="field"><label>Fixed amount ($)</label><input type="number" id="f-fixed" step="1" min="1" value="${preset.fixed || 10}"></div></div>
           <div id="sizing-percent" class="sizing-sub"><div class="field"><label>Percent of bankroll (%)</label><input type="number" id="f-percent" step="0.1" min="0.1" value="${preset.percent || 1}"></div></div>
           <div id="sizing-dynamic" class="sizing-sub"><div class="field"><label>Percent of current balance (%)</label><input type="number" id="f-dynamic-percent" step="0.1" min="0.1" value="${preset.percent || 1}"></div></div>
+          <div id="sizing-daily_compounding" class="sizing-sub">
+            <div class="info-box">Full settings (profit target, loss limit, timezone, and more) are below.</div>
+          </div>
           <div id="sizing-kelly" class="sizing-sub">
             <div class="row"><div class="field"><label>Estimated win rate (%)</label><input type="number" id="f-kelly-p" value="55"></div><div class="field"><label>Estimated payout (0-1)</label><input type="number" id="f-kelly-b" step="0.01" value="0.88"></div></div>
             <div class="field"><label>Kelly fraction</label><input type="number" id="f-kelly-fraction" step="0.05" value="0.5"></div>
           </div>
+        </div>
+        <div class="card" id="daily-compounding-card" style="display:${preset.sizing_mode === "daily_compounding" ? "block" : "none"};">
+          <h3 style="margin-top:0;">Daily Compounding Settings</h3>
+          <div class="info-box">Risk per trade, the profit target, and the loss limit are all recalculated once at the start of each trading day, from that day's real starting Fund balance - never mid-day, never per-trade.</div>
+          <div class="row" style="margin-top:10px;">
+            <div class="field"><label>Risk % of today's starting balance (min 1%)</label><input type="number" id="f-daily-risk-percent" step="0.1" min="1" value="${preset.daily_risk_percent || 1}"></div>
+            <div class="field"><label>Or fixed $ per trade (optional, overrides %)</label><input type="number" id="f-daily-risk-fixed" step="1" min="0" value="${preset.daily_risk_fixed ?? ""}"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Daily profit target (%)</label><input type="number" id="f-daily-profit-target-pct" step="1" min="0" value="${preset.daily_profit_target_percent ?? 50}"></div>
+            <div class="field"><label>Or fixed $ (optional)</label><input type="number" id="f-daily-profit-target-fixed" step="1" min="0" value="${preset.daily_profit_target_fixed ?? ""}"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Daily loss limit (%)</label><input type="number" id="f-daily-loss-limit-pct" step="1" min="0" value="${preset.daily_loss_limit_percent ?? 25}"></div>
+            <div class="field"><label>Or fixed $ (optional)</label><input type="number" id="f-daily-loss-limit-fixed" step="1" min="0" value="${preset.daily_loss_limit_fixed ?? ""}"></div>
+          </div>
+          <div class="field"><label>Fund/account timezone (IANA name, e.g. America/New_York)</label><input type="text" id="f-daily-timezone" value="${escapeHtml(preset.daily_timezone || "UTC")}"></div>
+          <div class="row">
+            <div class="field"><label>Max trades per day (0=off)</label><input type="number" id="f-daily-max-trades" min="0" value="${preset.daily_max_trades_per_day || 0}"></div>
+            <div class="field"><label>Max concurrent trades (0=off)</label><input type="number" id="f-daily-max-concurrent" min="0" value="${preset.daily_max_concurrent_trades || 0}"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Cooldown after a loss (seconds, 0=off)</label><input type="number" id="f-daily-cooldown" min="0" value="${preset.daily_cooldown_after_loss || 0}"></div>
+            <div class="field"><label>Consecutive-loss stop (0=off)</label><input type="number" id="f-daily-consecutive-loss-stop" min="0" value="${preset.daily_consecutive_loss_stop || 0}"></div>
+          </div>
+          <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:8px;"><input type="checkbox" id="f-daily-stop-after-target" style="width:auto;" ${preset.daily_stop_after_target !== false ? "checked" : ""}> Stop trading for the rest of the day once the profit target is hit</label>
+          <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:6px;"><input type="checkbox" id="f-daily-stop-after-loss" style="width:auto;" ${preset.daily_stop_after_loss_limit !== false ? "checked" : ""}> Stop trading for the rest of the day once the loss limit is hit</label>
+          <div class="row" style="justify-content:space-between; margin-top:14px;"><h4 style="margin:0;">Vault on daily target</h4><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-daily-vault-enabled" style="width:auto;" ${preset.daily_vault_enabled ? "checked" : ""}> Enabled</label></div>
+          <div class="field"><label>Vault % of the day's profit the moment the target is hit</label><input type="number" id="f-daily-vault-percent" step="1" min="0" max="100" value="${preset.daily_vault_percent_on_target || 0}"></div>
         </div>
         <div class="card">
           <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Martingale</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-mart-enabled" style="width:auto;" ${preset.mart_enabled ? "checked" : ""}> Enabled</label></div>
@@ -367,7 +510,7 @@ async function showBuilder(baseKey, existingProfileId) {
               <div class="field"><label>Multiplier</label><input type="number" id="f-mart-mult" step="0.1" min="1" value="${preset.mart_mult || 2}"></div>
             </div>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" id="f-mart-reset" style="width:auto;" ${preset.mart_reset !== false ? "checked" : ""}> Reset to base stake after a win</label>
-            <div class="warning-box" id="mart-unlimited-warning" style="display:none;">⚠ A long losing streak with no cap can consume an entire bankroll. Keep max steps low unless you fully understand the exposure - use "Preview Projected Exposure" on the profile after saving to see the worst case in dollars.</div>
+            <div class="warning-box" id="mart-unlimited-warning" style="display:none;">⚠ A long losing streak with no cap can consume an entire bankroll. Keep max steps low unless you fully understand the exposure - use "Preview Projected Exposure" on the strategy after saving to see the worst case in dollars.</div>
           </div>
         </div>
         <div class="card">
@@ -431,8 +574,8 @@ async function showBuilder(baseKey, existingProfileId) {
       <div style="flex:1; position:sticky; top:20px;">
         <div class="card">
           <h3 style="margin-top:0;">Save</h3>
-          <p style="font-size:12px; color:var(--text-dim); margin:0 0 10px;">${existing ? "Updates this profile - your other profiles are untouched." : `Creates a new profile.${baseName ? ` "${baseName}" itself is never modified.` : ""}`}</p>
-          <button class="primary" style="width:100%;" onclick="saveBuilder(${existingProfileId || "null"})">${existing ? "Save Changes" : "Save as New Profile"}</button>
+          <p style="font-size:12px; color:var(--text-dim); margin:0 0 10px;">${existing ? "Updates this strategy - your other strategies are untouched." : `Creates a new strategy.${baseName ? ` "${baseName}" itself is never modified.` : ""}`}</p>
+          <button class="primary" style="width:100%;" onclick="saveBuilder(${existingProfileId || "null"})">${existing ? "Save Changes" : "Save as New Strategy"}</button>
           <span id="builder-save-status" class="muted" style="display:block; margin-top:8px;"></span>
         </div>
       </div>
@@ -458,15 +601,16 @@ async function showBuilder(baseKey, existingProfileId) {
 }
 
 function showSizingSub(mode) {
-  ["fixed", "percent", "dynamic", "kelly"].forEach(m => {
+  ["fixed", "percent", "dynamic", "kelly", "daily_compounding"].forEach(m => {
     document.getElementById(`sizing-${m}`).classList.toggle("visible", m === mode);
   });
+  document.getElementById("daily-compounding-card").style.display = mode === "daily_compounding" ? "block" : "none";
 }
 
 async function saveBuilder(existingProfileId) {
   const statusEl = document.getElementById("builder-save-status");
   const name = document.getElementById("f-name").value.trim();
-  if (!name) { alert("Please give this profile a name."); return; }
+  if (!name) { alert("Please give this strategy a name."); return; }
   const sizingMode = document.getElementById("f-sizing-mode").value;
   const body = {
     name, bankroll: parseFloat(document.getElementById("f-bankroll").value) || 0,
@@ -531,6 +675,37 @@ async function saveBuilder(existingProfileId) {
         trigger_event: document.getElementById("f-vault-trigger").value,
       }),
     });
+
+    const dailyRiskPercent = parseFloat(document.getElementById("f-daily-risk-percent").value) || 1;
+    if (sizingMode === "daily_compounding" && dailyRiskPercent < 1) {
+      statusEl.textContent = "Failed: Daily Compounding risk % must be at least 1%.";
+      return;
+    }
+    const dailyRiskFixedVal = document.getElementById("f-daily-risk-fixed").value;
+    const dailyTargetFixedVal = document.getElementById("f-daily-profit-target-fixed").value;
+    const dailyLossFixedVal = document.getElementById("f-daily-loss-limit-fixed").value;
+    await fetchJSON(`/api/risk-profiles/${profileId}/daily-compounding`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: sizingMode === "daily_compounding",
+        risk_percent: dailyRiskPercent,
+        risk_fixed_amount: dailyRiskFixedVal !== "" ? parseFloat(dailyRiskFixedVal) : null,
+        profit_target_percent: parseFloat(document.getElementById("f-daily-profit-target-pct").value) || 0,
+        profit_target_fixed_amount: dailyTargetFixedVal !== "" ? parseFloat(dailyTargetFixedVal) : null,
+        loss_limit_percent: parseFloat(document.getElementById("f-daily-loss-limit-pct").value) || 0,
+        loss_limit_fixed_amount: dailyLossFixedVal !== "" ? parseFloat(dailyLossFixedVal) : null,
+        timezone: document.getElementById("f-daily-timezone").value.trim() || "UTC",
+        max_trades_per_day: parseInt(document.getElementById("f-daily-max-trades").value, 10) || 0,
+        max_concurrent_trades: parseInt(document.getElementById("f-daily-max-concurrent").value, 10) || 0,
+        cooldown_after_loss_seconds: parseInt(document.getElementById("f-daily-cooldown").value, 10) || 0,
+        consecutive_loss_stop: parseInt(document.getElementById("f-daily-consecutive-loss-stop").value, 10) || 0,
+        stop_after_target: document.getElementById("f-daily-stop-after-target").checked,
+        stop_after_loss_limit: document.getElementById("f-daily-stop-after-loss").checked,
+        vault_enabled: document.getElementById("f-daily-vault-enabled").checked,
+        vault_percent_on_target: parseFloat(document.getElementById("f-daily-vault-percent").value) || 0,
+      }),
+    });
+
     statusEl.textContent = "Saved.";
     await loadProfiles();
     setTimeout(() => showView("view-list"), 500);

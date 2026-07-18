@@ -49,8 +49,9 @@ def create_profile_from_strategy(strategy_key: str, body: CreateFromStrategyRequ
     update_compounding_settings) - not a new mechanism. See
     core/money_studio.risk_profile_fields_for for exactly what's real vs
     approximated per strategy."""
-    create_fields, martingale_fields, vault_fields, compounding_fields = money_studio.risk_profile_fields_for(
-        strategy_key, body.name, body.bankroll)
+    create_fields, martingale_fields, vault_fields, compounding_fields, daily_compounding_fields = (
+        money_studio.risk_profile_fields_for(strategy_key, body.name, body.bankroll)
+    )
     if create_fields is None:
         raise HTTPException(status_code=404, detail="strategy not found")
     name = create_fields.pop("name")
@@ -62,4 +63,6 @@ def create_profile_from_strategy(strategy_key: str, body: CreateFromStrategyRequ
         database.update_profit_vault_settings(profile_id, **vault_fields)
     if compounding_fields:
         database.update_compounding_settings(profile_id, **compounding_fields)
+    if daily_compounding_fields:
+        database.update_daily_compounding_settings(profile_id, **daily_compounding_fields)
     return database.get_risk_profile(profile_id)

@@ -22,11 +22,11 @@ class MoneyStudioSeedTests(unittest.TestCase):
         database.DB_FILE = self._original_db_file
         self._tmp_dir.cleanup()
 
-    def test_seeds_exactly_the_4_official_strategies(self):
+    def test_seeds_exactly_the_5_official_strategies(self):
         database.seed_money_studio_templates()
         profiles = database.list_risk_profiles(include_templates=True)
         seeded = [p for p in profiles if p["strategy_key"] in money_studio.STRATEGIES_BY_KEY]
-        self.assertEqual(len(seeded), 4)
+        self.assertEqual(len(seeded), 5)
         self.assertTrue(all(p["is_template"] for p in seeded))
 
     def test_seeded_profiles_are_selectable_as_templates(self):
@@ -51,12 +51,21 @@ class MoneyStudioSeedTests(unittest.TestCase):
         self.assertTrue(vault["enabled"])
         self.assertEqual(vault["vault_percent"], 25)
 
+    def test_daily_compounding_gets_daily_compounding_settings(self):
+        database.seed_money_studio_templates()
+        profiles = database.list_risk_profiles(include_templates=True)
+        daily = next(p for p in profiles if p["strategy_key"] == "daily_compounding")
+        self.assertEqual(daily["sizing_mode"], "daily_compounding")
+        settings = database.get_daily_compounding_settings(daily["id"])
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["risk_percent"], money_studio.DAILY_COMPOUNDING_RISK_PERCENT)
+
     def test_is_a_no_op_if_templates_already_exist(self):
         database.seed_money_studio_templates()
         database.seed_money_studio_templates()
         profiles = database.list_risk_profiles(include_templates=True)
         seeded = [p for p in profiles if p["strategy_key"] in money_studio.STRATEGIES_BY_KEY]
-        self.assertEqual(len(seeded), 4)
+        self.assertEqual(len(seeded), 5)
 
 
 if __name__ == "__main__":

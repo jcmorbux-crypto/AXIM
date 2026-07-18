@@ -1,4 +1,4 @@
-"""AXIM Trader - Money Management Studio, the 4-strategy redesign.
+"""AXIM Trader - Money Management Studio, the 5-strategy redesign.
 
 Complete replacement of the old "6 starters + 27-item Advanced Library"
 system per direct product-owner directive (2026-07-13): too technical,
@@ -6,9 +6,12 @@ too many generic-named options, felt like configuring software instead
 of having a professional trading coach beside you. Originally designed
 and verified on the ui-vision-upgrade branch's isolated preview server;
 this copy is the real, production version wired to core/risk_engine.py
-and core/database.py's real risk_profiles table.
+and core/database.py's real risk_profiles table. Daily Compounding
+(strategy 5, see below) was added 2026-07-18 as a genuinely new
+calendar-day-scoped sizing mode (core/daily_compounding.py) - the
+other 4 strategies and their real-engine mapping are unchanged.
 
-Exactly 4 official, LOCKED strategies + 1 Custom Strategy Builder entry
+Exactly 5 official, LOCKED strategies + 1 Custom Strategy Builder entry
 point. "Locked" means the definitions below are the single source of
 truth, hardcoded here, never stored as an editable DB row - "Use This
 Strategy"/"Create From This Template" always creates a NEW real
@@ -336,7 +339,83 @@ RECOVERY_LADDER = {
 }
 
 
-STRATEGIES = [CAPITAL_PRESERVATION, GROWTH_ACCELERATOR, ALTERNATING_COMPOUND, RECOVERY_LADDER]
+# ---------------------------------------------------------------------
+# Strategy 5: Daily Compounding
+# ---------------------------------------------------------------------
+
+DAILY_COMPOUNDING_RISK_PERCENT = 1.0
+DAILY_COMPOUNDING_PROFIT_TARGET_PERCENT = 50.0
+DAILY_COMPOUNDING_LOSS_LIMIT_PERCENT = 25.0
+
+
+def _daily_compounding_worked_example(bankroll=STARTING_BANKROLL):
+    stake = _money(bankroll * (DAILY_COMPOUNDING_RISK_PERCENT / 100.0))
+    payout = PAYOUT_PERCENT / 100.0
+    profit = _money(stake * payout)
+    return {
+        "starting_bankroll": bankroll, "stake": stake,
+        "win": {"profit": profit, "active_after": _money(bankroll + profit)},
+        "loss": {"loss": -stake, "active_after": _money(bankroll - stake)},
+        "daily_profit_target": _money(bankroll * (DAILY_COMPOUNDING_PROFIT_TARGET_PERCENT / 100.0)),
+        "daily_loss_limit": _money(bankroll * (DAILY_COMPOUNDING_LOSS_LIMIT_PERCENT / 100.0)),
+    }
+
+
+def _daily_compounding_timeline(bankroll=STARTING_BANKROLL):
+    # Not a growth-checkpoint strategy like the other 4 - the "checkpoint"
+    # here is calendar-driven (every trading day), not bankroll-driven,
+    # so this describes the real daily reset core/daily_compounding.py
+    # performs rather than a fabricated growth threshold.
+    return [{
+        "checkpoint": 1,
+        "trigger": "The next trading day begins (your Fund's configured timezone)",
+        "action": (
+            "AXIM captures the Fund's real balance at that moment as the new starting balance, "
+            f"recalculates the {DAILY_COMPOUNDING_RISK_PERCENT:g}% stake, the "
+            f"{DAILY_COMPOUNDING_PROFIT_TARGET_PERCENT:g}% profit target, and the "
+            f"{DAILY_COMPOUNDING_LOSS_LIMIT_PERCENT:g}% loss limit from it, and resets yesterday's "
+            "realized P/L counter to $0 - yesterday's trade history is preserved, never erased, "
+            "and an in-progress trade is never touched by the reset."
+        ),
+        "baseline_after": None, "new_stake": None, "vaulted_this_step": 0.0,
+    }]
+
+
+DAILY_COMPOUNDING = {
+    "key": "daily_compounding", "id": "daily_compounding",
+    "name": "Daily Compounding", "icon": "",
+    "tagline": "A fresh, fixed risk budget every trading day.",
+    "personality": "Balanced", "risk_level": "Medium",
+    "purpose": "Built around the trading day, not the session: every trading day starts with its own risk budget, its own profit target, and its own loss limit, all sized off that day's real starting Fund balance. Once the day's target or limit is reached, AXIM stops trading that Fund until the next trading day begins - so a great day can't be given back, and a bad day can't be chased.",
+    "risk": {"headline": f"{DAILY_COMPOUNDING_RISK_PERCENT:g}% of today's starting balance", "detail": f"Every trade risks {DAILY_COMPOUNDING_RISK_PERCENT:g}% (minimum - you can set it higher) of the Fund's balance at the moment today's trading began. It does not move again until tomorrow, no matter how the balance changes during the day."},
+    "martingale": {"active": False, "summary": "No martingale. A loss never changes today's stake."},
+    "compounding": {"active": True, "custom_label": "Once per day", "summary": "Recalculates exactly once, at the start of each trading day, from that day's real starting Fund balance - never mid-day, never per-trade."},
+    "vault": {"active": False, "summary": "Off by default - optionally vault a percentage of the day's profit the moment the daily target is hit."},
+    "growth_recalc": {"active": True, "custom_label": "Start of each trading day", "summary": "Recalculates once at the start of every trading day - tied to the calendar (your Fund's configured timezone), not to a bankroll growth percentage like the other strategies."},
+    "best_for": ["Traders who want a hard daily circuit breaker on both the upside and the downside", "Funds trading every day and wanting consistent, repeatable daily risk", "Anyone who has ever given back a great day's profit and wants that structurally prevented"],
+    "pros": [
+        "A real daily stop on both sides - trading halts for the day at the profit target exactly the same way it halts at the loss limit.",
+        "Risk per trade is always sized off a real, known number (today's real starting balance), never a stale or projected one.",
+        "Resumes automatically the next trading day - no manual re-enable required.",
+    ],
+    "cons": [
+        "A strong trading day is deliberately capped at the profit target - this strategy will not let a session run further once the target is hit.",
+        "Requires a correctly configured Fund/account timezone to align the daily boundary with when you actually trade.",
+    ],
+    "ideal_providers": "Works with any provider whose signals arrive throughout the trading day - the daily boundary is about YOUR risk management, not about the provider's own signal pattern.",
+    "faq": [
+        {"q": "What happens right at midnight if a trade is still open?", "a": "Nothing - an in-progress trade is never touched by the daily reset. The new day's starting balance and thresholds are captured at the first new signal of the new day, and the open trade resolves normally."},
+        {"q": "Can I risk more than 1%?", "a": "Yes - 1% is the minimum, not a cap. Raise it in the Custom Strategy Builder, subject to your Fund and platform limits."},
+        {"q": "What timezone is \"the start of the day\"?", "a": "Whatever timezone you set on this strategy - not the server's timezone and not a hardcoded UTC assumption. Set it to match where you actually consider your trading day to begin."},
+        {"q": "Does hitting the loss limit pause my whole Fund?", "a": "No - only today's trading stops. The Fund itself stays active and automatically resumes trading, with a fresh budget, at the start of the next trading day."},
+    ],
+    "session_controls": {"daily_profit_target": "configurable (50% default)", "daily_loss_limit": "configurable (25% default)", "max_trades_per_day": "configurable", "timezone": "configurable"},
+    "_worked_example_fn": _daily_compounding_worked_example,
+    "_timeline_fn": _daily_compounding_timeline,
+}
+
+
+STRATEGIES = [CAPITAL_PRESERVATION, GROWTH_ACCELERATOR, ALTERNATING_COMPOUND, RECOVERY_LADDER, DAILY_COMPOUNDING]
 STRATEGIES_BY_KEY = {s["key"]: s for s in STRATEGIES}
 
 
@@ -372,10 +451,11 @@ def strategy_detail(key):
 
 def risk_profile_fields_for(key, name, bankroll):
     """Returns (create_fields, martingale_fields_or_None,
-    vault_fields_or_None, compounding_fields_or_None) for POST
-    /api/risk-profiles + its martingale/vault/compounding PATCH sub-
-    endpoints. create_fields always includes strategy_key so the saved
-    profile can show "Based on <Strategy>"."""
+    vault_fields_or_None, compounding_fields_or_None,
+    daily_compounding_fields_or_None) for POST /api/risk-profiles + its
+    martingale/vault/compounding/daily-compounding PATCH sub-endpoints.
+    create_fields always includes strategy_key so the saved profile can
+    show "Based on <Strategy>"."""
     if key == "capital_preservation":
         create = {
             "name": name, "bankroll": bankroll, "sizing_mode": "percent",
@@ -383,7 +463,7 @@ def risk_profile_fields_for(key, name, bankroll):
             "description": "Based on Capital Preservation - 1% risk per trade, 25% of every winning trade's profit vaulted immediately.",
         }
         vault = {"enabled": True, "vault_percent": 25, "trigger_event": "per_trade"}
-        return create, None, vault, None
+        return create, None, vault, None, None
 
     if key == "growth_accelerator":
         create = {
@@ -392,7 +472,7 @@ def risk_profile_fields_for(key, name, bankroll):
             "description": "Based on Growth Accelerator - 5% risk per trade, 25% of every winning trade's profit vaulted immediately.",
         }
         vault = {"enabled": True, "vault_percent": 25, "trigger_event": "per_trade"}
-        return create, None, vault, None
+        return create, None, vault, None, None
 
     if key == "alternating_compound":
         create = {
@@ -401,7 +481,7 @@ def risk_profile_fields_for(key, name, bankroll):
             "description": "Based on Alternating Compound - the real 4-trade 2.5%/5%/2.5%/5% cycle, keyed off this session's own trade count (not an averaged approximation).",
         }
         compounding = {"mode": "alternating_cycle", "steps_json": json.dumps(_ALT_CYCLE_PERCENTS)}
-        return create, None, None, compounding
+        return create, None, None, compounding, None
 
     if key == "recovery_ladder":
         create = {
@@ -413,6 +493,19 @@ def risk_profile_fields_for(key, name, bankroll):
             "enabled": True, "max_steps": DEFAULT_RECOVERY_MAX_STEPS,
             "multiplier": DEFAULT_RECOVERY_MULTIPLIER, "reset_after_win": True,
         }
-        return create, martingale, None, None
+        return create, martingale, None, None, None
 
-    return None, None, None, None
+    if key == "daily_compounding":
+        create = {
+            "name": name, "bankroll": bankroll, "sizing_mode": "daily_compounding", "strategy_key": key,
+            "description": "Based on Daily Compounding - 1% of each trading day's starting Fund balance risked per trade, recalculated once at the start of every trading day, stopping for the day at a 50% profit target or a 25% loss limit.",
+        }
+        daily = {
+            "enabled": True, "risk_percent": DAILY_COMPOUNDING_RISK_PERCENT,
+            "profit_target_percent": DAILY_COMPOUNDING_PROFIT_TARGET_PERCENT,
+            "loss_limit_percent": DAILY_COMPOUNDING_LOSS_LIMIT_PERCENT,
+            "timezone": "UTC", "stop_after_target": True, "stop_after_loss_limit": True,
+        }
+        return create, None, None, None, daily
+
+    return None, None, None, None, None

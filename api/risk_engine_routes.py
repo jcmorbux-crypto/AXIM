@@ -12,10 +12,12 @@ CORE_DIR = PROJECT_ROOT / "core"
 sys.path.insert(0, str(CORE_DIR))
 
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+import daily_compounding
 import database
 import risk_engine as risk_engine_module
 from auth_routes import get_current_user, require_admin
@@ -27,8 +29,10 @@ router = APIRouter(prefix="/api/risk-profiles", tags=["risk-engine"])
 # pre-existing fixed/percent/dynamic/kelly modes (unchanged). Momentum/
 # Fortress/Sentinel/Cashflow/Strike are modifiers layered on top of
 # whichever of these base modes is active, not sizing modes of their own,
-# so they don't belong in this set.
-_VALID_SIZING_MODES = {"fixed", "percent", "dynamic", "kelly", "apex_ascension", "empire"}
+# so they don't belong in this set. "daily_compounding" (Money Management
+# Studio's 5th official strategy) is a real sizing mode of its own too -
+# see core/daily_compounding.py.
+_VALID_SIZING_MODES = {"fixed", "percent", "dynamic", "kelly", "apex_ascension", "empire", "daily_compounding"}
 
 
 class ProfileCreate(BaseModel):
@@ -168,6 +172,25 @@ class EmpireUpdate(BaseModel):
     current_level: Optional[int] = None
 
 
+class DailyCompoundingUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    risk_percent: Optional[float] = None
+    risk_fixed_amount: Optional[float] = None
+    profit_target_percent: Optional[float] = None
+    profit_target_fixed_amount: Optional[float] = None
+    loss_limit_percent: Optional[float] = None
+    loss_limit_fixed_amount: Optional[float] = None
+    timezone: Optional[str] = None
+    max_trades_per_day: Optional[int] = None
+    max_concurrent_trades: Optional[int] = None
+    cooldown_after_loss_seconds: Optional[int] = None
+    consecutive_loss_stop: Optional[int] = None
+    vault_enabled: Optional[bool] = None
+    vault_percent_on_target: Optional[float] = None
+    stop_after_target: Optional[bool] = None
+    stop_after_loss_limit: Optional[bool] = None
+
+
 def _get_or_404(profile_id):
     profile = database.get_risk_profile(profile_id)
     if profile is None:
@@ -181,8 +204,8 @@ def _reject_if_template(profile):
 
 
 @router.get("")
-def list_profiles(include_templates: bool = True, user=Depends(get_current_user)):
-    return database.list_risk_profiles(include_templates=include_templates)
+def list_profiles(include_templates: bool = True, include_archived: bool = False, user=Depends(get_current_user)):
+    return database.list_risk_profiles(include_templates=include_templates, include_archived=include_archived)
 
 
 @router.post("")
@@ -213,10 +236,53 @@ def update_profile(profile_id: int, body: ProfileUpdate, user=Depends(require_ad
     return database.get_risk_profile(profile_id)
 
 
-@router.delete("/{profile_id}")
-def delete_profile(profile_id: int, user=Depends(require_admin)):
+def _reject_if_in_use(profile_id, action):
+    """Shared "who's still using this" guard for both archive and delete
+    (Money Management Studio's "My Strategies" section, 2026-07-18
+    directive: "archive safely"/"delete safely") - same 409 pattern as
+    broker account archival (api/broker_accounts_routes.py's archive_
+    broker_account)."""
+    funds_using_it = database.list_funds_using_risk_profile(profile_id)
+    if funds_using_it:
+        names = ", ".join(f["name"] for f in funds_using_it)
+        raise HTTPException(
+            status_code=409,
+            detail=f"still the default strategy for: {names} - change their default strategy before you {action} it",
+        )
+    active_sessions = [s for s in database.list_active_trading_sessions() if s["risk_profile_id"] == profile_id]
+    if active_sessions:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{len(active_sessions)} active session(s) are currently using this strategy - stop them before you {action} it",
+        )
+
+
+@router.post("/{profile_id}/archive")
+def archive_profile(profile_id: int, user=Depends(require_admin)):
     profile = _get_or_404(profile_id)
     _reject_if_template(profile)
+    _reject_if_in_use(profile_id, "archive")
+    database.archive_risk_profile(profile_id)
+    return database.get_risk_profile(profile_id)
+
+
+@router.post("/{profile_id}/unarchive")
+def unarchive_profile(profile_id: int, user=Depends(require_admin)):
+    _get_or_404(profile_id)
+    database.unarchive_risk_profile(profile_id)
+    return database.get_risk_profile(profile_id)
+
+
+@router.delete("/{profile_id}")
+def delete_profile(profile_id: int, user=Depends(require_admin)):
+    """"Delete safely" (Money Management Studio product directive,
+    2026-07-18): blocks deletion while a Fund still points at this
+    profile as its own default, or while a currently active session is
+    using it, rather than silently leaving a Fund/session pointing at a
+    now-nonexistent risk_profile_id."""
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    _reject_if_in_use(profile_id, "delete")
     database.delete_risk_profile(profile_id)
     return {"status": "deleted"}
 
@@ -323,6 +389,37 @@ def update_empire(profile_id: int, body: EmpireUpdate, user=Depends(require_admi
     profile = _get_or_404(profile_id)
     _reject_if_template(profile)
     database.update_empire_settings(profile_id, **body.model_dump(exclude_unset=True))
+    return database.get_risk_profile(profile_id)
+
+
+@router.patch("/{profile_id}/daily-compounding")
+def update_daily_compounding(profile_id: int, body: DailyCompoundingUpdate, user=Depends(require_admin)):
+    """Money Management Studio's 5th official strategy (2026-07-18
+    directive): "minimum 1%" is a real, server-enforced floor - a
+    risk_percent below daily_compounding.MIN_RISK_PERCENT is rejected
+    outright, not silently clamped, so the UI's own validation can never
+    silently drift from what the backend actually accepts. timezone is
+    validated against the real IANA tz database (the same one core/
+    daily_compounding.trading_date_for uses to compute the daily
+    boundary) - a typo here must be caught at save time, not discovered
+    the first time it silently falls back to UTC in production."""
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    fields = body.model_dump(exclude_unset=True)
+
+    if "risk_percent" in fields and fields["risk_percent"] is not None:
+        if fields["risk_percent"] < daily_compounding.MIN_RISK_PERCENT:
+            raise HTTPException(
+                status_code=400,
+                detail=f"risk_percent must be at least {daily_compounding.MIN_RISK_PERCENT}%",
+            )
+    if "timezone" in fields and fields["timezone"]:
+        try:
+            ZoneInfo(fields["timezone"])
+        except (ZoneInfoNotFoundError, ValueError):
+            raise HTTPException(status_code=400, detail=f"unknown timezone {fields['timezone']!r}")
+
+    database.update_daily_compounding_settings(profile_id, **fields)
     return database.get_risk_profile(profile_id)
 
 

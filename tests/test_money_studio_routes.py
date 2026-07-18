@@ -29,9 +29,9 @@ class MoneyStudioRoutesTestCase(unittest.TestCase):
         database.DB_FILE = self._original_db_file
         self._tmp_dir.cleanup()
 
-    def test_list_strategies_returns_all_4_official_ones(self):
+    def test_list_strategies_returns_all_5_official_ones(self):
         result = routes.list_strategies(user=_FAKE_USER)
-        self.assertEqual(len(result["strategies"]), 4)
+        self.assertEqual(len(result["strategies"]), 5)
         keys = {s["key"] for s in result["strategies"]}
         self.assertEqual(keys, set(money_studio.STRATEGIES_BY_KEY.keys()))
 
@@ -73,6 +73,16 @@ class MoneyStudioRoutesTestCase(unittest.TestCase):
         compounding = database.get_compounding_settings(created["id"])
         self.assertEqual(compounding["mode"], "alternating_cycle")
         self.assertEqual(json.loads(compounding["steps_json"]), [2.5, 5.0, 2.5, 5.0])
+
+    def test_create_profile_from_strategy_wires_up_daily_compounding_settings(self):
+        body = routes.CreateFromStrategyRequest(name="Daily Fund", bankroll=1000.0)
+        created = routes.create_profile_from_strategy("daily_compounding", body, user=_FAKE_USER)
+        self.assertEqual(created["sizing_mode"], "daily_compounding")
+        daily = database.get_daily_compounding_settings(created["id"])
+        self.assertTrue(daily["enabled"])
+        self.assertEqual(daily["risk_percent"], money_studio.DAILY_COMPOUNDING_RISK_PERCENT)
+        self.assertEqual(daily["profit_target_percent"], money_studio.DAILY_COMPOUNDING_PROFIT_TARGET_PERCENT)
+        self.assertEqual(daily["loss_limit_percent"], money_studio.DAILY_COMPOUNDING_LOSS_LIMIT_PERCENT)
 
     def test_create_profile_from_strategy_rejects_an_unknown_key(self):
         from fastapi import HTTPException

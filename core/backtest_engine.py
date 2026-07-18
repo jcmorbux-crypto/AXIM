@@ -56,6 +56,7 @@ from collections import defaultdict
 import database
 import risk_engine
 import capital_strategies
+import daily_compounding
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
@@ -265,6 +266,22 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
     enforces them live - its profit_target/max_session_loss/max_trades are
     the same fields already covered above, so re-simulating them under
     Strike's name would be inert."""
+    # Daily Compounding (sizing_mode="daily_compounding") forces daily
+    # session grouping regardless of the caller's session_window - its
+    # day-boundary rule (recalculate risk/target/limit once at the start
+    # of each calendar day) is a property of the STRATEGY itself, not a
+    # generic backtest-run setting, exactly like Alternating Compound's
+    # fixed 4-trade cycle isn't configurable via a generic option either.
+    # Each simulated "session" is then genuinely one calendar day, so
+    # risk_engine._base_amount's own "daily_compounding" branch (called
+    # with record_events=False below, same as every other mode) can
+    # reuse profile["bankroll"]/session_state["realized_pnl"] - already
+    # fixed at the top of each day/session here - as this day's starting
+    # balance and today's realized P/L, with zero separate day-boundary
+    # bookkeeping in this file. See core/daily_compounding.py for the
+    # actual rule math.
+    if profile_snapshot.get("sizing_mode") == "daily_compounding":
+        session_window = "daily"
     session_groups = _group_signals_into_sessions(signal_pool, session_window)
 
     cumulative_realized_pnl = 0.0
@@ -287,6 +304,7 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
         sentinel = profile.get("drawdown_protection", _DISABLED)
         vault = profile.get("profit_vault", _DISABLED)
         strike = profile.get("strike", _DISABLED)
+        daily = profile.get("daily_compounding", _DISABLED)
 
         session_state = {
             "realized_pnl": 0.0, "current_martingale_step": 0, "current_momentum_step": 0,
@@ -302,6 +320,9 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
             try:
                 amount = risk_engine._base_amount(profile, session_state, record_events=False)
             except risk_engine.EmpireChallengeOver as e:
+                status = f"stopped_{e.rule}"
+                break
+            except risk_engine.DailyCompoundingStopped as e:
                 status = f"stopped_{e.rule}"
                 break
             amount = risk_engine._apply_martingale(amount, profile["martingale"], session_state["current_martingale_step"])
@@ -355,6 +376,7 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
             else:
                 profit_loss = 0.0
 
+            realized_pnl_before_this_trade = session_state["realized_pnl"]
             session_state["realized_pnl"] += profit_loss
             session_state["trades_count"] += 1
             ended_at = signal["timestamp"]
@@ -399,6 +421,14 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
             if skim > 0:
                 session_vaulted += skim
                 cumulative_vaulted += skim
+
+            if daily.get("enabled") and daily.get("vault_enabled"):
+                daily_skim = daily_compounding.vault_skim_on_target(
+                    daily, profile["bankroll"], realized_pnl_before_this_trade, session_state["realized_pnl"],
+                )
+                if daily_skim > 0:
+                    session_vaulted += daily_skim
+                    cumulative_vaulted += daily_skim
 
             running_balance = starting_bankroll + cumulative_realized_pnl + session_state["realized_pnl"]
             session_trades.append({
@@ -576,6 +606,22 @@ def compute_metrics(sessions, trades, starting_bankroll):
         "sessions_completed": sum(1 for s in sessions if s["status"] == "completed"),
         "sessions_stopped_by_target": sum(1 for s in sessions if s["status"] == "stopped_target"),
         "sessions_stopped_by_loss_limit": sum(1 for s in sessions if s["status"] == "stopped_loss_limit"),
+        # Daily Compounding reporting (product directive 2026-07-18) - for
+        # any OTHER sizing mode these are always 0/None, since only
+        # risk_engine.DailyCompoundingStopped ever produces this status
+        # string. Meaningful only when session_window ended up "daily"
+        # (forced for sizing_mode="daily_compounding" - see
+        # simulate_strategy), where each "session" here genuinely is one
+        # calendar trading day.
+        "days_profit_target_hit": sum(1 for s in sessions if s["status"] == "stopped_daily_compounding_profit_target"),
+        "days_loss_limit_hit": sum(1 for s in sessions if s["status"] == "stopped_daily_compounding_loss_limit"),
+        "avg_daily_pnl": round(sum(session_pnls) / len(session_pnls), 2) if session_pnls else 0.0,
+        "daily_target_hit_rate": round(
+            sum(1 for s in sessions if s["status"] == "stopped_daily_compounding_profit_target") / len(sessions) * 100, 1,
+        ) if sessions else None,
+        "daily_loss_limit_hit_rate": round(
+            sum(1 for s in sessions if s["status"] == "stopped_daily_compounding_loss_limit") / len(sessions) * 100, 1,
+        ) if sessions else None,
         "avg_trade_size": avg_trade_size,
         "largest_trade_size": largest_trade_size,
         "total_protected_profit": total_protected_profit,

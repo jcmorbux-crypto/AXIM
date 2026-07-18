@@ -10,6 +10,10 @@ Scoping notes, stated plainly rather than silently overclaimed:
   across multiple sessions - that would need its own tracking layer this
   phase doesn't build. Sessions are this system's unit of trading, so
   this is a reasonable placeholder, not a bug, but it is a simplification.
+  sizing_mode="daily_compounding" (see core/daily_compounding.py) is the
+  genuine calendar-day-spanning tracking layer this note describes as
+  missing - built specifically for that one sizing mode, not retrofitted
+  onto Compounding's older "daily"/"weekly" mode names above.
 - Martingale's same_asset_only/same_source_only fields are stored but NOT
   YET enforced (would need last-trade asset/source tracking per session,
   a real follow-up, not fabricated behavior) - same honesty pattern as
@@ -41,6 +45,7 @@ import json
 
 import database
 import capital_strategies
+import daily_compounding
 import fund_manager
 from logger import get_logger
 
@@ -148,6 +153,48 @@ def _base_amount(profile, session, record_events=True):
         if status in ("challenge_complete", "terminated"):
             raise EmpireChallengeOver(status)
         return stake
+
+    if mode == "daily_compounding":
+        settings = profile["daily_compounding"]
+        if not settings["enabled"]:
+            return profile["fixed_amount"]
+
+        if record_events:
+            # Live: the day's starting balance is a real, persisted fact
+            # (core/database.py's fund_daily_starting_balance) so it stays
+            # fixed all day even as the fund's actual balance moves with
+            # each trade - session.get("fund_id") is None for a profile-
+            # less/legacy session, which has no Fund-scoped daily balance
+            # to anchor to, so this mode simply isn't usable there.
+            fund_id = session.get("fund_id")
+            if fund_id is None:
+                return profile["fixed_amount"]
+            trading_date = daily_compounding.trading_date_for(settings["timezone"])
+            day_starting_balance = database.get_or_create_fund_daily_starting_balance(
+                fund_id, trading_date,
+                lambda: fund_manager.get_fund_balances(fund_id)["trading_balance"],
+            )
+            since = daily_compounding.day_start_iso(settings["timezone"], trading_date)
+            realized_pnl_today = database.get_fund_realized_pnl_since(fund_id, since)
+            pending_stake_today = database.get_fund_pending_stake_since(fund_id, since)
+        else:
+            # Backtest: core/backtest_engine.py forces one simulated
+            # "session" per calendar day for this sizing mode, so
+            # profile["bankroll"] (fixed at the top of that day's loop)
+            # and session["realized_pnl"] (that same day's own running
+            # total) are already exactly the day-scoped numbers this mode
+            # needs - no separate day-boundary bookkeeping required here.
+            day_starting_balance = bankroll
+            realized_pnl_today = current_pnl
+            pending_stake_today = 0.0
+
+        stop_reason = daily_compounding.check_should_stop(
+            settings, day_starting_balance, realized_pnl_today, pending_stake_today,
+        )
+        if stop_reason:
+            raise DailyCompoundingStopped(stop_reason, day_starting_balance)
+
+        return daily_compounding.compute_risk_per_trade(settings, day_starting_balance)
 
     return profile["fixed_amount"]
 
@@ -308,6 +355,26 @@ class FortressPrincipalProtected(Exception):
         super().__init__(self.reason)
 
 
+class DailyCompoundingStopped(Exception):
+    """Same (rule, reason) shape as CashflowTargetReached/SentinelSuspended/
+    FortressPrincipalProtected above. Raised by _base_amount's
+    "daily_compounding" branch once today's realized P/L has crossed the
+    day's profit target or loss limit - deliberately does NOT pause the
+    Fund (fund_manager.check_fund_limits' LIFETIME breach does that, and
+    requires a manual resume): this is a same-calendar-day-only stop that
+    lifts itself automatically the moment core/daily_compounding.
+    trading_date_for rolls over to a new date, since that's a fresh
+    (fund_id, trading_date) row with no prior realized P/L."""
+    def __init__(self, reason, starting_balance):
+        self.rule = f"daily_compounding_{reason}"
+        label = "profit target" if reason == "profit_target" else "loss limit"
+        self.reason = (
+            f"Daily Compounding: today's {label} reached (today's starting balance ${starting_balance:.2f}) "
+            f"- no new trades until the next trading day"
+        )
+        super().__init__(self.reason)
+
+
 class EmpireChallengeOver(Exception):
     """Same (rule, reason) shape - see CashflowTargetReached above.
     Raised by _base_amount when an Empire ladder challenge has either
@@ -430,6 +497,34 @@ def on_trade_closed(session_id, won, profit_loss):
     if skim > 0:
         database.add_to_vault(session_id, skim)
         logger.info("risk_engine: vaulted $%.2f for session %s at a milestone", skim, session_id)
+
+    # Daily Compounding's own vault-on-target - a genuinely different
+    # trigger from the three above (session-scoped): skims the moment
+    # THIS trade's close pushes the FUND's today's realized P/L across
+    # the day's profit target, computed fresh from the signals table
+    # (see core/daily_compounding.py's own "compute, don't cache" note)
+    # rather than a persisted counter, so there is nothing to double-skim
+    # even if this hook somehow ran twice for the same trade.
+    daily = profile["daily_compounding"]
+    if daily["enabled"] and daily["vault_enabled"] and session["fund_id"] is not None:
+        settings = daily
+        trading_date = daily_compounding.trading_date_for(settings["timezone"])
+        starting_balance = database.get_or_create_fund_daily_starting_balance(
+            session["fund_id"], trading_date,
+            lambda: fund_manager.get_fund_balances(session["fund_id"])["trading_balance"],
+        )
+        since = daily_compounding.day_start_iso(settings["timezone"], trading_date)
+        realized_pnl_after = database.get_fund_realized_pnl_since(session["fund_id"], since)
+        realized_pnl_before = realized_pnl_after - profit_loss
+        daily_skim = daily_compounding.vault_skim_on_target(
+            settings, starting_balance, realized_pnl_before, realized_pnl_after,
+        )
+        if daily_skim > 0:
+            database.add_to_vault(session_id, daily_skim)
+            logger.info(
+                "risk_engine: vaulted $%.2f for session %s on Daily Compounding's target being hit",
+                daily_skim, session_id,
+            )
 
 
 def on_session_ended(session_id):

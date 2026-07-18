@@ -188,6 +188,7 @@ class TradeCoordinator:
             except (
                 risk_engine.CashflowTargetReached, risk_engine.SentinelSuspended,
                 risk_engine.FortressPrincipalProtected, risk_engine.EmpireChallengeOver,
+                risk_engine.DailyCompoundingStopped,
             ) as violation:
                 timeline.persist(database)
                 return self._reject(trade_id, violation, time.monotonic() - stage_t0)
