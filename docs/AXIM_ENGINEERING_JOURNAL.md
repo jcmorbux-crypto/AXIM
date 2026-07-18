@@ -1137,3 +1137,57 @@ much larger mandated browser-driven Truthful Feature Audit across every nav page
 started as a systematic pass yet, next up.
 
 ---
+
+## 2026-07-18 — The Truthful Feature Audit, and one real bug found: the Pause button
+
+Ran the FINAL V1 PRODUCT DIRECTIVE's mandated browser-driven audit across all 14 nav
+pages, using one persistent isolated preview session (DB copy, throwaway admin login,
+port 8092) reused across the whole pass rather than spun up repeatedly, per the
+standing shell-command-style correction. Full results and the 13 verdicts are in
+`docs/AXIM_V1_FINAL_ACCEPTANCE_REPORT.md` - this entry covers the process and the one
+real finding, not a duplicate of that report.
+
+**Real bug found and fixed**: the Dashboard's global Pause button always said "Pause"
+and always POSTed to `/api/control/pause`, with no way to undo it from that page at
+all - a genuine "VISIBLE + INCOMPLETE" violation on a safety-relevant control. The
+per-fund pause button (`funds.html`) already got this right (toggles label based on
+`fund.status`); the global header control never got the same treatment. Fixed:
+`web/dashboard.html` now reads `status.control.paused` (already computed on every
+refresh) and toggles between `/api/control/pause` and the existing, previously-orphaned
+`/api/control/resume` endpoint. Verified live: click -> "Resume" (server confirms
+`paused=true` via a direct `/api/status` check), click again -> "Pause"
+(`paused=false`). Pure HTML/JS, live in production immediately.
+
+**A second finding, corrected before it became a false bug report**: the OPT SIGNALS
+folder-sync fix from earlier this session (commit `3111c86`) turned out itself to need
+a correction discovered while double-checking assumptions during this audit - already
+covered in its own entry above.
+
+**Worth recording for anyone continuing this audit**: a large fraction of this pass's
+time went into distinguishing real bugs from **test-environment timing artifacts**, not
+real product bugs. The preview server is one local uvicorn worker that gets hit by many
+independent, rapid Playwright browser launches (one per test script) in quick
+succession - several apparent "stuck on Loading..." states (Dashboard after Emergency
+Stop, Automation Studio's rule-builder dropdown, Funds page) were entirely test-script
+timing, not shipped defects, each re-confirmed with either a longer wait, a
+`wait_for_function` poll on real page state, or a direct unambiguous API call before
+being ruled out. The Automation Studio investigation in particular chased this through
+several dead ends (button click vs. direct function call vs. JS-triggered click all
+producing different results at first) before a `page.wait_for_function` proved the
+underlying code was correct all along and the flakiness was purely how fast a local dev
+server responds under many concurrent Playwright launches. Flagged here so future
+verification passes budget for this and don't mistake it for a pattern of real bugs.
+
+**Every other page checked was genuinely functional**, including real functional tests
+(not just screenshots) on: Users (Grant Free Access actually changed `access_tier` in
+the database), Logs (search filter correctly narrowed 300 real entries to 1), Help/Guide
+(search correctly filtered and highlighted "martingale"), Automation Studio (a full
+create -> persist -> re-render -> delete cycle for a real rule), and Signal Inspector
+(Test Parse reached the real live parser and returned correct results). Users, Logs,
+and Help - the three pages the directive specifically worried might need removal from
+navigation for being incomplete - were all confirmed complete and were NOT removed.
+
+Preview server and its temp DB copy torn down afterward - nothing left running, nothing
+touched in production.
+
+---
