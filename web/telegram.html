@@ -158,11 +158,24 @@
     </div>
   </div>
 </div>
+
+<!-- Provider Profile modal (Universal Signal Intelligence Engine) -->
+<div class="modal-backdrop" id="profile-modal">
+  <div class="modal" style="width:640px; max-width:95vw;">
+    <h2 style="margin-top:0;" id="profile-title">Provider Profile</h2>
+    <div id="profile-body">Loading...</div>
+    <div class="row" style="justify-content:flex-end; margin-top:14px;">
+      <button class="subtle" onclick="closeModal('profile-modal')">Close</button>
+    </div>
+  </div>
+</div>
 <script src="/web/smart_channel_search.js"></script>
 <script src="/web/shell.js"></script>
 <script>
 let allChannels = [];
 let currentMessagesChannelId = null;
+let allProfilesByChannelId = {};
+let currentProfile = null;
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, { credentials: "same-origin", ...opts });
@@ -283,10 +296,30 @@ async function syncChannels() {
 async function refreshChannels() {
   try {
     allChannels = await fetchJSON("/api/channels");
+    try {
+      const profiles = await fetchJSON("/api/provider-profiles");
+      allProfilesByChannelId = {};
+      profiles.forEach(p => { allProfilesByChannelId[p.channel_id] = p; });
+    } catch (e) { allProfilesByChannelId = {}; }
     renderMySources();
   } catch (e) {
     document.getElementById("my-sources-list").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
   }
+}
+
+const TRADING_MODE_LABELS = {
+  observation: "Observation", demo_ready: "Demo-Ready", demo: "Demo", live: "Live",
+};
+const TRADING_MODE_BADGE_CLASS = {
+  observation: "off", demo_ready: "warn", demo: "on", live: "danger",
+};
+
+function tradingModeBadge(channelId) {
+  const profile = allProfilesByChannelId[channelId];
+  if (!profile) return "";
+  const label = TRADING_MODE_LABELS[profile.trading_mode] || profile.trading_mode;
+  const cls = TRADING_MODE_BADGE_CLASS[profile.trading_mode] || "off";
+  return `<span class="badge ${cls}" title="Universal Signal Intelligence Engine trading mode">${label}</span>`;
 }
 
 function renderMySources() {
@@ -304,7 +337,7 @@ function renderMySources() {
       </label>
       <div class="info">
         <div class="name">${escapeHtml(c.title || "(no title)")}</div>
-        <div class="meta">${c.username ? "@" + escapeHtml(c.username) + " &middot; " : ""}<span class="badge off">${c.source_type}</span></div>
+        <div class="meta">${c.username ? "@" + escapeHtml(c.username) + " &middot; " : ""}<span class="badge off">${c.source_type}</span> ${tradingModeBadge(c.id)}</div>
         <div class="source-config" id="config-${c.id}">
           <div class="row">
             <div class="field"><label>Source type</label>
@@ -326,8 +359,9 @@ function renderMySources() {
           </div>
           ${c.source_type === "bot_command" ? botFields(c) : ""}
           <div class="muted" style="font-size:12px; margin-top:8px;">Last signal: ${fmtTime(c.last_signal_at)}</div>
-          <button class="subtle" onclick="event.stopPropagation(); openMessages(${c.id})">View recent messages</button>
-          <button class="subtle" onclick="event.stopPropagation(); openOnboardWizard(${c.id}, '${escapeHtml(c.chat_id)}', '${escapeHtml(c.title || "")}')">Analyze This Provider</button>
+          <button class="subtle" onclick="event.stopPropagation(); openMessages(${c.id})">Inspect Messages</button>
+          <button class="subtle" onclick="event.stopPropagation(); openOnboardWizard(${c.id}, '${escapeHtml(c.chat_id)}', '${escapeHtml(c.title || "")}')">Analyze / Reanalyze</button>
+          <button class="subtle" onclick="event.stopPropagation(); openProfileModal(${c.id}, '${escapeHtml(c.title || "")}')">Provider Profile</button>
         </div>
       </div>
       <div class="stats">
@@ -584,6 +618,162 @@ async function openMessages(id) {
     `).join("");
   } catch (e) {
     listEl.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ---------------- Provider Profile (Universal Signal Intelligence Engine) ----------------
+
+async function openProfileModal(channelId, title) {
+  document.getElementById("profile-title").textContent = `Provider Profile - ${title}`;
+  const bodyEl = document.getElementById("profile-body");
+  bodyEl.innerHTML = '<div class="empty">Loading...</div>';
+  openModal("profile-modal");
+  try {
+    currentProfile = await fetchJSON(`/api/provider-profiles/by-channel/${channelId}`);
+    await renderProfileModal();
+  } catch (e) {
+    bodyEl.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function renderProfileModal() {
+  const p = currentProfile;
+  const bodyEl = document.getElementById("profile-body");
+  const successRate = p.observed_signal_count ? (p.parse_success_count / p.observed_signal_count * 100).toFixed(0) + "%" : "-";
+  const grad = p.graduation;
+
+  let history = [];
+  try { history = await fetchJSON(`/api/provider-profiles/${p.id}/history`); } catch (e) {}
+
+  const actionsHtml = () => {
+    if (p.trading_mode === "observation") {
+      return `<button class="primary" onclick="profileGraduate()" ${grad.eligible ? "" : "disabled"}>Graduate to Demo-Ready</button>`;
+    }
+    if (p.trading_mode === "demo_ready") {
+      return `<button class="primary" onclick="profileApproveDemo()">Approve Demo Trading</button>
+              <button class="subtle" onclick="profileRevert()">Send Back to Observation</button>`;
+    }
+    if (p.trading_mode === "demo") {
+      return `<button class="primary" onclick="profileApproveLive()">Approve Live Trading</button>
+              <button class="subtle" onclick="profileRevert()">Send Back to Observation</button>`;
+    }
+    if (p.trading_mode === "live") {
+      return `<button class="danger" onclick="profileRevert()">Send Back to Observation</button>`;
+    }
+    return "";
+  };
+
+  bodyEl.innerHTML = `
+    <div class="row" style="gap:10px; margin-bottom:12px;">
+      <span class="badge ${TRADING_MODE_BADGE_CLASS[p.trading_mode] || "off"}" style="font-size:13px;">${TRADING_MODE_LABELS[p.trading_mode] || p.trading_mode}</span>
+      ${p.drift_detected_at ? `<span class="badge danger">Format drift detected</span>` : ""}
+    </div>
+    <div class="card solid" style="margin-bottom:12px;">
+      <div class="stat-row"><span class="stat-label">Detected pattern</span><span class="stat-value">${escapeHtml(p.pattern_name || "not yet analyzed")}</span></div>
+      <div class="stat-row"><span class="stat-label">Pattern coverage</span><span class="stat-value">${p.coverage !== null && p.coverage !== undefined ? (p.coverage * 100).toFixed(1) + "%" : "-"}</span></div>
+      <div class="stat-row"><span class="stat-label">Last analyzed</span><span class="stat-value">${fmtTime(p.last_analyzed_at)}</span></div>
+      <div class="stat-row"><span class="stat-label">Observed signals</span><span class="stat-value">${p.observed_signal_count || 0}</span></div>
+      <div class="stat-row"><span class="stat-label">Parse success rate</span><span class="stat-value">${successRate}</span></div>
+    </div>
+    <div class="card solid" style="margin-bottom:12px;">
+      <h3 style="margin-top:0; font-size:13px;">Graduation status</h3>
+      ${grad.eligible
+        ? '<div class="muted" style="color:var(--green);">Eligible - meets every configured threshold.</div>'
+        : `<ul style="margin:0; padding-left:18px; font-size:12.5px; color:var(--text-dim);">${grad.reasons.map(r => `<li>${escapeHtml(r)}</li>`).join("")}</ul>`}
+    </div>
+    <div class="card solid" style="margin-bottom:12px;">
+      <h3 style="margin-top:0; font-size:13px;">Edit parsing profile</h3>
+      <div class="row">
+        <div class="field"><label>Timezone (IANA name)</label><input type="text" id="pf-timezone" value="${escapeHtml(p.timezone || "UTC")}"></div>
+        <div class="field"><label>Assembly timeout (seconds)</label><input type="number" id="pf-timeout" min="1" value="${p.assembly_timeout_seconds || 300}"></div>
+      </div>
+      <div class="row">
+        <div class="field"><label>Confidence threshold (0-1)</label><input type="number" id="pf-confidence" step="0.05" min="0" max="1" value="${p.confidence_threshold ?? 0.6}"></div>
+      </div>
+      <h4 style="margin:10px 0 4px; font-size:12px;">Graduation thresholds</h4>
+      <div class="row">
+        <div class="field"><label>Min observed signals</label><input type="number" id="pf-grad-signals" min="0" value="${p.graduation_min_signals ?? 20}"></div>
+        <div class="field"><label>Min success rate (0-1)</label><input type="number" id="pf-grad-rate" step="0.05" min="0" max="1" value="${p.graduation_min_success_rate ?? 0.8}"></div>
+        <div class="field"><label>Min pattern confidence (0-1)</label><input type="number" id="pf-grad-conf" step="0.05" min="0" max="1" value="${p.graduation_min_confidence ?? 0.6}"></div>
+      </div>
+      <button class="subtle" onclick="profileSaveEdits()">Save Changes</button>
+      <span id="profile-save-status" class="muted" style="margin-left:8px;"></span>
+    </div>
+    <div class="row" style="gap:8px; margin-bottom:12px;">${actionsHtml()}</div>
+    <details>
+      <summary style="cursor:pointer; font-size:12.5px; font-weight:650;">Change history (${history.length})</summary>
+      <div style="max-height:200px; overflow-y:auto; margin-top:8px;">
+        ${history.map(h => `<div class="message-item"><div class="message-time">${fmtTime(h.created_at)} - ${escapeHtml(h.changed_by || "system")}</div><div>${escapeHtml(h.reason || "")}</div></div>`).join("") || '<div class="empty">No changes yet.</div>'}
+      </div>
+    </details>
+  `;
+}
+
+async function profileSaveEdits() {
+  const statusEl = document.getElementById("profile-save-status");
+  statusEl.textContent = "Saving...";
+  try {
+    currentProfile = await fetchJSON(`/api/provider-profiles/${currentProfile.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        timezone: document.getElementById("pf-timezone").value.trim() || "UTC",
+        assembly_timeout_seconds: parseInt(document.getElementById("pf-timeout").value, 10) || 300,
+        confidence_threshold: parseFloat(document.getElementById("pf-confidence").value),
+        graduation_min_signals: parseInt(document.getElementById("pf-grad-signals").value, 10),
+        graduation_min_success_rate: parseFloat(document.getElementById("pf-grad-rate").value),
+        graduation_min_confidence: parseFloat(document.getElementById("pf-grad-conf").value),
+      }),
+    });
+    statusEl.textContent = "Saved.";
+    await renderProfileModal();
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+async function profileGraduate() {
+  try {
+    currentProfile = await fetchJSON(`/api/provider-profiles/${currentProfile.id}/graduate`, { method: "POST" });
+    await renderProfileModal();
+    await refreshChannels();
+  } catch (e) {
+    alert("Failed to graduate: " + e.message);
+  }
+}
+
+async function profileApproveDemo() {
+  if (!confirm("Approve this source for Demo trading? AXIM will begin trading its signals in Demo mode.")) return;
+  try {
+    currentProfile = await fetchJSON(`/api/provider-profiles/${currentProfile.id}/approve-demo`, { method: "POST" });
+    await renderProfileModal();
+    await refreshChannels();
+  } catch (e) {
+    alert("Failed to approve demo: " + e.message);
+  }
+}
+
+async function profileApproveLive() {
+  if (!confirm("Approve this source for LIVE trading with real money? This is a separate, deliberate decision from Demo approval.")) return;
+  try {
+    currentProfile = await fetchJSON(`/api/provider-profiles/${currentProfile.id}/approve-live`, { method: "POST" });
+    await renderProfileModal();
+    await refreshChannels();
+  } catch (e) {
+    alert("Failed to approve live: " + e.message);
+  }
+}
+
+async function profileRevert() {
+  const reason = prompt("Why send this source back to Observation Mode?", "format drift / manual review");
+  if (!reason) return;
+  try {
+    currentProfile = await fetchJSON(`/api/provider-profiles/${currentProfile.id}/revert-to-observation`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }),
+    });
+    await renderProfileModal();
+    await refreshChannels();
+  } catch (e) {
+    alert("Failed to revert: " + e.message);
   }
 }
 
