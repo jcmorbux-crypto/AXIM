@@ -115,7 +115,7 @@
         <select id="fund-selector" onchange="onFundChange()" style="width:220px;">
           <option value="">All Funds (combined)</option>
         </select>
-        <button class="subtle" onclick="callControl('/api/control/pause')">Pause</button>
+        <button class="subtle" id="pause-resume-btn" onclick="togglePause()">Pause</button>
         <button class="danger" onclick="confirmEmergencyStop()">Emergency Stop</button>
       </div>
     </div>
@@ -214,6 +214,7 @@ let currentUser = null;
 let allFunds = [];
 let selectedFundId = "";
 let portfolioOverview = null;
+let controlPaused = false;
 
 function displayName(email) {
   const local = (email || "").split("@")[0] || "there";
@@ -469,6 +470,10 @@ function renderStatusLine(status, po, channels) {
   const telegramOk = status.process.running && !po.heartbeat_stale;
   const enabledChannels = channels.filter(c => c.enabled);
 
+  controlPaused = status.control.paused;
+  const pauseBtn = document.getElementById("pause-resume-btn");
+  if (pauseBtn) pauseBtn.textContent = controlPaused ? "Resume" : "Pause";
+
   if (status.control.emergency_stop) {
     dot.className = "dot danger"; headline.textContent = "Emergency stop active";
     detail.textContent = "No trades will be placed until you clear the emergency stop.";
@@ -662,6 +667,10 @@ async function callControl(path) {
     alert("Action failed: " + e.message);
   }
   refreshAll();
+}
+
+function togglePause() {
+  callControl(controlPaused ? "/api/control/resume" : "/api/control/pause");
 }
 
 function confirmEmergencyStop() {
