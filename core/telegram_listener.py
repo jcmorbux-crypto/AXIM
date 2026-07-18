@@ -93,16 +93,27 @@ else:
     print(f"Watching for chat titles containing: {WATCH_CHANNELS} (plus anything enabled in the UI channel manager)")
 
 
-def channel_allowed(chat_title, chat_username=None):
+def channel_allowed(chat_title, chat_username=None, chat_id=None):
     """A chat is allowed if it matches EITHER the static .env WATCH_CHANNELS
-    list OR a currently-enabled row in the UI-managed ui_channels table -
-    same two-way match either way: a case-insensitive substring of the
+    list OR a currently-enabled row in the UI-managed ui_channels table.
+
+    For the WATCH_CHANNELS list (informal short names typed into .env, with
+    no real chat_id to match against): a case-insensitive substring of the
     chat's display title/first_name (works for anything, but display names
     can be renamed or duplicated - e.g. this account has both "Pocket
     Option Quant Algorithm" and a "PO Quant Algo" contact), or an exact
-    case-insensitive match against the chat's @username, which Telegram
-    guarantees is unique and immutable - the more reliable of the two for
-    allow-listing a specific bot/channel. Fail-closed if neither source has
+    case-insensitive match against the chat's @username.
+
+    For real synced ui_channels rows, prefer an exact chat_id match over
+    the fuzzy title substring whenever both sides have one - a real,
+    live bug otherwise: "OTC Pro Trading Robot" was explicitly disabled by
+    the operator, but its title contains "Pro Trading Robot" (a
+    DIFFERENT, separately-enabled channel) as a literal substring, so the
+    old title-only check incorrectly treated the disabled channel as
+    allowed. Falls back to the fuzzy title/username check only for rows
+    with no chat_id yet (freshly seeded from WATCH_CHANNELS, not yet
+    synced) or when the caller doesn't have a chat_id to compare (the
+    TELEGRAM_DEBUG_LOG preview path). Fail-closed if neither source has
     anything configured."""
     title_lower = (chat_title or "").lower()
     username_lower = (chat_username or "").lower()
@@ -114,6 +125,13 @@ def channel_allowed(chat_title, chat_username=None):
         return True
 
     for row in database.get_enabled_channels():
+        if chat_id is not None and row["chat_id"] is not None:
+            try:
+                if int(row["chat_id"]) == int(chat_id):
+                    return True
+            except (TypeError, ValueError):
+                pass
+            continue
         entry_username = (row["username"] or "").lower()
         entry_title = (row["title"] or "").lower()
         if (entry_username and entry_username == username_lower) or (
@@ -186,7 +204,7 @@ async def handler(event):
 
     if TELEGRAM_DEBUG_LOG:
         debug_sender = await event.get_sender()
-        filter_decision = channel_allowed(chat_title, chat_username)
+        filter_decision = channel_allowed(chat_title, chat_username, event.chat_id)
         print("\n[TELEGRAM_DEBUG] ------------------------------")
         print(f"[TELEGRAM_DEBUG] chat_title    : {_debug_safe(chat_title)}")
         print(f"[TELEGRAM_DEBUG] chat_username : {_debug_safe(chat_username)}")
@@ -236,7 +254,7 @@ async def handler(event):
     # having its own active session (a different Fund) must not block
     # this one, so fall back to the legacy global WATCH_CHANNELS/
     # enabled-channels check exactly as if no session existed anywhere.
-    elif not channel_allowed(chat_title, chat_username):
+    elif not channel_allowed(chat_title, chat_username, event.chat_id):
         return
 
     database.record_channel_signal_seen(chat_id=event.chat_id, username=chat_username, title=chat_title)
