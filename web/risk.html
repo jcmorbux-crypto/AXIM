@@ -116,6 +116,19 @@ async function fetchJSON(url, opts) {
   return res.json();
 }
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+
+// A profile auto-created from a provider recommendation carries over the
+// raw Telegram channel title (emoji included) plus a "- Suggested
+// (Recommended)" suffix - display-only cleanup, matching web/dashboard.html's
+// displayFundName; the stored profile name itself is untouched.
+function displayProfileName(name) {
+  const stripped = (name || "")
+    .replace(/\s*-\s*Suggested\s*\(Recommended\)\s*$/i, "")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}️]/gu, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return stripped || (name || "").trim();
+}
 function fmtMoney(n) { return "$" + Number(n).toLocaleString(undefined, { maximumFractionDigits: 2 }); }
 function riskBadgeClass(level) { return level === "Low" ? "badge-risk-low" : level === "Medium" ? "badge-risk-medium" : "badge-risk-high"; }
 function personalityClass(p) { return p === "Conservative" ? "personality-conservative" : p === "Aggressive" ? "personality-aggressive" : "personality-balanced"; }
@@ -173,7 +186,7 @@ async function loadProfiles() {
   }
   listEl.innerHTML = allProfiles.map(p => `
     <div class="profile-list-item" onclick="showBuilder(null, ${p.id})">
-      <span>${escapeHtml(p.name)}${p.strategy_key ? ` <span class="muted" style="font-size:11.5px;">(based on ${escapeHtml(p.strategy_key.replace(/_/g, " "))})</span>` : ""}</span>
+      <span title="${escapeHtml(p.name)}">${escapeHtml(displayProfileName(p.name))}${p.strategy_key ? ` <span class="muted" style="font-size:11.5px;">(based on ${escapeHtml(p.strategy_key.replace(/_/g, " "))})</span>` : ""}</span>
       <span class="badge off">${p.sizing_mode}</span>
     </div>
   `).join("");

@@ -89,8 +89,14 @@
   .fund-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; background: var(--bg); box-shadow: var(--shadow-sm); cursor: pointer; text-align: left; }
   .fund-card.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
   .fund-card .fc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
-  .fund-card .fc-name { font-weight: 650; font-size: 14.5px; }
-  .fund-card .fc-strategy { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
+  .fund-card .fc-name {
+    font-weight: 650; font-size: 14.5px; display: -webkit-box;
+    -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .fund-card .fc-strategy {
+    color: var(--text-dim); font-size: 12px; margin-top: 2px; display: -webkit-box;
+    -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden;
+  }
   .fund-card .fc-equity { font-size: 20px; font-weight: 700; margin: 6px 0 2px; font-variant-numeric: tabular-nums; }
   .fund-card .fc-row { display: flex; justify-content: space-between; font-size: 12.5px; padding: 4px 0; border-top: 1px solid var(--border); }
   .fund-card .fc-row .label { color: var(--text-dim); }
@@ -317,6 +323,23 @@ async function loadFundSelector() {
 }
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 
+// Fund names carry over the raw Telegram channel title they were created
+// from (e.g. "⚡️ Daniel FX Trade💯"), plus an auto-appended
+// "- Suggested (Recommended)" suffix from the Create Recommended Demo
+// Fund flow - both real, but neither belongs on a Fund card, which
+// already shows the connection/strategy state via its own badge and
+// subtitle line. Strips emoji/symbol codepoints and the suggestion
+// suffix for DISPLAY only - the real stored Fund name (used everywhere
+// else: Funds page, Automation Studio, Signal Sources) is untouched.
+function displayFundName(name) {
+  const stripped = (name || "")
+    .replace(/\s*-\s*Suggested\s*\(Recommended\)\s*$/i, "")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}️]/gu, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  return stripped || (name || "").trim();
+}
+
 // Built entirely from allFunds (already fetched for the selector, which
 // includes each Fund's balances via fund_manager.list_funds_with_balances)
 // rather than a request per Fund - trading_balance - starting_balance is
@@ -337,8 +360,8 @@ function renderFundsOverview() {
       <button type="button" class="fund-card ${isActive ? "active" : ""}" onclick="selectFundFromOverview(${f.id})">
         <div class="fc-top">
           <div>
-            <div class="fc-name">${escapeHtml(f.name)}</div>
-            <div class="fc-strategy">${f.strategy_name ? escapeHtml(f.strategy_name) : "No strategy assigned"}</div>
+            <div class="fc-name" title="${escapeHtml(f.name)}">${escapeHtml(displayFundName(f.name))}</div>
+            <div class="fc-strategy">${f.strategy_name ? escapeHtml(displayFundName(f.strategy_name)) : "No strategy assigned"}</div>
           </div>
           <span class="badge ${f.broker_account_status === "connected" ? "on" : "off"}" style="font-size:10.5px;">${f.broker_account_status ? escapeHtml(f.broker_account_status) : "no broker"}</span>
         </div>
