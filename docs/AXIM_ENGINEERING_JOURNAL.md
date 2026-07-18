@@ -1284,4 +1284,22 @@ as it went, but incomplete: the rate limiter is downstream of an authorization d
 that itself was silently wrong. Documented here rather than leaving the earlier entry
 standing as the final word on this incident.
 
+**A related but different situation checked and deliberately NOT changed**:
+`database.find_channel()`'s own title-substring fallback (used only when an exact
+chat_id/username match fails) has the same collision *shape* - confirmed with a
+hypothetical unseen chat_id whose title contained "Pro Trading Robot," which
+mismatched to an unrelated existing row. But unlike `channel_allowed()`, this fallback
+is deliberately tested, intended behavior (`tests/test_database_telegram_sources.py::
+test_find_channel_falls_back_to_username_then_title` explicitly matches a KNOWN row by
+title when the *incoming* chat_id is genuinely unrecognized - some callers, e.g.
+`capital_recommendation_routes.py`, intentionally call `find_channel(title=...)` with
+no chat_id at all). Restricting the fallback the same way `channel_allowed()` was fixed
+would break that existing, tested contract. And critically, `channel_allowed()` - the
+actual trade-authorization gate - no longer depends on `find_channel`'s result being
+correct, so this fallback's worst realistic case today is a minor misattribution (wrong
+channel's signal_rules applied, or a wrong `bot_command` classification) for a
+genuinely brand-new, never-before-synced chat_id - not an authorization bypass. Flagged
+here as a known, lower-severity, deliberately-deferred follow-up rather than risking a
+regression with a rushed fix.
+
 ---
