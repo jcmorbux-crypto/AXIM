@@ -56,6 +56,20 @@ mis-classified it — flagged as a limitation below.
    of 60 real messages correctly reconstructed into tradeable signals).
    Committed (`962783b`), deployed to both the API and Listener processes.
 
+3. **A disabled Telegram channel's signals were still reaching the trade
+   pipeline** — found while following up on this report's own Addendum
+   (below). `channel_allowed()` authorized any channel whose title was a
+   substring of an enabled channel's title, with no `chat_id` check at
+   all: "OTC Pro Trading Robot" (explicitly disabled) kept being treated
+   as allowed because "Pro Trading Robot" (a different, enabled channel)
+   is a literal substring of its title. Confirmed live before the fix:
+   `channel_allowed("OTC Pro Trading Robot", None)` returned `True`
+   despite `enabled=0`. Fixed: exact `chat_id` match now takes precedence
+   over fuzzy title matching whenever both sides have one. Verified live
+   against the real production database both before and after deploy.
+   Committed (`01d6e49`), deployed to both the API and Listener
+   processes. Full account in the Addendum and the engineering journal.
+
 ## Per-page findings
 
 **Dashboard (`/dashboard`)** — Verified live. Portfolio totals, weekly/
@@ -172,7 +186,7 @@ is shown) even though the tab itself wasn't removed.
 ## Verdicts
 
 1. Does every visible navigation item lead to a genuinely functional page? **YES** (verified for all 14 nav pages this pass)
-2. Are all controls found broken during this audit now fixed or removed? **YES** (1 found, 1 fixed — the Dashboard Pause button)
+2. Are all bugs found during and after this audit now fixed or removed? **YES** (2 found, 2 fixed — the Dashboard Pause button, and a live channel-authorization bypass found while following up on this report's own Addendum; see Addendum)
 3. Does the Dashboard show real data with no fabricated/dummy values? **YES** (verified live)
 4. Does Performance show real data with no fabricated/dummy values, including real losses? **YES** (verified live)
 5. Is Emergency Stop verified to actually persist server-side and block trading? **YES** (verified live, both banner state and `/api/status`)
@@ -211,10 +225,21 @@ executed** — the safety system worked exactly as intended, and the account is 
 throughout, so there was no financial consequence either way. Verdict 13 above
 (no real-money trade executed) remains true and unaffected.
 
-This is left as a positive finding, not treated as something requiring a further code
-change: the rate limiter doing its job under a real burst of newly-recognized signals is
-the system behaving correctly, not a bug. It is being flagged for the operator's
-awareness because a currently-configured `max_trades_per_hour=10` limit is now the
-binding constraint on this specific channel following the parser fix, which is an
-operational fact worth knowing, not an engineering defect to autonomously "fix" by
-changing a limit the operator configured deliberately.
+This was originally left as "a positive finding, no code change needed" - that
+framing was itself incomplete. Following up on why a *disabled* channel
+("OTC Pro Trading Robot") was reaching the pipeline at all - regardless of whether the
+rate limiter caught the result - surfaced a real, currently-active authorization bug:
+`channel_allowed()` matched enabled channels by fuzzy title substring with no chat_id
+awareness, so "OTC Pro Trading Robot" (disabled) was being treated as allowed purely
+because its title contains "Pro Trading Robot" (a different, legitimately-enabled
+channel)'s title as a substring. Confirmed live: `channel_allowed("OTC Pro Trading
+Robot", None)` returned `True` despite that specific channel's `enabled` flag being 0.
+
+Fixed in `core/telegram_listener.py` (chat_id-aware matching now takes precedence over
+fuzzy title matching whenever both sides have a real chat_id), verified against the
+real production database before and after deploy, 9 new regression tests, full suite
+1029 tests OK, deployed to both the API and Listener processes. Full details in the
+engineering journal's "The actual root cause: a live authorization bypass" entry.
+`max_trades_per_hour=10` remains the correct operational note for the legitimately
+enabled "Pro Trading Robot" channel specifically - that part of the original addendum
+still stands.
