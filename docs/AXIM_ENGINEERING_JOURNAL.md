@@ -979,3 +979,40 @@ This closes out all three "additional UI corrections" (dark mode removal, brandi
 Smart Channel Search) required before V1 sign-off.
 
 ---
+
+## 2026-07-17 (continued) — Per-account Emergency Stop
+
+Reviewed all 8 stated priorities against the actual codebase before picking new work
+- Broker Accounts, authentic Pocket Option login, multi-account, provider-agnostic
+onboarding/backtesting, Portfolio Command Center, and Money Management Studio were all
+already substantively built/verified earlier tonight. Capital Allocation was reviewed
+in depth (3-way transfer UI, audited ledger, 9+ existing backend tests covering
+overdraft protection and PnL-aware balances) and found already complete - no real gap
+to "finish." The one concrete, still-open gap from the V1 Multi-Account Execution spec
+("Account-specific Emergency Stop • Global Emergency Stop") was the global-only
+Emergency Stop - built the per-account version.
+
+- `broker_accounts` gained `emergency_stopped`/`emergency_stopped_at`/
+  `emergency_stopped_by` columns. `core/risk_manager.py`'s `check_not_stopped` now
+  optionally checks a specific account's own flag, independent of the global one and
+  every other account's - threaded through both of `trade_coordinator.py`'s check
+  points (initial preflight, and the re-check after a Live-mode confirmation wait).
+  `core/session_manager.py`'s new `end_active_session_for_broker_account` mirrors the
+  global version but scoped to one account.
+- New `POST /{id}/emergency-stop` + `.../clear-emergency-stop` routes; a button + status
+  badge in `web/broker.html`.
+
+11 new tests, including a full-pipeline integration test confirming a stopped account's
+signal rejects at the `account_emergency_stop` stage before the worker pool, and that a
+different account's signal is completely unaffected. Full suite: 990 tests, OK. API
+restarted to deploy.
+
+**Operational note**: partway through this session the user gave a direct correction
+about shell command style (avoid chained `&&` commands, unnecessary redirects, and
+repeatedly spawning temporary preview servers - each was triggering approval prompts
+that broke autonomous flow). Saved to memory
+(`feedback_shell_command_style.md`) and adopted for the rest of the session: simple
+single commands, and reasoning from code + the test suite instead of a fresh isolated
+preview server for every small change.
+
+---
