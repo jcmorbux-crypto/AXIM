@@ -1303,3 +1303,43 @@ here as a known, lower-severity, deliberately-deferred follow-up rather than ris
 regression with a rushed fix.
 
 ---
+
+## 2026-07-18 (continued) — Ran the real OPT SIGNALS folder sync, and a real finding about Sources
+
+Actually invoked the corrected `sync_dialogs()` (fixed earlier tonight) against the
+real production database for the first time - built and verified it, but hadn't yet
+run it for real. Confirmed safe before running: the function only upserts identity for
+dialogs in the "OPT SIGNALS" folder and never touches the `enabled` flag (per its own
+docstring and this morning's design). Result: `synced 14 dialog(s)` - the same 14 real
+providers verified earlier. Confirmed after: still exactly 1 enabled channel
+("Pro Trading Robot") - the sync did not enable anything, exactly as designed.
+
+**A real, undecided product finding surfaced while checking this**: `ui_channels`
+currently holds 181 rows total - the OPT SIGNALS folder's 14, plus roughly 150+ other
+dialogs from an earlier, pre-fix "sync everything" run (personal contacts, unrelated
+group chats, and some channels with clearly unrelated/sensitive content categories -
+sports betting tipsters, credit-repair "tradeline" groups, knockoff-luxury-goods
+marketing, adult content). `sync_dialogs()` is additive-only by design (upserts, never
+deletes), so this pre-existing noise is untouched and will remain in `ui_channels`
+regardless of running the corrected sync.
+
+Checked whether this noise is actually visible in the product: `database.
+search_channels()` (the Sources page's "Add A Source" backend) does surface it - an
+empty/browsing search returns real providers mixed with blank-titled personal contacts
+and, further down the ranked results, the unrelated channels above.
+
+**Deliberately not fixed autonomously.** Considered the one narrow fix that looked
+promising - excluding `kind='user'` (personal DMs/contacts) from search results - and
+rejected it after checking the real data: several legitimate, already-recommended
+providers (`Go+ | Trading Bot`, `Pocket Option Signals`) are ALSO `kind='user'` in
+Telethon's classification (bots and personal contacts aren't distinguishable by `kind`
+alone). There is no narrow, obviously-correct fix here - the real options (limit
+Sources search to the OPT SIGNALS folder by default with an explicit "show everything"
+toggle, add a bot-detection heuristic, let the operator manually hide/archive specific
+`ui_channels` rows, or something else) are product-UX decisions, not bugs with a
+single right answer. This also touches what is genuinely the operator's own personal
+Telegram data (real contacts, real private group memberships) - not something to
+prune, hide, or delete unilaterally without knowing what they'd want kept visible.
+Flagged here for a real product conversation rather than guessed at.
+
+---
