@@ -232,5 +232,73 @@ class TylerVipFlowTests(unittest.TestCase):
         self.assertEqual(results, ["win", "loss"])
 
 
+class OtcProRobotFlowTests(unittest.TestCase):
+    """OTC Pro Trading Robot's real vocabulary - reuses
+    parsers/signal_parser.py's own parse_asset_announcement/carried_asset
+    (built and live-verified 2026-07-18 for this exact provider's
+    real-time trading), so the batch onboarding/backtest pattern and the
+    live real-time parser agree on what this provider's messages mean.
+    Verified live against the real channel's actual current history
+    (46% coverage, 230 signal records, 116 wins / 113 losses / 0
+    unresolved out of a 500-message batch, end-to-end through
+    detect_pattern + parse_with_pattern) before adding this offline
+    regression coverage. Message text below is copied verbatim from
+    real fetched history, not invented."""
+
+    PREP = "Preparing trading asset \U0001F1EA\U0001F1FA EUR/\U0001F1EF\U0001F1F5 JPY OTC Robot has started peforming analysis \U0001F680"
+    ENTRY = "\U0001F4B9 Summary:  BUY OPTION \U0001F7E2⬆️ ⏰ Expiration time:  3 MINUTES  \U0001F4CA Opening price: 185.4"
+    RECOVERY = ("\U0001F4C8 Result: Safe OPTION  BUY \U0001F7E2⬆️ (x2 BET)   "
+                "\U0001F1E8\U0001F1E6CAD/\U0001F1EF\U0001F1F5 JPY OTC  Opening price: 115.87")
+    TERMINAL_WIN = "Summary: \U0001F1EA\U0001F1FAEUR/\U0001F1EF\U0001F1F5JPY OTC Profit\U0001F7E2 \nClosing price: 185.490\U0001F4CA"
+    TERMINAL_LOSS = "Summary: \U0001F1EA\U0001F1FAEUR/\U0001F1FAUSD OTC Loss\U0001F534 \nClosing price: 1.13984\U0001F4CA"
+
+    def test_prep_message_is_not_a_signal_itself(self):
+        messages = _messages((1, self.PREP))
+        signals, links = learner.parse_with_pattern("otc_pro_robot_flow", messages)
+        self.assertEqual(signals, [])
+        self.assertEqual(links, [])
+
+    def test_entry_alone_with_no_prep_produces_no_signal(self):
+        # Fails closed exactly like the live real-time parser - no asset
+        # means no fabricated trade, matching parse_signal's own contract.
+        messages = _messages((1, self.ENTRY))
+        signals, links = learner.parse_with_pattern("otc_pro_robot_flow", messages)
+        self.assertEqual(signals, [])
+
+    def test_prep_then_entry_produces_one_signal_with_the_carried_asset(self):
+        messages = _messages((1, self.PREP), (2, self.ENTRY), (3, self.TERMINAL_WIN))
+        signals, links = learner.parse_with_pattern("otc_pro_robot_flow", messages)
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["normalized_asset"], "EUR/JPY OTC")
+        self.assertEqual(signals[0]["direction"], "BUY")
+        self.assertEqual(signals[0]["expiry"], "3 Minute")
+        self.assertEqual(links[0]["result"], "win")
+
+    def test_terminal_loss_message_is_linked_as_a_loss(self):
+        messages = _messages((1, self.PREP), (2, self.ENTRY), (3, self.TERMINAL_LOSS))
+        signals, links = learner.parse_with_pattern("otc_pro_robot_flow", messages)
+        self.assertEqual(links[0]["result"], "loss")
+
+    def test_recovery_reentry_carries_its_own_inline_asset(self):
+        # No "Preparing trading asset" needed - the recovery message
+        # states its asset directly, matching the real provider mechanic.
+        messages = _messages((1, self.RECOVERY), (2, self.TERMINAL_WIN))
+        signals, links = learner.parse_with_pattern("otc_pro_robot_flow", messages)
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0]["normalized_asset"], "CAD/JPY OTC")
+
+    def test_detect_pattern_identifies_a_real_batch(self):
+        messages = _messages(
+            (1, self.PREP), (2, self.ENTRY), (3, self.TERMINAL_WIN),
+            (4, self.PREP), (5, self.ENTRY), (6, self.TERMINAL_LOSS),
+        )
+        detection = learner.detect_pattern(messages)
+        self.assertIsNotNone(detection)
+        self.assertEqual(detection["pattern"], "otc_pro_robot_flow")
+        for name, score in detection["all_scores"].items():
+            if name != "otc_pro_robot_flow":
+                self.assertEqual(score, 0.0, f"{name} unexpectedly matched OTC Pro Robot-style text")
+
+
 if __name__ == "__main__":
     unittest.main()

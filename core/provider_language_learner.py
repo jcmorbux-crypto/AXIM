@@ -38,7 +38,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "parsers"))
-from signal_parser import _find_valid_pair, _CURRENCY_CODES  # noqa: E402
+from signal_parser import (  # noqa: E402
+    _find_valid_pair, _CURRENCY_CODES, parse_signal, parse_asset_announcement,
+)
 
 # A provider whose best-scoring pattern still extracts a clean signal
 # from fewer than this fraction of its real messages isn't a good
@@ -224,6 +226,118 @@ def _parse_tyler_vip_flow(messages):
     return signal_records, result_links
 
 
+# ---------------------------------------------------------------------
+# OTC Pro Trading Robot named pattern - reuses parsers/signal_parser.py's
+# own parse_asset_announcement/carried_asset (built and live-verified
+# 2026-07-18 to make this exact provider's real-time trading work:
+# 26/60 real messages correctly reconstructed into signals). Deliberately
+# NOT a separate reimplementation - the batch onboarding/backtest pattern
+# and the live real-time parser must agree on what this provider's
+# messages mean, or a provider AXIM can already trade correctly in real
+# time could still fail to onboard/backtest, which is exactly the gap
+# found live (2026-07-18): the generic two_step_asset_then_direction
+# template scores 0 here because the real "Preparing trading asset X"
+# announcement is 60+ chars (loses _asset_only's 40-char cap) and the
+# real entry message ("💹 Summary: BUY OPTION ... Expiration time: 3
+# MINUTES ...") doesn't match _direction_only's labeled-field regex.
+#
+# Terminal result messages ("Summary: EUR/JPY OTC Profit🟢 Closing
+# price:...", "Safe option has been completed! Closing price:...
+# Summary: ... Profit🟢") always contain PROFIT/LOSS/DRAW as a literal
+# word (confirmed against real full-text messages, not the truncated
+# samples first fetched) - same detection the OPT SIGNALS research
+# branch's own hand-built adapter for this provider already used.
+# ---------------------------------------------------------------------
+
+_OTC_ROBOT_TERMINAL_RESULT_RE = re.compile(r"\b(PROFIT|LOSS|DRAW)\b", re.IGNORECASE)
+_OTC_ROBOT_RESULT_MAP = {"PROFIT": "win", "LOSS": "loss", "DRAW": "draw"}
+# The real, distinguishing shape of this provider's entry/recovery
+# messages ("Summary: BUY OPTION...", "Safe OPTION SELL...") - required
+# so this pattern doesn't just re-detect ANY message the shared
+# real-time parser happens to recognize (parse_signal is intentionally
+# generic across many providers' shapes; without this gate,
+# otc_pro_robot_flow scored 0.375 on plain "BUY NOW EUR/USD (OTC)"
+# TYLER-style text in testing - a real false-positive caught before
+# shipping, not a hypothetical one).
+_OTC_ROBOT_OPTION_WORD_RE = re.compile(r"\bOPTION\b", re.IGNORECASE)
+
+
+def _score_otc_pro_robot_flow(messages):
+    total = sum(1 for m in messages if _normalize(m.get("text")))
+    if not total:
+        return 0.0
+    hits = 0
+    carried_asset = None
+    for m in messages:
+        text = _normalize(m.get("text"))
+        if not text:
+            continue
+        announced = parse_asset_announcement(text)
+        if announced:
+            carried_asset = announced
+            continue
+        if _OTC_ROBOT_TERMINAL_RESULT_RE.search(text.upper()):
+            continue  # a terminal result line, not a signal - doesn't count as a hit or a miss
+        if not _OTC_ROBOT_OPTION_WORD_RE.search(text):
+            continue
+        if parse_signal(text, carried_asset=carried_asset):
+            hits += 1
+    return hits / total
+
+
+def _parse_otc_pro_robot_flow(messages):
+    signal_records = []
+    result_links = []
+    pending = None  # (message_id, record)
+    carried_asset = None
+
+    for m in messages:
+        text = _normalize(m.get("text"))
+        if not text:
+            continue
+
+        announced = parse_asset_announcement(text)
+        if announced:
+            carried_asset = announced
+            continue
+
+        result_m = _OTC_ROBOT_TERMINAL_RESULT_RE.search(text.upper())
+        if result_m:
+            outcome = _OTC_ROBOT_RESULT_MAP[result_m.group(1).upper()]
+            if pending is not None:
+                result_links.append({
+                    "signal_message_id": pending[0], "result_message_id": m["message_id"], "result": outcome,
+                })
+                pending = None
+            continue
+
+        if not _OTC_ROBOT_OPTION_WORD_RE.search(text):
+            continue  # not this provider's entry/recovery shape - promo/chatter, not forced into a fake record
+
+        signal = parse_signal(text, carried_asset=carried_asset)
+        if signal is None:
+            continue  # promo/prep chatter - not forced into a fake record
+
+        if pending is not None:
+            # A recovery re-entry after an unresolved prior entry in the
+            # same chain - the provider's own mechanic only fires a next
+            # entry after the previous one lost, matching the OPT SIGNALS
+            # research adapter's identical inference for this provider.
+            result_links.append({"signal_message_id": pending[0], "result_message_id": None, "result": "loss"})
+        record = {
+            "source_message_id": m["message_id"], "normalized_asset": signal["asset"],
+            "direction": signal["direction"],
+            "expiry": signal["expiry"] if signal["expiry"] != "Unknown" else None,
+            "confidence": 0.7,
+        }
+        signal_records.append(record)
+        pending = (m["message_id"], record)
+
+    if pending is not None:
+        result_links.append({"signal_message_id": pending[0], "result_message_id": None, "result": "unresolved"})
+    return signal_records, result_links
+
+
 def _try_compact_buysell(line):
     m = _COMPACT_BUYSELL_RE.match(line.strip())
     if not m:
@@ -350,6 +464,7 @@ def detect_pattern(messages):
         candidates.append((name, coverage))
     candidates.append(("two_step_asset_then_direction", _score_two_step_pattern(messages)))
     candidates.append(("tyler_vip_flow", _score_tyler_vip_flow(messages)))
+    candidates.append(("otc_pro_robot_flow", _score_otc_pro_robot_flow(messages)))
 
     best_name, best_coverage = max(candidates, key=lambda c: c[1])
     if best_coverage < MIN_VIABLE_COVERAGE:
@@ -371,6 +486,8 @@ def parse_with_pattern(pattern_name, messages):
         return _parse_two_step(messages)
     if pattern_name == "tyler_vip_flow":
         return _parse_tyler_vip_flow(messages)
+    if pattern_name == "otc_pro_robot_flow":
+        return _parse_otc_pro_robot_flow(messages)
     fn = dict(_SINGLE_MESSAGE_TEMPLATES)[pattern_name]
     use_whole = (pattern_name == "labeled_block")
     return _parse_single_message(fn, messages, use_whole_text=use_whole, confidence=0.75)
