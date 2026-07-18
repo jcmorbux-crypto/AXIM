@@ -305,22 +305,28 @@ async function showBuilder(baseKey, existingProfileId) {
   if (baseKey) { try { base = await fetchJSON(`/api/money-strategies/${baseKey}`); } catch (e) {} }
   if (existingProfileId) { try { existing = await fetchJSON(`/api/risk-profiles/${existingProfileId}`); } catch (e) {} }
 
+  const compSteps = existing && existing.compounding.steps_json ? JSON.parse(existing.compounding.steps_json) : [];
   const preset = existing ? {
     name: existing.name, bankroll: existing.bankroll,
     sizing_mode: existing.sizing_mode, percent: existing.percent_of_bankroll, fixed: existing.fixed_amount,
     mart_enabled: existing.martingale.enabled, mart_steps: existing.martingale.max_steps, mart_mult: existing.martingale.multiplier, mart_reset: existing.martingale.reset_after_win,
     vault_enabled: existing.profit_vault.enabled, vault_percent: existing.profit_vault.vault_percent, vault_trigger: existing.profit_vault.trigger_event,
+    comp_mode: existing.compounding.mode, comp_steps: compSteps,
+    comp_drawdown: existing.compounding.drawdown_reset_percent, comp_max: existing.compounding.max_risk_percent, comp_min: existing.compounding.min_risk_percent,
   } : base ? {
     name: `${base.name} (Custom)`, bankroll: 1000,
     sizing_mode: "percent", percent: parseFloat(base.risk.headline) || 1, fixed: 10,
     mart_enabled: base.martingale.active, mart_steps: 3, mart_mult: 2, mart_reset: true,
     vault_enabled: base.vault.active, vault_percent: base.vault.percent || 25, vault_trigger: "per_trade",
+    comp_mode: "disabled", comp_steps: [], comp_drawdown: 0, comp_max: 0, comp_min: 0,
   } : {
     name: "My Custom Strategy", bankroll: 1000,
     sizing_mode: "percent", percent: 1, fixed: 10,
     mart_enabled: false, mart_steps: 3, mart_mult: 2, mart_reset: true,
     vault_enabled: false, vault_percent: 25, vault_trigger: "per_trade",
+    comp_mode: "disabled", comp_steps: [], comp_drawdown: 0, comp_max: 0, comp_min: 0,
   };
+  const compCycleText = preset.comp_mode === "alternating_cycle" ? preset.comp_steps.join(", ") : "";
 
   const baseName = base ? base.name : null;
   const heading = existing ? `Edit "${existing.name}"` : "Custom Strategy Builder";
@@ -362,6 +368,39 @@ async function showBuilder(baseKey, existingProfileId) {
             </div>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" id="f-mart-reset" style="width:auto;" ${preset.mart_reset !== false ? "checked" : ""}> Reset to base stake after a win</label>
             <div class="warning-box" id="mart-unlimited-warning" style="display:none;">⚠ A long losing streak with no cap can consume an entire bankroll. Keep max steps low unless you fully understand the exposure - use "Preview Projected Exposure" on the profile after saving to see the worst case in dollars.</div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Compounding</h3>
+            <select id="f-comp-mode" style="width:auto;">
+              <option value="disabled" ${preset.comp_mode === "disabled" || !preset.comp_mode ? "selected" : ""}>Disabled</option>
+              <option value="milestone_based" ${preset.comp_mode === "milestone_based" ? "selected" : ""}>Milestone-based (profit thresholds)</option>
+              <option value="alternating_cycle" ${preset.comp_mode === "alternating_cycle" ? "selected" : ""}>Alternating cycle (per trade)</option>
+            </select>
+          </div>
+          <div id="comp-milestone-fields" style="display:${preset.comp_mode === "milestone_based" ? "block" : "none"}; margin-top:10px;">
+            <div class="info-box">Risk percent steps up as this session's profit crosses each threshold below, and resets to the base percent after a large enough drawdown. Only applies when sizing mode is Percent or Dynamic.</div>
+            <div class="row">
+              <div class="field"><label>Threshold 1 ($)</label><input type="number" id="f-comp-t1" min="0" value="${(preset.comp_steps[0] || {}).profit_threshold ?? ""}"></div>
+              <div class="field"><label>Risk % at threshold 1</label><input type="number" id="f-comp-p1" step="0.1" min="0" value="${(preset.comp_steps[0] || {}).risk_percent ?? ""}"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Threshold 2 ($, optional)</label><input type="number" id="f-comp-t2" min="0" value="${(preset.comp_steps[1] || {}).profit_threshold ?? ""}"></div>
+              <div class="field"><label>Risk % at threshold 2</label><input type="number" id="f-comp-p2" step="0.1" min="0" value="${(preset.comp_steps[1] || {}).risk_percent ?? ""}"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Threshold 3 ($, optional)</label><input type="number" id="f-comp-t3" min="0" value="${(preset.comp_steps[2] || {}).profit_threshold ?? ""}"></div>
+              <div class="field"><label>Risk % at threshold 3</label><input type="number" id="f-comp-p3" step="0.1" min="0" value="${(preset.comp_steps[2] || {}).risk_percent ?? ""}"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Drawdown reset (%, 0=off)</label><input type="number" id="f-comp-drawdown" step="0.5" min="0" value="${preset.comp_drawdown || 0}"></div>
+              <div class="field"><label>Max risk % (0=off)</label><input type="number" id="f-comp-max" step="0.1" min="0" value="${preset.comp_max || 0}"></div>
+              <div class="field"><label>Min risk % (0=off)</label><input type="number" id="f-comp-min" step="0.1" min="0" value="${preset.comp_min || 0}"></div>
+            </div>
+          </div>
+          <div id="comp-cycle-fields" style="display:${preset.comp_mode === "alternating_cycle" ? "block" : "none"}; margin-top:10px;">
+            <div class="info-box">Cycles through this list of risk percents, one per trade this session, repeating - never reacts to profit or loss. Only applies when sizing mode is Percent or Dynamic.</div>
+            <div class="field"><label>Percent cycle (comma-separated, e.g. 2.5, 5, 2.5, 5)</label><input type="text" id="f-comp-cycle" value="${escapeHtml(compCycleText)}"></div>
           </div>
         </div>
         <div class="card">
@@ -407,6 +446,10 @@ async function showBuilder(baseKey, existingProfileId) {
   });
   document.getElementById("f-vault-enabled").addEventListener("change", (e) => {
     document.getElementById("vault-fields").style.display = e.target.checked ? "block" : "none";
+  });
+  document.getElementById("f-comp-mode").addEventListener("change", (e) => {
+    document.getElementById("comp-milestone-fields").style.display = e.target.value === "milestone_based" ? "block" : "none";
+    document.getElementById("comp-cycle-fields").style.display = e.target.value === "alternating_cycle" ? "block" : "none";
   });
   const martSteps = document.getElementById("f-mart-steps");
   const updateWarning = () => { document.getElementById("mart-unlimited-warning").style.display = (parseInt(martSteps.value, 10) > 5) ? "block" : "none"; };
@@ -454,6 +497,29 @@ async function saveBuilder(existingProfileId) {
         max_steps: parseInt(document.getElementById("f-mart-steps").value, 10) || 1,
         multiplier: parseFloat(document.getElementById("f-mart-mult").value) || 2,
         reset_after_win: document.getElementById("f-mart-reset").checked,
+      }),
+    });
+    const compMode = document.getElementById("f-comp-mode").value;
+    let compStepsJson = null;
+    if (compMode === "milestone_based") {
+      const steps = [];
+      [["f-comp-t1", "f-comp-p1"], ["f-comp-t2", "f-comp-p2"], ["f-comp-t3", "f-comp-p3"]].forEach(([tId, pId]) => {
+        const t = document.getElementById(tId).value, pr = document.getElementById(pId).value;
+        if (t !== "" && pr !== "") steps.push({ profit_threshold: parseFloat(t), risk_percent: parseFloat(pr) });
+      });
+      compStepsJson = JSON.stringify(steps);
+    } else if (compMode === "alternating_cycle") {
+      const cycle = document.getElementById("f-comp-cycle").value.split(",").map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+      compStepsJson = JSON.stringify(cycle);
+    }
+    await fetchJSON(`/api/risk-profiles/${profileId}/compounding`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        mode: compMode,
+        steps_json: compStepsJson,
+        drawdown_reset_percent: parseFloat(document.getElementById("f-comp-drawdown").value) || 0,
+        max_risk_percent: parseFloat(document.getElementById("f-comp-max").value) || 0,
+        min_risk_percent: parseFloat(document.getElementById("f-comp-min").value) || 0,
       }),
     });
     const vaultEnabled = document.getElementById("f-vault-enabled").checked;
