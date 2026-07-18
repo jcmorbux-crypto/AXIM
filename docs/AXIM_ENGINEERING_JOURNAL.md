@@ -1016,3 +1016,45 @@ single commands, and reasoning from code + the test suite instead of a fresh iso
 preview server for every small change.
 
 ---
+
+## 2026-07-17 (continued) — Per-account rate limits, and channel sync scoped to OPT SIGNALS
+
+Closed out the last open item from the V1 Multi-Account Execution spec's Broker
+Accounts section: rate/session limits were still enforced globally
+(`risk_manager.check_max_trades_per_hour`/`check_max_trades_per_day` counted every
+account's trades together), so one busy account could exhaust the shared hourly/daily
+cap and silently block a completely different account's signals. Extended
+`database.count_trades_since` with an optional `broker_account_id` scope and threaded
+it through both risk-manager checks and both of `trade_coordinator.py`'s check points
+- deliberately left the other circuit breakers (max daily loss, daily profit target,
+max consecutive losses, cooldown-after-loss) global, since the spec only names rate/
+session limits as per-account, not the loss/profit breakers. A real test failure
+surfaced immediately: `test_trade_coordinator.py`'s slow-risk-check test monkey-patches
+`check_max_trades_per_hour` with a replacement that still had the old zero-arg
+signature, and now got called with a positional `broker_account_id` - fixed the
+replacement's signature, not the production code (the test was stale, not the change).
+Full suite re-run clean: 993 tests, OK.
+
+Then built the FINAL V1 PRODUCT DIRECTIVE's named default source universe: channel
+sync previously always pulled every dialog on the Telegram account (personal chats,
+unrelated groups included). `core/telegram_channels.py` now looks up the "OPT SIGNALS"
+folder via `GetDialogFiltersRequest` (Telethon 1.44's dialog-filter API - a folder's
+title is a `TextWithEntities` object, `.text` is the actual string, not a bare str)
+and passes its id to `iter_dialogs(folder=...)`. Overridable via `TELEGRAM_SYNC_FOLDER`
+in `.env` for installs that name their folder differently; falls back to syncing every
+dialog (the prior behavior) if the named folder isn't found, since silently syncing
+zero channels on a misconfigured install would be a worse regression than over-syncing.
+17 new tests (`test_telegram_channels.py`): folder-id lookup (exact/case-insensitive
+match, skips filter types like `DialogFilterDefault` with no title/id, doesn't raise on
+a dropped connection), and `sync_dialogs`' folder-scoping/fallback behavior against a
+fake Telethon client. Not yet verified against the real Telegram account's actual
+folder structure - the `axim_ui_session` is authenticated and this is a natural next
+verification step, but wasn't done in this pass.
+
+Committed as two separate commits (rate-limit scoping; OPT SIGNALS folder sync) rather
+than one bundled commit, since they're unrelated changes. Restarted the `AXIM API`
+scheduled task to deploy both (Python core changes) - this time `Stop-ScheduledTask`
+alone actually killed the process (confirmed via `Get-CimInstance` before starting
+again), unlike the documented earlier gap. Confirmed post-restart: root page 200.
+
+---
