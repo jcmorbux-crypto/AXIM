@@ -1412,11 +1412,24 @@ def find_recent_duplicate(asset, direction, expiry, window_seconds, exclude_id=N
 
 
 @timed("database")
-def count_trades_since(since_iso):
+def count_trades_since(since_iso, broker_account_id=None):
+    """broker_account_id, when given, scopes the count to just that
+    account - core/risk_manager.py's rate-limit checks (max_trades_per_hour/
+    _per_day) use this so one account's real trade volume can't exhaust
+    another account's quota against the SAME configured limit (a real
+    cross-account interference bug: previously this counted every
+    account's trades together, so a busy account could silently starve
+    a different one)."""
     conn = get_connection()
-    row = conn.execute(
-        "SELECT COUNT(*) AS n FROM signals WHERE received_at >= ?", (since_iso,)
-    ).fetchone()
+    if broker_account_id is not None:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM signals WHERE received_at >= ? AND broker_account_id = ?",
+            (since_iso, broker_account_id),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM signals WHERE received_at >= ?", (since_iso,)
+        ).fetchone()
     conn.close()
     return row["n"]
 

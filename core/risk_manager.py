@@ -88,10 +88,18 @@ def check_max_trade_amount(amount):
         )
 
 
-def check_max_trades_per_hour():
+def check_max_trades_per_hour(broker_account_id=None):
+    """broker_account_id, when this signal is routed to a specific multi-
+    broker-account Fund, scopes the count to just that account - each
+    account gets its own independent quota against the SAME configured
+    limit, rather than every account's trades counting against one
+    shared global bucket (previously a busy account could silently
+    exhaust the quota for every other account too). session_id=None's
+    legacy single-shared-connection path has no account to scope to, so
+    it keeps counting globally, unchanged."""
     limit = _setting("max_trades_per_hour", MAX_TRADES_PER_HOUR)
     since = (datetime.now() - timedelta(hours=1)).isoformat()
-    count = database.count_trades_since(since)
+    count = database.count_trades_since(since, broker_account_id=broker_account_id)
     if count >= limit:
         raise RiskViolation(
             "max_trades_per_hour",
@@ -99,17 +107,18 @@ def check_max_trades_per_hour():
         )
 
 
-def check_max_trades_per_day():
+def check_max_trades_per_day(broker_account_id=None):
     """A coarser, complementary cap to check_max_trades_per_hour - off by
     default (0), since it's a brand-new concept this project didn't have
     before the UI, and MAX_TRADES_PER_HOUR already provides real
     rate-limiting; this only activates once the operator sets a real value
-    via the UI."""
+    via the UI. broker_account_id scopes the count the same way
+    check_max_trades_per_hour does - see its own docstring."""
     limit = _setting("max_trades_per_day", 0)
     if limit <= 0:
         return
     midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    count = database.count_trades_since(midnight)
+    count = database.count_trades_since(midnight, broker_account_id=broker_account_id)
     if count >= limit:
         raise RiskViolation(
             "max_trades_per_day",

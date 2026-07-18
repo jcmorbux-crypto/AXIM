@@ -445,9 +445,9 @@ class EventLoopNotBlockedDuringRiskChecksTests(unittest.TestCase):
         SLOW_CHECK_SECONDS = 0.3
         original_check = risk_manager.check_max_trades_per_hour
 
-        def slow_check_max_trades_per_hour():
+        def slow_check_max_trades_per_hour(broker_account_id=None):
             time_module.sleep(SLOW_CHECK_SECONDS)  # simulates a slow blocking DB round trip
-            return original_check()
+            return original_check(broker_account_id)
 
         ticks = []
 

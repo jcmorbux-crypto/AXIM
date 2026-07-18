@@ -25,9 +25,10 @@ class RiskManagerTests(unittest.TestCase):
         self._tmp_dir.cleanup()
 
     def _insert_signal(self, asset="EUR/USD OTC", direction="BUY", expiry="1 Minute",
-                        result=None, closed_at=None, profit_loss=None):
+                        result=None, closed_at=None, profit_loss=None, broker_account_id=None):
         trade_id = database.record_signal_received(
             {"asset": asset, "direction": direction, "expiry": expiry, "raw_message": "test"},
+            broker_account_id=broker_account_id,
         )
         if result:
             database.update_trade_status(
@@ -75,6 +76,26 @@ class RiskManagerTests(unittest.TestCase):
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_max_trades_per_hour()
         self.assertEqual(ctx.exception.rule, "max_trades_per_hour")
+
+    def test_max_trades_per_hour_is_scoped_per_broker_account(self):
+        # A busy account must not exhaust the quota for a DIFFERENT
+        # account sharing the same configured limit - each gets its own
+        # independent count.
+        account_a = database.create_broker_account("Account A")
+        account_b = database.create_broker_account("Account B")
+        for _ in range(risk_manager.MAX_TRADES_PER_HOUR):
+            self._insert_signal(broker_account_id=account_a)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_trades_per_hour(account_a)
+        risk_manager.check_max_trades_per_hour(account_b)  # must not raise - a separate quota
+
+    def test_max_trades_per_hour_with_no_account_id_still_counts_globally(self):
+        # The legacy session_id=None path (no Fund/account attached) has
+        # no account to scope to - unchanged, still counts every trade.
+        for _ in range(risk_manager.MAX_TRADES_PER_HOUR):
+            self._insert_signal()
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_trades_per_hour()
 
     def test_max_consecutive_losses(self):
         for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
@@ -305,6 +326,16 @@ class RiskManagerTests(unittest.TestCase):
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_max_trades_per_day()
         self.assertEqual(ctx.exception.rule, "max_trades_per_day")
+
+    def test_max_trades_per_day_is_scoped_per_broker_account(self):
+        database.set_setting("max_trades_per_day", 3)
+        account_a = database.create_broker_account("Account A")
+        account_b = database.create_broker_account("Account B")
+        for _ in range(3):
+            self._insert_signal(broker_account_id=account_a)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_trades_per_day(account_a)
+        risk_manager.check_max_trades_per_day(account_b)  # must not raise - a separate quota
 
     # -- daily_profit_target (new) ----------------------------------------
 
