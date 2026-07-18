@@ -73,6 +73,7 @@
               <select id="f-broker-account"><option value="">Not attached</option></select>
             </div>
             <button class="subtle" style="align-self:flex-end;" onclick="assignBrokerAccount()">Attach</button>
+            <button class="subtle" id="detach-broker-btn" style="align-self:flex-end; display:none;" onclick="detachBrokerAccount()">Detach</button>
           </div>
           <label class="row" style="gap:8px; margin-top:12px; font-size:13px; color:var(--text-dim); cursor:pointer;">
             <input type="checkbox" id="f-live-enabled" style="width:auto;" onchange="toggleFundLive(this.checked)">
@@ -313,6 +314,7 @@ function renderDetail(report) {
   accountSelect.innerHTML = '<option value="">Not attached</option>' +
     allBrokerAccounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)} (${a.mode}, ${a.connection_status})</option>`).join("");
   accountSelect.value = account ? account.id : "";
+  document.getElementById("detach-broker-btn").style.display = account ? "inline-block" : "none";
   document.getElementById("f-live-enabled").checked = !!fund.live_enabled;
 
   const reserveSummaryEl = document.getElementById("reserve-summary");
@@ -399,6 +401,18 @@ async function assignBrokerAccount() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ broker_account_id: parseInt(value, 10), is_primary: true }),
     });
+    await selectFund(currentFundId);
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function detachBrokerAccount() {
+  const account = currentFundReport && currentFundReport.broker_account;
+  if (!account) return;
+  if (!confirm(`Detach ${account.name} from this Fund? Its sessions won't be able to start again until a broker account is attached.`)) return;
+  try {
+    await fetchJSON(`/api/funds/${currentFundId}/broker-account/${account.id}`, { method: "DELETE" });
     await selectFund(currentFundId);
   } catch (e) {
     alert("Failed: " + e.message);
