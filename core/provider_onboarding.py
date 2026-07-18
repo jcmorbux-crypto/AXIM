@@ -17,8 +17,18 @@ TYLER VIP CLUB, Pattern Signals - are exactly the ones this module's
 pattern library doesn't catch either, confirmed by direct validation
 against that same research database). Only a real failure (Telegram
 connection, credentials) raises.
+
+Universal Signal Intelligence Engine (2026-07-18 directive) - historical
+analysis now writes a real, database-driven provider_profiles row (see
+_update_provider_profile_from_analysis) rather than only returning an
+in-memory preview, so the pattern this module detects is the SAME one
+core/signal_assembler.py and the browser's Edit Parsing Profile screen
+read/edit - not three independently-maintained copies of "what this
+provider's format is."
 """
+import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent
@@ -100,6 +110,40 @@ def _build_preview_sample(analysis, messages, limit=PREVIEW_SAMPLE_SIZE):
     return sample
 
 
+_MULTI_MESSAGE_PATTERNS = {"two_step_asset_then_direction", "otc_pro_robot_flow"}
+
+
+def _update_provider_profile_from_analysis(chat_id, analysis, message_count):
+    """Universal Signal Intelligence Engine directive, Historical Learning
+    phase: writes a REAL, database-driven provider_profiles row from
+    what core/provider_language_learner.py just detected, rather than
+    only returning an in-memory preview result - this is what phase 4/5
+    ("database-driven provider profiles" / "historical profile
+    generation") actually means: the next analysis, the live listener
+    (once wired - see core/signal_assembler.py), and the browser's Edit
+    Parsing Profile screen all read/write this SAME row, not three
+    independent copies of "what pattern this provider uses."
+
+    No-ops (returns None) if this chat_id has no ui_channels row yet -
+    a provider can be previewed before it's ever been synced into
+    ui_channels (a raw chat_id typed in directly), and that's fine; the
+    profile is created the first time it actually IS a real channel."""
+    import database
+
+    channel = database.find_channel(chat_id=chat_id)
+    if channel is None:
+        return None
+    profile = database.get_or_create_provider_profile(channel["id"])
+    is_multi = analysis["pattern"] in _MULTI_MESSAGE_PATTERNS
+    database.update_provider_profile(
+        profile["id"], changed_by="provider_onboarding", reason="historical analysis",
+        pattern_name=analysis["pattern"], coverage=analysis["coverage"],
+        expected_sequence_json=json.dumps(["asset_announcement", "entry"] if is_multi else ["entry"]),
+        last_analyzed_at=datetime.now().isoformat(),
+    )
+    return database.get_provider_profile(profile["id"])
+
+
 async def preview_provider(chat_id, source_label=None, days=DEFAULT_HISTORY_DAYS):
     """Provider Onboarding Wizard Steps 1-4: fetch this provider's real
     history over the given day-window, detect its signal format, and
@@ -109,12 +153,14 @@ async def preview_provider(chat_id, source_label=None, days=DEFAULT_HISTORY_DAYS
     wrong, then calls analyze_and_onboard_provider with
     excluded_message_ids to actually commit.
 
-    Honest scope note: this excludes bad matches from the commit: it
-    does not yet let a reviewer CORRECT a wrong asset/direction and have
-    AXIM re-learn the provider's pattern from that correction - that
-    would need a genuinely editable, database-stored parsing-rule system
-    (the wizard spec's "hybrid" ask), which is real, separate follow-up
-    work, not something to silently claim as done here.
+    Honest scope note: this excludes bad matches from the commit; a
+    reviewer correcting a wrong asset/direction and having AXIM re-learn
+    from that specific correction (rather than just excluding it) is
+    real, separate follow-up work - the profile IS now database-driven
+    and editable (core/database.py's provider_profiles,
+    _update_provider_profile_from_analysis below), which is the
+    prerequisite this note used to say was still missing; per-correction
+    re-learning on top of it is not yet built.
 
     Returns a result dict with a "status" field - same possible values
     as analyze_and_onboard_provider ("no_history", "pattern_not_detected",
@@ -139,6 +185,7 @@ async def preview_provider(chat_id, source_label=None, days=DEFAULT_HISTORY_DAYS
                 "Robot, and TYLER VIP CLUB required)."
             ),
         }
+    _update_provider_profile_from_analysis(chat_id, analysis, len(messages))
 
     sample = _build_preview_sample(analysis, messages)
     if not sample:
@@ -201,6 +248,7 @@ async def analyze_and_onboard_provider(chat_id, source_label=None, created_by="p
                 "Robot, and TYLER VIP CLUB required)."
             ),
         }
+    _update_provider_profile_from_analysis(chat_id, analysis, len(messages))
 
     date_by_message_id = {m["message_id"]: m["date_utc"] for m in messages}
     trades = _extract_decided_trades(analysis, date_by_message_id, excluded_message_ids=excluded_message_ids)

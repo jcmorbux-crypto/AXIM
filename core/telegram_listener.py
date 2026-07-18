@@ -36,6 +36,8 @@ import session_manager
 import broker_account_manager
 import event_stream
 import telegram_bot_trigger
+import signal_assembler
+import provider_profile
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -175,6 +177,42 @@ def _get_carried_asset(chat_id):
     return asset
 
 
+# Universal Signal Intelligence Engine (2026-07-18 directive) - runs the
+# new provider-agnostic core/signal_assembler.py alongside (never
+# instead of) the real execution path above, for every channel AXIM
+# watches. Deliberately SHADOW-only right now: it never executes a
+# trade and never affects what parsers/signal_parser.py's own real-time
+# parser decides above - it only builds the real observation evidence
+# (provider_profiles.observed_signal_count/parse_success_count) that
+# core/provider_profile.py's graduation_status needs before a source
+# could ever be considered for Demo/Live via this new path. Swapping
+# actual EXECUTION over to the new assembler+profile system is real,
+# separate follow-up work that depends on this evidence existing first
+# - not something to silently skip to.
+_shadow_assembler = signal_assembler.SignalAssembler()
+
+
+def _observe_message(channel_row, message_text, message_id, reply_to_message_id=None):
+    """Fails silent (logged, never raised) - a bug here must never be
+    able to affect real signal execution, which happens entirely
+    independently of this function."""
+    if channel_row is None:
+        return
+    try:
+        profile = database.get_or_create_provider_profile(channel_row["id"])
+        timeout = profile["assembly_timeout_seconds"] or signal_assembler.DEFAULT_ASSEMBLY_TIMEOUT_SECONDS
+        result = _shadow_assembler.process_message(
+            channel_row["id"], message_id, message_text,
+            reply_to_message_id=reply_to_message_id, assembly_timeout_seconds=timeout,
+        )
+        for _ in result.get("expired_assets", []):
+            provider_profile.record_observed_signal(profile["id"], parsed_successfully=False)
+        if result["action"] == "signal_ready":
+            provider_profile.record_observed_signal(profile["id"], parsed_successfully=True)
+    except Exception as e:
+        logger.error("telegram_listener: shadow observation failed for channel_id=%s: %s", channel_row.get("id"), e)
+
+
 def _debug_safe(text):
     """Belt-and-suspenders alongside the UTF-8 stdout reconfigure above -
     guards print() calls if stdout is ever swapped for a stream that
@@ -285,6 +323,12 @@ async def handler(event):
         rules = database.get_enabled_rules_for_channel(channel_row["id"])
         if rules:
             message_text = apply_signal_rules(message_text, rules)
+
+    # Universal Signal Intelligence Engine shadow observation - see
+    # _observe_message's own docstring. Runs on the same normalized
+    # message text the real parser below uses, never affects it.
+    reply_to_message_id = getattr(getattr(event.message, "reply_to", None), "reply_to_msg_id", None)
+    _observe_message(channel_row, message_text, event.id, reply_to_message_id=reply_to_message_id)
 
     # A standalone asset announcement (e.g. OTC Pro Trading Robot's
     # "Preparing trading asset X") is never itself a tradeable signal -

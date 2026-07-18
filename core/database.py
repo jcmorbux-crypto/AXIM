@@ -35,6 +35,33 @@ _NEW_COLUMNS = {
     "session_id": "INTEGER",
     "fund_id": "INTEGER",
     "broker_account_id": "INTEGER",
+    # Universal Signal Intelligence Engine (2026-07-18 product directive) -
+    # extends this existing real execution record with the directive's
+    # canonical signal schema, rather than a parallel table (this row
+    # already IS "one detected signal, its parse, and what happened to
+    # it" - the directive's schema is the same concept, just richer).
+    # channel/message_id/asset/direction/timeframe/received_at/closed_at
+    # already cover source_id/message_ids(single)/asset/direction/
+    # expiry(text)/created_at/completed_at - only the genuinely new
+    # fields are added here.
+    "channel_id": "INTEGER",
+    "provider_profile_id": "INTEGER",
+    "message_ids_json": "TEXT",
+    "normalized_asset": "TEXT",
+    "is_otc": "INTEGER",
+    "entry_type": "TEXT",
+    "scheduled_entry_time": "TEXT",
+    "expiry_seconds": "INTEGER",
+    "provider_timezone": "TEXT",
+    "detected_language": "TEXT",
+    "confidence_score": "REAL",
+    "parser_version": "TEXT",
+    "parsing_method": "TEXT",
+    "is_multi_message": "INTEGER DEFAULT 0",
+    "correction_status": "TEXT",
+    "cancellation_status": "TEXT",
+    "execution_eligibility": "TEXT",
+    "rejection_reason": "TEXT",
 }
 
 # source_type: "passive" (default - existing behavior) | "bot_command"
@@ -49,6 +76,14 @@ _NEW_CHANNEL_COLUMNS = {
     "max_requests_per_session": "INTEGER",
     "default_expiry": "TEXT",
     "in_default_folder": "INTEGER DEFAULT 0",
+    # Universal Signal Intelligence Engine (2026-07-18 directive) - set by
+    # core/telegram_channels.sync_dialogs when a channel that WAS in the
+    # OPT SIGNALS folder as of the last sync is no longer found in the
+    # current one ("mark removed sources as unavailable without deleting
+    # historical records" - never touches `enabled`, never deletes the
+    # row or its signal history). Cleared back to NULL automatically if
+    # the same chat_id reappears in the folder on a later sync.
+    "removed_from_folder_at": "TEXT",
 }
 
 _NEW_SESSION_COLUMNS = {
@@ -216,6 +251,82 @@ def initialize_database():
         trigger_command TEXT,
         command_wait_for_result INTEGER DEFAULT 1,
         max_requests_per_session INTEGER
+    );
+    """)
+
+    # Universal Signal Intelligence Engine (2026-07-18 product directive) -
+    # the database-driven, browser-editable parsing profile the directive
+    # requires in place of a new hand-written Python adapter per provider.
+    # One row per ui_channels source. Every *_json field is a list/dict of
+    # RULES (patterns, sequences, thresholds), not code - editing them
+    # changes how this source is parsed without a deploy. pattern_name
+    # records which core/provider_language_learner.py template (or
+    # "custom" for a hand-edited rule set, or a named adapter like
+    # "tyler_vip_flow") this profile is currently built from.
+    #
+    # trading_mode is the source's own lifecycle gate, independent of
+    # ui_channels.enabled (which only controls whether the listener
+    # watches it at all): 'observation' (parse and record, never trade -
+    # every source starts here per the directive), 'demo_ready' (meets
+    # graduation criteria, awaiting a human's manual approval),
+    # 'demo' (trading in Demo mode), 'live' (a SEPARATE explicit approval
+    # from demo - see live_approved_at/live_approved_by). A source can be
+    # manually sent back to 'observation' at any time (format drift,
+    # operator judgment) without losing its learned rules.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS provider_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER UNIQUE NOT NULL REFERENCES ui_channels(id),
+        aliases_json TEXT,
+        asset_patterns_json TEXT,
+        direction_patterns_json TEXT,
+        expiry_patterns_json TEXT,
+        entry_time_rules_json TEXT,
+        timezone TEXT DEFAULT 'UTC',
+        otc_rules_json TEXT,
+        preparation_rules_json TEXT,
+        final_trigger_rules_json TEXT,
+        result_rules_json TEXT,
+        correction_rules_json TEXT,
+        cancellation_rules_json TEXT,
+        expected_sequence_json TEXT,
+        assembly_timeout_seconds INTEGER DEFAULT 300,
+        confidence_threshold REAL DEFAULT 0.6,
+        known_unsupported_formats_json TEXT,
+        requires_image INTEGER DEFAULT 0,
+        pattern_name TEXT,
+        parser_version INTEGER DEFAULT 1,
+        coverage REAL,
+        trading_mode TEXT DEFAULT 'observation',
+        observed_signal_count INTEGER DEFAULT 0,
+        parse_success_count INTEGER DEFAULT 0,
+        graduation_min_signals INTEGER DEFAULT 20,
+        graduation_min_success_rate REAL DEFAULT 0.8,
+        graduation_min_confidence REAL DEFAULT 0.6,
+        demo_approved_at TEXT,
+        demo_approved_by TEXT,
+        live_approved_at TEXT,
+        live_approved_by TEXT,
+        last_analyzed_at TEXT,
+        last_drift_check_at TEXT,
+        drift_detected_at TEXT,
+        drift_reason TEXT,
+        created_at TEXT,
+        updated_at TEXT
+    );
+    """)
+
+    # Auditable change history for provider_profiles (directive: "Every
+    # profile change must be auditable") - one row per PATCH, whether from
+    # a human editing rules in the browser or an automatic re-analysis.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS provider_profile_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        provider_profile_id INTEGER NOT NULL,
+        changed_fields_json TEXT NOT NULL,
+        changed_by TEXT,
+        reason TEXT,
+        created_at TEXT
     );
     """)
 
@@ -1937,6 +2048,11 @@ def upsert_channel(chat_id, username, title, kind, in_default_folder=None):
                 last_synced_at = excluded.last_synced_at
         """, (str(chat_id), username, title, kind, now, now))
     else:
+        # Reappearing in the folder after a prior removal clears
+        # removed_from_folder_at back to NULL (Universal Signal
+        # Intelligence Engine directive: additions are detected the same
+        # way removals are - this row simply becomes available again,
+        # never re-created).
         conn.execute("""
             INSERT INTO ui_channels (chat_id, username, title, kind, enabled, last_synced_at, created_at, in_default_folder)
             VALUES (?, ?, ?, ?, 0, ?, ?, ?)
@@ -1945,8 +2061,41 @@ def upsert_channel(chat_id, username, title, kind, in_default_folder=None):
                 title = excluded.title,
                 kind = excluded.kind,
                 last_synced_at = excluded.last_synced_at,
-                in_default_folder = excluded.in_default_folder
+                in_default_folder = excluded.in_default_folder,
+                removed_from_folder_at = CASE WHEN excluded.in_default_folder = 1 THEN NULL ELSE removed_from_folder_at END
         """, (str(chat_id), username, title, kind, now, now, 1 if in_default_folder else 0))
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def mark_channels_removed_from_folder(still_present_chat_ids):
+    """Universal Signal Intelligence Engine directive: "Mark removed
+    sources as unavailable without deleting historical records." Called
+    once per core/telegram_channels.sync_dialogs run with every chat_id
+    seen in THIS pass - any channel previously confirmed in the OPT
+    SIGNALS folder (in_default_folder=1) but absent from this pass is
+    marked removed_from_folder_at (first time only - a channel gone for
+    3 syncs in a row keeps its ORIGINAL removal timestamp, not the most
+    recent check). Never touches `enabled` or deletes the row - a
+    removed source's real signal/trade history in `signals` stays
+    exactly as it was."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    if still_present_chat_ids:
+        placeholders = ", ".join("?" for _ in still_present_chat_ids)
+        conn.execute(f"""
+            UPDATE ui_channels SET removed_from_folder_at = ?
+            WHERE in_default_folder = 1 AND removed_from_folder_at IS NULL
+              AND chat_id NOT IN ({placeholders})
+        """, [now] + [str(c) for c in still_present_chat_ids])
+    else:
+        # A genuinely empty sync pass (e.g. the folder itself vanished) -
+        # every currently-in-folder channel is "not present" this time.
+        conn.execute("""
+            UPDATE ui_channels SET removed_from_folder_at = ?
+            WHERE in_default_folder = 1 AND removed_from_folder_at IS NULL
+        """, (now,))
     conn.commit()
     conn.close()
 
@@ -2100,6 +2249,118 @@ def set_channel_enabled(channel_id, enabled):
     conn.execute("UPDATE ui_channels SET enabled = ? WHERE id = ?", (1 if enabled else 0, channel_id))
     conn.commit()
     conn.close()
+
+
+# ---------------------------------------------------------------------
+# Provider Profiles (Universal Signal Intelligence Engine, 2026-07-18
+# product directive) - see provider_profiles' own CREATE TABLE comment.
+# ---------------------------------------------------------------------
+
+_PROVIDER_PROFILE_FIELDS = {
+    "aliases_json", "asset_patterns_json", "direction_patterns_json", "expiry_patterns_json",
+    "entry_time_rules_json", "timezone", "otc_rules_json", "preparation_rules_json",
+    "final_trigger_rules_json", "result_rules_json", "correction_rules_json", "cancellation_rules_json",
+    "expected_sequence_json", "assembly_timeout_seconds", "confidence_threshold",
+    "known_unsupported_formats_json", "requires_image", "pattern_name", "parser_version", "coverage",
+    "trading_mode", "observed_signal_count", "parse_success_count",
+    "graduation_min_signals", "graduation_min_success_rate", "graduation_min_confidence",
+    "demo_approved_at", "demo_approved_by", "live_approved_at", "live_approved_by",
+    "last_analyzed_at", "last_drift_check_at", "drift_detected_at", "drift_reason",
+}
+
+_VALID_TRADING_MODES = {"observation", "demo_ready", "demo", "live"}
+
+
+@timed("database")
+def create_provider_profile(channel_id, **fields):
+    for key in fields:
+        if key not in _PROVIDER_PROFILE_FIELDS:
+            raise ValueError(f"Unknown provider profile field: {key!r}")
+    now = datetime.now().isoformat()
+    columns = ["channel_id", "created_at", "updated_at"] + list(fields.keys())
+    placeholders = ", ".join("?" for _ in columns)
+    values = [channel_id, now, now] + list(fields.values())
+    conn = get_connection()
+    cursor = conn.execute(f"INSERT INTO provider_profiles ({', '.join(columns)}) VALUES ({placeholders})", values)
+    profile_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return profile_id
+
+
+@timed("database")
+def get_provider_profile(profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM provider_profiles WHERE id = ?", (profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def get_provider_profile_by_channel_id(channel_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM provider_profiles WHERE channel_id = ?", (channel_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def list_provider_profiles(trading_mode=None):
+    conn = get_connection()
+    if trading_mode:
+        rows = conn.execute("SELECT * FROM provider_profiles WHERE trading_mode = ?", (trading_mode,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM provider_profiles").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def update_provider_profile(profile_id, changed_by=None, reason=None, **fields):
+    """Applies field changes AND appends a provider_profile_history row in
+    the same call - every profile change is auditable by construction,
+    not an opt-in the caller can forget (directive: "Every profile change
+    must be auditable"). No-ops (still returns cleanly) if fields is
+    empty - callers that only want to READ the profile use
+    get_provider_profile instead."""
+    for key in fields:
+        if key not in _PROVIDER_PROFILE_FIELDS:
+            raise ValueError(f"Unknown provider profile field: {key!r}")
+    if "trading_mode" in fields and fields["trading_mode"] not in _VALID_TRADING_MODES:
+        raise ValueError(f"invalid trading_mode, must be one of {sorted(_VALID_TRADING_MODES)}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields] + ["updated_at = ?"]
+    params = list(fields.values()) + [datetime.now().isoformat(), profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE provider_profiles SET {', '.join(set_clauses)} WHERE id = ?", params)
+    conn.execute(
+        "INSERT INTO provider_profile_history (provider_profile_id, changed_fields_json, changed_by, reason, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (profile_id, json.dumps(fields, default=str), changed_by, reason, datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_provider_profile_history(profile_id, limit=50):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM provider_profile_history WHERE provider_profile_id = ? ORDER BY id DESC LIMIT ?",
+        (profile_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def get_or_create_provider_profile(channel_id):
+    existing = get_provider_profile_by_channel_id(channel_id)
+    if existing is not None:
+        return existing
+    profile_id = create_provider_profile(channel_id)
+    return get_provider_profile(profile_id)
 
 
 @timed("database")

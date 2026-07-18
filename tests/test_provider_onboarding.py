@@ -99,6 +99,76 @@ class ProviderOnboardingTestCase(unittest.TestCase):
         self.assertNotIn("GBP/CAD", [s["asset"] for s in imported])
 
 
+class ProviderProfileWritingTestCase(unittest.TestCase):
+    """Universal Signal Intelligence Engine directive: historical
+    analysis must write a real, database-driven provider_profiles row,
+    not just return an in-memory result."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.channel_id = database.upsert_channel(chat_id=123, username="testprov", title="Test Provider", kind="channel")
+        self.channel_id = database.list_channels()[0]["id"]
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_analyze_and_onboard_creates_a_real_profile_row(self):
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            _run(provider_onboarding.analyze_and_onboard_provider(chat_id=123))
+        profile = database.get_provider_profile_by_channel_id(self.channel_id)
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["pattern_name"], "compact_dirfirst")
+        self.assertIsNotNone(profile["coverage"])
+        self.assertEqual(profile["trading_mode"], "observation")  # never auto-graduated
+        self.assertIsNotNone(profile["last_analyzed_at"])
+
+    def test_preview_also_writes_the_profile_not_just_the_commit_step(self):
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            _run(provider_onboarding.preview_provider(chat_id=123))
+        profile = database.get_provider_profile_by_channel_id(self.channel_id)
+        self.assertIsNotNone(profile)
+        self.assertEqual(profile["pattern_name"], "compact_dirfirst")
+
+    def test_single_message_pattern_gets_a_single_step_expected_sequence(self):
+        import json as json_module
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            _run(provider_onboarding.preview_provider(chat_id=123))
+        profile = database.get_provider_profile_by_channel_id(self.channel_id)
+        self.assertEqual(json_module.loads(profile["expected_sequence_json"]), ["entry"])
+
+    def test_reanalysis_updates_the_same_profile_row_not_a_new_one(self):
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            _run(provider_onboarding.preview_provider(chat_id=123))
+            first = database.get_provider_profile_by_channel_id(self.channel_id)
+            _run(provider_onboarding.preview_provider(chat_id=123))
+            second = database.get_provider_profile_by_channel_id(self.channel_id)
+        self.assertEqual(first["id"], second["id"])
+
+    def test_no_ui_channels_row_yet_does_not_crash(self):
+        # A raw chat_id that's never been synced into ui_channels - the
+        # profile write is a documented no-op, not a crash.
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Never Synced"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            result = _run(provider_onboarding.preview_provider(chat_id=99999))
+        self.assertEqual(result["status"], "complete")
+
+    def test_profile_change_is_auditable(self):
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            _run(provider_onboarding.preview_provider(chat_id=123))
+        profile = database.get_provider_profile_by_channel_id(self.channel_id)
+        history = database.list_provider_profile_history(profile["id"])
+        self.assertTrue(any(h["reason"] == "historical analysis" for h in history))
+
+
 class PreviewProviderTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp_dir = tempfile.TemporaryDirectory()

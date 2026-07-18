@@ -166,6 +166,7 @@ async def sync_dialogs(folder_name=DEFAULT_SYNC_FOLDER):
     client = TelegramClient(UI_SESSION_NAME, api_id, api_hash)
     await client.start(phone=phone)
     count = 0
+    seen_chat_ids = []
     try:
         dialog_filter = None
         if folder_name:
@@ -187,9 +188,20 @@ async def sync_dialogs(folder_name=DEFAULT_SYNC_FOLDER):
                 kind=_dialog_kind(dialog),
                 in_default_folder=True if dialog_filter is not None else None,
             )
+            if dialog_filter is not None:
+                seen_chat_ids.append(dialog.id)
             count += 1
     finally:
         await client.disconnect()
+    if dialog_filter is not None:
+        # Additions were just handled above (upsert_channel clears
+        # removed_from_folder_at on reappearance) - this half of "detect
+        # additions and removals" marks whatever WAS in-folder as of the
+        # last sync but wasn't seen in THIS pass. Only run when we
+        # actually resolved the real folder (never in the "folder not
+        # found, synced everything" fallback, where "in folder" isn't a
+        # meaningful signal to remove anything by).
+        database.mark_channels_removed_from_folder(seen_chat_ids)
     logger.info("telegram_channels: synced %d dialog(s) via %s (folder=%s)", count, UI_SESSION_NAME, folder_name)
     return count
 

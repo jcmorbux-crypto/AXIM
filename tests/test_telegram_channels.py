@@ -206,12 +206,16 @@ class SyncDialogsFolderScopingTests(IsolatedAsyncioTestCase):
         self.upserted = []
         self._orig_upsert = telegram_channels.database.upsert_channel
         telegram_channels.database.upsert_channel = lambda **kwargs: self.upserted.append(kwargs)
+        self.removed_calls = []
+        self._orig_mark_removed = telegram_channels.database.mark_channels_removed_from_folder
+        telegram_channels.database.mark_channels_removed_from_folder = lambda seen: self.removed_calls.append(seen)
         self._orig_creds = telegram_channels._telegram_credentials
         telegram_channels._telegram_credentials = lambda: (12345, "hash", "+10000000000")
         self._orig_client_cls = telegram_channels.TelegramClient
 
     def tearDown(self):
         telegram_channels.database.upsert_channel = self._orig_upsert
+        telegram_channels.database.mark_channels_removed_from_folder = self._orig_mark_removed
         telegram_channels._telegram_credentials = self._orig_creds
         telegram_channels.TelegramClient = self._orig_client_cls
 
@@ -222,6 +226,21 @@ class SyncDialogsFolderScopingTests(IsolatedAsyncioTestCase):
         count = await telegram_channels.sync_dialogs(folder_name="OPT SIGNALS")
         self.assertEqual(count, 1)
         self.assertEqual(self.upserted[0]["chat_id"], 1)
+
+    async def test_removal_detection_runs_only_when_the_real_folder_was_resolved(self):
+        matched, unmatched = _dialog(1, "In Folder"), _dialog(2, "Not In Folder")
+        client = _FakeClient([_filter("OPT SIGNALS", include_peers=[_channel_peer(1)])], [matched, unmatched])
+        telegram_channels.TelegramClient = lambda *a, **k: client
+        await telegram_channels.sync_dialogs(folder_name="OPT SIGNALS")
+        self.assertEqual(len(self.removed_calls), 1)
+        self.assertEqual(self.removed_calls[0], [1])  # only the in-folder dialog was "seen"
+
+    async def test_removal_detection_skipped_on_fallback_to_all_dialogs(self):
+        d1, d2 = _dialog(1, "A"), _dialog(2, "B")
+        client = _FakeClient([_filter("Some Other Folder")], [d1, d2])
+        telegram_channels.TelegramClient = lambda *a, **k: client
+        await telegram_channels.sync_dialogs(folder_name="OPT SIGNALS")
+        self.assertEqual(self.removed_calls, [])
 
     async def test_falls_back_to_all_dialogs_when_folder_not_found(self):
         d1, d2 = _dialog(1, "A"), _dialog(2, "B")
