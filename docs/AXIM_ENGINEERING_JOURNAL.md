@@ -1231,3 +1231,57 @@ correct behavior, not a defect. Flagged for the operator's awareness that
 is a configuration fact worth knowing, not something to autonomously change.
 
 ---
+
+## 2026-07-18 (continued) — The actual root cause: a live authorization bypass
+
+Followed up on the previous entry's finding (a disabled channel's signals reaching the
+pipeline) rather than accepting "the rate limiter caught it" as the end of the story -
+a disabled channel's signals should never have reached the pipeline at all, rate
+limiter or not. Traced it to a real, currently-active bug in
+`core/telegram_listener.py`'s `channel_allowed()`.
+
+**Root cause**: `channel_allowed()`'s check against enabled `ui_channels` rows used
+pure case-insensitive title-substring matching, with no `chat_id` awareness at all -
+`entry_title in title_lower`, nothing more. "OTC Pro Trading Robot" (chat_id
+-1001851061994) was explicitly disabled by the operator in the UI. But "Pro Trading
+Robot" (chat_id -1001515679451, a completely different, separately-enabled channel)
+has a title that is a literal substring of the disabled channel's title. So every
+message from the disabled channel still passed the check, confirmed directly:
+`channel_allowed("OTC Pro Trading Robot", None)` returned `True`. `find_channel()`
+(used earlier in the same handler to resolve `channel_row`) already does this
+correctly via an exact `chat_id` match first - the bug was specifically in this
+second, separate, chat_id-blind check.
+
+**Fix**: `channel_allowed()` now takes an optional `chat_id` parameter (both real call
+sites in `handler()` already have `event.chat_id` available) and prefers an exact
+chat_id match over the fuzzy title/username check whenever both the incoming message
+and the candidate row have a real chat_id - falling back to the original fuzzy
+matching only for the legacy WATCH_CHANNELS `.env` list (informal short names with no
+chat_id to compare) or a `ui_channels` row that hasn't been synced with a real chat_id
+yet. Scanned every real channel in the production database for other instances of this
+exact collision pattern (one title being a literal substring of another's) - this was
+the only one currently affecting production.
+
+**Verified live, before and after deploy**: `channel_allowed("OTC Pro Trading Robot",
+None, -1001851061994)` was `True` before the fix and `False` after, checked against
+the real production database both times; `channel_allowed("Pro Trading Robot", None,
+-1001515679451)` stayed `True` throughout, confirming the legitimately-enabled channel
+wasn't affected. 9 new regression tests (`tests/test_telegram_listener_channel_allowed.py`
+- this is the first direct test coverage `channel_allowed()` has ever had; plain
+`import telegram_listener` is safe for tests since `client.start()`/
+`run_until_disconnected()` only run under `if __name__ == "__main__":`, confirmed by
+reading the file's structure before writing the test). Full suite: 1029 tests, OK.
+
+Restarted both `AXIM API` and `AXIM Listener` (this changes `telegram_listener.py`) -
+hit the same documented `Stop-ScheduledTask` gap on the listener again (API died
+cleanly, listener needed a direct `Stop-Process -Force`, confirmed via PID before/
+after). Verified the fix live against the real production database immediately after
+restart, both directions.
+
+This closes out the actual root cause behind the previous entry's finding - the earlier
+entry's framing ("the rate limiter caught it, no code change needed") was true as far
+as it went, but incomplete: the rate limiter is downstream of an authorization decision
+that itself was silently wrong. Documented here rather than leaving the earlier entry
+standing as the final word on this incident.
+
+---
