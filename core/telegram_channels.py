@@ -28,6 +28,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "parsers"))
 
 from dotenv import load_dotenv
 from telethon import TelegramClient
+from telethon.tl import functions
 
 import database
 from logger import get_logger
@@ -38,6 +39,37 @@ load_dotenv()
 logger = get_logger("axim.ui", filename="ui.log")
 
 UI_SESSION_NAME = os.getenv("UI_SESSION_NAME", "axim_ui_session")
+
+# Default source universe (V1 product directive): scope channel sync to
+# this Telegram folder, rather than every dialog in the account
+# (personal chats, unrelated groups, etc. - a real, confirmed source of
+# noise this project already hit once, see the empty-title-channel
+# lookup-collision fix in core/database.py). A configurable override via
+# .env, not hardcoded, since a fresh install may name its folder
+# differently.
+DEFAULT_SYNC_FOLDER = os.getenv("TELEGRAM_SYNC_FOLDER", "OPT SIGNALS")
+
+
+async def _find_folder_id(client, folder_name):
+    """Returns the Telegram dialog-filter (folder) id whose title matches
+    folder_name (case-insensitive, whitespace-trimmed), or None if the
+    account has no such folder. A DialogFilter's title is a
+    TextWithEntities object in current Telethon/MTProto, not a plain
+    string - .text is the actual folder name. Some filter types
+    (DialogFilterDefault, the "All Chats" pseudo-folder) have no real
+    title/id at all and are safely skipped rather than raising."""
+    try:
+        response = await client(functions.messages.GetDialogFiltersRequest())
+    except Exception as e:
+        logger.warning("telegram_channels: could not list Telegram folders: %s", e)
+        return None
+    for f in getattr(response, "filters", []):
+        title_obj = getattr(f, "title", None)
+        title_text = getattr(title_obj, "text", None) if title_obj is not None else None
+        folder_id = getattr(f, "id", None)
+        if title_text and folder_id is not None and title_text.strip().lower() == folder_name.strip().lower():
+            return folder_id
+    return None
 
 
 def _telegram_credentials():
@@ -69,18 +101,35 @@ def _dialog_kind(dialog):
     return "unknown"
 
 
-async def sync_dialogs():
-    """Connects with the dedicated UI session, lists every real dialog,
-    and upserts identity (chat_id/username/title/kind) into ui_channels -
-    never touches the `enabled` flag, so this is safe to call as often as
-    the UI wants (e.g. a "Refresh" button) without undoing the operator's
-    own choices. Returns the count synced."""
+async def sync_dialogs(folder_name=DEFAULT_SYNC_FOLDER):
+    """Connects with the dedicated UI session and upserts identity
+    (chat_id/username/title/kind) into ui_channels for dialogs in the
+    given Telegram folder - never touches the `enabled` flag, so this is
+    safe to call as often as the UI wants (e.g. a "Refresh" button)
+    without undoing the operator's own choices. Returns the count synced.
+
+    folder_name defaults to DEFAULT_SYNC_FOLDER ("OPT SIGNALS" unless
+    overridden via .env) - the V1 product directive's required default
+    source universe, so a fresh account isn't flooded with personal
+    chats/unrelated groups. Pass folder_name=None to sync every dialog
+    (the old, pre-folder-scoping behavior) - also the automatic fallback
+    if the named folder doesn't exist in this Telegram account, since
+    silently syncing zero channels would be a worse regression than
+    syncing everything."""
     api_id, api_hash, phone = _telegram_credentials()
     client = TelegramClient(UI_SESSION_NAME, api_id, api_hash)
     await client.start(phone=phone)
     count = 0
     try:
-        async for dialog in client.iter_dialogs():
+        folder_id = None
+        if folder_name:
+            folder_id = await _find_folder_id(client, folder_name)
+            if folder_id is None:
+                logger.warning(
+                    "telegram_channels: folder '%s' not found - syncing all dialogs instead",
+                    folder_name,
+                )
+        async for dialog in client.iter_dialogs(folder=folder_id):
             username = getattr(dialog.entity, "username", None)
             title = dialog.name or ""
             database.upsert_channel(
@@ -92,7 +141,7 @@ async def sync_dialogs():
             count += 1
     finally:
         await client.disconnect()
-    logger.info("telegram_channels: synced %d dialog(s) via %s", count, UI_SESSION_NAME)
+    logger.info("telegram_channels: synced %d dialog(s) via %s (folder=%s)", count, UI_SESSION_NAME, folder_name)
     return count
 
 
