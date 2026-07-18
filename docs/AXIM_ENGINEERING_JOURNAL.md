@@ -1191,3 +1191,43 @@ Preview server and its temp DB copy torn down afterward - nothing left running, 
 touched in production.
 
 ---
+
+## 2026-07-18 (continued) — Correcting the audit's own blind spot, and a reassuring finding
+
+Followed up on the audit's own honest-limitations note (verdict 9: "a systematic sweep
+of every other live/synced channel's message format... was NOT performed") by checking
+`database.get_enabled_channels()` directly against the real production database - and
+found the audit's Final Acceptance Report had itself made an unverified claim.
+
+**The gap**: the report checked whether chat_id 1851061994 ("OTC Pro Trading Robot")
+was enabled before shipping the emoji-normalization/carried-asset fix, found it wasn't,
+and reported the fix as safe on that basis. It never checked whether any *other*
+channel used the same message format. It turns out a sibling channel with the identical
+provider bot output - literally named "Pro Trading Robot" (chat_id 1515679451, no "OTC"
+prefix) - was already enabled and already attached to an active Demo session (session
+12, Fund 25, "Pocket Option Demo (Primary)", `mode=demo`, `live_enabled=0`) before the
+fix was even written.
+
+**What actually happened, checked against real post-deploy production data**: since the
+fix deployed, this channel's messages have parsed correctly for the first time (real
+logged signal payloads now show populated asset/direction/expiry where they previously
+would have failed silently). The resulting burst of newly-recognized signals hit the
+existing `max_trades_per_hour` risk-manager limit (10) almost immediately - every
+rejection in `logs/lifecycle.log` for this channel is `stage=max_trades_per_hour
+status=rejected`, not a real execution error. Zero trades from this channel executed.
+Demo account throughout - no financial consequence regardless.
+
+This is a genuinely reassuring result (the fix works correctly on live production
+traffic, and the existing rate-limit circuit breaker caught the resulting volume
+exactly as designed), but the report's original claim was still wrong when written, and
+is corrected in place in `docs/AXIM_V1_FINAL_ACCEPTANCE_REPORT.md` (an Addendum
+section) rather than silently edited - matching this project's standing discipline of
+disclosing when an earlier claim in this session turns out to be incomplete, not just
+disclosing gaps found in the underlying product.
+
+No code change made here - the rate limiter doing its job under new signal volume is
+correct behavior, not a defect. Flagged for the operator's awareness that
+`max_trades_per_hour=10` is now the binding constraint on this specific channel, which
+is a configuration fact worth knowing, not something to autonomously change.
+
+---
