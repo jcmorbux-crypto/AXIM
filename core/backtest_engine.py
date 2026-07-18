@@ -727,8 +727,10 @@ def run_backtest(run_id):
             for session in result["sessions"]:
                 session_trades = session.pop("trades")
                 session_id = database.create_backtest_session(strategy["id"], **session)
-                for trade in session_trades:
-                    database.create_backtest_trade(session_id, **trade)
+                # One batched insert per session, not one open-commit-close
+                # SQLite connection per trade - see create_backtest_trades_
+                # bulk's own docstring for the real perf bug this fixes.
+                database.create_backtest_trades_bulk(session_id, session_trades)
             metrics = compute_metrics(result["sessions"], result["trades"], run["starting_bankroll"])
             database.save_backtest_metrics(strategy["id"], metrics)
             strategy_metrics.append((strategy["id"], metrics))

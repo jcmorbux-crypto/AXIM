@@ -5225,6 +5225,43 @@ def create_backtest_trade(backtest_session_id, signal_source_type, signal_id, se
 
 
 @timed("database")
+def create_backtest_trades_bulk(backtest_session_id, trades):
+    """Same INSERT as create_backtest_trade, batched into ONE connection/
+    commit via executemany rather than one open-commit-close cycle per
+    trade. Discovered as a genuine, real performance bug (not specific to
+    any one sizing mode) while live-verifying Daily Compounding's
+    backtest reporting: core/backtest_engine.py's run_backtest previously
+    called create_backtest_trade once per trade in a loop, and each
+    individual commit's fsync cost (~45ms measured against this
+    project's real production data - a WAL-mode commit's disk sync, not
+    the INSERT itself) made a backtest over a few thousand real signals
+    take several MINUTES instead of well under a second - effectively a
+    frozen/broken page from a real user's perspective, for any sizing
+    mode that doesn't stop early (not just Daily Compounding, which
+    simply happened to be the first backtest run against the full real
+    signal pool without an early stop). No caller needs individual
+    trade_ids back (run_backtest never used create_backtest_trade's
+    return value), so this returns nothing."""
+    if not trades:
+        return
+    conn = get_connection()
+    conn.executemany("""
+        INSERT INTO backtest_trades (
+            backtest_session_id, signal_source_type, signal_id, sequence_in_session,
+            asset, direction, occurred_at, trade_amount, martingale_step, result,
+            profit_loss, running_balance
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, [
+        (backtest_session_id, t["signal_source_type"], t["signal_id"], t["sequence_in_session"],
+         t["asset"], t["direction"], t["occurred_at"], t["trade_amount"], t["martingale_step"], t["result"],
+         t["profit_loss"], t["running_balance"])
+        for t in trades
+    ])
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
 def list_backtest_trades(backtest_session_id):
     conn = get_connection()
     rows = conn.execute(

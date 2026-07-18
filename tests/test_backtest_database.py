@@ -141,6 +141,40 @@ class BacktestRunLifecycleTests(BacktestDbTestCase):
         self.assertEqual(len(report["strategies"]), 1)
         self.assertEqual(report["strategies"][0]["metrics"]["final_bankroll"], 1200.0)
 
+    def test_create_backtest_trades_bulk_matches_individual_inserts(self):
+        # Discovered as a real performance bug (~45ms/trade individual
+        # commits made a real-data backtest take minutes instead of
+        # seconds) while verifying Daily Compounding's backtest reporting -
+        # core/backtest_engine.py's run_backtest now calls this instead of
+        # looping create_backtest_trade. Proves the batched insert produces
+        # the identical rows a caller would get from individual calls.
+        run_id = database.create_backtest_run("Bulk Test", {"source": "imported"}, 1000)
+        strategy_id = database.create_backtest_strategy(run_id, None, "S", {"sizing_mode": "fixed"})
+        session_id = database.create_backtest_session(strategy_id, 0, "2026-01-01T00:00:00", "completed", 1000)
+
+        trades = [
+            {
+                "signal_source_type": "imported", "signal_id": i, "sequence_in_session": i,
+                "asset": "EUR/USD", "direction": "BUY", "occurred_at": f"2026-01-01T{10 + i}:00:00",
+                "trade_amount": 10, "martingale_step": 0, "result": "win" if i % 2 == 0 else "loss",
+                "profit_loss": 8.5 if i % 2 == 0 else -10, "running_balance": 1000 + i,
+            }
+            for i in range(5)
+        ]
+        database.create_backtest_trades_bulk(session_id, trades)
+
+        stored = database.list_backtest_trades(session_id)
+        self.assertEqual(len(stored), 5)
+        self.assertEqual({t["signal_id"] for t in stored}, {0, 1, 2, 3, 4})
+        self.assertEqual(sorted(t["result"] for t in stored), ["loss", "loss", "win", "win", "win"])
+
+    def test_create_backtest_trades_bulk_with_empty_list_is_a_no_op(self):
+        run_id = database.create_backtest_run("Bulk Empty Test", {"source": "imported"}, 1000)
+        strategy_id = database.create_backtest_strategy(run_id, None, "S", {"sizing_mode": "fixed"})
+        session_id = database.create_backtest_session(strategy_id, 0, "2026-01-01T00:00:00", "completed", 1000)
+        database.create_backtest_trades_bulk(session_id, [])
+        self.assertEqual(database.list_backtest_trades(session_id), [])
+
     def test_update_status_rejects_invalid(self):
         run_id = database.create_backtest_run("R", {}, 1000)
         with self.assertRaises(ValueError):
