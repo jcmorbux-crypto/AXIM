@@ -48,6 +48,7 @@ _NEW_CHANNEL_COLUMNS = {
     "command_wait_for_result": "INTEGER DEFAULT 1",
     "max_requests_per_session": "INTEGER",
     "default_expiry": "TEXT",
+    "in_default_folder": "INTEGER DEFAULT 0",
 }
 
 _NEW_SESSION_COLUMNS = {
@@ -1841,21 +1842,44 @@ def get_fund_trades_since(fund_id, since_iso):
 # ---------------------------------------------------------------------
 
 @timed("database")
-def upsert_channel(chat_id, username, title, kind):
+def upsert_channel(chat_id, username, title, kind, in_default_folder=None):
     """Insert or refresh a dialog's identity (from a real Telethon sync) -
     never touches `enabled`, so re-syncing the dialog list never silently
-    re-enables or disables a channel the operator already chose."""
+    re-enables or disables a channel the operator already chose.
+
+    in_default_folder marks whether this dialog is currently a member of
+    the "OPT SIGNALS" Telegram folder (core/telegram_channels.py's
+    sync_dialogs passes this based on the real, live folder membership
+    check at sync time) - Smart Channel Search restricts to these by
+    default (search_channels' default_folder_only), so a fresh operator
+    isn't shown hundreds of unrelated personal contacts/groups before
+    they've asked to see everything. None (the default here) means "the
+    caller doesn't know" and leaves whatever was already stored
+    untouched, rather than incorrectly resetting a channel that was
+    already confirmed in-folder by an earlier sync."""
     conn = get_connection()
     now = datetime.now().isoformat()
-    conn.execute("""
-        INSERT INTO ui_channels (chat_id, username, title, kind, enabled, last_synced_at, created_at)
-        VALUES (?, ?, ?, ?, 0, ?, ?)
-        ON CONFLICT(chat_id) DO UPDATE SET
-            username = excluded.username,
-            title = excluded.title,
-            kind = excluded.kind,
-            last_synced_at = excluded.last_synced_at
-    """, (str(chat_id), username, title, kind, now, now))
+    if in_default_folder is None:
+        conn.execute("""
+            INSERT INTO ui_channels (chat_id, username, title, kind, enabled, last_synced_at, created_at)
+            VALUES (?, ?, ?, ?, 0, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                username = excluded.username,
+                title = excluded.title,
+                kind = excluded.kind,
+                last_synced_at = excluded.last_synced_at
+        """, (str(chat_id), username, title, kind, now, now))
+    else:
+        conn.execute("""
+            INSERT INTO ui_channels (chat_id, username, title, kind, enabled, last_synced_at, created_at, in_default_folder)
+            VALUES (?, ?, ?, ?, 0, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                username = excluded.username,
+                title = excluded.title,
+                kind = excluded.kind,
+                last_synced_at = excluded.last_synced_at,
+                in_default_folder = excluded.in_default_folder
+        """, (str(chat_id), username, title, kind, now, now, 1 if in_default_folder else 0))
     conn.commit()
     conn.close()
 
@@ -1924,7 +1948,7 @@ def _match_score(query, channel):
 
 
 @timed("database")
-def search_channels(query="", limit=20, include_historical_sources=False):
+def search_channels(query="", limit=20, include_historical_sources=False, default_folder_only=True):
     """Smart Channel Search's backend - ranks every synced channel
     against query (title/username/chat_id, tolerant of partial words
     and minor typos via subsequence matching - see _match_score) and
@@ -1934,6 +1958,16 @@ def search_channels(query="", limit=20, include_historical_sources=False):
     a user sees before they've typed anything. Each result includes
     `status` ('available'/'needs_setup'/'connected') so the UI can show
     the right next action without a second round-trip.
+
+    default_folder_only (default True): restricts results to channels
+    telegram_channels.sync_dialogs marked in_default_folder=1 (real
+    membership in the "OPT SIGNALS" Telegram folder), PLUS anything
+    already enabled - an operator's own already-active channel is never
+    hidden, even if it sits outside the folder. Without this, a fresh
+    account's search mixed real providers with every personal contact,
+    unrelated group, and DM the Telegram account has ever seen (confirmed
+    live: 150+ irrelevant results). Pass False to search everything - the
+    UI does this only when the operator explicitly asks to widen.
 
     include_historical_sources also searches list_historical_signal_sources()'s
     distinct source labels (Strategy Lab's backtest filter spans a wider
@@ -1955,6 +1989,8 @@ def search_channels(query="", limit=20, include_historical_sources=False):
             return 0.0
 
     channels = list_channels()
+    if default_folder_only:
+        channels = [c for c in channels if c["enabled"] or c["in_default_folder"]]
     scored = []
     seen_titles = set()
     for channel in channels:

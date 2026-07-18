@@ -460,6 +460,13 @@ button.subtle:hover { background: var(--surface); color: var(--text); }
 
 .scs-empty { padding: 16px 12px; font-size: 13px; color: var(--text-dim); text-align: center; }
 
+.scs-widen { border-top: 1px solid var(--border); padding: 8px 12px; text-align: center; }
+.scs-widen-link {
+  background: none; border: none; padding: 0; font-size: 12px; color: var(--blue);
+  cursor: pointer; font-family: inherit;
+}
+.scs-widen-link:hover { text-decoration: underline; }
+
 .scs-selected {
   align-items: center; justify-content: space-between; gap: 10px;
   padding: 9px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);

@@ -90,6 +90,12 @@ const SmartChannelSearch = (() => {
     let debounceTimer = null;
     let selectedChannel = null;
     let requestId = 0;
+    // Results default to the OPT SIGNALS folder (database.search_channels'
+    // default_folder_only) - real personal contacts/unrelated Telegram
+    // chats stay hidden until the operator explicitly widens, confirmed
+    // live this was otherwise ~150 irrelevant results mixed with real
+    // providers.
+    let allSources = false;
 
     function itemHtml(c, i) {
       const meta = statusMeta(c.status);
@@ -105,9 +111,15 @@ const SmartChannelSearch = (() => {
       `;
     }
 
+    function widenLinkHtml() {
+      if (allSources) return "";
+      return `<div class="scs-widen"><button type="button" class="scs-widen-link">Not finding it? Search all your Telegram chats &rarr;</button></div>`;
+    }
+
     function renderEmpty(query) {
-      resultsEl.innerHTML = `<div class="scs-empty">${query ? "No matching channels found." : "Start typing to search connected Telegram sources."}</div>`;
+      resultsEl.innerHTML = `<div class="scs-empty">${query ? "No matching channels found." : "Start typing to search connected Telegram sources."}</div>${widenLinkHtml()}`;
       resultsEl.style.display = "block";
+      bindWidenLink();
     }
 
     function renderResults(list, sectionLabel) {
@@ -118,15 +130,27 @@ const SmartChannelSearch = (() => {
         return;
       }
       resultsEl.innerHTML = (sectionLabel ? `<div class="scs-section-label">${escapeHtml(sectionLabel)}</div>` : "")
-        + list.map((c, i) => itemHtml(c, i)).join("");
+        + list.map((c, i) => itemHtml(c, i)).join("") + widenLinkHtml();
       resultsEl.style.display = "block";
+      bindWidenLink();
+    }
+
+    function bindWidenLink() {
+      const link = resultsEl.querySelector(".scs-widen-link");
+      if (!link) return;
+      link.addEventListener("click", () => {
+        allSources = true;
+        const query = input.value.trim();
+        if (query) runSearch(query); else showRecentOrDefault();
+      });
     }
 
     async function runSearch(query) {
       const thisRequest = ++requestId;
       try {
         const hist = opts.includeHistoricalSources ? "&include_historical_sources=true" : "";
-        const res = await fetch(`/api/channels/search?q=${encodeURIComponent(query)}&limit=20${hist}`, { credentials: "same-origin" });
+        const wide = allSources ? "&all_sources=true" : "";
+        const res = await fetch(`/api/channels/search?q=${encodeURIComponent(query)}&limit=20${hist}${wide}`, { credentials: "same-origin" });
         const data = res.ok ? await res.json() : [];
         if (thisRequest !== requestId) return; // a newer keystroke's request already landed
         renderResults(data, null);

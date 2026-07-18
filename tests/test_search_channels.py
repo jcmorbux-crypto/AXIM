@@ -13,7 +13,14 @@ import database
 class SearchChannelsTestCase(unittest.TestCase):
     """Smart Channel Search's backend (core/database.py's search_channels) -
     ranking, status classification, and the historical-sources merge for
-    Strategy Lab's broader backtest-filter domain."""
+    Strategy Lab's broader backtest-filter domain.
+
+    Every upsert_channel call here passes in_default_folder=True - matching
+    how a real channel actually arrives in ui_channels via
+    telegram_channels.sync_dialogs' OPT SIGNALS folder scoping - so these
+    tests exercise search_channels' real default_folder_only=True default
+    path, not the widened "search everything" one. The folder-restriction
+    behavior itself has its own dedicated tests below."""
 
     def setUp(self):
         self._tmp_dir = tempfile.TemporaryDirectory()
@@ -26,55 +33,55 @@ class SearchChannelsTestCase(unittest.TestCase):
         self._tmp_dir.cleanup()
 
     def test_exact_title_match_ranks_above_partial_match(self):
-        database.upsert_channel(chat_id="1", username="tylervip", title="Tyler VIP Club", kind="channel")
-        database.upsert_channel(chat_id="2", username="tylerother", title="Tyler VIP Club Reviews", kind="channel")
+        database.upsert_channel(chat_id="1", username="tylervip", title="Tyler VIP Club", kind="channel", in_default_folder=True)
+        database.upsert_channel(chat_id="2", username="tylerother", title="Tyler VIP Club Reviews", kind="channel", in_default_folder=True)
         results = database.search_channels("Tyler VIP Club")
         self.assertEqual(results[0]["title"], "Tyler VIP Club")
 
     def test_username_match_is_found(self):
-        database.upsert_channel(chat_id="1", username="go_plusbot", title="Go+ | Trading Bot", kind="channel")
+        database.upsert_channel(chat_id="1", username="go_plusbot", title="Go+ | Trading Bot", kind="channel", in_default_folder=True)
         results = database.search_channels("go_plusbot")
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["title"], "Go+ | Trading Bot")
 
     def test_partial_word_match(self):
-        database.upsert_channel(chat_id="1", username=None, title="Pocket Option Quant Algorithm", kind="channel")
+        database.upsert_channel(chat_id="1", username=None, title="Pocket Option Quant Algorithm", kind="channel", in_default_folder=True)
         results = database.search_channels("quant")
         self.assertEqual(len(results), 1)
 
     def test_tolerates_a_common_typo_via_subsequence_matching(self):
-        database.upsert_channel(chat_id="1", username=None, title="Tyler VIP Club", kind="channel")
+        database.upsert_channel(chat_id="1", username=None, title="Tyler VIP Club", kind="channel", in_default_folder=True)
         results = database.search_channels("tylr vip")  # missing the 'e'
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["title"], "Tyler VIP Club")
 
     def test_no_match_returns_empty(self):
-        database.upsert_channel(chat_id="1", username=None, title="Tyler VIP Club", kind="channel")
+        database.upsert_channel(chat_id="1", username=None, title="Tyler VIP Club", kind="channel", in_default_folder=True)
         results = database.search_channels("completely unrelated query xyz")
         self.assertEqual(results, [])
 
     def test_empty_query_returns_a_default_list_not_everything_alphabetically(self):
-        database.upsert_channel(chat_id="1", username=None, title="Zebra Channel", kind="channel")
+        database.upsert_channel(chat_id="1", username=None, title="Zebra Channel", kind="channel", in_default_folder=True)
         database.set_channel_enabled(1, True)
-        database.upsert_channel(chat_id="2", username=None, title="Apple Channel", kind="channel")
+        database.upsert_channel(chat_id="2", username=None, title="Apple Channel", kind="channel", in_default_folder=True)
         results = database.search_channels("")
         # Enabled ("Zebra") should rank ahead of disabled ("Apple") in the
         # default listing, even though "Apple" is alphabetically first.
         self.assertEqual(results[0]["title"], "Zebra Channel")
 
     def test_status_available_for_a_disabled_channel(self):
-        database.upsert_channel(chat_id="1", username=None, title="Not Yet Added", kind="channel")
+        database.upsert_channel(chat_id="1", username=None, title="Not Yet Added", kind="channel", in_default_folder=True)
         results = database.search_channels("Not Yet Added")
         self.assertEqual(results[0]["status"], "available")
 
     def test_status_needs_setup_for_an_enabled_channel_with_no_recommendation(self):
-        database.upsert_channel(chat_id="1", username=None, title="Added But Unanalyzed", kind="channel")
+        database.upsert_channel(chat_id="1", username=None, title="Added But Unanalyzed", kind="channel", in_default_folder=True)
         database.set_channel_enabled(1, True)
         results = database.search_channels("Added But Unanalyzed")
         self.assertEqual(results[0]["status"], "needs_setup")
 
     def test_status_connected_for_an_enabled_channel_with_a_real_recommendation(self):
-        database.upsert_channel(chat_id="1", username=None, title="Fully Onboarded", kind="channel")
+        database.upsert_channel(chat_id="1", username=None, title="Fully Onboarded", kind="channel", in_default_folder=True)
         database.set_channel_enabled(1, True)
         database.save_capital_recommendation(
             source_label="Fully Onboarded", backtest_run_id=1, best_strategy_id=1,
@@ -88,7 +95,7 @@ class SearchChannelsTestCase(unittest.TestCase):
 
     def test_limit_caps_the_result_count(self):
         for i in range(30):
-            database.upsert_channel(chat_id=str(i), username=None, title=f"Test Channel {i}", kind="channel")
+            database.upsert_channel(chat_id=str(i), username=None, title=f"Test Channel {i}", kind="channel", in_default_folder=True)
         results = database.search_channels("Test Channel", limit=10)
         self.assertEqual(len(results), 10)
 
@@ -120,7 +127,7 @@ class SearchChannelsTestCase(unittest.TestCase):
         self.assertEqual(results[0]["status"], "connected")
 
     def test_a_historical_source_already_covered_by_a_real_channel_is_not_duplicated(self):
-        database.upsert_channel(chat_id="1", username=None, title="Shared Name Provider", kind="channel")
+        database.upsert_channel(chat_id="1", username=None, title="Shared Name Provider", kind="channel", in_default_folder=True)
         conn = database.get_connection()
         conn.execute(
             "INSERT INTO imported_signals (source_label, asset, direction, expiry, received_at, result, import_batch) "
@@ -131,6 +138,45 @@ class SearchChannelsTestCase(unittest.TestCase):
         conn.close()
         results = database.search_channels("Shared Name Provider", include_historical_sources=True)
         self.assertEqual(len(results), 1)  # not duplicated
+
+
+class DefaultFolderOnlySearchTestCase(unittest.TestCase):
+    """The real fix for a live-confirmed bug: a fresh search mixed real
+    providers with ~150 unrelated personal contacts/groups. Channels
+    outside the OPT SIGNALS folder (in_default_folder=0/unset) are hidden
+    from search by default, UNLESS already enabled (an operator's own
+    active channel is never hidden) or the caller explicitly widens."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_channel_outside_the_folder_is_hidden_by_default(self):
+        database.upsert_channel(chat_id="1", username=None, title="Random Personal Contact", kind="user")
+        results = database.search_channels("Random Personal Contact")
+        self.assertEqual(results, [])
+
+    def test_channel_inside_the_folder_is_shown_by_default(self):
+        database.upsert_channel(chat_id="1", username=None, title="Real Provider", kind="channel", in_default_folder=True)
+        results = database.search_channels("Real Provider")
+        self.assertEqual(len(results), 1)
+
+    def test_already_enabled_channel_is_never_hidden_even_if_outside_the_folder(self):
+        database.upsert_channel(chat_id="1", username=None, title="Manually Added Provider", kind="channel")
+        database.set_channel_enabled(1, True)
+        results = database.search_channels("Manually Added Provider")
+        self.assertEqual(len(results), 1)
+
+    def test_widening_with_default_folder_only_false_shows_everything(self):
+        database.upsert_channel(chat_id="1", username=None, title="Random Personal Contact", kind="user")
+        results = database.search_channels("Random Personal Contact", default_folder_only=False)
+        self.assertEqual(len(results), 1)
 
 
 if __name__ == "__main__":

@@ -185,6 +185,7 @@ async def sync_dialogs(folder_name=DEFAULT_SYNC_FOLDER):
                 username=username,
                 title=title,
                 kind=_dialog_kind(dialog),
+                in_default_folder=True if dialog_filter is not None else None,
             )
             count += 1
     finally:
