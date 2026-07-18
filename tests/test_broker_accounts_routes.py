@@ -156,5 +156,69 @@ class EmergencyStopRouteTestCase(unittest.TestCase):
         self.assertEqual(still_active["status"], "active")
 
 
+class DisconnectRouteTestCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.account_id = database.create_broker_account("Test Account", mode="demo")
+        database.update_broker_account(self.account_id, connection_status="connected")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_disconnect_marks_the_account_disconnected(self):
+        result = routes.disconnect_broker_account(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(result["connection_status"], "disconnected")
+        self.assertEqual(database.get_broker_account(self.account_id)["connection_status"], "disconnected")
+
+    def test_disconnect_does_not_delete_the_account(self):
+        routes.disconnect_broker_account(self.account_id, user=_FAKE_ADMIN)
+        self.assertIsNotNone(database.get_broker_account(self.account_id))
+
+    def test_disconnect_unknown_account_404s(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            routes.disconnect_broker_account(999999, user=_FAKE_ADMIN)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+
+class ArchiveRouteTestCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.account_id = database.create_broker_account("Test Account", mode="demo")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_archive_sets_status_when_unassigned(self):
+        result = routes.archive_broker_account(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(result["status"], "archived")
+        self.assertEqual(database.get_broker_account(self.account_id)["status"], "archived")
+
+    def test_archive_is_rejected_while_still_assigned_to_a_fund(self):
+        from fastapi import HTTPException
+        fund_id = database.create_fund("Still Using It")
+        database.assign_broker_account_to_fund(fund_id, self.account_id)
+        with self.assertRaises(HTTPException) as ctx:
+            routes.archive_broker_account(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("Still Using It", ctx.exception.detail)
+        self.assertEqual(database.get_broker_account(self.account_id)["status"], "active")
+
+    def test_archive_succeeds_after_the_fund_is_unassigned(self):
+        fund_id = database.create_fund("Formerly Using It")
+        database.assign_broker_account_to_fund(fund_id, self.account_id)
+        database.unassign_broker_account_from_fund(fund_id, self.account_id)
+        result = routes.archive_broker_account(self.account_id, user=_FAKE_ADMIN)
+        self.assertEqual(result["status"], "archived")
+
+
 if __name__ == "__main__":
     unittest.main()
