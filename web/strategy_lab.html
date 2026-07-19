@@ -124,13 +124,24 @@
             <div class="field" style="flex:1;"><label>Starting bankroll ($)</label><input type="number" id="r-bankroll" value="1000" step="1"></div>
             <div class="field" style="flex:1;"><label>Default payout (%, used when a signal has none)</label><input type="number" id="r-payout" value="85" step="1"></div>
           </div>
-          <div class="field"><label>Session window</label>
-            <select id="r-window">
-              <option value="daily">One session per day</option>
-              <option value="all">Entire range as one session</option>
-            </select>
+          <div class="row">
+            <div class="field" style="flex:1;"><label>Session window</label>
+              <select id="r-window">
+                <option value="daily">One session per day</option>
+                <option value="all">Entire range as one session</option>
+              </select>
+            </div>
+            <div class="field" style="flex:1;">
+              <label>Minimum data trust tier</label>
+              <select id="r-trust-tier">
+                <option value="">Any (includes unverified provider-reported data)</option>
+                <option value="legacy_unverified">Legacy Unverified or better</option>
+                <option value="reprocessed_source">Reprocessed Source or better</option>
+                <option value="verified_only">Verified Only (broker-confirmed AXIM execution history)</option>
+              </select>
+            </div>
           </div>
-          <div class="stat-caption" id="signal-count-preview">&nbsp;</div>
+          <div id="run-estimate-panel"></div>
         </div>
 
         <div class="card solid">
@@ -141,7 +152,14 @@
       </div>
 
       <button class="primary" id="run-btn" onclick="runBacktest()">Run Backtest</button>
+      <button class="subtle" id="cancel-run-btn" style="display:none;" onclick="cancelCurrentRun()">Cancel</button>
       <span id="run-status" class="muted"></span>
+      <div id="run-progress-bar-wrap" style="display:none; margin-top:10px; max-width:420px;">
+        <div style="background:var(--surface-hover); border:1px solid var(--border); border-radius:999px; height:10px; overflow:hidden;">
+          <div id="run-progress-bar-fill" style="background:var(--brand); height:100%; width:0%; transition:width 0.3s ease;"></div>
+        </div>
+        <div class="muted" id="run-progress-label" style="font-size:11px; margin-top:4px;">&nbsp;</div>
+      </div>
 
       <div id="results-section" style="display:none; margin-top:28px;">
         <div class="row" style="justify-content:space-between; align-items:center;">
@@ -202,6 +220,18 @@
               <thead><tr><th>#</th><th>Started</th><th>Status</th><th>Trades</th><th>P/L</th><th>Vaulted</th></tr></thead>
               <tbody id="session-table-body"><tr><td colspan="6" class="empty">Run a backtest first.</td></tr></tbody>
             </table>
+          </div>
+        </div>
+
+        <div class="card solid full-width">
+          <h3 style="cursor:pointer;" onclick="toggleAuditHistory()">Audit History <span class="muted" style="font-size:11px; font-weight:normal;" id="audit-history-toggle-label">(show)</span></h3>
+          <div id="audit-history-body" style="display:none;">
+            <div class="signal-table-wrap">
+              <table>
+                <thead><tr><th>When</th><th>Action</th><th>Changed By</th><th>Reason</th></tr></thead>
+                <tbody id="audit-history-table-body"><tr><td colspan="4" class="empty">-</td></tr></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -372,6 +402,7 @@ async function fetchJSON(url, opts) {
 }
 function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function fmtMoney(n) { if (n === null || n === undefined) return "-"; const sign = n > 0 ? "+" : ""; return `${sign}$${Number(n).toFixed(2)}`; }
+function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "-"; }
 function openModal(id) { document.getElementById(id).style.display = "flex"; }
 function closeModal(id) { document.getElementById(id).style.display = "none"; }
 
@@ -467,7 +498,7 @@ async function loadSetupData() {
     allProfiles = profiles;
 
     document.getElementById("strategy-checklist").innerHTML = profiles.map(p => `
-      <label><input type="checkbox" value="${p.id}" ${p.is_template ? "" : "checked"}> ${escapeHtml(p.name)}${p.is_template ? " <span class=\"faint\">(template)</span>" : ""}</label>
+      <label><input type="checkbox" value="${p.id}" ${p.is_template ? "" : "checked"} onchange="scheduleBacktestEstimate()"> ${escapeHtml(p.name)}${p.is_template ? " <span class=\"faint\">(template)</span>" : ""}</label>
     `).join("") || '<div class="empty">No risk profiles yet - create one in Money Management Studio first.</div>';
 
     backtestChannelSearch = SmartChannelSearch.mount("r-channel-search", {
@@ -477,8 +508,14 @@ async function loadSetupData() {
       onSelect: (channel) => {
         selectedBacktestChannelTitle = channel.title;
         document.getElementById("r-channel-clear").style.display = "inline-block";
+        scheduleBacktestEstimate();
       },
     });
+
+    for (const id of ["r-source", "r-date-from", "r-date-to", "r-trust-tier"]) {
+      document.getElementById(id).addEventListener("change", scheduleBacktestEstimate);
+    }
+    scheduleBacktestEstimate();
   } catch (e) {
     document.getElementById("strategy-checklist").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
   }
@@ -488,41 +525,213 @@ function clearBacktestChannelFilter() {
   selectedBacktestChannelTitle = null;
   document.getElementById("r-channel-clear").style.display = "none";
   if (backtestChannelSearch) backtestChannelSearch.clear();
+  scheduleBacktestEstimate();
 }
+
+// ---------- Pre-run estimate (2026-07-19 directive) ----------
+// Every one-signal-per-bucket eligibility category, same discipline as
+// telegram.html's Coverage Analysis panel - "excluded" rows are muted
+// (correct classifications, not problems) rather than colored red.
+const ELIGIBILITY_CATEGORY_LABELS = {
+  eligible: "Eligible for this run",
+  excluded_ungraded: "Not yet graded (win/loss/draw unknown)",
+  excluded_cancelled: "Cancelled by the provider",
+  excluded_ambiguous: "Ambiguous (missing asset or direction)",
+  excluded_below_trust_tier: "Below the selected trust tier",
+  excluded_non_trade_outcome: "Never a placed trade (rejected/ignored/error)",
+};
+
+function _currentBacktestPoolConfig() {
+  const selectedIds = Array.from(document.querySelectorAll("#strategy-checklist input:checked")).map(el => parseInt(el.value, 10));
+  return {
+    source: document.getElementById("r-source").value,
+    channel_filter: selectedBacktestChannelTitle ? [selectedBacktestChannelTitle] : null,
+    date_from: document.getElementById("r-date-from").value || null,
+    date_to: document.getElementById("r-date-to").value || null,
+    session_window: document.getElementById("r-window").value,
+    min_trust_tier: document.getElementById("r-trust-tier").value || null,
+    risk_profile_ids: selectedIds,
+  };
+}
+
+let _backtestEstimateTimer = null;
+function scheduleBacktestEstimate() {
+  // Debounced - typing in the date fields or toggling several strategy
+  // checkboxes in quick succession shouldn't fire one request per
+  // keystroke/click.
+  clearTimeout(_backtestEstimateTimer);
+  _backtestEstimateTimer = setTimeout(updateBacktestEstimate, 350);
+}
+
+async function updateBacktestEstimate() {
+  const panel = document.getElementById("run-estimate-panel");
+  const body = _currentBacktestPoolConfig();
+  panel.innerHTML = `<div class="stat-caption">Checking eligible signals...</div>`;
+  try {
+    const est = await fetchJSON("/api/backtest/runs/estimate", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const rows = Object.entries(est.eligibility_breakdown)
+      .filter(([, count]) => count > 0)
+      .sort(([, a], [, b]) => b - a)
+      .map(([key, count]) => {
+        const pct = est.eligibility_total_examined ? ((count / est.eligibility_total_examined) * 100).toFixed(1) : "0.0";
+        const isEligible = key === "eligible";
+        const color = isEligible ? "var(--green)" : "var(--text-faint)";
+        return `<div class="stat-row">
+          <span class="stat-label" style="${isEligible ? "" : "color:var(--text-faint);"}">${ELIGIBILITY_CATEGORY_LABELS[key] || key}</span>
+          <span class="stat-value" style="color:${color};">${count} <span class="muted" style="font-size:11px;">(${pct}%)</span></span>
+        </div>`;
+      }).join("");
+    const warningsHtml = est.warnings.length
+      ? `<div style="margin-top:8px;">${est.warnings.map(w => `<div class="muted" style="font-size:11.5px; color:var(--yellow);">&#9888; ${escapeHtml(w)}</div>`).join("")}</div>`
+      : "";
+    panel.innerHTML = `
+      <div class="card solid" style="margin-top:10px; margin-bottom:0;">
+        <h3 style="margin-top:0; font-size:13px;">Pre-Run Estimate</h3>
+        <div class="stat-row"><span class="stat-label">Eligible signals</span><span class="stat-value">${est.eligible_signal_count}</span></div>
+        <div class="stat-row"><span class="stat-label">Sessions</span><span class="stat-value">${est.estimated_session_count}</span></div>
+        <div class="stat-row"><span class="stat-label">Estimated total trades (all strategies)</span><span class="stat-value">${est.estimated_total_trades}</span></div>
+        <div class="stat-row"><span class="stat-label">Estimated duration</span><span class="stat-value">~${est.estimated_duration_seconds.toFixed(2)}s</span></div>
+        ${rows ? `<div style="margin-top:10px; border-top:1px solid var(--border); padding-top:8px;">${rows}</div>` : ""}
+        ${warningsHtml}
+      </div>
+    `;
+  } catch (e) {
+    panel.innerHTML = `<div class="stat-caption" style="color:var(--red);">Could not estimate: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ---------- Run (async job: progress + cancellation) ----------
+
+let _runProgressPoll = null;
 
 async function runBacktest() {
   const selectedIds = Array.from(document.querySelectorAll("#strategy-checklist input:checked")).map(el => parseInt(el.value, 10));
   if (selectedIds.length === 0) { alert("Select at least one strategy to compare."); return; }
 
   const name = document.getElementById("r-name").value.trim() || `Backtest ${new Date().toLocaleString()}`;
+  const pool = _currentBacktestPoolConfig();
   const body = {
-    name,
-    source: document.getElementById("r-source").value,
-    channel_filter: selectedBacktestChannelTitle ? [selectedBacktestChannelTitle] : null,
-    date_from: document.getElementById("r-date-from").value || null,
-    date_to: document.getElementById("r-date-to").value || null,
+    name, source: pool.source, channel_filter: pool.channel_filter,
+    date_from: pool.date_from, date_to: pool.date_to,
     starting_bankroll: parseFloat(document.getElementById("r-bankroll").value) || 1000,
     default_payout_percent: parseFloat(document.getElementById("r-payout").value) || 85,
-    session_window: document.getElementById("r-window").value,
+    session_window: pool.session_window, min_trust_tier: pool.min_trust_tier,
     risk_profile_ids: selectedIds,
   };
 
   const btn = document.getElementById("run-btn");
+  const cancelBtn = document.getElementById("cancel-run-btn");
   const statusEl = document.getElementById("run-status");
+  const barWrap = document.getElementById("run-progress-bar-wrap");
   btn.disabled = true;
-  statusEl.textContent = "Running simulation...";
+  statusEl.textContent = "Starting...";
   try {
-    const report = await fetchJSON("/api/backtest/runs", {
+    const run = await fetchJSON("/api/backtest/runs/async", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
-    statusEl.textContent = "";
-    currentRunId = report.run.id;
-    currentReport = report;
-    await renderResults(report);
+    currentRunId = run.id;
+    barWrap.style.display = "block";
+    cancelBtn.style.display = "inline-block";
+    pollRunProgress(run.id);
   } catch (e) {
     statusEl.textContent = "Failed: " + e.message;
-  } finally {
     btn.disabled = false;
+  }
+}
+
+function pollRunProgress(runId) {
+  const btn = document.getElementById("run-btn");
+  const cancelBtn = document.getElementById("cancel-run-btn");
+  const statusEl = document.getElementById("run-status");
+  const barWrap = document.getElementById("run-progress-bar-wrap");
+  const barFill = document.getElementById("run-progress-bar-fill");
+  const barLabel = document.getElementById("run-progress-label");
+
+  if (_runProgressPoll) clearInterval(_runProgressPoll);
+  let ticks = 0;
+  const tick = async () => {
+    ticks += 1;
+    try {
+      const p = await fetchJSON(`/api/backtest/runs/${runId}/progress`);
+      barFill.style.width = `${p.progress_percent || 0}%`;
+      barLabel.textContent = `${p.status} - ${p.strategies_completed || 0}/${p.total_strategies || 0} strategies (${(p.progress_percent || 0).toFixed(0)}%)`;
+
+      if (p.status === "completed") {
+        clearInterval(_runProgressPoll);
+        barWrap.style.display = "none";
+        cancelBtn.style.display = "none";
+        statusEl.textContent = "";
+        btn.disabled = false;
+        const report = await fetchJSON(`/api/backtest/runs/${runId}`);
+        currentReport = report;
+        await renderResults(report);
+      } else if (p.status === "failed") {
+        clearInterval(_runProgressPoll);
+        barWrap.style.display = "none";
+        cancelBtn.style.display = "none";
+        statusEl.textContent = "Failed: " + (p.error_message || "unknown error");
+        btn.disabled = false;
+      } else if (p.status === "cancelled") {
+        clearInterval(_runProgressPoll);
+        barWrap.style.display = "none";
+        cancelBtn.style.display = "none";
+        statusEl.textContent = "Cancelled.";
+        btn.disabled = false;
+      } else if (ticks > 600) {  // ~10 minutes at 1s ticks - a safety net, not an expected outcome
+        clearInterval(_runProgressPoll);
+        statusEl.textContent = "Still running - stopped polling after 10 minutes. Check Past Runs for the final result.";
+        btn.disabled = false;
+      }
+    } catch (e) {
+      console.error("pollRunProgress failed:", e);
+    }
+  };
+  tick();
+  _runProgressPoll = setInterval(tick, 1000);
+}
+
+async function cancelCurrentRun() {
+  if (!currentRunId) return;
+  const cancelBtn = document.getElementById("cancel-run-btn");
+  cancelBtn.disabled = true;
+  try {
+    await fetchJSON(`/api/backtest/runs/${currentRunId}/cancel`, { method: "POST" });
+  } catch (e) {
+    alert("Failed to cancel: " + e.message);
+  } finally {
+    cancelBtn.disabled = false;
+  }
+}
+
+// ---------- Audit history ----------
+
+async function toggleAuditHistory() {
+  const body = document.getElementById("audit-history-body");
+  const label = document.getElementById("audit-history-toggle-label");
+  const showing = body.style.display !== "none";
+  if (showing) {
+    body.style.display = "none";
+    label.textContent = "(show)";
+    return;
+  }
+  body.style.display = "block";
+  label.textContent = "(hide)";
+  if (!currentRunId) return;
+  const tbody = document.getElementById("audit-history-table-body");
+  try {
+    const log = await fetchJSON(`/api/backtest/runs/${currentRunId}/audit-history`);
+    tbody.innerHTML = log.length ? log.map(entry => `
+      <tr>
+        <td>${fmtTime(entry.created_at)}</td>
+        <td>${escapeHtml(entry.action)}</td>
+        <td>${escapeHtml(entry.changed_by || "-")}</td>
+        <td>${escapeHtml(entry.reason || "-")}</td>
+      </tr>
+    `).join("") : `<tr><td colspan="4" class="empty">No audit entries yet.</td></tr>`;
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
@@ -530,6 +739,11 @@ async function runBacktest() {
 
 async function renderResults(report) {
   document.getElementById("results-section").style.display = "block";
+  // Collapse and clear any stale audit history from a previously-viewed
+  // run - it's fetched fresh (lazily) only if the operator expands it.
+  document.getElementById("audit-history-body").style.display = "none";
+  document.getElementById("audit-history-toggle-label").textContent = "(show)";
+  document.getElementById("audit-history-table-body").innerHTML = '<tr><td colspan="4" class="empty">-</td></tr>';
   const strategies = report.strategies;
 
   document.getElementById("compare-grid").innerHTML = strategies.map(s => {
