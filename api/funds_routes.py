@@ -85,6 +85,7 @@ def list_funds(status: Optional[str] = None, user=Depends(get_current_user)):
 def create_fund(body: FundCreate, user=Depends(require_admin)):
     try:
         fund_id = database.create_fund(body.name, starting_balance=body.starting_balance,
+                                        changed_by=user["email"],
                                         **body.model_dump(exclude={"name", "starting_balance"}))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -115,7 +116,7 @@ def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
     if body.default_session_profile_id is not None and database.get_session_profile(body.default_session_profile_id) is None:
         raise HTTPException(status_code=404, detail="session profile not found")
     try:
-        database.update_fund(fund_id, **body.model_dump(exclude_unset=True))
+        database.update_fund(fund_id, changed_by=user["email"], **body.model_dump(exclude_unset=True))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return fund_manager.get_fund_report(fund_id)
@@ -136,7 +137,7 @@ def archive_fund(fund_id: int, user=Depends(require_admin)):
             active_session["id"], "stopped_manual",
             stop_reason="Fund archived while this session was still active.",
         )
-    database.update_fund(fund_id, status="archived", live_enabled=False)
+    database.update_fund(fund_id, status="archived", live_enabled=False, changed_by=user["email"])
     return fund_manager.get_fund_report(fund_id)
 
 
@@ -148,21 +149,21 @@ def pause_fund(fund_id: int, user=Depends(require_admin)):
     stopping the session outright, so resuming picks back up exactly
     where it left off rather than requiring a fresh start."""
     _get_or_404(fund_id)
-    database.update_fund(fund_id, status="paused")
+    database.update_fund(fund_id, status="paused", changed_by=user["email"])
     return fund_manager.get_fund_report(fund_id)
 
 
 @router.post("/{fund_id}/resume")
 def resume_fund(fund_id: int, user=Depends(require_admin)):
     _get_or_404(fund_id)
-    database.update_fund(fund_id, status="active")
+    database.update_fund(fund_id, status="active", changed_by=user["email"])
     return fund_manager.get_fund_report(fund_id)
 
 
 @router.post("/{fund_id}/duplicate")
 def duplicate_fund(fund_id: int, body: DuplicateFundRequest, user=Depends(require_admin)):
     _get_or_404(fund_id)
-    new_id = database.duplicate_fund(fund_id, body.new_name)
+    new_id = database.duplicate_fund(fund_id, body.new_name, changed_by=user["email"])
     return fund_manager.get_fund_report(new_id)
 
 
@@ -171,14 +172,14 @@ def add_source(fund_id: int, body: AddSourceRequest, user=Depends(require_admin)
     _get_or_404(fund_id)
     if database.get_channel(body.channel_id) is None:
         raise HTTPException(status_code=404, detail="channel not found")
-    database.add_fund_source(fund_id, body.channel_id)
+    database.add_fund_source(fund_id, body.channel_id, changed_by=user["email"])
     return {"sources": database.list_fund_source_channel_ids(fund_id)}
 
 
 @router.delete("/{fund_id}/sources/{channel_id}")
 def remove_source(fund_id: int, channel_id: int, user=Depends(require_admin)):
     _get_or_404(fund_id)
-    database.remove_fund_source(fund_id, channel_id)
+    database.remove_fund_source(fund_id, channel_id, changed_by=user["email"])
     return {"sources": database.list_fund_source_channel_ids(fund_id)}
 
 
@@ -187,14 +188,15 @@ def assign_broker_account(fund_id: int, body: AssignBrokerAccountRequest, user=D
     _get_or_404(fund_id)
     if database.get_broker_account(body.broker_account_id) is None:
         raise HTTPException(status_code=404, detail="broker account not found")
-    database.assign_broker_account_to_fund(fund_id, body.broker_account_id, is_primary=body.is_primary)
+    database.assign_broker_account_to_fund(fund_id, body.broker_account_id, is_primary=body.is_primary,
+                                            changed_by=user["email"])
     return fund_manager.get_fund_report(fund_id)
 
 
 @router.delete("/{fund_id}/broker-account/{broker_account_id}")
 def unassign_broker_account(fund_id: int, broker_account_id: int, user=Depends(require_admin)):
     _get_or_404(fund_id)
-    database.unassign_broker_account_from_fund(fund_id, broker_account_id)
+    database.unassign_broker_account_from_fund(fund_id, broker_account_id, changed_by=user["email"])
     return fund_manager.get_fund_report(fund_id)
 
 
@@ -235,3 +237,14 @@ def transfer_capital(body: CapitalTransferRequest, user=Depends(require_admin)):
 def get_fund_transfers(fund_id: int, user=Depends(get_current_user)):
     _get_or_404(fund_id)
     return database.list_capital_transfers(fund_id=fund_id)
+
+
+@router.get("/{fund_id}/activity")
+def get_fund_activity(fund_id: int, user=Depends(get_current_user)):
+    """The Fund's config/lifecycle audit trail (2026-07-19 directive,
+    docs/AXIM_ROADMAP.md's own previously-deferred follow-up) - every
+    create/update/pause/resume/archive/duplicate/source and broker
+    attach-detach. Capital MOVES are deliberately not duplicated here;
+    they already have their own real ledger at GET /{fund_id}/transfers."""
+    _get_or_404(fund_id)
+    return database.list_fund_activity_log(fund_id)

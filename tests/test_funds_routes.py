@@ -72,5 +72,57 @@ class ArchiveFundTestCase(unittest.TestCase):
         self.assertEqual(still_active["status"], "active")
 
 
+class FundActivityRouteTestCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.fund_id = database.create_fund("Test Fund", starting_balance=1000.0, changed_by=_FAKE_ADMIN["email"])
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_activity_404_for_unknown_fund(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            routes.get_fund_activity(999999, user=_FAKE_ADMIN)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_activity_includes_creation(self):
+        log = routes.get_fund_activity(self.fund_id, user=_FAKE_ADMIN)
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]["action"], "created")
+        self.assertEqual(log[0]["changed_by"], _FAKE_ADMIN["email"])
+
+    def test_pause_resume_archive_are_all_attributed_to_the_acting_user(self):
+        routes.pause_fund(self.fund_id, user=_FAKE_ADMIN)
+        routes.resume_fund(self.fund_id, user=_FAKE_ADMIN)
+        routes.archive_fund(self.fund_id, user=_FAKE_ADMIN)
+        log = routes.get_fund_activity(self.fund_id, user=_FAKE_ADMIN)
+        actions = [entry["action"] for entry in log]
+        self.assertIn("status_paused", actions)
+        self.assertIn("status_active", actions)
+        for entry in log:
+            self.assertEqual(entry["changed_by"], _FAKE_ADMIN["email"])
+
+    def test_update_route_logs_changed_fields(self):
+        body = routes.FundUpdate(name="Renamed Fund")
+        routes.update_fund(self.fund_id, body, user=_FAKE_ADMIN)
+        log = routes.get_fund_activity(self.fund_id, user=_FAKE_ADMIN)
+        self.assertEqual(log[0]["action"], "updated")
+
+    def test_duplicate_route_logs_on_the_new_fund_not_the_source(self):
+        body = routes.DuplicateFundRequest(new_name="Copy of Test Fund")
+        result = routes.duplicate_fund(self.fund_id, body, user=_FAKE_ADMIN)
+        new_fund_id = result["fund"]["id"]
+        new_log = routes.get_fund_activity(new_fund_id, user=_FAKE_ADMIN)
+        actions = [entry["action"] for entry in new_log]
+        self.assertIn("duplicated_from", actions)
+        source_log = routes.get_fund_activity(self.fund_id, user=_FAKE_ADMIN)
+        self.assertEqual(len(source_log), 1)  # untouched by the duplicate
+
+
 if __name__ == "__main__":
     unittest.main()

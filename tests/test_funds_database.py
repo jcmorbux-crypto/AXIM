@@ -138,5 +138,116 @@ class FundBacktestAttributionTests(FundsDbTestCase):
         self.assertEqual(runs[0]["id"], run_id)
 
 
+class FundActivityLogTests(FundsDbTestCase):
+    """2026-07-19 directive: Fund config/lifecycle changes are auditable
+    (the roadmap's own previously-deferred follow-up)."""
+
+    def test_create_logs_created(self):
+        fund_id = database.create_fund("F", starting_balance=1000, changed_by="ops@axim")
+        log = database.list_fund_activity_log(fund_id)
+        self.assertEqual(len(log), 1)
+        self.assertEqual(log[0]["action"], "created")
+        self.assertEqual(log[0]["changed_by"], "ops@axim")
+
+    def test_create_with_no_changed_by_still_logs(self):
+        fund_id = database.create_fund("F")
+        log = database.list_fund_activity_log(fund_id)
+        self.assertEqual(len(log), 1)
+        self.assertIsNone(log[0]["changed_by"])
+
+    def test_field_update_logs_updated_with_changed_fields(self):
+        fund_id = database.create_fund("F")
+        database.update_fund(fund_id, name="Renamed", changed_by="ops@axim", reason="typo fix")
+        log = database.list_fund_activity_log(fund_id)
+        self.assertEqual(log[0]["action"], "updated")
+        self.assertEqual(log[0]["reason"], "typo fix")
+        import json
+        self.assertEqual(json.loads(log[0]["changed_fields_json"]), {"name": "Renamed"})
+
+    def test_pure_status_transition_logs_specific_action(self):
+        fund_id = database.create_fund("F")
+        database.update_fund(fund_id, status="paused", changed_by="ops")
+        database.update_fund(fund_id, status="active", changed_by="ops")
+        database.update_fund(fund_id, status="archived", changed_by="ops")
+        log = database.list_fund_activity_log(fund_id)
+        actions = [entry["action"] for entry in log]
+        self.assertIn("status_paused", actions)
+        self.assertIn("status_active", actions)
+        self.assertIn("status_archived", actions)
+
+    def test_status_plus_other_field_logs_generic_updated(self):
+        fund_id = database.create_fund("F")
+        database.update_fund(fund_id, status="archived", live_enabled=False, changed_by="ops")
+        log = database.list_fund_activity_log(fund_id)
+        self.assertEqual(log[0]["action"], "updated")
+
+    def test_source_added_and_removed_are_logged(self):
+        fund_id = database.create_fund("F")
+        database.add_fund_source(fund_id, 42, changed_by="ops")
+        database.remove_fund_source(fund_id, 42, changed_by="ops")
+        log = database.list_fund_activity_log(fund_id)
+        actions = [entry["action"] for entry in log]
+        self.assertIn("source_added", actions)
+        self.assertIn("source_removed", actions)
+
+    def test_re_adding_an_already_attached_source_is_not_logged_again(self):
+        fund_id = database.create_fund("F")
+        database.add_fund_source(fund_id, 42, changed_by="ops")
+        database.add_fund_source(fund_id, 42, changed_by="ops")  # INSERT OR IGNORE no-op
+        log = database.list_fund_activity_log(fund_id)
+        self.assertEqual(sum(1 for e in log if e["action"] == "source_added"), 1)
+
+    def test_removing_a_source_that_was_never_attached_is_not_logged(self):
+        fund_id = database.create_fund("F")
+        database.remove_fund_source(fund_id, 999, changed_by="ops")
+        log = database.list_fund_activity_log(fund_id)
+        self.assertEqual(len(log), 1)  # only the fund's own "created" entry
+        self.assertEqual(log[0]["action"], "created")
+
+    def test_duplicate_logs_created_and_duplicated_from_on_the_new_fund(self):
+        source_id = database.create_fund("Source", starting_balance=500)
+        new_id = database.duplicate_fund(source_id, "Copy", changed_by="ops", reason="cloning for testing")
+        log = database.list_fund_activity_log(new_id)
+        actions = [entry["action"] for entry in log]
+        self.assertIn("created", actions)
+        self.assertIn("duplicated_from", actions)
+        # The SOURCE fund's own log must be untouched by duplicating it
+        source_log = database.list_fund_activity_log(source_id)
+        self.assertEqual(len(source_log), 1)  # only its own "created" entry
+        self.assertEqual(source_log[0]["action"], "created")
+
+    def test_activity_log_is_isolated_per_fund(self):
+        fund_a = database.create_fund("A")
+        fund_b = database.create_fund("B")
+        database.update_fund(fund_a, name="A2", changed_by="ops")
+        self.assertEqual(len(database.list_fund_activity_log(fund_a)), 2)
+        self.assertEqual(len(database.list_fund_activity_log(fund_b)), 1)
+
+    def test_activity_log_most_recent_first(self):
+        fund_id = database.create_fund("F")
+        database.update_fund(fund_id, name="Second", changed_by="ops")
+        database.update_fund(fund_id, name="Third", changed_by="ops")
+        log = database.list_fund_activity_log(fund_id)
+        self.assertEqual(len(log), 3)
+        self.assertEqual(log[0]["id"], max(e["id"] for e in log))
+
+    def test_broker_attach_and_detach_are_logged(self):
+        fund_id = database.create_fund("F")
+        account_id = database.create_broker_account("PO Demo")
+        database.assign_broker_account_to_fund(fund_id, account_id, changed_by="ops")
+        database.unassign_broker_account_from_fund(fund_id, account_id, changed_by="ops")
+        log = database.list_fund_activity_log(fund_id)
+        actions = [entry["action"] for entry in log]
+        self.assertIn("broker_attached", actions)
+        self.assertIn("broker_detached", actions)
+
+    def test_detaching_an_unattached_broker_account_is_not_logged(self):
+        fund_id = database.create_fund("F")
+        database.unassign_broker_account_from_fund(fund_id, 999, changed_by="ops")
+        log = database.list_fund_activity_log(fund_id)
+        self.assertEqual(len(log), 1)  # only the fund's own "created" entry
+        self.assertEqual(log[0]["action"], "created")
+
+
 if __name__ == "__main__":
     unittest.main()

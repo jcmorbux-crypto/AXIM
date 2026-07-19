@@ -570,6 +570,29 @@ def initialize_database():
     );
     """)
 
+    # Fund activity/audit history (2026-07-19 directive: the operational-
+    # subsystem checklist's "activity/audit history" dimension - the
+    # roadmap's own explicitly-deferred follow-up, ported forward from
+    # the unmerged worktree-client-server-realtime-sync audit but never
+    # re-implemented until now, see docs/AXIM_ROADMAP.md). Config changes
+    # (create/update/pause/resume/archive/duplicate/source attach-detach/
+    # broker attach-detach) each get one row here - capital MOVES keep
+    # their own dedicated fund_capital_transfers ledger above (unchanged,
+    # not duplicated here); this table is everything else. Same shape as
+    # provider_profile_history - one entity (fund_id), changed_fields_json/
+    # changed_by/reason/created_at.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS fund_activity_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fund_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        changed_fields_json TEXT,
+        changed_by TEXT,
+        reason TEXT,
+        created_at TEXT NOT NULL
+    );
+    """)
+
     # One row per actual session run. Only one row may have status='active'
     # at a time (enforced in start_trading_session, not a DB constraint -
     # SQLite has no partial unique index short of a trigger, and the
@@ -2822,8 +2845,17 @@ _FUND_FIELDS = {
 _VALID_FUND_STATUSES = {"active", "paused", "archived"}
 
 
+def _log_fund_activity(conn, fund_id, action, detail=None, changed_by=None, reason=None):
+    conn.execute(
+        "INSERT INTO fund_activity_log (fund_id, action, changed_fields_json, changed_by, reason, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (fund_id, action, json.dumps(detail, default=str) if detail is not None else None,
+         changed_by, reason, datetime.now().isoformat()),
+    )
+
+
 @timed("database")
-def create_fund(name, starting_balance=0, **fields):
+def create_fund(name, starting_balance=0, changed_by=None, reason=None, **fields):
     for key in fields:
         if key not in _FUND_FIELDS:
             raise ValueError(f"Unknown fund field: {key!r}")
@@ -2837,6 +2869,9 @@ def create_fund(name, starting_balance=0, **fields):
     values = [name, starting_balance, status, now, now] + list(fields.values())
     cursor = conn.execute(f"INSERT INTO funds ({', '.join(columns)}) VALUES ({placeholders})", values)
     fund_id = cursor.lastrowid
+    _log_fund_activity(conn, fund_id, "created",
+                        {"name": name, "starting_balance": starting_balance, "status": status, **fields},
+                        changed_by, reason)
     conn.commit()
     conn.close()
     return fund_id
@@ -2862,7 +2897,7 @@ def list_funds(status=None):
 
 
 @timed("database")
-def update_fund(fund_id, **fields):
+def update_fund(fund_id, changed_by=None, reason=None, **fields):
     for key in fields:
         if key not in _FUND_FIELDS:
             raise ValueError(f"Unknown fund field: {key!r}")
@@ -2878,12 +2913,19 @@ def update_fund(fund_id, **fields):
     params.append(fund_id)
     conn = get_connection()
     conn.execute(f"UPDATE funds SET {', '.join(set_clauses)} WHERE id = ?", params)
+    # A pure status transition (pause/resume/archive - funds_routes.py's
+    # dedicated endpoints) logs as its own specific action; any other
+    # field change (including status alongside other fields) logs as a
+    # general "updated" carrying exactly what changed - same distinction
+    # backtest_data_audit_log's update_backtest_run_status makes.
+    action = f"status_{fields['status']}" if set(fields) == {"status"} else "updated"
+    _log_fund_activity(conn, fund_id, action, fields, changed_by, reason)
     conn.commit()
     conn.close()
 
 
 @timed("database")
-def duplicate_fund(fund_id, new_name):
+def duplicate_fund(fund_id, new_name, changed_by=None, reason=None):
     source = get_fund(fund_id)
     if source is None:
         raise ValueError(f"no fund with id {fund_id}")
@@ -2893,28 +2935,37 @@ def duplicate_fund(fund_id, new_name):
         default_risk_profile_id=source["default_risk_profile_id"],
         default_session_profile_id=source["default_session_profile_id"],
         profit_target=source["profit_target"], loss_limit=source["loss_limit"],
-        max_trades=source["max_trades"],
+        max_trades=source["max_trades"], changed_by=changed_by, reason=reason,
     )
     for channel_id in list_fund_source_channel_ids(fund_id):
-        add_fund_source(new_id, channel_id)
+        add_fund_source(new_id, channel_id, changed_by=changed_by, reason=reason)
+    conn = get_connection()
+    _log_fund_activity(conn, new_id, "duplicated_from", {"source_fund_id": fund_id, "source_fund_name": source["name"]},
+                        changed_by, reason)
+    conn.commit()
+    conn.close()
     return new_id
 
 
 @timed("database")
-def add_fund_source(fund_id, channel_id):
+def add_fund_source(fund_id, channel_id, changed_by=None, reason=None):
     conn = get_connection()
-    conn.execute(
+    cursor = conn.execute(
         "INSERT OR IGNORE INTO fund_sources (fund_id, channel_id, created_at) VALUES (?, ?, ?)",
         (fund_id, channel_id, datetime.now().isoformat()),
     )
+    if cursor.rowcount:  # OR IGNORE no-ops on an already-attached source - don't log a no-op as a change
+        _log_fund_activity(conn, fund_id, "source_added", {"channel_id": channel_id}, changed_by, reason)
     conn.commit()
     conn.close()
 
 
 @timed("database")
-def remove_fund_source(fund_id, channel_id):
+def remove_fund_source(fund_id, channel_id, changed_by=None, reason=None):
     conn = get_connection()
-    conn.execute("DELETE FROM fund_sources WHERE fund_id = ? AND channel_id = ?", (fund_id, channel_id))
+    cursor = conn.execute("DELETE FROM fund_sources WHERE fund_id = ? AND channel_id = ?", (fund_id, channel_id))
+    if cursor.rowcount:
+        _log_fund_activity(conn, fund_id, "source_removed", {"channel_id": channel_id}, changed_by, reason)
     conn.commit()
     conn.close()
 
@@ -3085,7 +3136,7 @@ def finalize_broker_account_connection(account_id, connection_status, **extra_fi
 
 
 @timed("database")
-def assign_broker_account_to_fund(fund_id, broker_account_id, is_primary=True):
+def assign_broker_account_to_fund(fund_id, broker_account_id, is_primary=True, changed_by=None, reason=None):
     """Attaches a broker account to a fund. Only one broker account may be
     primary per fund today (a fund "distributing trades across multiple
     broker accounts" is explicitly future scope) - assigning a new primary
@@ -3102,17 +3153,21 @@ def assign_broker_account_to_fund(fund_id, broker_account_id, is_primary=True):
         """,
         (fund_id, broker_account_id, 1 if is_primary else 0, now),
     )
+    _log_fund_activity(conn, fund_id, "broker_attached",
+                        {"broker_account_id": broker_account_id, "is_primary": is_primary}, changed_by, reason)
     conn.commit()
     conn.close()
 
 
 @timed("database")
-def unassign_broker_account_from_fund(fund_id, broker_account_id):
+def unassign_broker_account_from_fund(fund_id, broker_account_id, changed_by=None, reason=None):
     conn = get_connection()
-    conn.execute(
+    cursor = conn.execute(
         "DELETE FROM fund_broker_accounts WHERE fund_id = ? AND broker_account_id = ?",
         (fund_id, broker_account_id),
     )
+    if cursor.rowcount:
+        _log_fund_activity(conn, fund_id, "broker_detached", {"broker_account_id": broker_account_id}, changed_by, reason)
     conn.commit()
     conn.close()
 
@@ -3203,6 +3258,17 @@ def list_capital_transfers(fund_id=None, limit=100):
         rows = conn.execute(
             "SELECT * FROM fund_capital_transfers ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def list_fund_activity_log(fund_id, limit=100):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM fund_activity_log WHERE fund_id = ? ORDER BY id DESC LIMIT ?",
+        (fund_id, limit),
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
