@@ -167,13 +167,16 @@ def parse_signal(message, carried_asset=None):
             return None
 
     # Direction formats:
-    # UP, DOWN, CALL, PUT take priority over a trailing BUY/SELL word - some
-    # sources send both (e.g. "NZDJPY OTC DOWN BUY"), where the UP/DOWN/
-    # CALL/PUT keyword is the actual call and BUY/SELL is incidental wording.
-    directional_match = re.search(r"\b(UP|DOWN|CALL|PUT)\b", text)
+    # UP, DOWN, CALL, PUT, HIGH, LOWER take priority over a trailing BUY/
+    # SELL word - some sources send both (e.g. "NZDJPY OTC DOWN BUY"),
+    # where the UP/DOWN/CALL/PUT/HIGH/LOWER keyword is the actual call and
+    # BUY/SELL is incidental wording. HIGH/LOWER confirmed against a real
+    # provider's live format (Daniel FX Trade: "GBP/CAD HIGH ⬆ 15 MIN" /
+    # "GBP/CHF LOWER ⬇ 15 MIN") - not a guess.
+    directional_match = re.search(r"\b(UP|DOWN|CALL|PUT|HIGH|LOWER)\b", text)
 
     if directional_match:
-        signal["direction"] = "BUY" if directional_match.group(1) in ("UP", "CALL") else "SELL"
+        signal["direction"] = "BUY" if directional_match.group(1) in ("UP", "CALL", "HIGH") else "SELL"
     elif re.search(r"\bBUY\b", text):
         signal["direction"] = "BUY"
     elif re.search(r"\bSELL\b", text):
