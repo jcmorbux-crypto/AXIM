@@ -451,6 +451,20 @@ def channel_performance(channel_id: int, user=Depends(get_current_user)):
     return database.get_channel_performance(channel["title"])
 
 
+@app.get("/api/channels/performance-summary")
+def channels_performance_summary(user=Depends(get_current_user)):
+    """UI v2 Dashboard's "Performance by Channel" panel - every channel
+    with at least one closed (lifetime) trade, ranked by realized P/L
+    descending. Reuses core/trade_statistics.profit_by_channel (already
+    existed, just never had an HTTP route) rather than a new aggregation -
+    same win_rate/profit_loss/roi shape every other performance view in
+    this codebase already uses."""
+    grouped = trade_statistics.profit_by_channel()
+    rows = [{"channel": channel, **stats} for channel, stats in grouped.items()]
+    rows.sort(key=lambda r: r["profit_loss"], reverse=True)
+    return rows
+
+
 @app.get("/api/channels/{channel_id}/rules")
 def list_channel_rules(channel_id: int, user=Depends(get_current_user)):
     _get_channel_or_404(channel_id)

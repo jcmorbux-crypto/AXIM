@@ -105,6 +105,47 @@
   .fund-card .fc-goal-track { height: 5px; border-radius: 3px; background: var(--border); margin-top: 8px; overflow: hidden; }
   .fund-card .fc-goal-fill { height: 100%; background: var(--green, #1a9e5c); }
   #pv-chart .pv-empty { fill: var(--text-faint); font-size: 11px; }
+
+  /* ---- UI v2 metric card row: the hierarchy the design package
+     mandates - equity, realized profit, win rate, trade count are the
+     dashboard's headline, everything else supports it. ---- */
+  .metric-card-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 14px; }
+  .metric-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); padding: 18px 20px; }
+  .metric-card .mc-label { font-size: 12.5px; color: var(--text-dim); font-weight: 600; }
+  .metric-card .mc-value { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; margin-top: 6px; line-height: 1.1; }
+  .metric-card .mc-delta { font-size: 12.5px; margin-top: 6px; font-weight: 600; }
+  .secondary-stats-strip { display: flex; gap: 28px; flex-wrap: wrap; padding: 12px 4px; margin-bottom: 20px; }
+  .secondary-stats-strip .stat { display: flex; flex-direction: column; gap: 2px; }
+  .secondary-stats-strip .stat .label { font-size: 11.5px; color: var(--text-faint); }
+  .secondary-stats-strip .stat .value { font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  .dash-3col { display: grid; grid-template-columns: 1.6fr 1fr 1fr; gap: 16px; align-items: stretch; margin-bottom: 24px; }
+  .dash-3col .card { margin: 0; }
+  @media (max-width: 1100px) { .dash-3col { grid-template-columns: 1fr; } .metric-card-row { grid-template-columns: repeat(2, 1fr); } }
+
+  .channel-perf-row { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--border); gap: 10px; }
+  .channel-perf-row:last-child { border-bottom: none; }
+  .channel-perf-row .cp-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .channel-perf-row .cp-sub { font-size: 11.5px; color: var(--text-faint); }
+  .channel-perf-row .cp-pl { font-weight: 650; font-size: 13.5px; font-variant-numeric: tabular-nums; text-align: right; flex-shrink: 0; }
+
+  .session-cards-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+  .session-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; background: var(--bg); }
+  .session-card .sc-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .session-card .sc-name { font-weight: 650; font-size: 13.5px; }
+  .session-card .sc-pl { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; margin-bottom: 8px; }
+  .session-card .sc-goal-track { height: 5px; border-radius: 3px; background: var(--border); overflow: hidden; margin-bottom: 4px; }
+  .session-card .sc-goal-fill { height: 100%; background: var(--brand); }
+  .session-card .sc-caption { font-size: 11.5px; color: var(--text-dim); }
+
+  .quick-actions-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+  .quick-action-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; background: var(--bg); text-align: left; cursor: pointer; transition: border-color 0.15s var(--ease); }
+  .quick-action-card:hover { border-color: var(--brand); }
+  .quick-action-card .qa-label { font-size: 12.5px; color: var(--text-dim); font-weight: 600; }
+  .quick-action-card .qa-value { font-size: 20px; font-weight: 700; margin-top: 4px; }
+  .quick-action-card .qa-caption { font-size: 11.5px; color: var(--text-faint); margin-top: 4px; }
+  .risk-quick-actions-row { display: grid; grid-template-columns: 280px 1fr; gap: 16px; align-items: stretch; }
+  @media (max-width: 900px) { .risk-quick-actions-row { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -127,32 +168,36 @@
       </div>
     </div>
 
-    <div class="card solid" id="portfolio-overview" style="margin-bottom:24px;">
-      <div class="row" style="justify-content:space-between; align-items:flex-start; margin-bottom:18px;">
-        <div>
-          <div class="fund-hero-name">Total Portfolio Value</div>
-          <div class="fund-hero-value" id="pv-total">-</div>
-          <div class="fund-hero-caption" id="pv-today-pl">&nbsp;</div>
-        </div>
-        <div class="po-capital-split">
-          <div class="stat"><span class="label">Active trading capital</span><span class="value" id="pv-active-capital">-</span></div>
-          <div class="stat"><span class="label">Protected / vaulted</span><span class="value" id="pv-protected-capital">-</span></div>
-          <div class="stat"><span class="label">Active Funds</span><span class="value" id="pv-active-funds">-</span></div>
-        </div>
+    <div class="metric-card-row">
+      <div class="metric-card">
+        <div class="mc-label">Total Balance</div>
+        <div class="mc-value" id="mc-total-balance">-</div>
+        <div class="mc-delta" id="mc-active-funds-delta">&nbsp;</div>
       </div>
-      <div id="pv-chart-wrap">
-        <svg id="pv-chart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100px; display:block;"></svg>
-        <div class="muted" id="pv-chart-caption" style="font-size:11.5px; margin-top:6px;">&nbsp;</div>
+      <div class="metric-card">
+        <div class="mc-label">Total Profit</div>
+        <div class="mc-value" id="mc-total-profit">-</div>
+        <div class="mc-delta" id="mc-today-pl-delta">&nbsp;</div>
       </div>
-      <div class="po-stats-grid" id="pv-extended-stats">
-        <div class="stat"><span class="label">Weekly P/L</span><span class="value" id="pv-weekly-pl">-</span></div>
-        <div class="stat"><span class="label">Monthly P/L</span><span class="value" id="pv-monthly-pl">-</span></div>
-        <div class="stat"><span class="label">Overall ROI</span><span class="value" id="pv-overall-roi">-</span></div>
-        <div class="stat"><span class="label">Overall win rate</span><span class="value" id="pv-overall-winrate">-</span></div>
-        <div class="stat"><span class="label">Current exposure</span><span class="value" id="pv-exposure">-</span></div>
-        <div class="stat"><span class="label">Today's trades</span><span class="value" id="pv-todays-trades">-</span></div>
-        <div class="stat"><span class="label">Active sessions</span><span class="value" id="pv-active-sessions">-</span></div>
+      <div class="metric-card">
+        <div class="mc-label">Win Rate</div>
+        <div class="mc-value" id="mc-win-rate">-</div>
+        <div class="mc-delta muted">Lifetime, all closed trades</div>
       </div>
+      <div class="metric-card">
+        <div class="mc-label">Total Trades</div>
+        <div class="mc-value" id="mc-total-trades">-</div>
+        <div class="mc-delta" id="mc-todays-trades-delta">&nbsp;</div>
+      </div>
+    </div>
+    <div class="secondary-stats-strip">
+      <div class="stat"><span class="label">Weekly P/L</span><span class="value" id="pv-weekly-pl">-</span></div>
+      <div class="stat"><span class="label">Monthly P/L</span><span class="value" id="pv-monthly-pl">-</span></div>
+      <div class="stat"><span class="label">Overall ROI</span><span class="value" id="pv-overall-roi">-</span></div>
+      <div class="stat"><span class="label">Current exposure</span><span class="value" id="pv-exposure">-</span></div>
+      <div class="stat"><span class="label">Active sessions</span><span class="value" id="pv-active-sessions">-</span></div>
+      <div class="stat"><span class="label">Active trading capital</span><span class="value" id="pv-active-capital">-</span></div>
+      <div class="stat"><span class="label">Protected / vaulted</span><span class="value" id="pv-protected-capital">-</span></div>
     </div>
 
     <div class="card solid" id="onboarding-checklist" style="display:none; margin-bottom:24px;">
@@ -196,8 +241,38 @@
       </div>
     </div>
 
-    <div class="row" style="align-items:stretch; gap:16px; margin-bottom:24px;">
-      <div class="card solid" style="flex:0 0 280px;">
+    <div class="dash-3col">
+      <div class="card solid">
+        <h3>Equity Curve</h3>
+        <div id="pv-chart-wrap">
+          <svg id="pv-chart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100px; display:block;"></svg>
+          <div class="muted" id="pv-chart-caption" style="font-size:11.5px; margin-top:6px;">&nbsp;</div>
+        </div>
+      </div>
+      <div class="card solid">
+        <h3>Performance by Channel</h3>
+        <div id="channel-perf-list">
+          <div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No closed trades yet.</div>
+        </div>
+      </div>
+      <div class="card solid">
+        <h3>Recent Signals</h3>
+        <div id="activity-source" class="stat-caption" style="margin-bottom:10px;">&nbsp;</div>
+        <div id="activity-list">
+          <div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No signals yet.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card solid" style="margin-bottom:24px;">
+      <h3>Active Sessions</h3>
+      <div id="active-sessions-list" class="session-cards-row">
+        <div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No active sessions.</div>
+      </div>
+    </div>
+
+    <div class="risk-quick-actions-row" style="margin-bottom:24px;">
+      <div class="card solid" style="margin:0;">
         <h3>Risk</h3>
         <div class="risk-line" id="risk-line">Loading...</div>
         <details class="diagnostics" id="risk-diagnostics" style="display:none;">
@@ -205,11 +280,24 @@
           <div class="diagnostics-body" id="risk-details"></div>
         </details>
       </div>
-      <div class="card solid" style="flex:1; min-width:320px;">
-        <h3>Recent Activity</h3>
-        <div id="activity-source" class="stat-caption" style="margin-bottom:10px;">&nbsp;</div>
-        <div id="activity-list">
-          <div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No signals yet.</div>
+      <div class="card solid" style="margin:0;">
+        <h3>Quick Actions</h3>
+        <div class="quick-actions-row">
+          <button type="button" class="quick-action-card" onclick="window.location.href='/broker'">
+            <div class="qa-label">Broker Accounts</div>
+            <div class="qa-value" id="qa-broker-count">-</div>
+            <div class="qa-caption" id="qa-broker-caption">&nbsp;</div>
+          </button>
+          <button type="button" class="quick-action-card" onclick="window.location.href='/automation'">
+            <div class="qa-label">Automation Rules</div>
+            <div class="qa-value" id="qa-rules-count">-</div>
+            <div class="qa-caption">Manage strategies &rarr;</div>
+          </button>
+          <button type="button" class="quick-action-card" onclick="window.location.href='/sessions'">
+            <div class="qa-label">Sessions</div>
+            <div class="qa-value">New</div>
+            <div class="qa-caption">Start a trading session &rarr;</div>
+          </button>
         </div>
       </div>
     </div>
@@ -659,28 +747,110 @@ async function loadPortfolioOverview() {
     const totalValue = allFunds.reduce((sum, f) => sum + (f.balances.total_account_value ?? 0), 0);
     const activeCapital = allFunds.reduce((sum, f) => sum + (f.balances.trading_balance ?? 0), 0);
     const protectedCapital = allFunds.reduce((sum, f) => sum + (f.balances.protected_balance ?? 0), 0);
-    document.getElementById("pv-total").textContent = "$" + totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     const todayPl = dash.statistics.daily.profit_loss;
-    document.getElementById("pv-today-pl").innerHTML = `Today: <span class="${plClass(todayPl)}">${fmtMoney(todayPl)}</span>`;
+
+    // UI v2 metric card row - lifetime figures (never a rolling window)
+    // for the headline cards, per the v2 hierarchy: equity, realized
+    // profit, win rate, trade count are the dashboard's visual priority.
+    document.getElementById("mc-total-balance").textContent = "$" + totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    document.getElementById("mc-active-funds-delta").textContent = `${allFunds.length} active fund${allFunds.length === 1 ? "" : "s"}`;
+    document.getElementById("mc-total-profit").innerHTML = `<span class="${plClass(overview.total_profit_loss)}">${fmtMoney(overview.total_profit_loss)}</span>`;
+    document.getElementById("mc-today-pl-delta").innerHTML = `Today: <span class="${plClass(todayPl)}">${fmtMoney(todayPl)}</span>`;
+    document.getElementById("mc-win-rate").textContent = overview.overall_win_rate != null ? (overview.overall_win_rate * 100).toFixed(1) + "%" : "-";
+    document.getElementById("mc-total-trades").textContent = overview.total_trades ?? "-";
+    document.getElementById("mc-todays-trades-delta").textContent = `${overview.todays_trades ?? 0} today`;
+
     document.getElementById("pv-active-capital").textContent = "$" + activeCapital.toLocaleString(undefined, { maximumFractionDigits: 2 });
     document.getElementById("pv-protected-capital").textContent = "$" + protectedCapital.toLocaleString(undefined, { maximumFractionDigits: 2 });
-    document.getElementById("pv-active-funds").textContent = allFunds.length;
     renderGrowthChart(growth.points);
 
-    // Extended stats (Phase 2 Priority #2) - weekly/monthly are real
-    // dollar P&L over that window, not a fabricated "growth %" (AXIM
-    // doesn't keep a historical portfolio-value time series to compute
-    // one honestly from). ROI is return-on-stake-volume, labeled as such.
+    // Weekly/monthly are real dollar P&L over that window, not a
+    // fabricated "growth %" (AXIM doesn't keep a historical portfolio-
+    // value time series to compute one honestly from). ROI is
+    // return-on-stake-volume, labeled as such.
     document.getElementById("pv-weekly-pl").innerHTML = `<span class="${plClass(overview.weekly_pl)}">${fmtMoney(overview.weekly_pl)}</span>`;
     document.getElementById("pv-monthly-pl").innerHTML = `<span class="${plClass(overview.monthly_pl)}">${fmtMoney(overview.monthly_pl)}</span>`;
     document.getElementById("pv-overall-roi").textContent = overview.overall_roi != null ? fmtPercent(overview.overall_roi) + " (of volume traded)" : "-";
-    document.getElementById("pv-overall-winrate").textContent = overview.overall_win_rate != null ? (overview.overall_win_rate * 100).toFixed(1) + "%" : "-";
     document.getElementById("pv-exposure").textContent = "$" + Number(overview.current_exposure || 0).toFixed(2);
-    document.getElementById("pv-todays-trades").textContent = overview.todays_trades ?? "-";
     document.getElementById("pv-active-sessions").textContent = overview.active_sessions ?? "-";
     renderFundsOverview();
   } catch (e) {
     console.error("loadPortfolioOverview failed:", e);
+  }
+}
+
+function renderChannelPerformance(rows) {
+  const list = document.getElementById("channel-perf-list");
+  if (!rows.length) {
+    list.innerHTML = '<div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No closed trades yet.</div>';
+    return;
+  }
+  list.innerHTML = rows.slice(0, 8).map(r => `
+    <div class="channel-perf-row">
+      <div>
+        <div class="cp-name" title="${escapeHtml(r.channel)}">${escapeHtml(r.channel)}</div>
+        <div class="cp-sub">${r.total_closed} trade${r.total_closed === 1 ? "" : "s"} &middot; ${(r.win_rate * 100).toFixed(0)}% win rate</div>
+      </div>
+      <div class="cp-pl ${plClass(r.profit_loss)}">${fmtMoney(r.profit_loss)}</div>
+    </div>
+  `).join("");
+}
+
+async function loadChannelPerformance() {
+  try {
+    renderChannelPerformance(await fetchJSON("/api/channels/performance-summary"));
+  } catch (e) {
+    console.error("loadChannelPerformance failed:", e);
+  }
+}
+
+function renderActiveSessions(sessions) {
+  const list = document.getElementById("active-sessions-list");
+  if (!sessions.length) {
+    list.innerHTML = '<div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No active sessions.</div>';
+    return;
+  }
+  list.innerHTML = sessions.map(s => {
+    const goalPct = s.profit_target ? Math.min(100, Math.max(0, (s.realized_pnl / s.profit_target) * 100)) : null;
+    const goalBar = goalPct != null
+      ? `<div class="sc-goal-track"><div class="sc-goal-fill" style="width:${goalPct}%;"></div></div>
+         <div class="sc-caption">${goalPct.toFixed(0)}% of $${Number(s.profit_target).toFixed(2)} goal</div>`
+      : `<div class="sc-caption">No goal configured</div>`;
+    const fund = allFunds.find(f => f.id === s.fund_id);
+    const label = s.name || (fund ? displayFundName(fund.name) : `Session #${s.id}`);
+    return `
+      <div class="session-card">
+        <div class="sc-top">
+          <div class="sc-name" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+          <span class="badge on" style="font-size:10.5px;">${escapeHtml(s.account_mode || s.status || "active")}</span>
+        </div>
+        <div class="sc-pl ${plClass(s.realized_pnl)}">${fmtMoney(s.realized_pnl)}</div>
+        ${goalBar}
+      </div>
+    `;
+  }).join("");
+}
+
+async function loadActiveSessions() {
+  try {
+    renderActiveSessions(await fetchJSON("/api/sessions/active-list"));
+  } catch (e) {
+    console.error("loadActiveSessions failed:", e);
+  }
+}
+
+async function loadQuickActionCounts() {
+  try {
+    const [accounts, rules] = await Promise.all([
+      fetchJSON("/api/broker-accounts"),
+      fetchJSON("/api/rules"),
+    ]);
+    const connected = accounts.filter(a => a.connection_status === "connected").length;
+    document.getElementById("qa-broker-count").textContent = accounts.length;
+    document.getElementById("qa-broker-caption").textContent = `${connected} connected`;
+    document.getElementById("qa-rules-count").textContent = rules.length;
+  } catch (e) {
+    console.error("loadQuickActionCounts failed:", e);
   }
 }
 
@@ -710,11 +880,18 @@ function confirmEmergencyStop() {
   await loadFundSelector();
   loadOnboardingChecklist();
   loadPortfolioOverview();
+  loadChannelPerformance();
+  loadActiveSessions();
+  loadQuickActionCounts();
   refreshAll();
   setInterval(refreshAll, 5000);
   setInterval(loadPortfolioOverview, 15000);
+  setInterval(loadActiveSessions, 15000);
   AximShell.subscribeEvents({
-    "trade.closed": { onEvent: () => { refreshAll(); loadPortfolioOverview(); }, onResync: () => { refreshAll(); loadPortfolioOverview(); } },
+    "trade.closed": {
+      onEvent: () => { refreshAll(); loadPortfolioOverview(); loadChannelPerformance(); loadActiveSessions(); },
+      onResync: () => { refreshAll(); loadPortfolioOverview(); loadChannelPerformance(); loadActiveSessions(); },
+    },
   });
 })();
 </script>

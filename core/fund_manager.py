@@ -168,6 +168,11 @@ def get_portfolio_overview():
         "weekly_pl": weekly["profit_loss"], "weekly_roi": weekly["roi"],
         "monthly_pl": monthly["profit_loss"], "monthly_roi": monthly["roi"],
         "overall_roi": lifetime["roi"], "overall_win_rate": lifetime["win_rate"],
+        # UI v2 dashboard hierarchy (2026-07-18) - "Total Profit"/"Total
+        # Trades" cards need the real LIFETIME figures, not a rolling
+        # window - lifetime_stats() already computed both, just never
+        # surfaced at this dict's top level before now.
+        "total_profit_loss": lifetime["profit_loss"], "total_trades": lifetime["total_closed"],
         "current_exposure": current_exposure,
         "todays_trades": daily["total_closed"],
         "active_funds": len(funds),

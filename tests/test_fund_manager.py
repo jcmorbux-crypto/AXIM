@@ -344,6 +344,17 @@ class PortfolioOverviewTestCase(FundManagerTestCase):
         self.assertEqual(overview["total_portfolio_value"], 0.0)
         self.assertEqual(overview["funds"], [])
 
+    def test_exposes_lifetime_total_profit_and_trades(self):
+        fund_id = database.create_fund("Lifetime Fund", starting_balance=1000)
+        session_id = database.start_trading_session("S", [1], "DEMO", fund_id=fund_id)
+        signal = {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test", "trade_amount": 10}
+        trade_id = database.record_signal_received(signal, session_id=session_id, fund_id=fund_id)
+        database.update_trade_status(trade_id, trade_lifecycle.TradeStatus.RESULT_WIN, result="win",
+                                      profit_loss=8.5, closed_at=datetime.now().isoformat())
+        overview = fund_manager.get_portfolio_overview()
+        self.assertEqual(overview["total_profit_loss"], 8.5)
+        self.assertEqual(overview["total_trades"], 1)
+
 
 class CanTradeTests(FundManagerTestCase):
     """The safety gate api/sessions.py's start_session enforces - "Do not
