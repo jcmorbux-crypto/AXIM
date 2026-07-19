@@ -27,6 +27,7 @@ if hasattr(sys.stdout, "reconfigure"):
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "core"))
 sys.path.insert(0, str(PROJECT_ROOT / "execution"))
+sys.path.insert(0, str(PROJECT_ROOT / "config"))
 
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
