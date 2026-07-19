@@ -18,7 +18,7 @@
       </div>
       <div class="row">
         <a href="/trades" class="btn subtle">View Trade History</a>
-        <button onclick="refreshAll()">Refresh</button>
+        <button onclick="refreshAll(); loadExecutionQuality();">Refresh</button>
       </div>
     </div>
 
@@ -51,7 +51,7 @@
       </table>
     </div>
 
-    <div class="card solid full-width">
+    <div class="card solid full-width" style="margin-bottom:20px;">
       <h3>Money Management Activity</h3>
       <div class="grid">
         <div>
@@ -63,6 +63,12 @@
           <div id="compounding-list" class="muted">Loading...</div>
         </div>
       </div>
+    </div>
+
+    <div class="card solid full-width" id="execution-quality-card">
+      <h3>Execution Quality</h3>
+      <div class="muted" style="margin-bottom:14px;">How fast a signal actually becomes a placed trade, where that time goes, and how well the system recovers from browser/connection problems - not P/L, but the operational health behind it.</div>
+      <div id="execution-quality-body" class="muted">Loading...</div>
     </div>
   </main>
 </div>
@@ -102,6 +108,109 @@ function bestWorstBlock(bw, unitLabel) {
       <span class="stat-value ${plClass(entry.profit_loss)}">${fmtMoney(entry.profit_loss)} (${fmtPct(entry.win_rate)}, n=${entry.total_closed})</span>
     </div>` : "";
   return row("Best", bw.best) + row("Worst", bw.worst);
+}
+
+const CATEGORY_LABELS = {
+  waiting: "Waiting (Telegram / parsing)",
+  browser: "Pocket Option browser",
+  database: "Database",
+  logging: "Logging",
+  active: "Active (unaccounted)",
+  total: "Total, signal to outcome",
+};
+const CATEGORY_ORDER = ["total", "waiting", "browser", "database", "logging", "active"];
+
+const EVENT_TYPE_LABELS = {
+  browser_reconnect: "Browser reconnect",
+  worker_pool_rebuild: "Worker pool rebuild",
+  process_restart: "Listener process restart",
+  resume_open_trade: "Resume open trade after restart",
+};
+
+function fmtMs(n) { return (n === null || n === undefined) ? "-" : Math.round(n).toLocaleString() + " ms"; }
+
+function renderExecutionQuality(eq) {
+  const body = document.getElementById("execution-quality-body");
+  if (!eq.sample_size) {
+    body.innerHTML = '<div class="empty">No trade timeline data yet - fills in once trades have executed.</div>';
+    return;
+  }
+
+  const catRows = CATEGORY_ORDER.map(key => {
+    const s = eq.categories[key];
+    if (!s || !s.n) return "";
+    const label = CATEGORY_LABELS[key] || key;
+    return `
+      <tr class="${key === "total" ? "" : ""}">
+        <td>${key === "total" ? `<b>${label}</b>` : label}</td>
+        <td>${s.n}</td>
+        <td>${fmtMs(s.avg)}</td>
+        <td>${fmtMs(s.p50)}</td>
+        <td>${fmtMs(s.p95)}</td>
+        <td>${fmtMs(s.p99)}</td>
+      </tr>
+    `;
+  }).join("");
+
+  const recoveryRows = eq.recovery_events.length
+    ? (() => {
+        const byType = {};
+        for (const e of eq.recovery_events) {
+          byType[e.event_type] = byType[e.event_type] || { succeeded: 0, failed: 0 };
+          byType[e.event_type][e.outcome] = (byType[e.event_type][e.outcome] || 0) + e.n;
+        }
+        return Object.entries(byType).map(([type, counts]) => {
+          const total = (counts.succeeded || 0) + (counts.failed || 0);
+          const rate = total ? ((counts.succeeded || 0) / total * 100).toFixed(0) + "%" : "-";
+          return `
+            <tr>
+              <td>${escapeHtml(EVENT_TYPE_LABELS[type] || type)}</td>
+              <td class="pos">${counts.succeeded || 0}</td>
+              <td class="${counts.failed ? "neg" : ""}">${counts.failed || 0}</td>
+              <td>${rate}</td>
+            </tr>
+          `;
+        }).join("");
+      })()
+    : '<tr><td colspan="4" class="empty">No recovery events recorded - the system hasn\'t needed to recover from a browser/connection problem.</td></tr>';
+
+  body.innerHTML = `
+    <div class="muted" style="font-size:12px; margin-bottom:10px;">Based on the ${eq.sample_size} most recent trade(s) with timeline data.</div>
+    <table style="margin-bottom:16px;">
+      <thead><tr><th>Stage</th><th>n</th><th>Avg</th><th>P50</th><th>P95</th><th>P99</th></tr></thead>
+      <tbody>${catRows}</tbody>
+    </table>
+    <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">System Recovery Events</div>
+    <table style="margin-bottom:16px;">
+      <thead><tr><th>Event</th><th>Succeeded</th><th>Failed</th><th>Success rate</th></tr></thead>
+      <tbody>${recoveryRows}</tbody>
+    </table>
+    <details class="advanced-toggle">
+      <summary>Stage-by-stage breakdown <span class="hint">Every signal-to-execution transition, individually timed</span></summary>
+      <div class="advanced-toggle-body">
+        <table>
+          <thead><tr><th>Transition</th><th>n</th><th>Avg</th><th>P50</th><th>P95</th><th>P99</th></tr></thead>
+          <tbody>
+            ${Object.entries(eq.stage_transitions).map(([name, s]) => `
+              <tr>
+                <td style="font-size:12px;">${escapeHtml(name.replace(/->/g, " → ").replace(/_/g, " "))}</td>
+                <td>${s.n}</td><td>${fmtMs(s.avg)}</td><td>${fmtMs(s.p50)}</td><td>${fmtMs(s.p95)}</td><td>${fmtMs(s.p99)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </details>
+  `;
+}
+
+async function loadExecutionQuality() {
+  try {
+    const eq = await fetchJSON("/api/performance/execution-quality");
+    renderExecutionQuality(eq);
+  } catch (e) {
+    document.getElementById("execution-quality-body").textContent = "Failed to load: " + e.message;
+  }
 }
 
 async function refreshAll() {
@@ -162,6 +271,7 @@ async function refreshAll() {
   const user = await AximShell.init({ active: "stats" });
   if (!user) return;
   refreshAll();
+  loadExecutionQuality();
 })();
 </script>
 </body>

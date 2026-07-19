@@ -825,6 +825,29 @@ def performance(user=Depends(get_current_user)):
     return trade_statistics.performance_report()
 
 
+@app.get("/api/performance/execution-quality")
+def performance_execution_quality(user=Depends(get_current_user)):
+    """Execution-quality analytics: end-to-end trade latency (P50/P95/P99),
+    where that time actually goes (waiting on Telegram/parsing vs. the
+    Pocket Option browser vs. database vs. logging), and system-resilience
+    recovery events (browser reconnects, worker pool rebuilds, process
+    restarts) with their real success/failure counts.
+
+    Both core/timeline_report.py (per-trade TradeTimeline stage stamps)
+    and database.get_recovery_event_stats() (core/recovery.py,
+    execution/browser_warmup.py, execution/browser_worker_pool.py,
+    telegram_listener.py's restart handling) were already computed and
+    served by /api/dashboard, but nothing in the UI ever rendered them -
+    this is the same real data, reused verbatim, just finally surfaced."""
+    _, timeline_aggregate = timeline_report.generate_report(limit=200)
+    return {
+        "sample_size": timeline_aggregate["sample_size"],
+        "categories": timeline_aggregate["categories"],
+        "stage_transitions": timeline_aggregate["stage_transitions"],
+        "recovery_events": database.get_recovery_event_stats(),
+    }
+
+
 @app.get("/api/logs")
 def logs(since: str = None, until: str = None, level: str = None, module: str = None,
          search: str = None, limit: int = 200, user=Depends(require_admin)):
