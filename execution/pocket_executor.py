@@ -18,6 +18,7 @@ import pocket_dom
 import database
 import risk_manager
 from trade_lifecycle import TradeStatus
+from signal_lifecycle import SignalLifecycleState
 from timeline import TradeTimeline, get_current_timeline, clear_current
 from logger import get_logger
 from settings import SAVE_SCREENSHOTS
@@ -115,6 +116,8 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
                 "trade_id=%s worker_id=%s rejected: unparseable_expiry (%s)", trade_id, worker.worker_id, e,
             )
             database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:unparseable_expiry")
+            database.record_pipeline_event(None, None, SignalLifecycleState.FAILED,
+                                            signal_id=trade_id, detail="unparseable_expiry")
             timeline.persist(database)
             return {
                 "status": "rejected", "trade_id": trade_id,
@@ -152,6 +155,8 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
                 trade_amount=amount, payout=payout,
                 result=f"rejected:{violation.rule}",
             )
+            database.record_pipeline_event(None, None, SignalLifecycleState.SKIPPED,
+                                            signal_id=trade_id, detail=f"{violation.rule}: {violation.reason}")
             print(f"Status    : REJECTED ({violation.rule}: {violation.reason})")
             timeline.persist(database)
             return {
@@ -164,6 +169,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
             trade_id, TradeStatus.TRADE_PREPARED,
             trade_amount=amount, payout=payout,
         )
+        database.record_pipeline_event(None, None, SignalLifecycleState.SIZED, signal_id=trade_id)
         lifecycle_logger.info(
             "trade_id=%s worker_id=%s status=%s payout=%s",
             trade_id, worker.worker_id, TradeStatus.TRADE_PREPARED.value, payout,
@@ -180,6 +186,8 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
 
         if not ARMED:
             print("Status    : ARMED=false, trade NOT clicked")
+            database.record_pipeline_event(None, None, SignalLifecycleState.SKIPPED,
+                                            signal_id=trade_id, detail="armed_false")
             timeline.persist(database)
             return {
                 "status": "prepared_not_armed",
@@ -199,6 +207,16 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
 
         database.update_trade_status(trade_id, TradeStatus.TRADE_OPENED, opened_at=opened_at)
         lifecycle_logger.info("trade_id=%s worker_id=%s status=%s", trade_id, worker.worker_id, TradeStatus.TRADE_OPENED.value)
+        # Live Signal Pipeline: click_direction only returns (rather than
+        # raising) once its own confirmation wait sees the position
+        # actually appear - the closest real broker-observable
+        # confirmation this codebase has (see pocket_dom.click_direction's
+        # docstring). BROKER_ACCEPTED and OPEN are recorded together here
+        # rather than trying to split them at pocket_dom.py's internal
+        # confirmation-wait boundary, which this milestone deliberately
+        # doesn't touch.
+        database.record_pipeline_event(None, None, SignalLifecycleState.BROKER_ACCEPTED, signal_id=trade_id)
+        database.record_pipeline_event(None, None, SignalLifecycleState.OPEN, signal_id=trade_id)
 
         print("Status    : TRADE BUTTON CLICKED (confirmed via Opened trades list)")
         timeline.persist(database)
@@ -223,11 +241,19 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
     except pocket_dom.AssetUntradeableError as e:
         lifecycle_logger.warning("trade_id=%s worker_id=%s asset untradeable: %s", trade_id, worker.worker_id, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable")
+        # The one real, live-DOM-observed broker/venue rejection this
+        # codebase has (the .asset-inactive overlay - see pocket_dom.
+        # read_payout_and_check_tradeable) - the closest real mapping to
+        # BROKER_REJECTED, distinct from every other rejection above
+        # (which are all client-side policy/pre-checks, hence SKIPPED).
+        database.record_pipeline_event(None, None, SignalLifecycleState.BROKER_REJECTED,
+                                        signal_id=trade_id, detail="asset_untradeable")
         timeline.persist(database)
         return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable", "reason": str(e)}
     except Exception as e:
         lifecycle_logger.error("trade_id=%s worker_id=%s status=%s error=%s", trade_id, worker.worker_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
+        database.record_pipeline_event(None, None, SignalLifecycleState.FAILED, signal_id=trade_id, detail=str(e))
         timeline.persist(database)
         raise
     finally:
@@ -306,6 +332,8 @@ async def track_outcome(warmup_service, trade_id, expiry_seconds, asset=None, di
 
         if outcome is None:
             database.update_trade_status(trade_id, TradeStatus.ERROR, result="error:result_read_failed")
+            database.record_pipeline_event(None, None, SignalLifecycleState.UNKNOWN,
+                                            signal_id=trade_id, detail="result_read_failed")
             lifecycle_logger.error(
                 "trade_id=%s status=%s reason=result_read_failed",
                 trade_id, TradeStatus.ERROR.value,
@@ -335,6 +363,14 @@ async def track_outcome(warmup_service, trade_id, expiry_seconds, asset=None, di
             trade_id, result_status,
             closed_at=closed_at, result=outcome["result"], profit_loss=profit_loss,
         )
+        pipeline_state_map = {
+            "win": SignalLifecycleState.WON,
+            "loss": SignalLifecycleState.LOST,
+            "draw": SignalLifecycleState.DRAW,
+        }
+        database.record_pipeline_event(
+            None, None, pipeline_state_map.get(outcome["result"], SignalLifecycleState.UNKNOWN), signal_id=trade_id,
+        )
         timeline.mark("outcome_recorded")
         timeline.persist(database)
 
@@ -354,6 +390,7 @@ async def track_outcome(warmup_service, trade_id, expiry_seconds, asset=None, di
     except Exception as e:
         lifecycle_logger.error("trade_id=%s status=%s error=%s", trade_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
+        database.record_pipeline_event(None, None, SignalLifecycleState.FAILED, signal_id=trade_id, detail=str(e))
         timeline.persist(database)
     finally:
         if own_token is not None:
