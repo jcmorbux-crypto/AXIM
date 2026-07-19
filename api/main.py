@@ -610,9 +610,20 @@ def get_developer_mode(user=Depends(get_current_user)):
 
 @app.put("/api/settings/developer-mode")
 def set_developer_mode(body: dict, user=Depends(require_admin)):
-    database.set_setting("developer_mode", bool(body.get("enabled")))
+    database.set_setting("developer_mode", bool(body.get("enabled")), changed_by=user["email"], source="developer_mode_toggle")
     logger.info("api: developer mode set to %s by %s", body.get("enabled"), user["email"])
     return {"enabled": bool(database.get_setting("developer_mode", default=False))}
+
+
+def _compute_effective_settings():
+    """Shared by GET /api/settings and GET /api/settings/diagnostics so
+    the two can never compute a different "effective" value for the same
+    key - see get_settings' own docstring for what "effective" means."""
+    overrides = database.get_all_settings()
+    return {
+        key: overrides.get(key, static_default)
+        for key, static_default in _SETTING_STATIC_DEFAULTS.items()
+    }, overrides
 
 
 @app.get("/api/settings")
@@ -623,11 +634,7 @@ def get_settings(user=Depends(get_current_user)):
     bankroll and what the next trade would actually be sized at
     (risk_manager.compute_trade_amount, the exact real function
     trade_coordinator.py calls, not a re-implementation of its logic)."""
-    overrides = database.get_all_settings()
-    effective = {
-        key: overrides.get(key, static_default)
-        for key, static_default in _SETTING_STATIC_DEFAULTS.items()
-    }
+    effective, overrides = _compute_effective_settings()
     lifetime_pnl = database.get_lifetime_realized_pnl()
     current_bankroll = effective["starting_bankroll"] + lifetime_pnl
 
@@ -668,10 +675,38 @@ def put_settings(body: MoneyManagementSettings, user=Depends(require_admin)):
     updated = {}
     for key, value in body.model_dump(exclude_unset=True).items():
         if value is not None:
-            database.set_setting(key, value)
+            database.set_setting(key, value, changed_by=user["email"], source="ui_trading_settings")
             updated[key] = value
     logger.info("api: settings updated via UI by %s: %s", user["email"], updated)
     return {"updated": updated}
+
+
+@app.get("/api/settings/diagnostics")
+def get_settings_diagnostics(user=Depends(get_current_user)):
+    """Config validation against the ACTUAL enforcement code in
+    risk_manager.py - every finding here is traced to a real check, not a
+    generic heuristic. See risk_manager.diagnose_settings' own docstring."""
+    effective, _ = _compute_effective_settings()
+    findings = risk_manager.diagnose_settings(effective)
+    return {
+        "findings": findings,
+        "healthy": not any(f["severity"] == "critical" for f in findings),
+    }
+
+
+@app.get("/api/settings/audit-log")
+def get_settings_audit_log(key: Optional[str] = None, limit: int = 200, user=Depends(get_current_user)):
+    return database.list_settings_audit_log(key=key, limit=limit)
+
+
+@app.post("/api/settings/audit-log/{entry_id}/restore")
+def restore_settings_audit_entry(entry_id: int, user=Depends(require_admin)):
+    try:
+        key, value = database.restore_setting_from_audit(entry_id, changed_by=user["email"])
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    logger.info("api: setting %s restored from audit #%s by %s", key, entry_id, user["email"])
+    return {"key": key, "value": value}
 
 
 @app.get("/api/pocket-option/status")

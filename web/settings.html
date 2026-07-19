@@ -95,6 +95,7 @@
           <span id="consecutive-loss-lock-text"></span>
           <button class="subtle" onclick="resetConsecutiveLossLock()">Reset Loss-Streak Lock</button>
         </div>
+        <div id="settings-diagnostics"></div>
         <table><tbody id="settings-body"></tbody></table>
         <details class="advanced-toggle">
           <summary>Advanced <span class="hint">Daily limits, trade pacing, minimum payout</span></summary>
@@ -105,6 +106,18 @@
         <div class="row" style="margin-top:14px;">
           <button class="primary" onclick="saveTradingSettings()">Save Settings</button>
           <span id="trading-settings-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div class="card solid" style="margin-top:16px;">
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; cursor:pointer;" onclick="toggleSettingsHistory()">
+          Setting Change History <span class="muted" style="font-weight:normal; text-transform:none;" id="settings-history-toggle-label">(show)</span>
+        </div>
+        <div id="settings-history-body" style="display:none; margin-top:10px;">
+          <table>
+            <thead><tr><th>When</th><th>Setting</th><th>From &rarr; To</th><th>Changed By</th><th>Reason</th><th></th></tr></thead>
+            <tbody id="settings-history-table-body"><tr><td colspan="6" class="empty">-</td></tr></tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -319,6 +332,71 @@ async function loadTradingSettings() {
   }
 }
 
+async function loadSettingsDiagnostics() {
+  const el = document.getElementById("settings-diagnostics");
+  try {
+    const data = await fetchJSON("/api/settings/diagnostics");
+    if (!data.findings.length) { el.innerHTML = ""; return; }
+    el.innerHTML = data.findings.map(f => `
+      <div class="banner ${f.severity === "critical" ? "danger" : f.severity}" style="margin-bottom:10px; align-items:flex-start;">
+        <span>${escapeHtml(f.message)}</span>
+      </div>
+    `).join("");
+  } catch (e) {
+    el.innerHTML = "";
+  }
+}
+
+async function toggleSettingsHistory() {
+  const body = document.getElementById("settings-history-body");
+  const label = document.getElementById("settings-history-toggle-label");
+  const showing = body.style.display !== "none";
+  if (showing) {
+    body.style.display = "none";
+    label.textContent = "(show)";
+    return;
+  }
+  body.style.display = "block";
+  label.textContent = "(hide)";
+  await loadSettingsHistory();
+}
+
+function _fmtSettingValue(v) {
+  if (v === null || v === undefined) return "<span class=\"muted\">not set</span>";
+  return escapeHtml(typeof v === "object" ? JSON.stringify(v) : String(v));
+}
+
+async function loadSettingsHistory() {
+  const tbody = document.getElementById("settings-history-table-body");
+  try {
+    const log = await fetchJSON("/api/settings/audit-log?limit=200");
+    tbody.innerHTML = log.length ? log.map(entry => `
+      <tr>
+        <td class="muted">${(entry.created_at || "").replace("T", " ").slice(0, 16)}</td>
+        <td>${escapeHtml(entry.key)}</td>
+        <td style="font-size:11.5px;">${_fmtSettingValue(entry.old_value)} &rarr; ${_fmtSettingValue(entry.new_value)}</td>
+        <td>${escapeHtml(entry.changed_by || "-")}</td>
+        <td class="muted" style="font-size:11.5px;">${escapeHtml(entry.reason || entry.source || "-")}</td>
+        <td><button class="subtle" style="font-size:11px; padding:4px 8px;" onclick="restoreSetting(${entry.id})">Restore this value</button></td>
+      </tr>
+    `).join("") : '<tr><td colspan="6" class="empty">No changes recorded yet.</td></tr>';
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function restoreSetting(entryId) {
+  if (!confirm("Restore this setting to this historical value? This is logged as a new change, not a silent rewrite.")) return;
+  try {
+    await fetchJSON(`/api/settings/audit-log/${entryId}/restore`, { method: "POST" });
+    await loadTradingSettings();
+    await loadSettingsDiagnostics();
+    await loadSettingsHistory();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
 async function resetConsecutiveLossLock() {
   if (!confirm("Reset the consecutive-loss lock? This does not erase the real loss streak or change the configured limit - trades before this moment just stop counting toward a new streak going forward. This action is logged.")) return;
   try {
@@ -326,6 +404,12 @@ async function resetConsecutiveLossLock() {
     loadTradingSettings();
   } catch (e) {
     alert("Failed: " + e.message);
+  }
+}
+
+async function refreshSettingsHistoryIfOpen() {
+  if (document.getElementById("settings-history-body").style.display !== "none") {
+    await loadSettingsHistory();
   }
 }
 
@@ -345,6 +429,8 @@ async function saveTradingSettings() {
     });
     statusEl.textContent = "saved";
     loadTradingSettings();
+    loadSettingsDiagnostics();
+    refreshSettingsHistoryIfOpen();
   } catch (e) {
     statusEl.textContent = "failed: " + e.message;
   }
@@ -408,6 +494,7 @@ async function toggleDeveloperMode() {
   loadDevices();
   loadTelegramCredStatus();
   loadTradingSettings();
+  loadSettingsDiagnostics();
   loadBackups();
   loadDeveloperMode();
 })();

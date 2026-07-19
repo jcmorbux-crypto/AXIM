@@ -987,6 +987,26 @@ def initialize_database():
     );
     """)
 
+    # Every value change to a ui_settings key, oldest-lost-forever otherwise -
+    # set_setting() previously overwrote in place with no history at all, so
+    # "who lowered the daily-loss limit and when" was unanswerable even
+    # though these are the exact limits every trade is checked against.
+    # Only written when the value actually changes (see set_setting) so
+    # re-saving an unchanged form doesn't create log noise.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS settings_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        key TEXT NOT NULL,
+        old_value_json TEXT,
+        new_value_json TEXT,
+        changed_by TEXT,
+        reason TEXT,
+        source TEXT,
+        created_at TEXT NOT NULL
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_settings_audit_log_key ON settings_audit_log(key)")
+
     # Singleton heartbeat row - core/telegram_listener.py writes this
     # periodically so the (separate-process) API/UI has something to show
     # for "is the browser/worker pool actually healthy right now" without
@@ -4553,12 +4573,26 @@ def get_setting(key, default=None):
 
 
 @timed("database")
-def set_setting(key, value):
+def set_setting(key, value, changed_by=None, reason=None, source=None):
+    """changed_by/reason/source are optional so every existing internal
+    caller (tests, risk_manager's own lock-reset bookkeeping) keeps working
+    unchanged - only api/main.py's user-facing endpoints pass them today.
+    A no-op save (new value equals the existing one) is not logged, so
+    re-submitting an unchanged form doesn't pollute the audit trail."""
     conn = get_connection()
+    old_row = conn.execute("SELECT value FROM ui_settings WHERE key = ?", (key,)).fetchone()
+    old_value_json = old_row["value"] if old_row is not None else None
+    new_value_json = json.dumps(value)
+    now = datetime.now().isoformat()
     conn.execute("""
         INSERT INTO ui_settings (key, value, updated_at) VALUES (?, ?, ?)
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    """, (key, json.dumps(value), datetime.now().isoformat()))
+    """, (key, new_value_json, now))
+    if new_value_json != old_value_json:
+        conn.execute("""
+            INSERT INTO settings_audit_log (key, old_value_json, new_value_json, changed_by, reason, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (key, old_value_json, new_value_json, changed_by, reason, source, now))
     conn.commit()
     conn.close()
 
@@ -4569,6 +4603,58 @@ def get_all_settings():
     rows = conn.execute("SELECT key, value, updated_at FROM ui_settings").fetchall()
     conn.close()
     return {row["key"]: json.loads(row["value"]) for row in rows}
+
+
+@timed("database")
+def list_settings_audit_log(key=None, limit=200):
+    conn = get_connection()
+    if key:
+        rows = conn.execute(
+            "SELECT * FROM settings_audit_log WHERE key = ? ORDER BY id DESC LIMIT ?", (key, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM settings_audit_log ORDER BY id DESC LIMIT ?", (limit,),
+        ).fetchall()
+    conn.close()
+    results = []
+    for row in rows:
+        entry = dict(row)
+        entry["old_value"] = json.loads(entry["old_value_json"]) if entry["old_value_json"] is not None else None
+        entry["new_value"] = json.loads(entry["new_value_json"]) if entry["new_value_json"] is not None else None
+        results.append(entry)
+    return results
+
+
+@timed("database")
+def get_settings_audit_entry(entry_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM settings_audit_log WHERE id = ?", (entry_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    entry = dict(row)
+    entry["old_value"] = json.loads(entry["old_value_json"]) if entry["old_value_json"] is not None else None
+    entry["new_value"] = json.loads(entry["new_value_json"]) if entry["new_value_json"] is not None else None
+    return entry
+
+
+def restore_setting_from_audit(entry_id, changed_by):
+    """Sets a key back to the value it held right after a specific past
+    change (entry['new_value']) - e.g. undoing an accidental edit by
+    picking the entry from before it. Itself produces a new audit row
+    (via set_setting), so a restore is visible in history too, not a
+    silent rewrite of the past."""
+    entry = get_settings_audit_entry(entry_id)
+    if entry is None:
+        raise ValueError(f"no settings_audit_log entry with id {entry_id}")
+    set_setting(
+        entry["key"], entry["new_value"],
+        changed_by=changed_by,
+        reason=f"Restored to value from audit #{entry_id} ({entry['created_at']})",
+        source="restore",
+    )
+    return entry["key"], entry["new_value"]
 
 
 @timed("database")

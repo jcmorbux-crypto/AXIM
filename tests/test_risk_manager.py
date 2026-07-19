@@ -412,5 +412,80 @@ class RiskManagerTests(unittest.TestCase):
         self.assertEqual(risk_manager.compute_trade_amount(7), 7)
 
 
+_DEFAULT_EFFECTIVE_SETTINGS = {
+    "starting_bankroll": 0,
+    "trade_sizing_mode": "fixed",
+    "fixed_trade_amount": 5,
+    "trade_sizing_percent": 1.0,
+    "max_trade_amount": 50,
+    "max_daily_loss": 100,
+    "daily_profit_target": 0,
+    "max_trades_per_hour": 10,
+    "max_trades_per_day": 0,
+    "max_consecutive_losses": 3,
+    "cooldown_after_loss_seconds": 60,
+    "minimum_payout": 90,
+    "duplicate_signal_window_seconds": 30,
+}
+
+
+class DiagnoseSettingsTests(unittest.TestCase):
+    """diagnose_settings is a pure function traced against the exact
+    enforcement semantics in this file - no DB needed."""
+
+    def _findings_by_key(self, effective):
+        overrides = dict(_DEFAULT_EFFECTIVE_SETTINGS)
+        overrides.update(effective)
+        return {f["key"]: f for f in risk_manager.diagnose_settings(overrides)}
+
+    def test_sane_defaults_produce_no_critical_findings(self):
+        findings = risk_manager.diagnose_settings(_DEFAULT_EFFECTIVE_SETTINGS)
+        self.assertFalse(any(f["severity"] == "critical" for f in findings))
+
+    def test_fixed_mode_reports_percent_fields_as_ignored_info(self):
+        findings = self._findings_by_key({"trade_sizing_mode": "fixed"})
+        self.assertEqual(findings["trade_sizing_percent"]["severity"], "info")
+
+    def test_percent_mode_reports_fixed_amount_as_fallback_info(self):
+        findings = self._findings_by_key({"trade_sizing_mode": "percent"})
+        self.assertEqual(findings["fixed_trade_amount"]["severity"], "info")
+
+    def test_percent_mode_zero_percent_is_critical(self):
+        findings = self._findings_by_key({"trade_sizing_mode": "percent", "trade_sizing_percent": 0})
+        self.assertEqual(findings["trade_sizing_percent"]["severity"], "critical")
+
+    def test_fixed_amount_exceeding_max_trade_amount_is_critical(self):
+        findings = self._findings_by_key({"fixed_trade_amount": 100, "max_trade_amount": 50})
+        self.assertEqual(findings["fixed_trade_amount"]["severity"], "critical")
+
+    def test_zero_max_trade_amount_is_critical(self):
+        findings = self._findings_by_key({"max_trade_amount": 0})
+        self.assertEqual(findings["max_trade_amount"]["severity"], "critical")
+
+    def test_zero_max_trades_per_hour_is_critical(self):
+        findings = self._findings_by_key({"max_trades_per_hour": 0})
+        self.assertEqual(findings["max_trades_per_hour"]["severity"], "critical")
+
+    def test_zero_max_consecutive_losses_is_critical(self):
+        findings = self._findings_by_key({"max_consecutive_losses": 0})
+        self.assertEqual(findings["max_consecutive_losses"]["severity"], "critical")
+
+    def test_minimum_payout_over_100_is_critical(self):
+        findings = self._findings_by_key({"minimum_payout": 150})
+        self.assertEqual(findings["minimum_payout"]["severity"], "critical")
+
+    def test_minimum_payout_negative_is_warning(self):
+        findings = self._findings_by_key({"minimum_payout": -5})
+        self.assertEqual(findings["minimum_payout"]["severity"], "warning")
+
+    def test_negative_cooldown_is_warning(self):
+        findings = self._findings_by_key({"cooldown_after_loss_seconds": -10})
+        self.assertEqual(findings["cooldown_after_loss_seconds"]["severity"], "warning")
+
+    def test_negative_duplicate_window_is_warning(self):
+        findings = self._findings_by_key({"duplicate_signal_window_seconds": -10})
+        self.assertEqual(findings["duplicate_signal_window_seconds"]["severity"], "warning")
+
+
 if __name__ == "__main__":
     unittest.main()

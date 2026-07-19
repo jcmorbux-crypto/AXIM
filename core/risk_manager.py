@@ -166,7 +166,7 @@ def reset_consecutive_loss_lock(reset_by):
     if not reset_by:
         raise ValueError("reset_consecutive_loss_lock requires reset_by - this is a real, attributable decision")
     reset_at = datetime.now().isoformat()
-    database.set_setting("consecutive_loss_reset_at", reset_at)
+    database.set_setting("consecutive_loss_reset_at", reset_at, changed_by=reset_by, source="consecutive_loss_lock_reset")
     logger.warning("risk_manager: consecutive-loss lock reset by %s at %s", reset_by, reset_at)
     return reset_at
 
@@ -294,6 +294,85 @@ def compute_trade_amount(static_default_amount):
     if bankroll <= 0:
         return fixed_amount
     return round(bankroll * (percent / 100.0), 2)
+
+
+def diagnose_settings(effective):
+    """Config validation for the Settings screen - every finding here is
+    traced against the exact enforcement code above, not a generic
+    "looks risky" heuristic, so each message states precisely what would
+    happen on the next signal. `effective` is the {key: value} dict
+    api/main.py's GET /api/settings already computes (UI override, else
+    the static .env-derived default) - this is a pure function over that,
+    no DB access of its own.
+
+    severity: "critical" (would silently block ALL trading), "warning"
+    (a real but narrower misconfiguration), "info" (an override that's
+    currently being ignored by the active mode - not wrong, just inert)."""
+    findings = []
+
+    def add(severity, key, message):
+        findings.append({"severity": severity, "key": key, "message": message})
+
+    mode = effective.get("trade_sizing_mode")
+    fixed_amount = effective.get("fixed_trade_amount")
+    max_amount = effective.get("max_trade_amount")
+    percent = effective.get("trade_sizing_percent")
+
+    if mode == "percent":
+        add("info", "fixed_trade_amount",
+            "Trade sizing mode is \"percent\" - fixed_trade_amount only takes effect as a fallback "
+            "when starting_bankroll + lifetime P/L is $0 or negative.")
+        if percent is not None and percent <= 0:
+            add("critical", "trade_sizing_percent",
+                f"trade_sizing_percent is {percent}% with a positive bankroll - every trade would be sized "
+                "at $0 or less, which check_max_trade_amount and the broker will both reject.")
+    else:
+        add("info", "trade_sizing_percent",
+            "Trade sizing mode is \"fixed\" (or unset) - trade_sizing_percent and starting_bankroll are "
+            "stored but not used for position sizing until mode is switched to \"percent\".")
+        if fixed_amount is not None and max_amount is not None and fixed_amount > max_amount:
+            add("critical", "fixed_trade_amount",
+                f"fixed_trade_amount (${fixed_amount}) exceeds max_trade_amount (${max_amount}) - "
+                "check_max_trade_amount would reject every trade before it ever reaches the broker.")
+
+    if max_amount is not None and max_amount <= 0:
+        add("critical", "max_trade_amount",
+            f"max_trade_amount is ${max_amount} - since a trade stake must be positive, every trade would "
+            "be rejected by check_max_trade_amount.")
+
+    max_per_hour = effective.get("max_trades_per_hour")
+    if max_per_hour is not None and max_per_hour <= 0:
+        add("critical", "max_trades_per_hour",
+            f"max_trades_per_hour is {max_per_hour} - unlike max_trades_per_day, this limit has no "
+            "\"0 = disabled\" case, so it would block every trade immediately.")
+
+    max_losses = effective.get("max_consecutive_losses")
+    if max_losses is not None and max_losses <= 0:
+        add("critical", "max_consecutive_losses",
+            f"max_consecutive_losses is {max_losses} - check_max_consecutive_losses treats 0 currently-open "
+            "trades as already at or past this limit, so it would hard-lock trading immediately.")
+
+    payout = effective.get("minimum_payout")
+    if payout is not None and payout > 100:
+        add("critical", "minimum_payout",
+            f"minimum_payout is {payout}% - no real Pocket Option payout can ever reach above 100%, so "
+            "check_minimum_payout would skip every trade.")
+    elif payout is not None and payout < 0:
+        add("warning", "minimum_payout",
+            f"minimum_payout is {payout}%, below 0 - effectively the same as no minimum at all.")
+
+    cooldown = effective.get("cooldown_after_loss_seconds")
+    if cooldown is not None and cooldown < 0:
+        add("warning", "cooldown_after_loss_seconds",
+            f"cooldown_after_loss_seconds is {cooldown} - a negative cooldown never blocks, same as 0.")
+
+    dup_window = effective.get("duplicate_signal_window_seconds")
+    if dup_window is not None and dup_window < 0:
+        add("warning", "duplicate_signal_window_seconds",
+            f"duplicate_signal_window_seconds is {dup_window} - a negative window can never match a "
+            "duplicate, same as 0 (duplicate detection effectively off).")
+
+    return findings
 
 
 def evaluate_all(asset, direction, expiry, amount, exclude_id=None):
