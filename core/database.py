@@ -1174,6 +1174,48 @@ def initialize_database():
         created_at TEXT
     );
     """)
+    # Backtesting trust-data policy (2026-07-19 directive): every imported
+    # signal is provider-claimed, never independently confirmed by AXIM
+    # itself against a real broker execution - unlike `signals` rows (real
+    # AXIM trade lifecycle history), which get treated as VERIFIED_ONLY
+    # implicitly wherever they're read, with no column needed. Default
+    # 'legacy_unverified' is deliberately honest: it's what every row
+    # imported before this directive (and every row from the auto-onboard
+    # flow's provider-reported win/loss) already is - nothing is
+    # retroactively upgraded just because the column now exists.
+    # 'reprocessed_source' is earned only by a real, audited correction
+    # (see edit_imported_signal); 'verified_only' on an imported row is only
+    # ever set by an explicit, reasoned operator override (see
+    # set_imported_signal_trust_tier) - never a default, never automatic.
+    _NEW_IMPORTED_SIGNAL_COLUMNS = {
+        "data_trust_tier": "TEXT NOT NULL DEFAULT 'legacy_unverified'",
+        "reprocessed_at": "TEXT",
+        "reprocessed_reason": "TEXT",
+        "reprocessed_by": "TEXT",
+    }
+    imported_signal_columns = {row["name"] for row in conn.execute("PRAGMA table_info(imported_signals)")}
+    for column, sql_type in _NEW_IMPORTED_SIGNAL_COLUMNS.items():
+        if column not in imported_signal_columns:
+            conn.execute(f"ALTER TABLE imported_signals ADD COLUMN {column} {sql_type}")
+
+    # Generic audit log for the Backtesting subsystem (trust-tier changes,
+    # signal edits, and - once wired in the async job layer - run
+    # lifecycle events) - one small table with entity_type/entity_id
+    # rather than a separate history table per entity, since none of these
+    # individually need more than "what changed, who, why, when" (same
+    # shape as provider_profile_history above).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS backtest_data_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL,
+        entity_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        detail_json TEXT,
+        changed_by TEXT,
+        reason TEXT,
+        created_at TEXT NOT NULL
+    );
+    """)
 
     # One row per "Run Backtest" click. signal_pool_json captures the
     # filter used (source: live/imported/both, channel filter, date
@@ -5277,18 +5319,35 @@ def list_admin_actions(limit=200):
 # module.
 # ---------------------------------------------------------------------
 
+# Trusted-Data Policy (2026-07-19 directive). Rank order matters -
+# get_historical_signal_pool's min_trust_tier filter and
+# analyze_signal_eligibility both compare against this rank, not the
+# string, so "at least REPROCESSED_SOURCE" reads naturally as
+# rank >= 1. `signals` rows (real AXIM execution history) are always
+# treated as VERIFIED_ONLY wherever read - there is no column for it,
+# since that table IS the verification.
+_TRUST_TIER_RANK = {"legacy_unverified": 0, "reprocessed_source": 1, "verified_only": 2}
+_VALID_TRUST_TIERS = set(_TRUST_TIER_RANK)
+_VALID_IMPORTED_SIGNAL_RESULTS = {"win", "loss", "draw", "cancelled"}
+
+
 @timed("database")
 def create_imported_signal(source_label, asset, direction, expiry, received_at, raw_message=None,
-                            result=None, payout_percent=None, profit_loss=None, notes=None, import_batch=None):
+                            result=None, payout_percent=None, profit_loss=None, notes=None, import_batch=None,
+                            data_trust_tier="legacy_unverified"):
+    if data_trust_tier not in _VALID_TRUST_TIERS:
+        raise ValueError(f"invalid data_trust_tier: {data_trust_tier!r}")
+    if result is not None and result not in _VALID_IMPORTED_SIGNAL_RESULTS:
+        raise ValueError(f"invalid result: {result!r}")
     conn = get_connection()
     now = datetime.now().isoformat()
     cursor = conn.execute("""
         INSERT INTO imported_signals (
             source_label, raw_message, asset, direction, expiry, received_at,
-            result, payout_percent, profit_loss, notes, import_batch, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            result, payout_percent, profit_loss, notes, import_batch, created_at, data_trust_tier
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (source_label, raw_message, asset, direction, expiry, received_at,
-          result, payout_percent, profit_loss, notes, import_batch, now))
+          result, payout_percent, profit_loss, notes, import_batch, now, data_trust_tier))
     conn.commit()
     signal_id = cursor.lastrowid
     conn.close()
@@ -5331,7 +5390,13 @@ def list_imported_signals(import_batch=None, graded_only=False, limit=500):
 
 @timed("database")
 def grade_imported_signal(signal_id, result, payout_percent=None, profit_loss=None):
-    if result not in ("win", "loss", "draw"):
+    """result also accepts 'cancelled' (the provider voided the signal
+    after the fact) - a real, attributable non-outcome, distinct from
+    win/loss/draw and from "never graded". get_historical_signal_pool's
+    WHERE clause already excludes it (only win/loss/draw are simulated);
+    analyze_signal_eligibility below is what actually surfaces it as its
+    own counted reason instead of it silently reading as "ungraded"."""
+    if result not in _VALID_IMPORTED_SIGNAL_RESULTS:
         raise ValueError(f"invalid result: {result!r}")
     conn = get_connection()
     conn.execute(
@@ -5340,6 +5405,107 @@ def grade_imported_signal(signal_id, result, payout_percent=None, profit_loss=No
     )
     conn.commit()
     conn.close()
+
+
+def _log_backtest_data_audit(conn, entity_type, entity_id, action, detail, changed_by, reason):
+    conn.execute(
+        "INSERT INTO backtest_data_audit_log (entity_type, entity_id, action, detail_json, changed_by, reason, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (entity_type, entity_id, action, json.dumps(detail, default=str), changed_by, reason, datetime.now().isoformat()),
+    )
+
+
+@timed("database")
+def edit_imported_signal(signal_id, changed_by, reason, **fields):
+    """Corrects a parsed field (asset/direction/expiry/received_at) on an
+    already-imported signal - e.g. an operator fixing a parser mistake
+    found via Coverage Analysis. Unlike grade_imported_signal (recording
+    a new outcome, normal operation), this is a REPROCESSING event: the
+    signal's extracted data was wrong and is now corrected, so its trust
+    tier is bumped to at least 'reprocessed_source' (never silently left
+    at 'legacy_unverified', never downgraded if it was already higher)
+    and the correction is audited - `reason` is required, matching every
+    other "why did this change" field in this codebase
+    (provider_profile_history, broker account history, etc.)."""
+    editable = {"asset", "direction", "expiry", "received_at"}
+    unknown = set(fields) - editable
+    if unknown:
+        raise ValueError(f"cannot edit these imported_signal fields: {sorted(unknown)}")
+    if not fields:
+        return
+    if not reason or not reason.strip():
+        raise ValueError("reason is required to edit an imported signal")
+
+    conn = get_connection()
+    existing = conn.execute("SELECT * FROM imported_signals WHERE id = ?", (signal_id,)).fetchone()
+    if existing is None:
+        conn.close()
+        raise ValueError(f"no imported signal with id {signal_id}")
+    existing = dict(existing)
+
+    now = datetime.now().isoformat()
+    current_rank = _TRUST_TIER_RANK.get(existing["data_trust_tier"], 0)
+    new_tier = existing["data_trust_tier"] if current_rank >= _TRUST_TIER_RANK["reprocessed_source"] else "reprocessed_source"
+
+    set_clauses = [f"{key} = ?" for key in fields] + [
+        "data_trust_tier = ?", "reprocessed_at = ?", "reprocessed_reason = ?", "reprocessed_by = ?",
+    ]
+    params = list(fields.values()) + [new_tier, now, reason, changed_by, signal_id]
+    conn.execute(f"UPDATE imported_signals SET {', '.join(set_clauses)} WHERE id = ?", params)
+    _log_backtest_data_audit(
+        conn, "imported_signal", signal_id, "edited",
+        {"before": {k: existing[k] for k in fields}, "after": fields, "new_trust_tier": new_tier},
+        changed_by, reason,
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def set_imported_signal_trust_tier(signal_id, data_trust_tier, changed_by, reason):
+    """Explicit, manual, reasoned override - e.g. an operator who has
+    personally cross-checked an imported batch against real broker
+    records marking it 'verified_only'. Never called automatically and
+    never the default; this is the ONE path that can set 'verified_only'
+    on an imported_signals row (create_imported_signal/edit_
+    imported_signal never do)."""
+    if data_trust_tier not in _VALID_TRUST_TIERS:
+        raise ValueError(f"invalid data_trust_tier: {data_trust_tier!r}")
+    if not reason or not reason.strip():
+        raise ValueError("reason is required to change a signal's trust tier")
+    conn = get_connection()
+    existing = conn.execute("SELECT data_trust_tier FROM imported_signals WHERE id = ?", (signal_id,)).fetchone()
+    if existing is None:
+        conn.close()
+        raise ValueError(f"no imported signal with id {signal_id}")
+    conn.execute("UPDATE imported_signals SET data_trust_tier = ? WHERE id = ?", (data_trust_tier, signal_id))
+    _log_backtest_data_audit(
+        conn, "imported_signal", signal_id, "trust_tier_changed",
+        {"before": existing["data_trust_tier"], "after": data_trust_tier}, changed_by, reason,
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_backtest_data_audit_log(entity_type=None, entity_id=None, limit=100):
+    conn = get_connection()
+    query = "SELECT * FROM backtest_data_audit_log"
+    conditions = []
+    params = []
+    if entity_type is not None:
+        conditions.append("entity_type = ?")
+        params.append(entity_type)
+    if entity_id is not None:
+        conditions.append("entity_id = ?")
+        params.append(entity_id)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 @timed("database")
@@ -5367,13 +5533,22 @@ def list_historical_signal_sources():
 
 
 @timed("database")
-def get_historical_signal_pool(source, channel_filter=None, date_from=None, date_to=None):
+def get_historical_signal_pool(source, channel_filter=None, date_from=None, date_to=None, min_trust_tier=None):
     """Normalizes real `signals` rows and `imported_signals` rows into one
     common shape for core/backtest_engine.py: {source_type, signal_id,
     channel, asset, direction, expiry, timestamp, result, payout_percent,
     profit_loss, trade_amount}. source is "live", "imported", or "both".
     Only rows with a known win/loss/draw result are returned - an
-    ungraded/unresolved signal can't be simulated."""
+    ungraded/unresolved signal can't be simulated.
+
+    min_trust_tier (None/"legacy_unverified"/"reprocessed_source"/
+    "verified_only", default None = no filtering, preserving every
+    existing caller's behavior exactly - core/provider_onboarding.py's
+    auto-onboard backtest never passes it) only ever narrows the
+    `imported_signals` half of the pool; `signals` rows are real AXIM
+    execution history and always pass, since they're implicitly
+    VERIFIED_ONLY regardless of threshold."""
+    min_rank = _TRUST_TIER_RANK[min_trust_tier] if min_trust_tier else None
     pool = []
     conn = get_connection()
 
@@ -5401,7 +5576,7 @@ def get_historical_signal_pool(source, channel_filter=None, date_from=None, date
                 "asset": r["asset"], "direction": r["direction"], "expiry": r["timeframe"],
                 "timestamp": r["received_at"], "result": r["result"],
                 "payout_percent": payout_percent, "profit_loss": r["profit_loss"],
-                "trade_amount": r["trade_amount"],
+                "trade_amount": r["trade_amount"], "data_trust_tier": "verified_only",
             })
 
     if source in ("imported", "both"):
@@ -5420,17 +5595,144 @@ def get_historical_signal_pool(source, channel_filter=None, date_from=None, date
         query += " ORDER BY received_at ASC"
         for row in conn.execute(query, params).fetchall():
             r = dict(row)
+            if min_rank is not None and _TRUST_TIER_RANK.get(r["data_trust_tier"], 0) < min_rank:
+                continue
             pool.append({
                 "source_type": "imported", "signal_id": r["id"], "channel": r["source_label"],
                 "asset": r["asset"], "direction": r["direction"], "expiry": r["expiry"],
                 "timestamp": r["received_at"], "result": r["result"],
                 "payout_percent": r["payout_percent"], "profit_loss": r["profit_loss"],
-                "trade_amount": None,
+                "trade_amount": None, "data_trust_tier": r["data_trust_tier"],
             })
 
     conn.close()
     pool.sort(key=lambda s: s["timestamp"])
     return pool
+
+
+_ELIGIBILITY_CATEGORIES = [
+    "eligible", "excluded_ungraded", "excluded_cancelled", "excluded_ambiguous",
+    "excluded_below_trust_tier", "excluded_non_trade_outcome",
+]
+
+
+@timed("database")
+def analyze_signal_eligibility(source, channel_filter=None, date_from=None, date_to=None, min_trust_tier=None):
+    """Backtesting's signal eligibility rules, made honest and attributable
+    (2026-07-19 directive) - the same "every row lands in exactly one
+    concrete bucket, nothing fabricated" discipline as
+    provider_language_learner.analyze_coverage_gaps, applied to WHICH
+    signals a backtest run will actually simulate. Examines every row
+    matching the source/channel/date filters (not just the already-
+    graded ones get_historical_signal_pool returns), so an operator can
+    see exactly why a signal did or didn't make it into a run:
+
+    - excluded_ungraded: no result yet (still pending/unresolved)
+    - excluded_cancelled: the provider voided the signal (imported only)
+    - excluded_non_trade_outcome: a real pipeline outcome that was never
+      a placed trade at all (rejected:*/ignored:*/error:* - `signals`
+      only)
+    - excluded_ambiguous: graded win/loss/draw but missing asset or
+      direction - the outcome is known but WHAT was traded isn't, so it
+      can't be replayed
+    - excluded_below_trust_tier: graded, unambiguous, but below the
+      requested min_trust_tier (imported only - see get_historical_
+      signal_pool's docstring)
+    - eligible: exactly what get_historical_signal_pool would return for
+      the same arguments
+
+    Returns {"total": N, "breakdown": {...}, "pool": [...]} - `pool` is
+    the same shape/order get_historical_signal_pool returns, so a caller
+    (the pre-run estimate) can use this single query for both the count
+    and the actual signals, rather than querying twice."""
+    min_rank = _TRUST_TIER_RANK[min_trust_tier] if min_trust_tier else None
+    counts = {cat: 0 for cat in _ELIGIBILITY_CATEGORIES}
+    pool = []
+    total = 0
+    conn = get_connection()
+
+    if source in ("live", "both"):
+        query = "SELECT * FROM signals WHERE 1=1"
+        params = []
+        if date_from:
+            query += " AND received_at >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND received_at <= ?"
+            params.append(date_to)
+        if channel_filter:
+            placeholders = ", ".join("?" for _ in channel_filter)
+            query += f" AND channel IN ({placeholders})"
+            params.extend(channel_filter)
+        for row in conn.execute(query, params).fetchall():
+            r = dict(row)
+            total += 1
+            result = r["result"]
+            if result is None:
+                counts["excluded_ungraded"] += 1
+                continue
+            if result not in ("win", "loss", "draw"):
+                counts["excluded_non_trade_outcome"] += 1
+                continue
+            if not r["asset"] or not r["direction"]:
+                counts["excluded_ambiguous"] += 1
+                continue
+            counts["eligible"] += 1
+            payout_percent = (r["payout"] if r["payout"] is not None else
+                               (round((r["profit_loss"] / r["trade_amount"]) * 100, 2)
+                                if result == "win" and r["trade_amount"] else None))
+            pool.append({
+                "source_type": "live", "signal_id": r["id"], "channel": r["channel"],
+                "asset": r["asset"], "direction": r["direction"], "expiry": r["timeframe"],
+                "timestamp": r["received_at"], "result": result,
+                "payout_percent": payout_percent, "profit_loss": r["profit_loss"],
+                "trade_amount": r["trade_amount"], "data_trust_tier": "verified_only",
+            })
+
+    if source in ("imported", "both"):
+        query = "SELECT * FROM imported_signals WHERE 1=1"
+        params = []
+        if date_from:
+            query += " AND received_at >= ?"
+            params.append(date_from)
+        if date_to:
+            query += " AND received_at <= ?"
+            params.append(date_to)
+        if channel_filter:
+            placeholders = ", ".join("?" for _ in channel_filter)
+            query += f" AND source_label IN ({placeholders})"
+            params.extend(channel_filter)
+        for row in conn.execute(query, params).fetchall():
+            r = dict(row)
+            total += 1
+            result = r["result"]
+            if result is None:
+                counts["excluded_ungraded"] += 1
+                continue
+            if result == "cancelled":
+                counts["excluded_cancelled"] += 1
+                continue
+            if result not in ("win", "loss", "draw"):
+                counts["excluded_non_trade_outcome"] += 1
+                continue
+            if not r["asset"] or not r["direction"]:
+                counts["excluded_ambiguous"] += 1
+                continue
+            if min_rank is not None and _TRUST_TIER_RANK.get(r["data_trust_tier"], 0) < min_rank:
+                counts["excluded_below_trust_tier"] += 1
+                continue
+            counts["eligible"] += 1
+            pool.append({
+                "source_type": "imported", "signal_id": r["id"], "channel": r["source_label"],
+                "asset": r["asset"], "direction": r["direction"], "expiry": r["expiry"],
+                "timestamp": r["received_at"], "result": result,
+                "payout_percent": r["payout_percent"], "profit_loss": r["profit_loss"],
+                "trade_amount": None, "data_trust_tier": r["data_trust_tier"],
+            })
+
+    conn.close()
+    pool.sort(key=lambda s: s["timestamp"])
+    return {"total": total, "breakdown": counts, "pool": pool}
 
 
 @timed("database")
