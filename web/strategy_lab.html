@@ -5,6 +5,7 @@
 <title>Strategy Lab - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
+<script>(function(){try{var t=localStorage.getItem("axim-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <style>
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; flex-wrap: wrap; }
   .tab-btn { background: none; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 4px; margin-right: 18px; color: var(--text-dim); font-weight: 600; cursor: pointer; }
@@ -604,8 +605,8 @@ function buildMultiLineSVG(series, opts = {}) {
   let svg = `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" style="font-family:inherit;">`;
   svg += `<line x1="${pad}" y1="${height - pad}" x2="${width - pad}" y2="${height - pad}" stroke="var(--border)" />`;
   svg += `<line x1="${pad}" y1="${pad}" x2="${pad}" y2="${height - pad}" stroke="var(--border)" />`;
-  svg += `<text x="${pad}" y="${pad - 8}" font-size="11" fill="#6b7078">${yFmt(maxY)}</text>`;
-  svg += `<text x="${pad}" y="${height - pad + 16}" font-size="11" fill="#6b7078">${yFmt(minY)}</text>`;
+  svg += `<text x="${pad}" y="${pad - 8}" font-size="11" fill="var(--text-dim)">${yFmt(maxY)}</text>`;
+  svg += `<text x="${pad}" y="${height - pad + 16}" font-size="11" fill="var(--text-dim)">${yFmt(minY)}</text>`;
 
   series.forEach((s, i) => {
     if (!s.values.length) return;
@@ -640,8 +641,8 @@ function buildBarChartSVG(bars, opts = {}) {
     const barHeight = Math.max(Math.abs(barY - zeroY), 1);
     const labelAbove = barY <= zeroY;
     svg += `<rect x="${x}" y="${top}" width="${barWidth}" height="${barHeight}" fill="${b.color}" rx="3" />`;
-    svg += `<text x="${x + barWidth / 2}" y="${labelAbove ? top - 6 : top + barHeight + 14}" font-size="11" fill="#6b7078" text-anchor="middle">${valueFmt(b.value)}</text>`;
-    svg += `<text x="${x + barWidth / 2}" y="${height - pad + 16}" font-size="10.5" fill="#6b7078" text-anchor="middle">${escapeHtml((b.label || "").slice(0, 16))}</text>`;
+    svg += `<text x="${x + barWidth / 2}" y="${labelAbove ? top - 6 : top + barHeight + 14}" font-size="11" fill="var(--text-dim)" text-anchor="middle">${valueFmt(b.value)}</text>`;
+    svg += `<text x="${x + barWidth / 2}" y="${height - pad + 16}" font-size="10.5" fill="var(--text-dim)" text-anchor="middle">${escapeHtml((b.label || "").slice(0, 16))}</text>`;
   });
   svg += `</svg>`;
   return svg;

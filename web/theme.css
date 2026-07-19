@@ -1,8 +1,14 @@
-/* AXIM design system - "premium wealth management platform", not a
-   monitoring dashboard. White background, soft warm-gray surfaces,
-   generous whitespace, restrained color (blue accent; green/red
-   reserved strictly for P/L), calm typography with a clear hierarchy
-   between the ONE number that matters on a screen and everything else.
+/* AXIM design system v2 (2026-07-18 UI v2 migration) - "premium wealth
+   management platform," now with a real brand identity: --brand
+   (purple) is the primary action/selection color app-wide, distinct
+   from --blue (kept as its own "info/trust" semantic - links, info
+   badges) - matches the v2 design package's own color rule ("Purple is
+   action/selection, not profit. Green is success/profit/live. Red is
+   loss/danger. Amber is pending/warning."). Dark and light are equal
+   first-class themes, switched via [data-theme] on <html> (see
+   web/shell.js's theme toggle) - every page sets this attribute before
+   first paint via a tiny inline script in <head>, reading a saved
+   preference or the OS preference on first visit.
    Technical/operational detail (process state, PIDs, heartbeats) is
    deliberately de-emphasized or tucked behind a .diagnostics disclosure -
    see dashboard.html/broker.html - never a primary-screen citizen. */
@@ -46,6 +52,15 @@
   --purple: #6d3fc4;
   --purple-soft: #f3edfc;
   --purple-border: #e2d3f7;
+  /* Primary brand/action color (UI v2, 2026-07-18) - buttons, active
+     nav, the logo mark, focus rings. A distinct hue from --purple
+     (Strategy Lab/AI's own "voice") even though both are violet-family,
+     so a brand-colored primary button is never confused with an
+     AI-generated recommendation card. */
+  --brand: #6c3aed;
+  --brand-dark: #5725d6;
+  --brand-hover: #5f2fe0;
+  --brand-soft: #f1ecfe;
   --radius: 14px;
   --radius-sm: 9px;
   --radius-lg: 20px;
@@ -54,6 +69,45 @@
   --shadow-lift: 0 4px 8px rgba(20, 24, 31, 0.05), 0 16px 40px rgba(20, 24, 31, 0.09);
   --sidebar-w: 256px;
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Dark theme (2026-07-18 UI v2 migration - did not exist before this).
+   Every semantic token gets a real dark-mode value; positive/negative/
+   warning meanings stay identical between themes (design package's own
+   theme rule), only the surface/text/soft-tint values change. */
+[data-theme="dark"] {
+  --bg: #0d1117;
+  --surface: #161b26;
+  --surface-hover: #1c2230;
+  --border: #262e40;
+  --text: #f2f4f8;
+  --text-dim: #a0a8bb;
+  --text-faint: #6b7385;
+  --blue: #6d93ff;
+  --blue-hover: #8fabff;
+  --blue-soft: #182242;
+  --green: #34d399;
+  --green-soft: #10281f;
+  --red: #f37070;
+  --red-hover: #f68f8f;
+  --red-soft: #341a1a;
+  --yellow: #eab84f;
+  --yellow-soft: #332510;
+  --highlight: #7a6420;
+  --overlay: rgba(3, 6, 14, 0.6);
+  --gold: #e0be6c;
+  --gold-soft: #332a10;
+  --gold-border: #4d3f18;
+  --purple: #b28cf0;
+  --purple-soft: #241a3d;
+  --purple-border: #3a2b5c;
+  --brand: #9166ff;
+  --brand-dark: #7c4dfa;
+  --brand-hover: #a482ff;
+  --brand-soft: #241a3d;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.34);
+  --shadow-lift: 0 4px 8px rgba(0, 0, 0, 0.32), 0 16px 40px rgba(0, 0, 0, 0.44);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -102,11 +156,11 @@ a { color: inherit; }
 
 .sidebar-logo .mark {
   width: 42px; height: 42px;
-  background: var(--blue);
+  background: var(--brand);
   border-radius: 12px;
   display: flex; align-items: center; justify-content: center;
   color: white; font-size: 13px; font-weight: 700;
-  box-shadow: 0 2px 6px rgba(36, 82, 235, 0.28);
+  box-shadow: 0 2px 6px rgba(108, 58, 237, 0.28);
 }
 
 .sidebar-logo .wordmark {
@@ -147,7 +201,7 @@ a { color: inherit; }
 }
 
 .nav-item:hover { background: var(--surface); color: var(--text); }
-.nav-item.active { background: var(--blue-soft); color: var(--blue); }
+.nav-item.active { background: var(--brand-soft); color: var(--brand); }
 .nav-item svg { flex-shrink: 0; opacity: 0.85; }
 
 .nav-spacer { flex: 1; }
@@ -178,6 +232,28 @@ a { color: inherit; }
 
 .user-chip .email { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .user-chip .role { color: var(--text-faint); font-size: 11px; }
+
+/* ---- Theme toggle (UI v2, 2026-07-18) - sidebar footer control +
+   its duplicate in the mobile "More" sheet (web/shell.js). ---- */
+.theme-toggle {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 8px 10px; border-radius: var(--radius-sm); border: none;
+  background: transparent; color: var(--text-dim); font-size: 12.5px; cursor: pointer;
+  text-align: left; margin-bottom: 2px;
+}
+.theme-toggle:hover { background: var(--surface); color: var(--text); }
+.theme-toggle-switch {
+  margin-left: auto; width: 32px; height: 18px; border-radius: 999px;
+  background: var(--border); position: relative; flex-shrink: 0;
+  transition: background var(--transition, 0.15s var(--ease));
+}
+.theme-toggle-switch.on { background: var(--brand); }
+.theme-toggle-knob {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+  border-radius: 50%; background: #fff; transition: transform 0.15s var(--ease);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.theme-toggle-switch.on .theme-toggle-knob { transform: translateX(14px); }
 
 .notif-bell-wrap { position: relative; }
 .notif-bell {
@@ -239,7 +315,7 @@ a { color: inherit; }
   background: var(--surface); color: var(--text-dim); border: 1px solid var(--border);
   font-size: 11px; font-weight: 700; text-decoration: none; vertical-align: middle;
 }
-.help-link:hover { background: var(--blue-soft); color: var(--blue); border-color: var(--blue-soft); }
+.help-link:hover { background: var(--brand-soft); color: var(--brand); border-color: var(--brand-soft); }
 
 /* ---- Cards / grid ---- */
 
@@ -298,7 +374,7 @@ a { color: inherit; }
 .hero-panel:before {
   content: "";
   position: absolute; top: 0; right: 0; width: 220px; height: 220px;
-  background: radial-gradient(circle at top right, var(--blue-soft) 0%, transparent 70%);
+  background: radial-gradient(circle at top right, var(--brand-soft) 0%, transparent 70%);
   opacity: 0.6; pointer-events: none;
 }
 .hero-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); font-weight: 650; margin-bottom: 10px; }
@@ -390,14 +466,14 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
    that isn't a text field. :focus-visible (not :focus) so mouse clicks
    don't show a ring, only keyboard/programmatic focus does. */
 button:focus-visible, .btn:focus-visible, a:focus-visible, .nav-item:focus-visible {
-  outline: 2px solid var(--blue);
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
 button.primary, .btn.primary {
-  background: var(--blue); border-color: var(--blue); color: white;
+  background: var(--brand); border-color: var(--brand); color: white;
 }
-button.primary:hover, .btn.primary:hover { background: var(--blue-hover); border-color: var(--blue-hover); }
+button.primary:hover, .btn.primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
 
 button.danger, .btn.danger {
   background: var(--red); border-color: var(--red); color: white;
@@ -435,7 +511,7 @@ button.subtle:hover { background: var(--surface); color: var(--text); }
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   background: var(--bg); color: var(--text);
 }
-.scs-input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px var(--blue-soft); }
+.scs-input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 
 .scs-results {
   position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 60;
@@ -462,7 +538,7 @@ button.subtle:hover { background: var(--surface); color: var(--text); }
 
 .scs-widen { border-top: 1px solid var(--border); padding: 8px 12px; text-align: center; }
 .scs-widen-link {
-  background: none; border: none; padding: 0; font-size: 12px; color: var(--blue);
+  background: none; border: none; padding: 0; font-size: 12px; color: var(--brand);
   cursor: pointer; font-family: inherit;
 }
 .scs-widen-link:hover { text-decoration: underline; }
@@ -499,7 +575,7 @@ button.subtle:hover { background: var(--surface); color: var(--text); }
 .count-up { transition: color 0.2s var(--ease); }
 
 .progress-ring-track { stroke: var(--border); fill: none; }
-.progress-ring-fill { stroke: var(--blue); fill: none; stroke-linecap: round; transition: stroke-dashoffset 0.6s var(--ease); }
+.progress-ring-fill { stroke: var(--brand); fill: none; stroke-linecap: round; transition: stroke-dashoffset 0.6s var(--ease); }
 
 /* Reusable "protected/premium" stat treatment - vault balances,
    premium plan badges. Gold, never used for a warning or an error. */
@@ -523,7 +599,7 @@ input[type=text], input[type=email], input[type=password], input[type=number], i
   font-size: 13.5px;
   width: 100%;
 }
-input:focus, select:focus, textarea:focus { outline: 2px solid var(--blue-soft); border-color: var(--blue); }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-soft); border-color: var(--brand); }
 
 textarea { min-height: 90px; resize: vertical; }
 
@@ -655,7 +731,7 @@ td.title-cell { white-space: normal; max-width: 320px; }
     padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0));
   }
   .mobile-header .mark {
-    width: 28px; height: 28px; background: var(--blue); border-radius: 8px;
+    width: 28px; height: 28px; background: var(--brand); border-radius: 8px;
     display: flex; align-items: center; justify-content: center; color: white; flex-shrink: 0;
   }
   .mobile-header .wordmark { display: flex; align-items: baseline; gap: 5px; line-height: 1; }
@@ -697,7 +773,7 @@ td.title-cell { white-space: normal; max-width: 320px; }
     padding: 9px 4px 8px; font-size: 10.5px; color: var(--text-dim); text-decoration: none;
   }
   .mobile-nav .item svg { opacity: 0.85; }
-  .mobile-nav .item.active { color: var(--blue); font-weight: 700; }
+  .mobile-nav .item.active { color: var(--brand); font-weight: 700; }
   .mobile-nav .item.active svg { opacity: 1; }
 
   .more-sheet {

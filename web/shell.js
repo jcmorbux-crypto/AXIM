@@ -36,6 +36,13 @@ const AximShell = (() => {
     capital: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.8 14.2h12.4"/><rect x="2.5" y="9.5" width="2.6" height="4.7" fill="currentColor" stroke="none"/><rect x="6.7" y="6.5" width="2.6" height="7.7" fill="currentColor" stroke="none"/><rect x="10.9" y="2.8" width="2.6" height="11.4" fill="currentColor" stroke="none"/></svg>',
   };
 
+  // Theme toggle icons (UI v2, 2026-07-18) - sun shown while in light
+  // mode (click to go dark), moon shown while in dark mode (click to go
+  // light) - the icon always represents the CURRENT state, matching the
+  // convention most users already expect from other apps.
+  const THEME_TOGGLE_ICON_SUN = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M14.5 8h-1.6M3.1 8H1.5M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1M12.6 12.6l-1.1-1.1M4.5 4.5L3.4 3.4"/></svg>';
+  const THEME_TOGGLE_ICON_MOON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.5 9.8A6 6 0 1 1 6.2 2.5a5 5 0 0 0 7.3 7.3Z"/></svg>';
+
   // "The AXIS" brand mark (brand/axis-mark.svg is the source of truth -
   // this is the glyph only, no background rect, since .sidebar-logo
   // .mark/.auth-logo .mark already paint the rounded-blue-square badge
@@ -49,6 +56,42 @@ const AximShell = (() => {
     const d = document.createElement("div");
     d.textContent = s ?? "";
     return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // ---- Theme (light/dark) - UI v2, 2026-07-18. Every authenticated
+  // page also carries a tiny inline script in <head> (before this file
+  // loads) that applies the saved/OS-preferred theme to <html> BEFORE
+  // first paint, so there is no flash of the wrong theme on navigation -
+  // this file is what makes the choice interactive and persists it, not
+  // what establishes it on load. Both read the SAME localStorage key. ----
+  const THEME_STORAGE_KEY = "axim-theme";
+
+  function currentTheme() {
+    return document.documentElement.getAttribute("data-theme") === "dark" ? "dark" : "light";
+  }
+
+  function updateThemeToggleUI() {
+    const dark = currentTheme() === "dark";
+    ["", "-mobile"].forEach(suffix => {
+      const btn = document.getElementById(`axim-theme-toggle${suffix}`);
+      if (!btn) return;
+      const icon = btn.querySelector("svg");
+      if (icon) icon.outerHTML = dark ? THEME_TOGGLE_ICON_MOON : THEME_TOGGLE_ICON_SUN;
+      const label = document.getElementById(`axim-theme-toggle-label${suffix}`);
+      if (label) label.textContent = dark ? "Dark Mode" : "Light Mode";
+      const sw = document.getElementById(`axim-theme-toggle-switch${suffix}`);
+      if (sw) sw.classList.toggle("on", dark);
+    });
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme === "dark" ? "dark" : "light");
+    try { localStorage.setItem(THEME_STORAGE_KEY, theme); } catch (e) {}
+    updateThemeToggleUI();
+  }
+
+  function toggleTheme() {
+    applyTheme(currentTheme() === "dark" ? "light" : "dark");
   }
 
   // IA reorganized 2026-07-14 per the approved UI overhaul spec: primary
@@ -135,6 +178,10 @@ const AximShell = (() => {
       </div>
       <div class="nav-spacer"></div>
       <div class="sidebar-footer">
+        <button class="theme-toggle" id="axim-theme-toggle" onclick="AximShell.toggleTheme()" title="Switch theme" aria-label="Switch between light and dark theme">
+          ${THEME_TOGGLE_ICON_SUN}<span id="axim-theme-toggle-label">Light Mode</span>
+          <span class="theme-toggle-switch" id="axim-theme-toggle-switch"><span class="theme-toggle-knob"></span></span>
+        </button>
         <div class="notif-bell-wrap">
           <button class="notif-bell" id="axim-notif-bell" onclick="AximShell._toggleNotifDropdown()">
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6.5a4 4 0 0 1 8 0c0 3.5 1.2 4.5 1.2 4.5H2.8S4 10 4 6.5Z"/><path d="M6.3 13a1.8 1.8 0 0 0 3.4 0"/></svg>
@@ -162,6 +209,7 @@ const AximShell = (() => {
       </div>
     `;
     renderMobileNav(user, activeKey, isAdmin);
+    updateThemeToggleUI();
     document.addEventListener("click", (e) => {
       const wrap = document.querySelector(".notif-bell-wrap");
       if (wrap && !wrap.contains(e.target)) {
@@ -472,9 +520,14 @@ const AximShell = (() => {
         ${more.map(i => `
           <a class="nav-item more-item ${i.key === activeKey ? "active" : ""}" href="${i.href}">${i.icon}<span>${i.label}</span></a>
         `).join("")}
+        <button class="theme-toggle" id="axim-theme-toggle-mobile" onclick="AximShell.toggleTheme()" style="width:100%; margin-top:8px;" aria-label="Switch between light and dark theme">
+          ${THEME_TOGGLE_ICON_SUN}<span id="axim-theme-toggle-label-mobile">Light Mode</span>
+          <span class="theme-toggle-switch" id="axim-theme-toggle-switch-mobile"><span class="theme-toggle-knob"></span></span>
+        </button>
       </div>
     `;
     moreSheet.addEventListener("click", (e) => { if (e.target === moreSheet) moreSheet.classList.remove("open"); });
+    updateThemeToggleUI();
 
     const mobileNav = document.createElement("div");
     mobileNav.className = "mobile-nav";
@@ -498,6 +551,6 @@ const AximShell = (() => {
 
   return {
     init, logout, fetchJSON, isDeveloperMode, _confirmPendingTrade, _rejectPendingTrade,
-    _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents,
+    _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents, toggleTheme,
   };
 })();
