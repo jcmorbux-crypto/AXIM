@@ -514,6 +514,8 @@ def initialize_database():
         "emergency_stopped": "INTEGER NOT NULL DEFAULT 0",
         "emergency_stopped_at": "TEXT",
         "emergency_stopped_by": "TEXT",
+        "last_error": "TEXT",
+        "last_error_at": "TEXT",
     }
     broker_account_columns = {row["name"] for row in conn.execute("PRAGMA table_info(broker_accounts)")}
     for column, sql_type in _NEW_BROKER_ACCOUNT_COLUMNS.items():

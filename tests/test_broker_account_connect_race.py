@@ -108,6 +108,28 @@ class FinalizeBrokerAccountConnectionTests(unittest.TestCase):
         self.assertEqual(account["connection_status"], "connected")
         self.assertEqual(account["last_connected_at"], "2026-01-01T00:00:00")
 
+    def test_error_outcome_records_the_real_reason(self):
+        database.finalize_broker_account_connection(
+            self.account_id, "error", last_error="TimeoutError: login not detected",
+            last_error_at="2026-01-01T00:00:00",
+        )
+        account = database.get_broker_account(self.account_id)
+        self.assertEqual(account["connection_status"], "error")
+        self.assertEqual(account["last_error"], "TimeoutError: login not detected")
+        self.assertEqual(account["last_error_at"], "2026-01-01T00:00:00")
+
+    def test_successful_connect_clears_a_stale_error(self):
+        database.finalize_broker_account_connection(
+            self.account_id, "error", last_error="some earlier failure", last_error_at="2026-01-01T00:00:00")
+        database.claim_broker_account_connecting(self.account_id)
+        database.finalize_broker_account_connection(
+            self.account_id, "connected", last_connected_at="2026-01-02T00:00:00",
+            last_error=None, last_error_at=None,
+        )
+        account = database.get_broker_account(self.account_id)
+        self.assertEqual(account["connection_status"], "connected")
+        self.assertIsNone(account["last_error"])
+
 
 if __name__ == "__main__":
     unittest.main()

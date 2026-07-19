@@ -276,7 +276,10 @@ async function refreshAccounts() {
     <tr>
       <td>${escapeHtml(a.name)} ${a.emergency_stopped ? '<span class="badge danger">Stopped</span>' : ""}</td>
       <td><span class="badge off">${a.mode}</span></td>
-      <td><span class="badge ${CONNECTION_BADGE[a.connection_status] || "off"}">${a.connection_status}</span></td>
+      <td>
+        <span class="badge ${CONNECTION_BADGE[a.connection_status] || "off"}">${a.connection_status}</span>
+        ${a.connection_status === "error" && a.last_error ? `<div class="muted" style="font-size:11px; color:var(--red); margin-top:3px; max-width:220px;" title="${escapeHtml(a.last_error)}">${escapeHtml(a.last_error)}</div>` : ""}
+      </td>
       <td>${a.last_balance !== null && a.last_balance !== undefined ? "$" + Number(a.last_balance).toFixed(2) : "-"}</td>
       <td>${a.reserve !== null && a.reserve !== undefined ? "$" + Number(a.reserve).toFixed(2) : "-"}</td>
       <td class="muted">${a.last_connected_at ? new Date(a.last_connected_at).toLocaleString() : "-"}</td>

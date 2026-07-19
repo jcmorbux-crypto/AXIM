@@ -98,6 +98,7 @@ async def connect(account_id):
             wrote = database.finalize_broker_account_connection(
                 account_id, "connected",
                 last_connected_at=datetime.now().isoformat(),
+                last_error=None, last_error_at=None,
             )
             if wrote:
                 print(f"Broker account {account_id!r} connected successfully.")
@@ -108,21 +109,37 @@ async def connect(account_id):
                 logger.info("connect_broker_account: account_id=%s login succeeded but was "
                             "disconnected from the UI in the meantime - result discarded", account_id)
         else:
-            wrote = database.finalize_broker_account_connection(account_id, "error")
-            if wrote:
-                print(f"Broker account {account_id!r} did not reach a logged-in state within "
-                      f"{CONNECT_TIMEOUT_SECONDS}s - marked as error. The window is left open; "
-                      f"you can keep trying and reconnect from the UI once logged in.")
-                logger.warning("connect_broker_account: account_id=%s timed out", account_id)
-            else:
-                logger.info("connect_broker_account: account_id=%s timed out but was already "
-                            "disconnected from the UI - result discarded", account_id)
+            _record_connection_error(
+                account_id,
+                f"Login was not completed within {CONNECT_TIMEOUT_SECONDS // 60} minutes.",
+            )
+            print(f"Broker account {account_id!r} did not reach a logged-in state within "
+                  f"{CONNECT_TIMEOUT_SECONDS}s - marked as error. The window is left open; "
+                  f"you can keep trying and reconnect from the UI once logged in.")
             # Leave the window open on timeout - don't yank control from an
             # operator who may still be mid-login (slow 2FA, etc).
             return
+    except Exception as e:
+        logger.exception("connect_broker_account: account_id=%s crashed", account_id)
+        _record_connection_error(account_id, f"{type(e).__name__}: {e}")
+        print(f"Broker account {account_id!r} connect attempt failed: {e}")
     finally:
         if connected:
             await session.__aexit__(None, None, None)
+
+
+def _record_connection_error(account_id, message):
+    """Same disconnect-race guard as the success path - an operator who
+    already clicked Disconnect (or reconnected some other way) owns the
+    account's state, not a stale failure from this attempt."""
+    wrote = database.finalize_broker_account_connection(
+        account_id, "error", last_error=message, last_error_at=datetime.now().isoformat(),
+    )
+    if wrote:
+        logger.warning("connect_broker_account: account_id=%s error: %s", account_id, message)
+    else:
+        logger.info("connect_broker_account: account_id=%s failed (%s) but was already "
+                    "disconnected from the UI in the meantime - result discarded", account_id, message)
 
 
 if __name__ == "__main__":
