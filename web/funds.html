@@ -7,11 +7,43 @@
 <link rel="stylesheet" href="/web/theme.css">
 <script>(function(){try{var t=localStorage.getItem("axim-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <style>
-  .fund-list-item { display: flex; flex-direction: column; gap: 4px; padding: 12px; border-radius: var(--radius-sm); cursor: pointer; margin-bottom: 4px; transition: background 0.12s var(--ease), transform 0.12s var(--ease); }
-  .fund-list-item:hover { background: var(--surface); transform: translateX(2px); }
-  .fund-list-item.active { background: var(--blue-soft); }
-  .fund-list-item .fund-name { font-weight: 600; font-size: 13.5px; }
-  .fund-list-item .fund-value { font-size: 12.5px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  /* ---- UI v2 Portfolio blueprint: Portfolio Summary + Allocation &
+     Growth up top, Funds & Broker Accounts table + Account Performance
+     + Add/Edit Fund below - every real interaction (transfers, broker
+     attach, source toggles, settings) preserved, just reorganized to
+     the approved hierarchy. ---- */
+  .portfolio-row-1 { display: grid; grid-template-columns: 1fr 2.1fr; gap: 16px; margin-bottom: 16px; align-items: stretch; }
+  .portfolio-row-2 { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; margin-bottom: 16px; align-items: start; }
+  @media (max-width: 1100px) { .portfolio-row-1, .portfolio-row-2 { grid-template-columns: 1fr; } }
+
+  .ps-stats { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
+  .ps-stats .stat { display: flex; justify-content: space-between; align-items: baseline; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .ps-stats .stat:last-child { border-bottom: none; }
+  .ps-stats .stat .label { font-size: 12.5px; color: var(--text-dim); }
+  .ps-stats .stat .value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  #pv-chart .pv-line { fill: none; stroke: var(--brand); stroke-width: 2; }
+  #pv-chart .pv-fill { fill: var(--brand-soft); stroke: none; }
+  #pv-chart .pv-empty { fill: var(--text-faint); font-size: 11px; }
+  .allocation-growth-wrap { display: grid; grid-template-columns: 1.3fr 1fr; gap: 20px; align-items: center; }
+  @media (max-width: 700px) { .allocation-growth-wrap { grid-template-columns: 1fr; } }
+  .allocation-legend { display: flex; flex-direction: column; gap: 8px; max-height: 160px; overflow-y: auto; }
+  .allocation-legend .row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .allocation-legend .swatch { width: 10px; height: 10px; border-radius: 3px; flex-shrink: 0; }
+  .allocation-legend .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+  .allocation-legend .pct { font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  .funds-table-wrap { overflow-x: auto; }
+  .funds-table { width: 100%; border-collapse: collapse; }
+  .funds-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); font-weight: 650; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .funds-table td { padding: 10px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+  .funds-table tr.fund-row { cursor: pointer; transition: background 0.12s var(--ease); }
+  .funds-table tr.fund-row:hover { background: var(--surface); }
+  .funds-table tr.fund-row.active { background: var(--brand-soft); }
+  .funds-table tr.fund-row.active td { color: var(--text); }
+  .funds-table .fr-name { font-weight: 600; }
+  .funds-table .fr-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+
   .source-checklist { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px; }
   .source-checklist label { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
   .source-checklist input { width: auto; }
@@ -33,118 +65,146 @@
       <button class="primary" onclick="openCreateModal()">New Fund</button>
     </div>
 
-    <div class="grid" style="grid-template-columns: 280px 1fr;">
+    <div class="portfolio-row-1">
       <div class="card solid">
-        <h3>All Funds</h3>
-        <div id="funds-list" class="muted">Loading...</div>
+        <h3>Portfolio Summary</h3>
+        <div class="ps-stats">
+          <div class="stat"><span class="label">Total portfolio value</span><span class="value" id="ps-total-value">-</span></div>
+          <div class="stat"><span class="label">Active funds</span><span class="value" id="ps-active-funds">-</span></div>
+          <div class="stat"><span class="label">Total profit (lifetime)</span><span class="value" id="ps-total-profit">-</span></div>
+          <div class="stat"><span class="label">Overall win rate</span><span class="value" id="ps-win-rate">-</span></div>
+          <div class="stat"><span class="label">Today's P/L</span><span class="value" id="ps-today-pl">-</span></div>
+        </div>
       </div>
-
-      <div class="card solid" id="detail-panel" style="display:none;">
-        <div class="row" style="justify-content:space-between; margin-bottom:14px;">
-          <h3 id="detail-title" style="margin:0;">Fund</h3>
-          <div class="row">
-            <span class="badge" id="detail-status-badge">-</span>
-            <button class="subtle" onclick="duplicateCurrentFund()">Duplicate</button>
-            <button class="subtle" onclick="toggleFundPause()" id="pause-btn">Pause</button>
-            <button class="subtle" onclick="toggleArchive()" id="archive-btn">Archive</button>
+      <div class="card solid">
+        <h3>Allocation &amp; Growth</h3>
+        <div class="allocation-growth-wrap">
+          <div>
+            <svg id="pv-chart" viewBox="0 0 600 120" preserveAspectRatio="none" style="width:100%; height:100px; display:block;"></svg>
+            <div class="muted" id="pv-chart-caption" style="font-size:11.5px; margin-top:6px;">&nbsp;</div>
           </div>
+          <div class="allocation-legend" id="allocation-legend"></div>
         </div>
+      </div>
+    </div>
 
-        <div class="balance-trio">
-          <div class="box"><div class="label">Trading Balance</div><div class="value" id="d-trading-balance">-</div></div>
-          <div class="box gold"><div class="label">Protected / Vault</div><div class="value" id="d-protected-balance">-</div></div>
-          <div class="box"><div class="label">Total Account Value</div><div class="value" id="d-total-value">-</div></div>
-        </div>
-
-        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Automation</div>
-        <div class="card" style="margin-bottom:18px;">
-          <div class="row" style="justify-content:space-between;">
-            <span class="muted" id="rules-summary">Loading...</span>
-            <a id="rules-link" href="/automation" style="font-size:12px; color:var(--blue); text-decoration:none;">Open Automation Studio &rarr;</a>
-          </div>
-          <div class="muted" style="font-size:11.5px; margin-top:6px;">Automations attached to this Fund apply automatically to every session it runs.</div>
-        </div>
-
-        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Broker Account</div>
-        <div class="card" style="margin-bottom:18px;">
-          <div id="broker-account-summary" class="muted">Loading...</div>
-          <div class="row" style="margin-top:10px;">
-            <div class="field" style="flex:2;">
-              <label>Attached Pocket Option account</label>
-              <select id="f-broker-account"><option value="">Not attached</option></select>
-            </div>
-            <button class="subtle" style="align-self:flex-end;" onclick="assignBrokerAccount()">Attach</button>
-            <button class="subtle" id="detach-broker-btn" style="align-self:flex-end; display:none;" onclick="detachBrokerAccount()">Detach</button>
-          </div>
-          <label class="row" style="gap:8px; margin-top:12px; font-size:13px; color:var(--text-dim); cursor:pointer;">
-            <input type="checkbox" id="f-live-enabled" style="width:auto;" onchange="toggleFundLive(this.checked)">
-            Allow this Fund to trade Live (also requires the broker account's own Live switch)
-          </label>
-          <div class="stat-caption" style="margin-top:6px; color:var(--text-faint);">
-            This Fund is genuinely required to be enabled here (and on the broker account) before it can route any signal through a Live-mode account - a signal from a not-yet-authorized Fund is rejected, never silently executed. That said, Live trading is not fully available yet on any account: it also requires a verified live cabinet URL to be configured server-side, which no account has today - see docs/AXIM_APP_PLAN.md.
-          </div>
-          <div style="margin-top:10px;"><a href="/broker" style="font-size:12px; color:var(--blue); text-decoration:none;">Manage broker accounts &rarr;</a></div>
-        </div>
-
-        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Capital Allocation</div>
-        <div class="card" style="margin-bottom:18px;">
-          <div class="row" style="justify-content:space-between; align-items:center;">
-            <div class="muted" id="reserve-summary" style="font-size:13px;">Loading...</div>
-            <button class="subtle" onclick="openTransferModal()" id="transfer-btn">Move Capital</button>
-          </div>
-          <div class="stat-caption" style="margin-top:6px; color:var(--text-faint);">
-            One real Pocket Option balance can be split across several Funds for sizing purposes. Moving capital here never touches the broker - it only changes how AXIM divides up what's already there.
-          </div>
-          <table style="margin-top:12px;">
-            <thead><tr><th>When</th><th>Move</th><th>Amount</th><th>Note</th></tr></thead>
-            <tbody id="transfers-body"><tr><td colspan="4" class="empty">No transfers yet.</td></tr></tbody>
+    <div class="portfolio-row-2">
+      <div class="card solid">
+        <h3>Funds &amp; Broker Accounts</h3>
+        <div class="funds-table-wrap">
+          <table class="funds-table">
+            <thead><tr><th>Fund</th><th>Broker Account</th><th>Equity</th><th>Status</th></tr></thead>
+            <tbody id="funds-list"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
           </table>
         </div>
+      </div>
 
-        <div class="row" style="margin-bottom:18px;">
-          <div class="card" style="flex:1;">
-            <h3>Performance</h3>
-            <div class="stat-row"><span class="stat-label">Trades closed</span><span class="stat-value" id="d-trades">-</span></div>
-            <div class="stat-row"><span class="stat-label">Win rate</span><span class="stat-value" id="d-winrate">-</span></div>
-            <div class="stat-row"><span class="stat-label">Total P/L</span><span class="stat-value" id="d-pl">-</span></div>
+      <div>
+        <div class="card solid" style="margin-bottom:16px;">
+          <h3>Account Performance</h3>
+          <div class="stat-row"><span class="stat-label">Trades closed</span><span class="stat-value" id="d-trades">-</span></div>
+          <div class="stat-row"><span class="stat-label">Win rate</span><span class="stat-value" id="d-winrate">-</span></div>
+          <div class="stat-row"><span class="stat-label">Total P/L</span><span class="stat-value" id="d-pl">-</span></div>
+        </div>
+
+        <div class="card solid" id="add-edit-fund-card">
+          <div class="row" style="justify-content:space-between; margin-bottom:10px;">
+            <h3 style="margin:0;" id="detail-title">Add / Edit Fund</h3>
+            <span class="badge" id="detail-status-badge" style="display:none;">-</span>
+          </div>
+          <div class="muted" id="add-edit-empty-state" style="font-size:13px;">Select a fund from the table to edit it, or use "New Fund" above to create one.</div>
+          <div id="add-edit-fields" style="display:none;">
+            <div class="field"><label>Name</label><input type="text" id="f-name"></div>
+            <div class="field"><label>Starting balance ($)</label><input type="number" id="f-starting-balance" step="0.01"></div>
+            <div class="field"><label>Broker / account label</label><input type="text" id="f-broker-label" placeholder="e.g. Pocket Option Demo"></div>
+            <div class="field"><label>Default money management profile</label><select id="f-risk-profile"><option value="">None</option></select></div>
+            <div class="field"><label>Default session template</label><select id="f-session-profile"><option value="">None</option></select></div>
+            <div class="muted" style="font-size:11.5px; margin-bottom:4px;">Lifetime circuit breaker - measured against all-time realized P/L and trade count, not reset daily.</div>
+            <div class="row">
+              <div class="field" style="flex:1;"><label>Profit target ($, 0=off)</label><input type="number" id="f-profit-target" step="0.01"></div>
+              <div class="field" style="flex:1;"><label>Loss limit ($, 0=off)</label><input type="number" id="f-loss-limit" step="0.01"></div>
+              <div class="field" style="flex:1;"><label>Max trades (0=off)</label><input type="number" id="f-max-trades"></div>
+            </div>
+            <div class="row" style="justify-content:space-between; align-items:center;">
+              <button class="primary" onclick="saveFund()">Save Settings</button>
+              <div class="row">
+                <button class="subtle" onclick="duplicateCurrentFund()">Duplicate</button>
+                <button class="subtle" onclick="toggleFundPause()" id="pause-btn">Pause</button>
+                <button class="subtle" onclick="toggleArchive()" id="archive-btn">Archive</button>
+              </div>
+            </div>
+            <span id="save-status" class="muted"></span>
           </div>
         </div>
+      </div>
+    </div>
 
-        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Fund Settings</div>
-        <div class="row">
-          <div class="field" style="flex:2;"><label>Name</label><input type="text" id="f-name"></div>
-          <div class="field" style="flex:1;"><label>Starting balance ($)</label><input type="number" id="f-starting-balance" step="0.01"></div>
+    <div class="card solid" id="detail-panel" style="display:none;">
+      <div class="balance-trio">
+        <div class="box"><div class="label">Trading Balance</div><div class="value" id="d-trading-balance">-</div></div>
+        <div class="box gold"><div class="label">Protected / Vault</div><div class="value" id="d-protected-balance">-</div></div>
+        <div class="box"><div class="label">Total Account Value</div><div class="value" id="d-total-value">-</div></div>
+      </div>
+
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Automation</div>
+      <div class="card" style="margin-bottom:18px;">
+        <div class="row" style="justify-content:space-between;">
+          <span class="muted" id="rules-summary">Loading...</span>
+          <a id="rules-link" href="/automation" style="font-size:12px; color:var(--brand); text-decoration:none;">Open Automation Studio &rarr;</a>
         </div>
-        <div class="field"><label>Broker / account label</label><input type="text" id="f-broker-label" placeholder="e.g. Pocket Option Demo"></div>
-        <div class="row">
-          <div class="field" style="flex:1;"><label>Default money management profile</label><select id="f-risk-profile"><option value="">None</option></select></div>
-          <div class="field" style="flex:1;"><label>Default session template</label><select id="f-session-profile"><option value="">None</option></select></div>
+        <div class="muted" style="font-size:11.5px; margin-top:6px;">Automations attached to this Fund apply automatically to every session it runs.</div>
+      </div>
+
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Broker Account</div>
+      <div class="card" style="margin-bottom:18px;">
+        <div id="broker-account-summary" class="muted">Loading...</div>
+        <div class="row" style="margin-top:10px;">
+          <div class="field" style="flex:2;">
+            <label>Attached Pocket Option account</label>
+            <select id="f-broker-account"><option value="">Not attached</option></select>
+          </div>
+          <button class="subtle" style="align-self:flex-end;" onclick="assignBrokerAccount()">Attach</button>
+          <button class="subtle" id="detach-broker-btn" style="align-self:flex-end; display:none;" onclick="detachBrokerAccount()">Detach</button>
         </div>
-        <div class="muted" style="font-size:11.5px; margin-bottom:4px;">Lifetime circuit breaker for this Fund - measured against its all-time realized P/L and trade count, not reset daily. Separate from any individual session's own limits.</div>
-        <div class="row">
-          <div class="field" style="flex:1;"><label>Lifetime profit target ($, 0=off)</label><input type="number" id="f-profit-target" step="0.01"></div>
-          <div class="field" style="flex:1;"><label>Lifetime loss limit ($, 0=off)</label><input type="number" id="f-loss-limit" step="0.01"></div>
-          <div class="field" style="flex:1;"><label>Lifetime max trades (0=off)</label><input type="number" id="f-max-trades"></div>
+        <label class="row" style="gap:8px; margin-top:12px; font-size:13px; color:var(--text-dim); cursor:pointer;">
+          <input type="checkbox" id="f-live-enabled" style="width:auto;" onchange="toggleFundLive(this.checked)">
+          Allow this Fund to trade Live (also requires the broker account's own Live switch)
+        </label>
+        <div class="stat-caption" style="margin-top:6px; color:var(--text-faint);">
+          This Fund is genuinely required to be enabled here (and on the broker account) before it can route any signal through a Live-mode account - a signal from a not-yet-authorized Fund is rejected, never silently executed. That said, Live trading is not fully available yet on any account: it also requires a verified live cabinet URL to be configured server-side, which no account has today - see docs/AXIM_APP_PLAN.md.
         </div>
-        <div class="muted" style="font-size:11.5px; margin-top:2px;">Breaching any of these pauses the Fund and stops its active session, if one is running.</div>
-        <button class="primary" onclick="saveFund()">Save Settings</button>
-        <span id="save-status" class="muted"></span>
+        <div style="margin-top:10px;"><a href="/broker" style="font-size:12px; color:var(--brand); text-decoration:none;">Manage broker accounts &rarr;</a></div>
+      </div>
 
-        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:18px 0 8px 0;">Signal Sources</div>
-        <div class="source-checklist" id="source-checklist"></div>
-
-        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:18px 0 8px 0;">Recent Sessions</div>
-        <table>
-          <thead><tr><th>Name</th><th>Status</th><th>P/L</th><th>Started</th></tr></thead>
-          <tbody id="sessions-body"><tr><td colspan="4" class="empty">No sessions yet.</td></tr></tbody>
-        </table>
-
-        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:18px 0 8px 0;">Recent Backtests</div>
-        <table>
-          <thead><tr><th>Name</th><th>Status</th><th>Created</th></tr></thead>
-          <tbody id="backtests-body"><tr><td colspan="3" class="empty">No backtests yet.</td></tr></tbody>
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Capital Allocation</div>
+      <div class="card" style="margin-bottom:18px;">
+        <div class="row" style="justify-content:space-between; align-items:center;">
+          <div class="muted" id="reserve-summary" style="font-size:13px;">Loading...</div>
+          <button class="subtle" onclick="openTransferModal()" id="transfer-btn">Move Capital</button>
+        </div>
+        <div class="stat-caption" style="margin-top:6px; color:var(--text-faint);">
+          One real Pocket Option balance can be split across several Funds for sizing purposes. Moving capital here never touches the broker - it only changes how AXIM divides up what's already there.
+        </div>
+        <table style="margin-top:12px;">
+          <thead><tr><th>When</th><th>Move</th><th>Amount</th><th>Note</th></tr></thead>
+          <tbody id="transfers-body"><tr><td colspan="4" class="empty">No transfers yet.</td></tr></tbody>
         </table>
       </div>
+
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Signal Sources</div>
+      <div class="source-checklist" id="source-checklist"></div>
+
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:18px 0 8px 0;">Recent Sessions</div>
+      <table>
+        <thead><tr><th>Name</th><th>Status</th><th>P/L</th><th>Started</th></tr></thead>
+        <tbody id="sessions-body"><tr><td colspan="4" class="empty">No sessions yet.</td></tr></tbody>
+      </table>
+
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:18px 0 8px 0;">Recent Backtests</div>
+      <table>
+        <thead><tr><th>Name</th><th>Status</th><th>Created</th></tr></thead>
+        <tbody id="backtests-body"><tr><td colspan="3" class="empty">No backtests yet.</td></tr></tbody>
+      </table>
     </div>
   </main>
 </div>
@@ -227,19 +287,103 @@ async function refreshAll() {
     allBrokerAccounts = brokerAccounts;
     renderFundsList();
   } catch (e) {
-    document.getElementById("funds-list").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+    document.getElementById("funds-list").innerHTML = `<tr><td colspan="4" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
 function renderFundsList() {
   const list = document.getElementById("funds-list");
-  if (!allFunds.length) { list.innerHTML = '<div class="empty">No funds yet - create one to get started.</div>'; return; }
-  list.innerHTML = allFunds.map(f => `
-    <div class="fund-list-item ${f.id === currentFundId ? "active" : ""}" onclick="selectFund(${f.id})">
-      <div class="fund-name">${escapeHtml(f.name)} ${f.status !== "active" ? `<span class="badge off">${f.status}</span>` : ""}</div>
-      <div class="fund-value">${fmtMoney(f.balances.total_account_value)}</div>
-    </div>
-  `).join("");
+  if (!allFunds.length) { list.innerHTML = '<tr><td colspan="4" class="empty">No funds yet - create one to get started.</td></tr>'; return; }
+  list.innerHTML = allFunds.map(f => {
+    const account = f.broker_account;
+    const brokerCell = account
+      ? `${escapeHtml(account.name)} <span class="badge ${account.connection_status === "connected" ? "on" : "off"}" style="font-size:10.5px;">${escapeHtml(account.connection_status)}</span>`
+      : '<span class="muted" style="font-size:12px;">Not attached</span>';
+    return `
+      <tr class="fund-row ${f.id === currentFundId ? "active" : ""}" onclick="selectFund(${f.id})">
+        <td>
+          <div class="fr-name">${escapeHtml(f.name)}</div>
+          <div class="fr-sub">${fmtMoney(f.balances.trading_balance)} trading &middot; ${fmtMoney(f.balances.protected_balance)} vaulted</div>
+        </td>
+        <td>${brokerCell}</td>
+        <td class="fr-name">${fmtMoney(f.balances.total_account_value)}</td>
+        <td><span class="badge ${f.status === "active" ? "on" : "off"}">${escapeHtml(f.status)}</span></td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function renderGrowthChart(points) {
+  const svg = document.getElementById("pv-chart");
+  const caption = document.getElementById("pv-chart-caption");
+  if (!points.length) {
+    svg.innerHTML = '<text x="10" y="60" class="pv-empty">No closed trades yet in this window - the chart fills in as trades complete.</text>';
+    caption.textContent = "";
+    return;
+  }
+  const W = 600, H = 120, PAD = 4;
+  let cumulative = 0;
+  const series = points.map(p => { cumulative += p.profit_loss; return cumulative; });
+  const min = Math.min(0, ...series), max = Math.max(0, ...series);
+  const range = (max - min) || 1;
+  const xStep = points.length > 1 ? (W - PAD * 2) / (points.length - 1) : 0;
+  const coords = series.map((v, i) => {
+    const x = PAD + i * xStep;
+    const y = H - PAD - ((v - min) / range) * (H - PAD * 2);
+    return [x, y];
+  });
+  const linePath = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const fillPath = `${linePath} L${coords[coords.length - 1][0].toFixed(1)},${H} L${coords[0][0].toFixed(1)},${H} Z`;
+  svg.innerHTML = `<path class="pv-fill" d="${fillPath}"></path><path class="pv-line" d="${linePath}"></path>`;
+  const netText = fmtMoney(cumulative);
+  caption.textContent = `${netText} net across ${points.length} closed trade${points.length === 1 ? "" : "s"}, last 90 days`;
+}
+
+const ALLOCATION_COLORS = ["#9166ff", "#6d93ff", "#34d399", "#eab84f", "#f37070", "#0891b2", "#db2777", "#7c3aed"];
+
+function renderAllocationLegend() {
+  const legend = document.getElementById("allocation-legend");
+  const active = allFunds.filter(f => f.status === "active");
+  const total = active.reduce((sum, f) => sum + (f.balances.total_account_value || 0), 0);
+  if (!active.length || total <= 0) {
+    legend.innerHTML = '<div class="empty">No allocated capital yet.</div>';
+    return;
+  }
+  legend.innerHTML = active
+    .slice()
+    .sort((a, b) => b.balances.total_account_value - a.balances.total_account_value)
+    .map((f, i) => {
+      const pct = (f.balances.total_account_value / total) * 100;
+      return `
+        <div class="row">
+          <span class="swatch" style="background:${ALLOCATION_COLORS[i % ALLOCATION_COLORS.length]};"></span>
+          <span class="name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+          <span class="pct">${pct.toFixed(1)}%</span>
+        </div>
+      `;
+    }).join("");
+}
+
+async function loadPortfolioSummary() {
+  try {
+    const [overview, growth] = await Promise.all([
+      fetchJSON("/api/funds/portfolio-overview"),
+      fetchJSON("/api/portfolio/growth-curve?days=90"),
+    ]);
+    document.getElementById("ps-total-value").textContent = fmtMoney(overview.total_portfolio_value);
+    document.getElementById("ps-active-funds").textContent = overview.active_funds;
+    const profitEl = document.getElementById("ps-total-profit");
+    profitEl.textContent = fmtMoney(overview.total_profit_loss);
+    profitEl.className = "value " + (overview.total_profit_loss > 0 ? "pos" : (overview.total_profit_loss < 0 ? "neg" : "neutral"));
+    document.getElementById("ps-win-rate").textContent = overview.overall_win_rate != null ? (overview.overall_win_rate * 100).toFixed(1) + "%" : "-";
+    const todayEl = document.getElementById("ps-today-pl");
+    todayEl.textContent = fmtMoney(overview.daily_pl);
+    todayEl.className = "value " + (overview.daily_pl > 0 ? "pos" : (overview.daily_pl < 0 ? "neg" : "neutral"));
+    renderGrowthChart(growth.points);
+    renderAllocationLegend();
+  } catch (e) {
+    console.error("loadPortfolioSummary failed:", e);
+  }
 }
 
 async function selectFund(fundId) {
@@ -289,8 +433,11 @@ function renderDetail(report) {
   currentFundReport = report;
   const fund = report.fund;
   document.getElementById("detail-panel").style.display = "block";
-  document.getElementById("detail-title").textContent = fund.name;
+  document.getElementById("add-edit-empty-state").style.display = "none";
+  document.getElementById("add-edit-fields").style.display = "block";
+  document.getElementById("detail-title").textContent = "Edit: " + fund.name;
   const statusBadge = document.getElementById("detail-status-badge");
+  statusBadge.style.display = "inline-block";
   statusBadge.textContent = fund.status;
   statusBadge.className = "badge " + (fund.status === "active" ? "on" : (fund.status === "paused" ? "warn" : "off"));
   document.getElementById("archive-btn").textContent = fund.status === "archived" ? "Reactivate" : "Archive";
@@ -388,6 +535,7 @@ async function saveFund() {
     });
     statusEl.textContent = "Saved.";
     await refreshAll();
+    loadPortfolioSummary();
     await selectFund(currentFundId);
   } catch (e) {
     statusEl.textContent = "Failed: " + e.message;
@@ -452,6 +600,7 @@ async function toggleFundPause() {
   try {
     await fetchJSON(`/api/funds/${currentFundId}/${action}`, { method: "POST" });
     await refreshAll();
+    loadPortfolioSummary();
     await selectFund(currentFundId);
   } catch (e) {
     alert("Failed: " + e.message);
@@ -466,6 +615,7 @@ async function toggleArchive() {
       method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: newStatus }),
     });
     await refreshAll();
+    loadPortfolioSummary();
     await selectFund(currentFundId);
   } catch (e) {
     alert("Failed: " + e.message);
@@ -480,6 +630,7 @@ async function duplicateCurrentFund() {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: newName }),
     });
     await refreshAll();
+    loadPortfolioSummary();
     await selectFund(result.fund.id);
   } catch (e) {
     alert("Failed: " + e.message);
@@ -544,6 +695,7 @@ async function submitTransfer() {
     });
     closeModal("transfer-modal");
     await refreshAll();
+    loadPortfolioSummary();
     await selectFund(currentFundId);
   } catch (e) {
     statusEl.textContent = "Failed: " + e.message;
@@ -568,6 +720,7 @@ async function createFund() {
     });
     closeModal("create-modal");
     await refreshAll();
+    loadPortfolioSummary();
     await selectFund(report.fund.id);
   } catch (e) {
     statusEl.textContent = "Failed: " + e.message;
@@ -578,6 +731,7 @@ async function createFund() {
   const user = await AximShell.init({ active: "funds" });
   if (!user) return;
   await refreshAll();
+  loadPortfolioSummary();
   if (allFunds.length) await selectFund(allFunds[0].id);
 })();
 </script>
