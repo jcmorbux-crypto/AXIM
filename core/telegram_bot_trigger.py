@@ -23,6 +23,7 @@ have and document - live-fire tested by an operator, not covered by an
 automated net that touches the real network)."""
 import asyncio
 import time
+from datetime import datetime
 
 import broker_account_manager
 import database
@@ -113,9 +114,14 @@ async def run_session_loop(client, session_id, channel_row, default_coordinator)
                             session_id, max_requests)
                 return
 
+            sent_at = datetime.now().isoformat()
             response = await _request_one_signal(client, channel_row)
             requests_sent += 1
             if response is None:
+                database.record_bot_command_activity(
+                    session_id, channel_row["id"], channel_row["trigger_command"], sent_at,
+                    outcome="no_reply",
+                )
                 await asyncio.sleep(REQUEST_INTERVAL_SECONDS)
                 continue
 
@@ -123,12 +129,24 @@ async def run_session_loop(client, session_id, channel_row, default_coordinator)
             if signal is None:
                 logger.warning("telegram_bot_trigger: session_id=%s bot reply did not parse as a signal: %r",
                                 session_id, (response.raw_text or "")[:200])
+                database.record_bot_command_activity(
+                    session_id, channel_row["id"], channel_row["trigger_command"], sent_at,
+                    response_text=response.raw_text, response_message_id=response.id,
+                    responded_at=response.date.isoformat() if response.date else None,
+                    outcome="no_signal",
+                )
                 await asyncio.sleep(REQUEST_INTERVAL_SECONDS)
                 continue
 
             result = await broker_account_manager.route_signal(
                 signal, default_coordinator, source=channel_row["title"], sender="bot_command",
                 message_id=response.id, sent_at=response.date, session_id=session_id,
+            )
+            database.record_bot_command_activity(
+                session_id, channel_row["id"], channel_row["trigger_command"], sent_at,
+                response_text=response.raw_text, response_message_id=response.id,
+                responded_at=response.date.isoformat() if response.date else None,
+                parsed_signal=signal, trade_id=result.get("trade_id"), outcome="routed",
             )
 
             if channel_row.get("command_wait_for_result") and result.get("trade_id"):

@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bot Control Center - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<script>(function(){try{var t=localStorage.getItem("axim-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<style>
+  .bot-card { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); padding: 20px 22px; margin-bottom: 16px; }
+  .bot-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+  .bot-card .bc-title { font-size: 16px; font-weight: 650; }
+  .bot-card .bc-command { font-size: 12.5px; color: var(--text-dim); font-family: monospace; margin-top: 2px; }
+  .bot-status-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; padding: 5px 12px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); }
+  .bot-status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+  .bot-status-pill.live .dot { background: var(--green); }
+  .bot-status-pill.idle .dot { background: var(--text-faint); }
+
+  .bc-attrs { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+  .bc-attrs .attr .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); font-weight: 650; margin-bottom: 3px; }
+  .bc-attrs .attr .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  .bc-idle-note { color: var(--text-dim); font-size: 13px; margin-bottom: 10px; }
+  .bc-actions { display: flex; gap: 10px; margin-bottom: 14px; }
+
+  .activity-log { max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .activity-row { display: flex; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .activity-row:last-child { border-bottom: none; }
+  .activity-row .a-time { color: var(--text-faint); width: 70px; flex-shrink: 0; }
+  .activity-row .a-body { flex: 1; min-width: 0; }
+  .activity-row .a-command { font-family: monospace; color: var(--text-dim); }
+  .activity-row .a-response { margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .activity-row .a-outcome { flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Bot Control Center <a href="/guide#sec-bots" class="help-link" title="Help: Bot Control Center">?</a></h1>
+        <div class="subtitle">Interactive Telegram bot-command channels - request signals on demand, watch every round-trip in real time.</div>
+      </div>
+    </div>
+
+    <div id="bots-list">
+      <div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>Loading...</div>
+    </div>
+  </main>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+function fmtMoney(n) { if (n === null || n === undefined) return "-"; const sign = n > 0 ? "+" : ""; return `${sign}$${Number(n).toFixed(2)}`; }
+function plClass(v) { if (v === null || v === undefined) return "neutral"; return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral"); }
+function timeAgo(iso) {
+  if (!iso) return "-";
+  const diffMs = Date.now() - new Date(iso).getTime();
+  const mins = Math.round(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return new Date(iso).toLocaleDateString();
+}
+function fmtClock(iso) {
+  if (!iso) return "-";
+  return new Date(iso).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+}
+
+const OUTCOME_LABELS = { routed: "Routed", no_signal: "No signal", no_reply: "No reply" };
+const OUTCOME_BADGE = { routed: "on", no_signal: "warn", no_reply: "off" };
+
+async function loadBots() {
+  const list = document.getElementById("bots-list");
+  let bots;
+  try {
+    bots = await fetchJSON("/api/bots");
+  } catch (e) {
+    list.innerHTML = `<div class="empty-panel">Failed to load: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  if (!bots.length) {
+    list.innerHTML = `<div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No Bot Command channels configured yet. Add one from Signal Sources and set its Source Type to "Bot Command".</div>`;
+    return;
+  }
+  list.innerHTML = bots.map(bot => renderBotCard(bot)).join("");
+  bots.forEach(bot => {
+    if (bot.active_session) loadActivity(bot.channel_id, bot.active_session.id);
+  });
+}
+
+function renderBotCard(bot) {
+  const s = bot.active_session;
+  const statusPill = s
+    ? `<span class="bot-status-pill live"><span class="dot"></span>Live - ${escapeHtml(s.status)}</span>`
+    : `<span class="bot-status-pill idle"><span class="dot"></span>Idle</span>`;
+
+  const attrs = s ? `
+    <div class="bc-attrs">
+      <div class="attr"><div class="label">Fund</div><div class="value">${s.fund_name ? escapeHtml(s.fund_name) : "-"}</div></div>
+      <div class="attr"><div class="label">Broker Account</div><div class="value">${s.broker_account_name ? escapeHtml(s.broker_account_name) : "-"}</div></div>
+      <div class="attr"><div class="label">Strategy</div><div class="value">${s.risk_profile_name ? escapeHtml(s.risk_profile_name) : "-"}</div></div>
+      <div class="attr"><div class="label">Mode</div><div class="value">${escapeHtml(s.account_mode)}</div></div>
+      <div class="attr"><div class="label">Session target</div><div class="value">${s.profit_target ? fmtMoney(s.profit_target) : "None"}</div></div>
+      <div class="attr"><div class="label">Loss limit</div><div class="value">${s.loss_limit ? fmtMoney(s.loss_limit) : "None"}</div></div>
+      <div class="attr"><div class="label">Requests sent</div><div class="value">${s.requests_sent}</div></div>
+      <div class="attr"><div class="label">Session P/L</div><div class="value ${plClass(s.realized_pnl)}">${fmtMoney(s.realized_pnl)}</div></div>
+    </div>
+  ` : `<div class="bc-idle-note">Not currently running. Start a session covering this channel to begin the interactive request loop.</div>`;
+
+  const actions = s
+    ? `<div class="bc-actions"><button class="danger" onclick="stopBotSession(${s.id}, ${bot.channel_id})">Stop</button></div>`
+    : `<div class="bc-actions"><button class="primary" onclick="window.location.href='/sessions'">Start Session &rarr;</button></div>`;
+
+  return `
+    <div class="bot-card" id="bot-card-${bot.channel_id}">
+      <div class="bot-card-top">
+        <div>
+          <div class="bc-title">${escapeHtml(bot.title)}</div>
+          <div class="bc-command">${bot.trigger_command ? escapeHtml(bot.trigger_command) : "(no trigger command configured)"}</div>
+        </div>
+        ${statusPill}
+      </div>
+      ${attrs}
+      ${actions}
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Activity Log</div>
+      <div class="activity-log" id="activity-log-${bot.channel_id}">
+        <div class="empty" style="padding:12px;">${s ? "Loading..." : "No session running - nothing to show yet."}</div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadActivity(channelId, sessionId) {
+  const el = document.getElementById(`activity-log-${channelId}`);
+  try {
+    const activity = await fetchJSON(`/api/bots/${channelId}/activity?session_id=${sessionId}`);
+    if (!activity.length) {
+      el.innerHTML = '<div class="empty" style="padding:12px;">No requests sent yet.</div>';
+      return;
+    }
+    el.innerHTML = activity.map(a => `
+      <div class="activity-row">
+        <div class="a-time">${fmtClock(a.sent_at)}</div>
+        <div class="a-body">
+          <div class="a-command">&rarr; ${escapeHtml(a.command_text || "-")}</div>
+          ${a.response_text ? `<div class="a-response">&larr; ${escapeHtml(a.response_text)}</div>` : ""}
+        </div>
+        <div class="a-outcome"><span class="badge ${OUTCOME_BADGE[a.outcome] || "off"}">${OUTCOME_LABELS[a.outcome] || a.outcome}</span></div>
+      </div>
+    `).join("");
+  } catch (e) {
+    el.innerHTML = `<div class="empty" style="padding:12px;">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function stopBotSession(sessionId, channelId) {
+  if (!confirm("Stop this session? The bot will stop requesting new signals immediately.")) return;
+  try {
+    await fetchJSON(`/api/sessions/${sessionId}/stop`, { method: "POST" });
+    await loadBots();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "bots" });
+  if (!user) return;
+  await loadBots();
+  setInterval(loadBots, 8000);
+})();
+</script>
+</body>
+</html>

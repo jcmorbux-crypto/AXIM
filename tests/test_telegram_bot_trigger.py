@@ -179,6 +179,54 @@ class RunSessionLoopTests(unittest.TestCase):
         self.assertEqual(signal_arg["asset"], "EUR/USD OTC")
         self.assertEqual(signal_arg["direction"], "BUY")
 
+    def test_routed_reply_is_recorded_in_the_activity_log(self):
+        import broker_account_manager
+        channel_row = self._make_channel(max_requests=1)
+        session_id = database.start_trading_session("Test", [self.channel_id], "DEMO")
+        client = FakeClient(responses=[FakeMessage("EUR/USD OTC BUY 1 Minute", msg_id=42)])
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+
+        original_route_signal = broker_account_manager.route_signal
+        broker_account_manager.route_signal = AsyncMock(return_value={"status": "preview", "trade_id": 7})
+        try:
+            _run(telegram_bot_trigger.run_session_loop(client, session_id, channel_row, coordinator))
+        finally:
+            broker_account_manager.route_signal = original_route_signal
+
+        activity = database.list_bot_command_activity(session_id)
+        self.assertEqual(len(activity), 1)
+        self.assertEqual(activity[0]["outcome"], "routed")
+        self.assertEqual(activity[0]["command_text"], "/signal")
+        self.assertEqual(activity[0]["response_message_id"], 42)
+        self.assertEqual(activity[0]["trade_id"], 7)
+        self.assertEqual(activity[0]["parsed_signal"]["asset"], "EUR/USD OTC")
+
+    def test_unparseable_reply_is_recorded_as_no_signal(self):
+        channel_row = self._make_channel(max_requests=1)
+        session_id = database.start_trading_session("Test", [self.channel_id], "DEMO")
+        client = FakeClient(responses=[FakeMessage("this is not a signal")])
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+
+        _run(telegram_bot_trigger.run_session_loop(client, session_id, channel_row, coordinator))
+
+        activity = database.list_bot_command_activity(session_id)
+        self.assertEqual(len(activity), 1)
+        self.assertEqual(activity[0]["outcome"], "no_signal")
+        self.assertIsNone(activity[0]["trade_id"])
+
+    def test_reply_timeout_is_recorded_as_no_reply(self):
+        channel_row = self._make_channel(max_requests=1)
+        session_id = database.start_trading_session("Test", [self.channel_id], "DEMO")
+        client = FakeClient(responses=[asyncio.TimeoutError()])
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+
+        _run(telegram_bot_trigger.run_session_loop(client, session_id, channel_row, coordinator))
+
+        activity = database.list_bot_command_activity(session_id)
+        self.assertEqual(len(activity), 1)
+        self.assertEqual(activity[0]["outcome"], "no_reply")
+        self.assertIsNone(activity[0]["response_text"])
+
     def test_stops_after_max_requests_per_session(self):
         channel_row = self._make_channel(max_requests=2)
         session_id = database.start_trading_session("Test", [self.channel_id], "DEMO")

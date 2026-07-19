@@ -330,6 +330,33 @@ def initialize_database():
     );
     """)
 
+    # Bot Control Center's activity log - one row per
+    # core/telegram_bot_trigger.py request/reply round-trip (send the
+    # configured trigger command, await the bot's reply, parse it,
+    # route it). Previously this loop's state existed only as an
+    # in-memory _active_loops dict inside the listener process - the API
+    # process (a different OS process) had no way to show "what did the
+    # bot say" at all. outcome is a plain label ("routed", "no_reply",
+    # "no_signal") so the UI can explain a quiet channel without the
+    # operator having to read raw logs.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS bot_command_activity (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        command_text TEXT,
+        sent_at TEXT,
+        response_text TEXT,
+        response_message_id INTEGER,
+        responded_at TEXT,
+        parsed_signal_json TEXT,
+        trade_id INTEGER,
+        outcome TEXT,
+        created_at TEXT
+    );
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_bot_command_activity_session ON bot_command_activity(session_id)")
+
     # Raw incoming Telegram messages, captured regardless of whether they
     # parsed as a tradeable signal - core/telegram_listener.py writes one
     # row per message received. Distinct from `signals` (which only exists
@@ -2371,6 +2398,54 @@ def get_enabled_channels():
     rows = conn.execute("SELECT * FROM ui_channels WHERE enabled = 1").fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def record_bot_command_activity(session_id, channel_id, command_text, sent_at, response_text=None,
+                                 response_message_id=None, responded_at=None, parsed_signal=None,
+                                 trade_id=None, outcome=None):
+    """One row per core/telegram_bot_trigger.py request/reply round-trip -
+    the Bot Control Center's activity log. response_text/responded_at are
+    None for a timed-out request (outcome="no_reply"); parsed_signal is
+    None when the reply didn't parse (outcome="no_signal")."""
+    conn = get_connection()
+    cursor = conn.execute(
+        """INSERT INTO bot_command_activity
+           (session_id, channel_id, command_text, sent_at, response_text, response_message_id,
+            responded_at, parsed_signal_json, trade_id, outcome, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, channel_id, command_text, sent_at, response_text, response_message_id,
+         responded_at, json.dumps(parsed_signal) if parsed_signal is not None else None,
+         trade_id, outcome, datetime.now().isoformat()),
+    )
+    conn.commit()
+    activity_id = cursor.lastrowid
+    conn.close()
+    return activity_id
+
+
+@timed("database")
+def list_bot_command_activity(session_id, limit=50):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM bot_command_activity WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+        (session_id, limit),
+    ).fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["parsed_signal"] = json.loads(item["parsed_signal_json"]) if item["parsed_signal_json"] else None
+        result.append(item)
+    return result
+
+
+def count_bot_command_activity(session_id):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM bot_command_activity WHERE session_id = ?", (session_id,)
+    ).fetchone()
+    conn.close()
+    return row["n"]
 
 
 @timed("database")
