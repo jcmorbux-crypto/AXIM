@@ -385,6 +385,42 @@ def initialize_database():
     );
     """)
 
+    # Live Signal Pipeline (2026-07-19 v2 mandate: "per-signal audit
+    # timeline" covering the canonical lifecycle - see core/
+    # signal_lifecycle.py's SignalLifecycleState). Deliberately a SEPARATE
+    # table from `signals`, not an extension of it: `signals` rows only
+    # ever exist for messages that reached core/trade_coordinator.py's
+    # record_signal_received (core/database.py's own docstring on that
+    # function - it hard-requires a fully parsed asset/direction/expiry),
+    # so every earlier drop (bot-command channel, fund paused, channel not
+    # watched, emergency stop, asset-announcement-only, parse failure) was
+    # previously invisible - zero trace anywhere except channel_messages/
+    # stdout. This table can record a state for a message BEFORE any
+    # `signals` row exists; signal_id is filled in once/if one is created,
+    # linking the two into one continuous journey. Pure observability -
+    # see record_pipeline_event's own docstring for why it can never
+    # affect real signal processing.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS signal_pipeline_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT,
+        message_id INTEGER,
+        channel_id INTEGER,
+        signal_id INTEGER,
+        state TEXT NOT NULL,
+        detail TEXT,
+        occurred_at TEXT NOT NULL
+    );
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_signal_pipeline_events_message "
+        "ON signal_pipeline_events(chat_id, message_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_signal_pipeline_events_signal "
+        "ON signal_pipeline_events(signal_id)"
+    )
+
     # Per-channel custom parsing override - a simple regex substitution
     # applied to the raw message BEFORE it reaches the normal
     # parsers/signal_parser.parse_signal(), rather than a second parser
@@ -2707,6 +2743,108 @@ def list_recent_channel_messages(chat_id=None, username=None, limit=25):
         rows = conn.execute(
             "SELECT * FROM channel_messages ORDER BY received_at DESC, id DESC LIMIT ?", (limit,)
         ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------
+# Live Signal Pipeline (2026-07-19 v2 mandate) - core/signal_lifecycle.py
+# owns the canonical SignalLifecycleState vocabulary; this is pure CRUD.
+# core/telegram_listener.py's _track_pipeline_event and core/trade_
+# coordinator.py write here; api/signal_pipeline_routes.py reads.
+# ---------------------------------------------------------------------
+
+@timed("database")
+def record_pipeline_event(chat_id, message_id, state, channel_id=None, signal_id=None, detail=None):
+    """A pure, side-effect-free INSERT - deliberately never raises past
+    this function (mirrors _observe_message's "exception never
+    propagates" discipline, since this is called from inside the live
+    Telegram handler and must never be able to take down real signal
+    processing over an observability bug). Returns the new row's id, or
+    None if the write itself failed."""
+    try:
+        conn = get_connection()
+        cursor = conn.execute(
+            """INSERT INTO signal_pipeline_events
+               (chat_id, message_id, channel_id, signal_id, state, detail, occurred_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (str(chat_id) if chat_id is not None else None, message_id, channel_id, signal_id,
+             state, detail, datetime.now().isoformat()),
+        )
+        event_id = cursor.lastrowid
+        conn.commit()
+        conn.close()
+        return event_id
+    except Exception:
+        return None
+
+
+@timed("database")
+def link_pipeline_events_to_signal(chat_id, message_id, signal_id):
+    """Back-fills signal_id on every pipeline event already recorded for
+    this (chat_id, message_id) - called once a real `signals` row exists
+    (core/trade_coordinator.py's record_signal_received), so the earlier
+    RECEIVED/PARSED events (which predate the row and couldn't know its
+    id yet) join into the same journey as the later, signal_id-bearing
+    ones instead of reading as two disconnected fragments."""
+    try:
+        conn = get_connection()
+        conn.execute(
+            "UPDATE signal_pipeline_events SET signal_id = ? WHERE chat_id = ? AND message_id = ? AND signal_id IS NULL",
+            (signal_id, str(chat_id) if chat_id is not None else None, message_id),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+@timed("database")
+def list_pipeline_events_for_message(chat_id, message_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM signal_pipeline_events WHERE chat_id = ? AND message_id = ? ORDER BY id ASC",
+        (str(chat_id) if chat_id is not None else None, message_id),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def list_pipeline_events_for_signal(signal_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM signal_pipeline_events WHERE signal_id = ? ORDER BY id ASC",
+        (signal_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def list_recent_pipeline_journeys(limit=50, state=None):
+    """One row per distinct (chat_id, message_id) journey, most recent
+    first, with its latest state and channel - the Live Signal Pipeline
+    UI's main list. state (optional) filters to journeys whose MOST
+    RECENT event is that state (e.g. state='SKIPPED' to see everything
+    that silently vanished)."""
+    conn = get_connection()
+    query = """
+        SELECT e.chat_id, e.message_id, e.channel_id, e.signal_id, e.state, e.detail, e.occurred_at
+        FROM signal_pipeline_events e
+        INNER JOIN (
+            SELECT MAX(id) AS max_id
+            FROM signal_pipeline_events
+            GROUP BY chat_id, message_id
+        ) latest ON e.id = latest.max_id
+    """
+    params = []
+    if state is not None:
+        query += " WHERE e.state = ?"
+        params.append(state)
+    query += " ORDER BY e.occurred_at DESC, e.id DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 

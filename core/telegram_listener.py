@@ -22,6 +22,7 @@ sys.path.insert(0, "core")
 sys.path.insert(0, "config")
 
 from signal_parser import parse_signal, apply_signal_rules, apply_expiry_fallback, parse_asset_announcement
+from signal_lifecycle import SignalLifecycleState
 from trade_coordinator import TradeCoordinator
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
@@ -213,6 +214,18 @@ def _observe_message(channel_row, message_text, message_id, reply_to_message_id=
         logger.error("telegram_listener: shadow observation failed for channel_id=%s: %s", channel_row.get("id"), e)
 
 
+def _track_pipeline_event(chat_id, message_id, channel_id, state, detail=None):
+    """Live Signal Pipeline instrumentation (2026-07-19 v2 mandate) -
+    pure observability, called alongside the handler's real decisions,
+    never instead of them. Same "exception never propagates" discipline
+    as _observe_message above (database.record_pipeline_event already
+    fails silent on its own, this is belt-and-suspenders)."""
+    try:
+        database.record_pipeline_event(chat_id, message_id, state, channel_id=channel_id, detail=detail)
+    except Exception as e:
+        logger.error("telegram_listener: pipeline event tracking failed: %s", e)
+
+
 def _debug_safe(text):
     """Belt-and-suspenders alongside the UTF-8 stdout reconfigure above -
     guards print() calls if stdout is ever swapped for a stream that
@@ -263,6 +276,16 @@ async def handler(event):
     # still matches.
     channel_row = database.find_channel(chat_id=event.chat_id, username=chat_username, title=chat_title)
 
+    # Live Signal Pipeline (2026-07-19 v2 mandate) - tracked only for
+    # messages in a chat AXIM already has a ui_channels record for
+    # (regardless of whether it's currently enabled); an entirely
+    # unconfigured chat isn't a "signal" in the product's sense at all,
+    # so this deliberately doesn't track every message in every chat the
+    # account can see. See core/database.py's signal_pipeline_events
+    # table docstring for why this can't just extend the `signals` table.
+    if channel_row is not None:
+        _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.RECEIVED)
+
     # A Bot Command Channel's messages are only ever valid as a direct
     # reply to a request core/telegram_bot_trigger.py made - never as an
     # unprompted passive signal. That module awaits the bot's reply
@@ -271,6 +294,8 @@ async def handler(event):
     # would double-handle every interactive reply as if it were also a
     # pushed signal.
     if channel_row is not None and channel_row.get("source_type") == "bot_command":
+        _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                               detail="bot_command_channel")
         return
 
     # When a Trading Session covers this channel, IT is the authoritative
@@ -287,12 +312,18 @@ async def handler(event):
             if fund is not None and fund["status"] == "paused":
                 print(f"\n[FUND PAUSED] Signal from {_debug_safe(chat_title)!r} skipped - "
                       f"Fund {fund['name']!r} is paused.")
+                if channel_row is not None:
+                    _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                                           detail="fund_paused")
                 return
     # No session covers this channel specifically - a DIFFERENT channel
     # having its own active session (a different Fund) must not block
     # this one, so fall back to the legacy global WATCH_CHANNELS/
     # enabled-channels check exactly as if no session existed anywhere.
     elif not channel_allowed(chat_title, chat_username, event.chat_id):
+        if channel_row is not None:
+            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                                   detail="channel_not_watched")
         return
 
     database.record_channel_signal_seen(chat_id=event.chat_id, username=chat_username, title=chat_title)
@@ -301,6 +332,9 @@ async def handler(event):
     if control_state["emergency_stop"] or control_state["paused"]:
         reason = "emergency_stop" if control_state["emergency_stop"] else "paused"
         print(f"\n[UI CONTROL] Signal from {_debug_safe(chat_title)!r} skipped - AXIM is {reason} via the UI.")
+        if channel_row is not None:
+            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                                   detail=f"ui_control_{reason}")
         return
 
     timeline = TradeTimeline()
@@ -341,10 +375,19 @@ async def handler(event):
         _remember_asset_announcement(event.chat_id, announced_asset)
         print(f"[ASSET ANNOUNCED] {_debug_safe(chat_title)!r} announced {announced_asset!r} - "
               f"carrying it forward for this channel's next entry message.")
+        if channel_row is not None:
+            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                                   detail="asset_announcement_only")
         return
 
     signal = parse_signal(message_text, carried_asset=_get_carried_asset(event.chat_id))
     timeline.mark("signal_parsed")
+    if channel_row is not None:
+        if signal:
+            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.PARSED)
+        else:
+            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.FAILED,
+                                   detail="parse_failed")
 
     if signal and signal["expiry"] == "Unknown" and channel_row and channel_row.get("default_expiry"):
         print(f"[EXPIRY FALLBACK] {_debug_safe(chat_title)!r} sent no expiry - using its configured "
