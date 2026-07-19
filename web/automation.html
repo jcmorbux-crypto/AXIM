@@ -503,7 +503,7 @@ async function saveRule() {
 
 async function deleteCurrentRule() {
   if (!currentRuleId) return;
-  if (!confirm("Delete this automation? This cannot be undone.")) return;
+  if (!(await AximShell.confirm("Delete this automation? This cannot be undone.", { title: "Delete Automation", danger: true, confirmLabel: "Delete" }))) return;
   try {
     await fetchJSON(`/api/rules/${currentRuleId}`, { method: "DELETE" });
     closeEditor();

@@ -1349,7 +1349,7 @@ async function addManualSignal() {
 }
 
 async function deleteSignal(id) {
-  if (!confirm("Delete this imported signal?")) return;
+  if (!(await AximShell.confirm("Delete this imported signal?", { title: "Delete Signal", danger: true, confirmLabel: "Delete" }))) return;
   try {
     await fetchJSON(`/api/backtest/signals/${id}`, { method: "DELETE" });
     loadImportedSignals();

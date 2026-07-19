@@ -295,7 +295,7 @@ function renderManageDevices(userId, sessions) {
 }
 
 async function revokeManageDevice(userId, sessionId) {
-  if (!confirm("Sign this device out?")) return;
+  if (!(await AximShell.confirm("Sign this device out?", { title: "Sign Out Device", confirmLabel: "Sign Out" }))) return;
   try {
     await fetchJSON(`/api/admin/users/${userId}/sessions/${sessionId}`, { method: "DELETE" });
     await openManageModal(userId);

@@ -346,6 +346,67 @@ const AximShell = (() => {
     confirmCountdownTimer = setInterval(updateConfirmCountdown, 1000);
   }
 
+  // ---- Generic in-app confirmation dialog - replaces native confirm(),
+  // which blocks the tab's renderer entirely (a stuck confirm() during
+  // browser-automation testing froze every tab in the window, not just
+  // its own, 2026-07-19). One dialog at a time, same as confirm()'s own
+  // semantics - a second call before the first resolves replaces it. ----
+  let _confirmDialogResolve = null;
+
+  function _injectGenericConfirmModal() {
+    if (document.getElementById("axim-generic-confirm-modal")) return;
+    const modal = document.createElement("div");
+    modal.className = "modal-backdrop";
+    modal.id = "axim-generic-confirm-modal";
+    modal.innerHTML = `
+      <div class="modal" style="width:420px;">
+        <div id="axim-gc-title" style="font-weight:650; font-size:15px; margin-bottom:10px;"></div>
+        <div id="axim-gc-message" class="muted" style="margin-bottom:20px; font-size:13.5px; line-height:1.5; white-space:pre-line;"></div>
+        <div class="row" style="justify-content:flex-end;">
+          <button class="subtle" id="axim-gc-cancel">Cancel</button>
+          <button class="primary" id="axim-gc-confirm">Confirm</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener("click", (e) => { if (e.target === modal) _resolveConfirmDialog(false); });
+    document.getElementById("axim-gc-cancel").addEventListener("click", () => _resolveConfirmDialog(false));
+    document.getElementById("axim-gc-confirm").addEventListener("click", () => _resolveConfirmDialog(true));
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && modal.style.display === "flex") _resolveConfirmDialog(false);
+    });
+  }
+
+  function _resolveConfirmDialog(result) {
+    const modal = document.getElementById("axim-generic-confirm-modal");
+    if (modal) modal.style.display = "none";
+    if (_confirmDialogResolve) {
+      const resolve = _confirmDialogResolve;
+      _confirmDialogResolve = null;
+      resolve(result);
+    }
+  }
+
+  // opts: { title, confirmLabel, cancelLabel, danger } - danger swaps the
+  // Confirm button to the .danger style and outlines the modal in red,
+  // for destructive/irreversible actions.
+  function confirmDialog(message, opts) {
+    opts = opts || {};
+    _injectGenericConfirmModal();
+    return new Promise((resolve) => {
+      _confirmDialogResolve = resolve;
+      const modal = document.getElementById("axim-generic-confirm-modal");
+      document.getElementById("axim-gc-title").textContent = opts.title || "Are you sure?";
+      document.getElementById("axim-gc-message").textContent = message;
+      const confirmBtn = document.getElementById("axim-gc-confirm");
+      confirmBtn.textContent = opts.confirmLabel || "Confirm";
+      confirmBtn.className = opts.danger ? "danger" : "primary";
+      document.getElementById("axim-gc-cancel").textContent = opts.cancelLabel || "Cancel";
+      modal.classList.toggle("danger", !!opts.danger);
+      modal.style.display = "flex";
+    });
+  }
+
   // ---- In-app notifications (core/rule_engine.py's notify_owner
   // action writes these; polled here so any page reflects new ones
   // without a reload) -----------------------------------------------
@@ -555,6 +616,6 @@ const AximShell = (() => {
 
   return {
     init, logout, fetchJSON, isDeveloperMode, _confirmPendingTrade, _rejectPendingTrade,
-    _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents, toggleTheme,
+    _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents, toggleTheme, confirm: confirmDialog,
   };
 })();

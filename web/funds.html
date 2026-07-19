@@ -646,7 +646,7 @@ async function assignBrokerAccount() {
 async function detachBrokerAccount() {
   const account = currentFundReport && currentFundReport.broker_account;
   if (!account) return;
-  if (!confirm(`Detach ${account.name} from this Fund? Its sessions won't be able to start again until a broker account is attached.`)) return;
+  if (!(await AximShell.confirm(`Detach ${account.name} from this Fund? Its sessions won't be able to start again until a broker account is attached.`, { title: "Detach Broker Account", danger: true, confirmLabel: "Detach" }))) return;
   try {
     await fetchJSON(`/api/funds/${currentFundId}/broker-account/${account.id}`, { method: "DELETE" });
     await selectFund(currentFundId);

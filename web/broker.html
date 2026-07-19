@@ -181,7 +181,7 @@ async function refreshStatus() {
 }
 
 async function reconnect() {
-  if (!confirm("Reconnect restarts your Pocket Option connection. Continue?")) return;
+  if (!(await AximShell.confirm("Reconnect restarts your Pocket Option connection. Continue?", { title: "Reconnect" }))) return;
   try {
     await fetchJSON("/api/process/stop", { method: "POST" });
     await new Promise(r => setTimeout(r, 2000));
@@ -216,7 +216,7 @@ function summarizeTestTradeResult(result) {
 }
 
 async function runTestTrade() {
-  if (!confirm("Place a real test trade on the DEMO account (EUR/USD OTC, BUY, 1 Minute)? This is blocked entirely if the account is LIVE.")) return;
+  if (!(await AximShell.confirm("Place a real test trade on the DEMO account (EUR/USD OTC, BUY, 1 Minute)? This is blocked entirely if the account is LIVE.", { title: "Run Test Trade", confirmLabel: "Place Test Trade" }))) return;
   const btn = document.getElementById("test-trade-btn");
   const statusEl = document.getElementById("test-trade-status");
   const resultEl = document.getElementById("test-trade-result");
@@ -407,7 +407,7 @@ async function connectAccount(id) {
 }
 
 async function disconnectAccount(id) {
-  if (!confirm("Disconnect this broker account? Any Fund using it won't be able to start a session until it's reconnected.")) return;
+  if (!(await AximShell.confirm("Disconnect this broker account? Any Fund using it won't be able to start a session until it's reconnected.", { title: "Disconnect Broker Account", danger: true, confirmLabel: "Disconnect" }))) return;
   try {
     await fetchJSON(`/api/broker-accounts/${id}/disconnect`, { method: "POST" });
     await refreshAccounts();
@@ -417,7 +417,7 @@ async function disconnectAccount(id) {
 }
 
 async function archiveAccount(id) {
-  if (!confirm("Archive this broker account?")) return;
+  if (!(await AximShell.confirm("Archive this broker account?", { title: "Archive Broker Account", danger: true, confirmLabel: "Archive" }))) return;
   try {
     await fetchJSON(`/api/broker-accounts/${id}/archive`, { method: "POST" });
     await refreshAccounts();
@@ -438,7 +438,7 @@ async function toggleLive(id, checked) {
 }
 
 async function emergencyStopAccount(id) {
-  if (!confirm("Emergency Stop this account? Its own active session (if any) will be stopped immediately, and no new trades will route through it until you resume it. Other accounts are not affected.")) return;
+  if (!(await AximShell.confirm("Emergency Stop this account? Its own active session (if any) will be stopped immediately, and no new trades will route through it until you resume it. Other accounts are not affected.", { title: "Emergency Stop Account", danger: true, confirmLabel: "Emergency Stop" }))) return;
   try {
     await fetchJSON(`/api/broker-accounts/${id}/emergency-stop`, { method: "POST" });
     await refreshAccounts();

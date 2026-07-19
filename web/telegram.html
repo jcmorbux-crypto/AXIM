@@ -273,7 +273,7 @@ async function submitVerifyCode() {
 }
 
 async function confirmDisconnect() {
-  if (!confirm("Disconnect Telegram? This logs out the channel-manager session (axim_ui_session) - it does NOT stop the live trading listener's own session, but you'll need to reconnect before syncing channels again. Continue?")) return;
+  if (!(await AximShell.confirm("Disconnect Telegram? This logs out the channel-manager session (axim_ui_session) - it does NOT stop the live trading listener's own session, but you'll need to reconnect before syncing channels again. Continue?", { title: "Disconnect Telegram", danger: true, confirmLabel: "Disconnect" }))) return;
   try {
     await fetchJSON("/api/telegram/disconnect", { method: "POST" });
     refreshConnectionStatus();
@@ -805,7 +805,7 @@ async function profileGraduate() {
 }
 
 async function profileApproveDemo() {
-  if (!confirm("Approve this source for Demo trading? AXIM will begin trading its signals in Demo mode.")) return;
+  if (!(await AximShell.confirm("Approve this source for Demo trading? AXIM will begin trading its signals in Demo mode.", { title: "Approve for Demo", confirmLabel: "Approve" }))) return;
   try {
     currentProfile = await fetchJSON(`/api/provider-profiles/${currentProfile.id}/approve-demo`, { method: "POST" });
     await renderProfileModal();
@@ -816,7 +816,7 @@ async function profileApproveDemo() {
 }
 
 async function profileApproveLive() {
-  if (!confirm("Approve this source for LIVE trading with real money? This is a separate, deliberate decision from Demo approval.")) return;
+  if (!(await AximShell.confirm("Approve this source for LIVE trading with real money? This is a separate, deliberate decision from Demo approval.", { title: "Approve for LIVE Trading", danger: true, confirmLabel: "Approve for Live" }))) return;
   try {
     currentProfile = await fetchJSON(`/api/provider-profiles/${currentProfile.id}/approve-live`, { method: "POST" });
     await renderProfileModal();

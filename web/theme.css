@@ -27,6 +27,7 @@
   --blue-border: #bfdbfe;
   --green: #14804a;
   --green-soft: #eaf7f0;
+  --green-border: #b7e4cb;
   --red: #b3261e;
   --red-hover: #8f1e18;
   --red-soft: #fbeeed;
@@ -92,6 +93,7 @@
   --blue-border: #2d3f66;
   --green: #34d399;
   --green-soft: #10281f;
+  --green-border: #1e5a41;
   --red: #f37070;
   --red-hover: #f68f8f;
   --red-soft: #341a1a;
@@ -689,6 +691,7 @@ td.title-cell { white-space: normal; max-width: 320px; }
 .banner.danger { background: var(--red-soft); border-color: var(--red-border); color: var(--red); }
 .banner.warn { background: var(--yellow-soft); border-color: var(--yellow-border); color: var(--yellow); }
 .banner.info { background: var(--blue-soft); border-color: var(--blue-border); color: var(--blue); }
+.banner.success { background: var(--green-soft); border-color: var(--green-border); color: var(--green); }
 
 .modal-backdrop {
   display: none; position: fixed; inset: 0; background: var(--overlay);
@@ -698,6 +701,13 @@ td.title-cell { white-space: normal; max-width: 320px; }
   background: var(--bg); border-radius: var(--radius); box-shadow: var(--shadow);
   padding: 24px; width: 420px; max-width: 92vw;
 }
+
+/* Generic in-app confirmation dialog (web/shell.js AximShell.confirm) -
+   replaces native confirm(), which blocks the page/renderer and can
+   freeze automated browser control entirely (found via live testing:
+   a stuck confirm() froze every tab in the window, not just its own). */
+#axim-generic-confirm-modal { z-index: 200; }
+#axim-generic-confirm-modal.danger .modal { border: 1px solid var(--red-border); }
 
 /* Live-mode trade confirmation - injected globally by web/shell.js so it
    can interrupt any page, not just Mission Control/Sessions. Deliberately

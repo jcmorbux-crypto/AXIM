@@ -167,7 +167,7 @@ async function loadActivity(channelId, sessionId) {
 }
 
 async function stopBotSession(sessionId, channelId) {
-  if (!confirm("Stop this session? The bot will stop requesting new signals immediately.")) return;
+  if (!(await AximShell.confirm("Stop this session? The bot will stop requesting new signals immediately.", { title: "Stop Session", danger: true, confirmLabel: "Stop Session" }))) return;
   try {
     await fetchJSON(`/api/sessions/${sessionId}/stop`, { method: "POST" });
     await loadBots();

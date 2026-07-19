@@ -238,7 +238,7 @@ async function loadDevices() {
 }
 
 async function revokeDevice(sessionId) {
-  if (!confirm("Sign this device out? It will need to log in again.")) return;
+  if (!(await AximShell.confirm("Sign this device out? It will need to log in again.", { title: "Sign Out Device", confirmLabel: "Sign Out" }))) return;
   try {
     await fetchJSON(`/api/auth/sessions/${sessionId}`, { method: "DELETE" });
     await loadDevices();
@@ -386,7 +386,7 @@ async function loadSettingsHistory() {
 }
 
 async function restoreSetting(entryId) {
-  if (!confirm("Restore this setting to this historical value? This is logged as a new change, not a silent rewrite.")) return;
+  if (!(await AximShell.confirm("Restore this setting to this historical value? This is logged as a new change, not a silent rewrite.", { title: "Restore Setting", confirmLabel: "Restore" }))) return;
   try {
     await fetchJSON(`/api/settings/audit-log/${entryId}/restore`, { method: "POST" });
     await loadTradingSettings();
@@ -398,7 +398,7 @@ async function restoreSetting(entryId) {
 }
 
 async function resetConsecutiveLossLock() {
-  if (!confirm("Reset the consecutive-loss lock? This does not erase the real loss streak or change the configured limit - trades before this moment just stop counting toward a new streak going forward. This action is logged.")) return;
+  if (!(await AximShell.confirm("Reset the consecutive-loss lock? This does not erase the real loss streak or change the configured limit - trades before this moment just stop counting toward a new streak going forward. This action is logged.", { title: "Reset Loss-Streak Lock", danger: true, confirmLabel: "Reset Lock" }))) return;
   try {
     await fetchJSON("/api/settings/reset-consecutive-loss-lock", { method: "POST" });
     loadTradingSettings();

@@ -273,7 +273,7 @@ async function confirmStartSession() {
     `Max trades: ${body.max_trades > 0 ? body.max_trades : "unlimited"}\n` +
     `Account mode: ${accountMode}`;
   const liveWarning = accountMode === "LIVE" ? "\n\n*** THIS IS A LIVE (REAL MONEY) ACCOUNT ***\n" : "\n";
-  if (!confirm(`Start this session?${liveWarning}\n${summary}\n\nContinue?`)) return;
+  if (!(await AximShell.confirm(`${liveWarning}\n${summary}`.trim(), { title: "Start this session?", danger: accountMode === "LIVE", confirmLabel: "Start Session" }))) return;
 
   if (accountMode === "LIVE") {
     const typed = prompt('This is a LIVE account. Type "START LIVE" to confirm:');
@@ -364,7 +364,7 @@ async function refreshActiveSession() {
 }
 
 async function stopSession(id) {
-  if (!confirm("Stop this session? No new signals will be requested/executed for it.")) return;
+  if (!(await AximShell.confirm("Stop this session? No new signals will be requested/executed for it.", { title: "Stop Session", danger: true, confirmLabel: "Stop Session" }))) return;
   try {
     await fetchJSON(`/api/sessions/${id}/stop`, { method: "POST" });
     await refreshActiveSession();
@@ -375,7 +375,7 @@ async function stopSession(id) {
 }
 
 async function emergencyStopSession(id) {
-  if (!confirm("EMERGENCY STOP: immediately halts ALL trading (not just this session). Continue?")) return;
+  if (!(await AximShell.confirm("EMERGENCY STOP: immediately halts ALL trading (not just this session). Continue?", { title: "Emergency Stop", danger: true, confirmLabel: "Emergency Stop" }))) return;
   try {
     await fetchJSON(`/api/sessions/${id}/emergency-stop`, { method: "POST" });
     await refreshActiveSession();
@@ -451,7 +451,7 @@ async function useProfile(profileId) {
 }
 
 async function deleteProfile(profileId) {
-  if (!confirm("Delete this profile?")) return;
+  if (!(await AximShell.confirm("Delete this profile?", { title: "Delete Profile", danger: true, confirmLabel: "Delete" }))) return;
   try {
     await fetchJSON(`/api/sessions/profiles/${profileId}`, { method: "DELETE" });
     await refreshProfiles();

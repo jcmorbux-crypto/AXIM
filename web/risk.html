@@ -258,7 +258,7 @@ async function duplicateStrategy(profileId, currentName) {
 }
 
 async function archiveStrategy(profileId, name) {
-  if (!confirm(`Archive "${name}"? It will no longer appear here, and stays out of every Session/Fund picker until unarchived.`)) return;
+  if (!(await AximShell.confirm(`Archive "${name}"? It will no longer appear here, and stays out of every Session/Fund picker until unarchived.`, { title: "Archive Strategy", danger: true, confirmLabel: "Archive" }))) return;
   try {
     await fetchJSON(`/api/risk-profiles/${profileId}/archive`, { method: "POST" });
     await loadProfiles();
@@ -268,7 +268,7 @@ async function archiveStrategy(profileId, name) {
 }
 
 async function deleteStrategy(profileId, name) {
-  if (!confirm(`Permanently delete "${name}"? This cannot be undone.`)) return;
+  if (!(await AximShell.confirm(`Permanently delete "${name}"? This cannot be undone.`, { title: "Delete Strategy", danger: true, confirmLabel: "Delete" }))) return;
   try {
     await fetchJSON(`/api/risk-profiles/${profileId}`, { method: "DELETE" });
     await loadProfiles();

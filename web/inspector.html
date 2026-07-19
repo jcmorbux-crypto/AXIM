@@ -235,7 +235,7 @@ async function toggleRule(ruleId, enabled) {
 }
 
 async function deleteRule(ruleId) {
-  if (!confirm("Delete this rule?")) return;
+  if (!(await AximShell.confirm("Delete this rule?", { title: "Delete Rule", danger: true, confirmLabel: "Delete" }))) return;
   try {
     await fetchJSON(`/api/signal-rules/${ruleId}`, { method: "DELETE" });
     await loadRules();

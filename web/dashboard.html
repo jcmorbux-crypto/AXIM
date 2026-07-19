@@ -946,8 +946,9 @@ function togglePause() {
   callControl(controlPaused ? "/api/control/resume" : "/api/control/pause");
 }
 
-function confirmEmergencyStop() {
-  if (confirm("Emergency stop: no new signals will be executed until you clear it. Continue?")) {
+async function confirmEmergencyStop() {
+  const ok = await AximShell.confirm("Emergency stop: no new signals will be executed until you clear it. Continue?", { title: "Emergency Stop", danger: true, confirmLabel: "Emergency Stop" });
+  if (ok) {
     callControl("/api/control/emergency-stop");
   }
 }
