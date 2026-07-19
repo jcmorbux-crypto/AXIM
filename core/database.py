@@ -414,7 +414,7 @@ def initialize_database():
     """)
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_signal_pipeline_events_message "
-        "ON signal_pipeline_events(chat_id, message_id)"
+        "ON signal_pipeline_events(channel_id, message_id)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_signal_pipeline_events_signal "
@@ -1587,7 +1587,7 @@ def initialize_database():
 
 @timed("database")
 def record_signal_received(signal, source=None, sender=None, message_id=None, session_id=None,
-                            fund_id=None, broker_account_id=None):
+                            fund_id=None, broker_account_id=None, channel_id=None):
     from trade_lifecycle import TradeStatus
 
     conn = get_connection()
@@ -1595,9 +1595,9 @@ def record_signal_received(signal, source=None, sender=None, message_id=None, se
     INSERT INTO signals (
         message_id, channel, sender, asset, direction, timeframe,
         trade_amount, message, received_at, executed, execution_status, session_id,
-        fund_id, broker_account_id
+        fund_id, broker_account_id, channel_id
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
     """, (
         message_id,
         source,
@@ -1612,6 +1612,7 @@ def record_signal_received(signal, source=None, sender=None, message_id=None, se
         session_id,
         fund_id,
         broker_account_id,
+        channel_id,
     ))
     conn.commit()
     trade_id = cursor.lastrowid
@@ -2761,8 +2762,25 @@ def record_pipeline_event(chat_id, message_id, state, channel_id=None, signal_id
     propagates" discipline, since this is called from inside the live
     Telegram handler and must never be able to take down real signal
     processing over an observability bug). Returns the new row's id, or
-    None if the write itself failed."""
+    None if the write itself failed.
+
+    core/trade_coordinator.py's callers (which only ever have a
+    signal_id, never the original chat_id/message_id - see core/
+    trade_coordinator.py's own note on this) pass channel_id=None,
+    message_id=None, signal_id=<trade_id> - this auto-resolves
+    channel_id/message_id from the `signals` row itself so the event
+    still lands in the SAME (channel_id, message_id) journey the
+    earlier core/telegram_listener.py events used, rather than starting
+    a disconnected second journey."""
     try:
+        if signal_id is not None and channel_id is None and message_id is None:
+            conn = get_connection()
+            row = conn.execute("SELECT channel_id, message_id FROM signals WHERE id = ?", (signal_id,)).fetchone()
+            conn.close()
+            if row is not None:
+                channel_id = row["channel_id"]
+                message_id = row["message_id"]
+
         conn = get_connection()
         cursor = conn.execute(
             """INSERT INTO signal_pipeline_events
@@ -2780,18 +2798,22 @@ def record_pipeline_event(chat_id, message_id, state, channel_id=None, signal_id
 
 
 @timed("database")
-def link_pipeline_events_to_signal(chat_id, message_id, signal_id):
+def link_pipeline_events_to_signal(channel_id, message_id, signal_id):
     """Back-fills signal_id on every pipeline event already recorded for
-    this (chat_id, message_id) - called once a real `signals` row exists
-    (core/trade_coordinator.py's record_signal_received), so the earlier
-    RECEIVED/PARSED events (which predate the row and couldn't know its
-    id yet) join into the same journey as the later, signal_id-bearing
-    ones instead of reading as two disconnected fragments."""
+    this (channel_id, message_id) - called once a real `signals` row
+    exists (core/trade_coordinator.py's record_signal_received), so the
+    earlier RECEIVED/PARSED events (which predate the row and couldn't
+    know its id yet) join into the same journey as the later, signal_id
+    -bearing ones instead of reading as two disconnected fragments.
+    Keyed by channel_id (the ui_channels row - already the resolved
+    identity core/trade_coordinator.py's handle_signal actually
+    receives), not chat_id (which never reaches that far down the
+    pipeline - only core/telegram_listener.py has it)."""
     try:
         conn = get_connection()
         conn.execute(
-            "UPDATE signal_pipeline_events SET signal_id = ? WHERE chat_id = ? AND message_id = ? AND signal_id IS NULL",
-            (signal_id, str(chat_id) if chat_id is not None else None, message_id),
+            "UPDATE signal_pipeline_events SET signal_id = ? WHERE channel_id = ? AND message_id = ? AND signal_id IS NULL",
+            (signal_id, channel_id, message_id),
         )
         conn.commit()
         conn.close()
@@ -2800,11 +2822,11 @@ def link_pipeline_events_to_signal(chat_id, message_id, signal_id):
 
 
 @timed("database")
-def list_pipeline_events_for_message(chat_id, message_id):
+def list_pipeline_events_for_message(channel_id, message_id):
     conn = get_connection()
     rows = conn.execute(
-        "SELECT * FROM signal_pipeline_events WHERE chat_id = ? AND message_id = ? ORDER BY id ASC",
-        (str(chat_id) if chat_id is not None else None, message_id),
+        "SELECT * FROM signal_pipeline_events WHERE channel_id = ? AND message_id = ? ORDER BY id ASC",
+        (channel_id, message_id),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -2823,7 +2845,7 @@ def list_pipeline_events_for_signal(signal_id):
 
 @timed("database")
 def list_recent_pipeline_journeys(limit=50, state=None):
-    """One row per distinct (chat_id, message_id) journey, most recent
+    """One row per distinct (channel_id, message_id) journey, most recent
     first, with its latest state and channel - the Live Signal Pipeline
     UI's main list. state (optional) filters to journeys whose MOST
     RECENT event is that state (e.g. state='SKIPPED' to see everything
@@ -2835,7 +2857,7 @@ def list_recent_pipeline_journeys(limit=50, state=None):
         INNER JOIN (
             SELECT MAX(id) AS max_id
             FROM signal_pipeline_events
-            GROUP BY chat_id, message_id
+            GROUP BY channel_id, message_id
         ) latest ON e.id = latest.max_id
     """
     params = []

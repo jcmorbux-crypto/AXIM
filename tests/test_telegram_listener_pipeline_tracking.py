@@ -32,14 +32,14 @@ class TrackPipelineEventTestCase(unittest.TestCase):
 
     def test_records_a_real_event(self):
         telegram_listener._track_pipeline_event(-1001, 42, 7, SignalLifecycleState.RECEIVED)
-        events = database.list_pipeline_events_for_message(-1001, 42)
+        events = database.list_pipeline_events_for_message(7, 42)
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["state"], SignalLifecycleState.RECEIVED)
         self.assertEqual(events[0]["channel_id"], 7)
 
     def test_records_detail(self):
         telegram_listener._track_pipeline_event(-1001, 42, 7, SignalLifecycleState.SKIPPED, detail="fund_paused")
-        events = database.list_pipeline_events_for_message(-1001, 42)
+        events = database.list_pipeline_events_for_message(7, 42)
         self.assertEqual(events[0]["detail"], "fund_paused")
 
     def test_exception_inside_tracking_never_propagates(self):

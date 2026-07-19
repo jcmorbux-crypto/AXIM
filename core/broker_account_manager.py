@@ -36,6 +36,7 @@ import recovery
 import fund_manager
 import pocket_dom
 from trade_lifecycle import TradeStatus
+from signal_lifecycle import SignalLifecycleState
 from trade_coordinator import TradeCoordinator
 from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
@@ -301,9 +302,14 @@ async def route_signal(signal, default_coordinator, source=None, sender=None, me
     except AccountUnavailable as e:
         trade_id = database.record_signal_received(
             signal, source=source, sender=sender, message_id=message_id, session_id=session_id,
+            channel_id=channel_id,
         )
+        if channel_id is not None:
+            database.link_pipeline_events_to_signal(channel_id, message_id, trade_id)
         logger.info("STAGE trade_id=%s stage=broker_account status=rejected reason=%s", trade_id, e.reason)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:broker_account_unavailable")
+        database.record_pipeline_event(None, None, SignalLifecycleState.SKIPPED,
+                                        signal_id=trade_id, detail="broker_account_unavailable")
         return {
             "status": "rejected", "trade_id": trade_id,
             "rule": "broker_account_unavailable", "reason": e.reason,

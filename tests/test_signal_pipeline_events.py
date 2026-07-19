@@ -10,6 +10,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "config"))
 import database
 from signal_lifecycle import SignalLifecycleState
 
+CHANNEL_ID = 7  # a fixed test ui_channels id - journeys are keyed by (channel_id, message_id)
+
 
 class SignalPipelineEventsTestCase(unittest.TestCase):
     def setUp(self):
@@ -26,12 +28,12 @@ class SignalPipelineEventsTestCase(unittest.TestCase):
 class RecordPipelineEventTests(SignalPipelineEventsTestCase):
     def test_records_a_real_event(self):
         event_id = database.record_pipeline_event(
-            -1001, 42, SignalLifecycleState.RECEIVED, channel_id=7, detail="test")
+            -1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID, detail="test")
         self.assertIsNotNone(event_id)
-        events = database.list_pipeline_events_for_message(-1001, 42)
+        events = database.list_pipeline_events_for_message(CHANNEL_ID, 42)
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["state"], SignalLifecycleState.RECEIVED)
-        self.assertEqual(events[0]["channel_id"], 7)
+        self.assertEqual(events[0]["channel_id"], CHANNEL_ID)
         self.assertEqual(events[0]["detail"], "test")
         self.assertEqual(events[0]["chat_id"], "-1001")
 
@@ -47,90 +49,127 @@ class RecordPipelineEventTests(SignalPipelineEventsTestCase):
             database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
 
     def test_chat_id_none_is_stored_as_none_not_the_string_none(self):
-        database.record_pipeline_event(None, 42, SignalLifecycleState.RECEIVED)
+        database.record_pipeline_event(None, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
         conn = database.get_connection()
         row = conn.execute("SELECT chat_id FROM signal_pipeline_events").fetchone()
         conn.close()
         self.assertIsNone(row["chat_id"])
 
     def test_signal_id_defaults_to_none(self):
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED)
-        events = database.list_pipeline_events_for_message(-1001, 42)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
+        events = database.list_pipeline_events_for_message(CHANNEL_ID, 42)
         self.assertIsNone(events[0]["signal_id"])
+
+    def test_signal_id_only_auto_resolves_channel_and_message_id_from_signals(self):
+        # core/trade_coordinator.py's callers only ever have a signal_id
+        # (never chat_id/message_id/channel_id directly) - this is what
+        # keeps their events joined into the same journey as the earlier
+        # core/telegram_listener.py-recorded ones instead of starting a
+        # disconnected second journey.
+        signal = {"asset": "EUR/USD", "direction": "BUY", "expiry": "1m", "raw_message": "test"}
+        trade_id = database.record_signal_received(signal, message_id=88, channel_id=CHANNEL_ID)
+        database.record_pipeline_event(None, None, SignalLifecycleState.SUBMITTING, signal_id=trade_id)
+        events = database.list_pipeline_events_for_message(CHANNEL_ID, 88)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["state"], SignalLifecycleState.SUBMITTING)
+        self.assertEqual(events[0]["signal_id"], trade_id)
+
+    def test_explicit_channel_and_message_id_are_not_overridden_by_auto_resolve(self):
+        signal = {"asset": "EUR/USD", "direction": "BUY", "expiry": "1m", "raw_message": "test"}
+        trade_id = database.record_signal_received(signal, message_id=88, channel_id=CHANNEL_ID)
+        # Explicitly passing a DIFFERENT channel_id/message_id must win -
+        # auto-resolve only kicks in when both are omitted.
+        database.record_pipeline_event(None, 999, SignalLifecycleState.SUBMITTING,
+                                        channel_id=CHANNEL_ID + 1, signal_id=trade_id)
+        events = database.list_pipeline_events_for_message(CHANNEL_ID + 1, 999)
+        self.assertEqual(len(events), 1)
 
 
 class LinkPipelineEventsToSignalTests(SignalPipelineEventsTestCase):
     def test_links_every_prior_event_for_the_message(self):
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED)
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.PARSED)
-        database.link_pipeline_events_to_signal(-1001, 42, signal_id=999)
-        events = database.list_pipeline_events_for_message(-1001, 42)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.PARSED, channel_id=CHANNEL_ID)
+        database.link_pipeline_events_to_signal(CHANNEL_ID, 42, signal_id=999)
+        events = database.list_pipeline_events_for_message(CHANNEL_ID, 42)
         self.assertTrue(all(e["signal_id"] == 999 for e in events))
 
     def test_never_overwrites_an_already_linked_event(self):
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED)
-        database.link_pipeline_events_to_signal(-1001, 42, signal_id=999)
-        database.link_pipeline_events_to_signal(-1001, 42, signal_id=111)  # a second, wrong link attempt
-        events = database.list_pipeline_events_for_message(-1001, 42)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
+        database.link_pipeline_events_to_signal(CHANNEL_ID, 42, signal_id=999)
+        database.link_pipeline_events_to_signal(CHANNEL_ID, 42, signal_id=111)  # a second, wrong link attempt
+        events = database.list_pipeline_events_for_message(CHANNEL_ID, 42)
         self.assertEqual(events[0]["signal_id"], 999)
 
     def test_does_not_touch_a_different_messages_events(self):
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED)
-        database.record_pipeline_event(-1001, 43, SignalLifecycleState.RECEIVED)
-        database.link_pipeline_events_to_signal(-1001, 42, signal_id=999)
-        other = database.list_pipeline_events_for_message(-1001, 43)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
+        database.record_pipeline_event(-1001, 43, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
+        database.link_pipeline_events_to_signal(CHANNEL_ID, 42, signal_id=999)
+        other = database.list_pipeline_events_for_message(CHANNEL_ID, 43)
+        self.assertIsNone(other[0]["signal_id"])
+
+    def test_does_not_touch_a_different_channels_same_message_id(self):
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
+        database.record_pipeline_event(-1002, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID + 1)
+        database.link_pipeline_events_to_signal(CHANNEL_ID, 42, signal_id=999)
+        other = database.list_pipeline_events_for_message(CHANNEL_ID + 1, 42)
         self.assertIsNone(other[0]["signal_id"])
 
     def test_never_raises_when_the_db_is_unreachable(self):
         database.DB_FILE = Path("Z:/definitely/does/not/exist/anywhere.db")
         try:
-            database.link_pipeline_events_to_signal(-1001, 42, signal_id=999)  # must not raise
+            database.link_pipeline_events_to_signal(CHANNEL_ID, 42, signal_id=999)  # must not raise
         finally:
             database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
 
 
 class ListPipelineEventsForSignalTests(SignalPipelineEventsTestCase):
     def test_returns_linked_events_in_order(self):
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, signal_id=999)
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.PARSED, signal_id=999)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID, signal_id=999)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.PARSED, channel_id=CHANNEL_ID, signal_id=999)
         events = database.list_pipeline_events_for_signal(999)
         self.assertEqual([e["state"] for e in events], [SignalLifecycleState.RECEIVED, SignalLifecycleState.PARSED])
 
     def test_unlinked_events_are_excluded(self):
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED)  # no signal_id
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)  # no signal_id
         self.assertEqual(database.list_pipeline_events_for_signal(999), [])
 
 
 class ListRecentPipelineJourneysTests(SignalPipelineEventsTestCase):
     def test_one_row_per_distinct_message_showing_the_latest_state(self):
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED)
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.PARSED)
-        database.record_pipeline_event(-1001, 43, SignalLifecycleState.RECEIVED)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.PARSED, channel_id=CHANNEL_ID)
+        database.record_pipeline_event(-1001, 43, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
         journeys = database.list_recent_pipeline_journeys()
         self.assertEqual(len(journeys), 2)
         journey_42 = next(j for j in journeys if j["message_id"] == 42)
         self.assertEqual(journey_42["state"], SignalLifecycleState.PARSED)
 
     def test_filters_by_state(self):
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.SKIPPED, detail="channel_not_watched")
-        database.record_pipeline_event(-1001, 43, SignalLifecycleState.PARSED)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.SKIPPED, channel_id=CHANNEL_ID,
+                                        detail="channel_not_watched")
+        database.record_pipeline_event(-1001, 43, SignalLifecycleState.PARSED, channel_id=CHANNEL_ID)
         skipped = database.list_recent_pipeline_journeys(state=SignalLifecycleState.SKIPPED)
         self.assertEqual(len(skipped), 1)
         self.assertEqual(skipped[0]["message_id"], 42)
 
     def test_most_recent_first(self):
-        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED)
-        database.record_pipeline_event(-1001, 43, SignalLifecycleState.RECEIVED)
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
+        database.record_pipeline_event(-1001, 43, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
         journeys = database.list_recent_pipeline_journeys()
         self.assertEqual(journeys[0]["message_id"], 43)
 
     def test_respects_limit(self):
         for i in range(5):
-            database.record_pipeline_event(-1001, i, SignalLifecycleState.RECEIVED)
+            database.record_pipeline_event(-1001, i, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
         self.assertEqual(len(database.list_recent_pipeline_journeys(limit=2)), 2)
 
     def test_empty_when_nothing_recorded(self):
         self.assertEqual(database.list_recent_pipeline_journeys(), [])
+
+    def test_different_channels_with_the_same_message_id_are_distinct_journeys(self):
+        database.record_pipeline_event(-1001, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID)
+        database.record_pipeline_event(-1002, 42, SignalLifecycleState.RECEIVED, channel_id=CHANNEL_ID + 1)
+        self.assertEqual(len(database.list_recent_pipeline_journeys()), 2)
 
 
 if __name__ == "__main__":

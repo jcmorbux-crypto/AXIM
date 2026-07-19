@@ -18,6 +18,7 @@ import risk_manager
 import session_manager
 import risk_engine
 from trade_lifecycle import TradeStatus
+from signal_lifecycle import SignalLifecycleState
 from event_bus import get_event_bus
 from timeline import TradeTimeline
 from logger import get_logger
@@ -97,6 +98,8 @@ class TradeCoordinator:
                 reason = f"signal age {age_seconds:.1f}s exceeds MAX_SIGNAL_AGE {MAX_SIGNAL_AGE}s"
                 self._log_stage(trade_id, "validation", "ignored", time.monotonic() - stage_t0, reason)
                 database.update_trade_status(trade_id, TradeStatus.ERROR, result="ignored:stale_signal")
+                database.record_pipeline_event(None, None, SignalLifecycleState.SKIPPED,
+                                                signal_id=trade_id, detail="stale_signal")
                 timeline.persist(database)
                 return "stale", {"status": "ignored", "trade_id": trade_id, "reason": "stale_signal", "age_seconds": age_seconds}
         self._log_stage(trade_id, "validation", "passed", time.monotonic() - stage_t0)
@@ -165,11 +168,21 @@ class TradeCoordinator:
             trade_id = await asyncio.to_thread(
                 database.record_signal_received, signal,
                 source=source, sender=sender, message_id=message_id, session_id=session_id,
-                fund_id=fund_id, broker_account_id=broker_account_id,
+                fund_id=fund_id, broker_account_id=broker_account_id, channel_id=channel_id,
             )
             timeline.trade_id = trade_id
             self._log_stage(trade_id, TradeStatus.SIGNAL_RECEIVED.value, "recorded", time.monotonic() - stage_t0)
             await self.event_bus.publish("trade.signal_received", {"trade_id": trade_id, "signal": signal})
+
+            # Live Signal Pipeline (2026-07-19 v2 mandate) - joins this
+            # trade_id onto whatever RECEIVED/PARSED events core/
+            # telegram_listener.py already recorded for this (channel_id,
+            # message_id) BEFORE this row existed (a no-op if there
+            # weren't any - e.g. a manually-triggered test signal). Pure
+            # observability; database.link_pipeline_events_to_signal
+            # never raises past itself.
+            if channel_id is not None:
+                await asyncio.to_thread(database.link_pipeline_events_to_signal, channel_id, message_id, trade_id)
 
             # Stage: Observation Mode gate - a source's provider_profile
             # starts in 'observation' and only reaches 'demo'/'live' via
@@ -188,6 +201,10 @@ class TradeCoordinator:
                     self._log_stage(trade_id, "observation_mode", "skipped", 0.0, reason)
                     await asyncio.to_thread(
                         database.update_trade_status, trade_id, TradeStatus.ERROR, result="skipped:observation_mode",
+                    )
+                    await asyncio.to_thread(
+                        database.record_pipeline_event, None, None, SignalLifecycleState.SKIPPED,
+                        signal_id=trade_id, detail="observation_mode",
                     )
                     await asyncio.to_thread(timeline.persist, database)
                     await self.event_bus.publish("signal.ignored", {"trade_id": trade_id, "reason": "observation_mode"})
@@ -245,6 +262,8 @@ class TradeCoordinator:
 
                     def _record_asset_cache_rejection():
                         database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable_cached")
+                        database.record_pipeline_event(None, None, SignalLifecycleState.SKIPPED,
+                                                        signal_id=trade_id, detail="asset_untradeable_cached")
                         timeline.persist(database)
                     await asyncio.to_thread(_record_asset_cache_rejection)
                     return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable_cached", "reason": reason}
@@ -335,14 +354,23 @@ class TradeCoordinator:
 
                     def _record_worker_pool_rejection():
                         database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:all_workers_busy")
+                        database.record_pipeline_event(None, None, SignalLifecycleState.SKIPPED,
+                                                        signal_id=trade_id, detail="all_workers_busy")
                         timeline.persist(database)
                     await asyncio.to_thread(_record_worker_pool_rejection)
                     return {"status": "rejected", "trade_id": trade_id, "rule": "all_workers_busy", "reason": reason}
                 self._log_stage(trade_id, "worker_pool", f"acquired worker_id={worker.worker_id}", time.monotonic() - stage_t0)
 
                 # Stage: Pocket Executor (unchanged browser execution logic,
-                # against this worker's own warm page)
+                # against this worker's own warm page). Live Signal
+                # Pipeline: everything up to here (authorization, sizing,
+                # queueing) is already captured at fine-grained timing
+                # resolution by `timeline`/signals.trade_timeline_json -
+                # SUBMITTING marks the coarser lifecycle handoff into real
+                # browser execution, not a duplicate of that detail.
                 stage_t0 = time.monotonic()
+                await asyncio.to_thread(database.record_pipeline_event, None, None, SignalLifecycleState.SUBMITTING,
+                                         signal_id=trade_id)
                 result = await pocket_executor.prepare_trade(
                     trade_id, asset, direction, expiry, amount,
                     worker, self.worker_pool, self.warmup_service, timeline=timeline,
@@ -354,6 +382,8 @@ class TradeCoordinator:
             except Exception as e:
                 logger.error("trade_coordinator: trade_id=%s unhandled error=%s", trade_id, e)
                 await asyncio.to_thread(database.update_trade_status, trade_id, TradeStatus.ERROR, result=f"error:{e}")
+                await asyncio.to_thread(database.record_pipeline_event, None, None, SignalLifecycleState.FAILED,
+                                         signal_id=trade_id, detail=str(e))
                 await self.event_bus.publish("trade.error", {"trade_id": trade_id, "error": str(e)})
                 await asyncio.to_thread(timeline.persist, database)
                 raise
@@ -368,4 +398,11 @@ class TradeCoordinator:
     def _reject(self, trade_id, violation, elapsed):
         self._log_stage(trade_id, violation.rule, "rejected", elapsed, violation.reason)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"rejected:{violation.rule}")
+        # Live Signal Pipeline - the ONE shared choke point every risk/
+        # session/duplicate/confirmation rejection in this file already
+        # funnels through; a deliberate rule-based decline, not a system
+        # failure, hence SKIPPED rather than FAILED (see core/signal_
+        # lifecycle.py's module docstring for that distinction).
+        database.record_pipeline_event(None, None, SignalLifecycleState.SKIPPED,
+                                        signal_id=trade_id, detail=f"{violation.rule}: {violation.reason}")
         return {"status": "rejected", "trade_id": trade_id, "rule": violation.rule, "reason": violation.reason}

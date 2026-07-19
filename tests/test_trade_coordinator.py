@@ -17,6 +17,7 @@ import session_manager
 import trade_coordinator
 import pocket_executor
 from trade_coordinator import TradeCoordinator
+from signal_lifecycle import SignalLifecycleState
 
 
 class FakeWorker:
@@ -517,6 +518,99 @@ class EventLoopNotBlockedDuringRiskChecksTests(unittest.TestCase):
         # delay alone. Asserting a conservative floor (not an exact
         # count) to stay robust against real scheduling jitter.
         self.assertGreaterEqual(len(ticks), 5)
+
+
+class LiveSignalPipelineTrackingTests(TradeCoordinatorTests):
+    """2026-07-19 v2 mandate: the Live Signal Pipeline's per-signal
+    audit timeline, instrumented purely additively alongside handle_
+    signal's real decisions - see core/signal_lifecycle.py."""
+
+    def test_earlier_listener_events_get_linked_to_the_new_trade_id(self):
+        database.upsert_channel(chat_id=950, username="link", title="Link Source", kind="channel")
+        channel_id = database.list_channels()[0]["id"]
+        database.record_pipeline_event(950, 77, SignalLifecycleState.RECEIVED, channel_id=channel_id)
+        trade_coordinator.PREVIEW_ONLY = True
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal(), message_id=77, channel_id=channel_id))
+        events = database.list_pipeline_events_for_signal(result["trade_id"])
+        self.assertTrue(any(e["state"] == SignalLifecycleState.RECEIVED for e in events))
+
+    def test_stale_signal_is_tracked_skipped(self):
+        trade_coordinator.PREVIEW_ONLY = True
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+        old_sent_at = datetime.now() - timedelta(seconds=trade_coordinator.MAX_SIGNAL_AGE + 30)
+        result = _run(coordinator.handle_signal(self._signal(), sent_at=old_sent_at))
+        events = database.list_pipeline_events_for_signal(result["trade_id"])
+        self.assertEqual(events[-1]["state"], "SKIPPED")
+        self.assertEqual(events[-1]["detail"], "stale_signal")
+
+    def test_observation_mode_is_tracked_skipped(self):
+        database.upsert_channel(chat_id=951, username="obs2", title="Observation Source 2", kind="channel")
+        channel_id = database.list_channels()[0]["id"]
+        database.get_or_create_provider_profile(channel_id)
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal(), channel_id=channel_id))
+        events = database.list_pipeline_events_for_signal(result["trade_id"])
+        self.assertEqual(events[-1]["state"], "SKIPPED")
+        self.assertEqual(events[-1]["detail"], "observation_mode")
+
+    def test_risk_violation_is_tracked_skipped_via_the_shared_reject_helper(self):
+        trade_coordinator.PREVIEW_ONLY = True
+        risk_manager.MAX_TRADE_AMOUNT = 0.01
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal()))
+        events = database.list_pipeline_events_for_signal(result["trade_id"])
+        self.assertEqual(events[-1]["state"], "SKIPPED")
+        self.assertIn("max_trade_amount", events[-1]["detail"])
+
+    def test_worker_pool_busy_is_tracked_skipped(self):
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        pool = FakeWorkerPool(worker_to_return=None)  # acquire_worker always returns None
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+        result = _run(coordinator.handle_signal(self._signal()))
+        self.assertEqual(result["status"], "rejected")
+        events = database.list_pipeline_events_for_signal(result["trade_id"])
+        self.assertEqual(events[-1]["state"], "SKIPPED")
+        self.assertEqual(events[-1]["detail"], "all_workers_busy")
+
+    def test_submitting_is_tracked_right_before_the_executor_call(self):
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        database.set_control_state(test_mode=False)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        pocket_executor.prepare_trade = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
+        try:
+            result = _run(coordinator.handle_signal(self._signal()))
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+
+        events = database.list_pipeline_events_for_signal(result["trade_id"])
+        self.assertTrue(any(e["state"] == "SUBMITTING" for e in events))
+
+    def test_unhandled_exception_is_tracked_failed(self):
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        database.set_control_state(test_mode=False)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        pocket_executor.prepare_trade = AsyncMock(side_effect=RuntimeError("boom"))
+        try:
+            with self.assertRaises(RuntimeError):
+                _run(coordinator.handle_signal(self._signal()))
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+
+        # trade_id isn't in the raised exception - look up the most
+        # recent signal row directly instead.
+        recent = database.list_recent_pipeline_journeys(limit=1)
+        self.assertEqual(recent[0]["state"], "FAILED")
+        self.assertIn("boom", recent[0]["detail"])
 
 
 if __name__ == "__main__":
