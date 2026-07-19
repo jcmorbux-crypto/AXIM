@@ -111,17 +111,31 @@
               </select>
             </div>
             <div class="field" style="flex:1;">
-              <label>Filter to one provider (optional)</label>
+              <label>Filter to one or more providers (optional)</label>
               <div id="r-channel-search"></div>
-              <button type="button" class="subtle" id="r-channel-clear" style="margin-top:6px; display:none;" onclick="clearBacktestChannelFilter()">Clear (use all channels)</button>
+              <div id="r-channel-chips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;"></div>
             </div>
           </div>
           <div class="row">
-            <div class="field" style="flex:1;"><label>From date</label><input type="date" id="r-date-from"></div>
-            <div class="field" style="flex:1;"><label>To date</label><input type="date" id="r-date-to"></div>
+            <div class="field" style="flex:1;"><label>Lookback</label>
+              <select id="r-lookback" onchange="applyBacktestLookback()">
+                <option value="">Custom range</option>
+                <option value="7">Last 7 days</option>
+                <option value="30">Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="all">All time</option>
+              </select>
+            </div>
           </div>
           <div class="row">
-            <div class="field" style="flex:1;"><label>Starting bankroll ($)</label><input type="number" id="r-bankroll" value="1000" step="1"></div>
+            <div class="field" style="flex:1;"><label>From date</label><input type="date" id="r-date-from" onchange="resetBacktestLookbackToCustom()"></div>
+            <div class="field" style="flex:1;"><label>To date</label><input type="date" id="r-date-to" onchange="resetBacktestLookbackToCustom()"></div>
+          </div>
+          <div class="row">
+            <div class="field" style="flex:2;"><label>Starting bankroll ($)</label><input type="number" id="r-bankroll" value="1000" step="1"></div>
+            <div class="field" style="flex:1;"><label>Or use a Fund's current balance</label>
+              <select id="r-fund" onchange="applyBacktestFundBalance()"><option value="">None</option></select>
+            </div>
             <div class="field" style="flex:1;"><label>Default payout (%, used when a signal has none)</label><input type="number" id="r-payout" value="85" step="1"></div>
           </div>
           <div class="row">
@@ -133,14 +147,15 @@
             </div>
             <div class="field" style="flex:1;">
               <label>Minimum data trust tier</label>
-              <select id="r-trust-tier">
-                <option value="">Any (includes unverified provider-reported data)</option>
-                <option value="legacy_unverified">Legacy Unverified or better</option>
-                <option value="reprocessed_source">Reprocessed Source or better</option>
+              <select id="r-trust-tier" onchange="updateTrustTierWarning(); scheduleBacktestEstimate();">
                 <option value="verified_only">Verified Only (broker-confirmed AXIM execution history)</option>
+                <option value="reprocessed_source">Reprocessed Source or better</option>
+                <option value="legacy_unverified">Legacy Unverified or better</option>
+                <option value="">Any (includes unverified provider-reported data)</option>
               </select>
             </div>
           </div>
+          <div id="trust-tier-warning" style="display:none; margin-bottom:12px; padding:8px 10px; border-radius:var(--radius-sm); background:var(--yellow-soft); border:1px solid var(--yellow-border); color:var(--yellow); font-size:12px;"></div>
           <div id="run-estimate-panel"></div>
         </div>
 
@@ -489,8 +504,75 @@ async function confirmCreateRecommendedFund() {
 
 // ---------- Setup ----------
 
-let selectedBacktestChannelTitle = null;
+// Multiple providers (2026-07-19 directive: "one or more providers") -
+// SmartChannelSearch itself stays single-pick (shared with other pages'
+// single-provider flows, e.g. telegram.html's Add-a-Source - not
+// touched here); this page layers its own accumulating chip list on
+// top, calling .clear() after each pick so the same search box is
+// immediately ready for the next provider. The backend already
+// accepts channel_filter as a list (get_historical_signal_pool's own
+// IN (...) query) - this was purely a UI gap.
+let selectedBacktestChannelTitles = [];
 let backtestChannelSearch = null;
+let backtestFundBalances = {};
+
+// Lookback (2026-07-19 directive) - a convenience over the same
+// From/To date fields the API already takes; picking a preset just
+// fills them in client-side rather than adding a separate backend
+// concept. Manually editing either date afterward reverts the
+// dropdown to "Custom range" so it never silently disagrees with what
+// the fields actually say.
+function applyBacktestLookback() {
+  const preset = document.getElementById("r-lookback").value;
+  const fromEl = document.getElementById("r-date-from");
+  const toEl = document.getElementById("r-date-to");
+  if (!preset) return;
+  const today = new Date();
+  toEl.value = today.toISOString().slice(0, 10);
+  if (preset === "all") {
+    fromEl.value = "";
+  } else {
+    const from = new Date(today);
+    from.setDate(from.getDate() - parseInt(preset, 10));
+    fromEl.value = from.toISOString().slice(0, 10);
+  }
+  scheduleBacktestEstimate();
+}
+function resetBacktestLookbackToCustom() {
+  document.getElementById("r-lookback").value = "";
+  scheduleBacktestEstimate();
+}
+
+// Starting balance from a Fund (2026-07-19 directive: "starting balance
+// or fund") - pre-fills the manual Starting Bankroll field with that
+// Fund's REAL current trading_balance (fund_manager.get_fund_balances,
+// the same figure the Funds page itself shows) rather than inventing a
+// separate number; the field stays a normal editable input afterward,
+// not locked to the Fund.
+function applyBacktestFundBalance() {
+  const fundId = document.getElementById("r-fund").value;
+  if (!fundId) return;
+  const balance = backtestFundBalances[fundId];
+  if (balance !== undefined && balance !== null) {
+    document.getElementById("r-bankroll").value = balance;
+  }
+}
+
+function renderBacktestChannelChips() {
+  const wrap = document.getElementById("r-channel-chips");
+  wrap.innerHTML = selectedBacktestChannelTitles.map((title, i) => `
+    <span class="badge off" style="display:inline-flex; align-items:center; gap:6px;">
+      ${escapeHtml(title)}
+      <span style="cursor:pointer; font-weight:700;" onclick="removeBacktestChannel(${i})">&times;</span>
+    </span>
+  `).join("");
+}
+
+function removeBacktestChannel(index) {
+  selectedBacktestChannelTitles.splice(index, 1);
+  renderBacktestChannelChips();
+  scheduleBacktestEstimate();
+}
 
 async function loadSetupData() {
   try {
@@ -506,11 +588,26 @@ async function loadSetupData() {
       recentKey: "backtest-filter",
       includeHistoricalSources: true,
       onSelect: (channel) => {
-        selectedBacktestChannelTitle = channel.title;
-        document.getElementById("r-channel-clear").style.display = "inline-block";
-        scheduleBacktestEstimate();
+        if (!selectedBacktestChannelTitles.includes(channel.title)) {
+          selectedBacktestChannelTitles.push(channel.title);
+          renderBacktestChannelChips();
+          scheduleBacktestEstimate();
+        }
+        backtestChannelSearch.clear();
       },
     });
+
+    try {
+      const funds = await fetchJSON("/api/funds");
+      backtestFundBalances = {};
+      const fundSelect = document.getElementById("r-fund");
+      fundSelect.innerHTML = '<option value="">None</option>' + funds.map(f => {
+        backtestFundBalances[f.id] = f.balances.trading_balance;
+        return `<option value="${f.id}">${escapeHtml(f.name)} (${fmtMoney(f.balances.trading_balance)})</option>`;
+      }).join("");
+    } catch (e) {
+      // Non-fatal - the manual Starting Bankroll field still works without this.
+    }
 
     for (const id of ["r-source", "r-date-from", "r-date-to", "r-trust-tier"]) {
       document.getElementById(id).addEventListener("change", scheduleBacktestEstimate);
@@ -519,13 +616,6 @@ async function loadSetupData() {
   } catch (e) {
     document.getElementById("strategy-checklist").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
   }
-}
-
-function clearBacktestChannelFilter() {
-  selectedBacktestChannelTitle = null;
-  document.getElementById("r-channel-clear").style.display = "none";
-  if (backtestChannelSearch) backtestChannelSearch.clear();
-  scheduleBacktestEstimate();
 }
 
 // ---------- Pre-run estimate (2026-07-19 directive) ----------
@@ -545,13 +635,34 @@ function _currentBacktestPoolConfig() {
   const selectedIds = Array.from(document.querySelectorAll("#strategy-checklist input:checked")).map(el => parseInt(el.value, 10));
   return {
     source: document.getElementById("r-source").value,
-    channel_filter: selectedBacktestChannelTitle ? [selectedBacktestChannelTitle] : null,
+    channel_filter: selectedBacktestChannelTitles.length ? selectedBacktestChannelTitles.slice() : null,
     date_from: document.getElementById("r-date-from").value || null,
     date_to: document.getElementById("r-date-to").value || null,
     session_window: document.getElementById("r-window").value,
     min_trust_tier: document.getElementById("r-trust-tier").value || null,
     risk_profile_ids: selectedIds,
   };
+}
+
+// Trusted-data policy (2026-07-19 directive): Verified Only is the safe
+// default - any looser choice is a deliberate operator decision to
+// include data AXIM never independently confirmed, so it gets a visible,
+// explicit warning rather than silently changing behavior.
+const TRUST_TIER_WARNINGS = {
+  reprocessed_source: "This run will include Reprocessed Source data - signals whose parsed fields were manually corrected, but whose outcome was still only ever reported by the provider, never independently confirmed by AXIM.",
+  legacy_unverified: "This run will include Legacy Unverified data - provider-reported outcomes AXIM has never independently confirmed against a real broker execution. Results may not reflect real trading conditions.",
+  "": "This run will include ALL data regardless of trust tier, including unverified provider-reported outcomes. Results may not reflect real trading conditions.",
+};
+function updateTrustTierWarning() {
+  const value = document.getElementById("r-trust-tier").value;
+  const banner = document.getElementById("trust-tier-warning");
+  const message = TRUST_TIER_WARNINGS[value];
+  if (message) {
+    banner.textContent = "⚠ " + message;
+    banner.style.display = "block";
+  } else {
+    banner.style.display = "none";
+  }
 }
 
 let _backtestEstimateTimer = null;
@@ -1287,6 +1398,7 @@ async function viewRun(runId) {
 (async () => {
   const user = await AximShell.init({ active: "lab" });
   if (!user) return;
+  updateTrustTierWarning();
   await loadSetupData();
 })();
 </script>
