@@ -1762,33 +1762,33 @@ def count_fund_pending_trades(fund_id):
 
 
 @timed("database")
-def get_recent_results(limit, fund_id=None, session_id=None):
+def get_recent_results(limit, fund_id=None, session_id=None, since=None):
     """fund_id and session_id are mutually exclusive scopes - session_id
     added for core/capital_strategies.py's Strike (tm) strategy, whose
     max_consecutive_losses is a per-session streak, distinct from
-    core/risk_manager.py's app-wide one and from a Fund's lifetime one."""
+    core/risk_manager.py's app-wide one and from a Fund's lifetime one.
+
+    since (ISO timestamp), when given, excludes any trade closed before
+    it - backs the consecutive-loss lock's explicit, logged reset action
+    (core/risk_manager.reset_consecutive_loss_lock): the streak itself
+    isn't erased or fabricated, real trades before the reset just stop
+    counting toward a NEW streak going forward."""
     conn = get_connection()
     if session_id is not None:
-        rows = conn.execute("""
-            SELECT result FROM signals
-            WHERE result IS NOT NULL AND session_id = ?
-            ORDER BY closed_at DESC
-            LIMIT ?
-        """, (session_id, limit)).fetchall()
+        query = "SELECT result FROM signals WHERE result IS NOT NULL AND session_id = ?"
+        params = [session_id]
     elif fund_id is not None:
-        rows = conn.execute("""
-            SELECT result FROM signals
-            WHERE result IS NOT NULL AND fund_id = ?
-            ORDER BY closed_at DESC
-            LIMIT ?
-        """, (fund_id, limit)).fetchall()
+        query = "SELECT result FROM signals WHERE result IS NOT NULL AND fund_id = ?"
+        params = [fund_id]
     else:
-        rows = conn.execute("""
-            SELECT result FROM signals
-            WHERE result IS NOT NULL
-            ORDER BY closed_at DESC
-            LIMIT ?
-        """, (limit,)).fetchall()
+        query = "SELECT result FROM signals WHERE result IS NOT NULL"
+        params = []
+    if since is not None:
+        query += " AND closed_at >= ?"
+        params.append(since)
+    query += " ORDER BY closed_at DESC LIMIT ?"
+    params.append(limit)
+    rows = conn.execute(query, params).fetchall()
     conn.close()
     return [row["result"] for row in rows]
 

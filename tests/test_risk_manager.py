@@ -142,6 +142,35 @@ class RiskManagerTests(unittest.TestCase):
         self._insert_pending_signal(trade_amount=10)
         risk_manager.check_max_consecutive_losses()
 
+    def test_reset_consecutive_loss_lock_clears_a_real_lock(self):
+        for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
+            self._insert_signal(result="loss")
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_consecutive_losses()
+
+        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local")
+        risk_manager.check_max_consecutive_losses()  # must not raise anymore
+
+    def test_reset_does_not_touch_the_configured_limit(self):
+        for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
+            self._insert_signal(result="loss")
+        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local")
+        self.assertEqual(database.get_setting("max_consecutive_losses", default=risk_manager.MAX_CONSECUTIVE_LOSSES),
+                          risk_manager.MAX_CONSECUTIVE_LOSSES)
+
+    def test_reset_does_not_erase_the_real_losses_a_new_streak_after_it_still_locks(self):
+        for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
+            self._insert_signal(result="loss")
+        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local")
+        for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
+            self._insert_signal(result="loss")
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_consecutive_losses()
+
+    def test_reset_requires_an_attributable_actor(self):
+        with self.assertRaises(ValueError):
+            risk_manager.reset_consecutive_loss_lock(reset_by=None)
+
     def test_cooldown_after_loss_blocks(self):
         if risk_manager.COOLDOWN_AFTER_LOSS_SECONDS <= 0:
             self.skipTest("COOLDOWN_AFTER_LOSS_SECONDS is 0 - cooldown intentionally disabled")

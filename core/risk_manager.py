@@ -142,13 +142,33 @@ def check_max_consecutive_losses():
             f"{pending_count} trade(s) currently open - if they all lose, that alone reaches the limit of {limit} consecutive losses",
         )
     remaining = limit - pending_count
-    recent = database.get_recent_results(remaining)
+    reset_at = database.get_setting("consecutive_loss_reset_at", default=None)
+    recent = database.get_recent_results(remaining, since=reset_at)
     if len(recent) == remaining and all(r == "loss" for r in recent):
         raise RiskViolation(
             "max_consecutive_losses",
             f"last {remaining} closed trades were all losses, plus {pending_count} more currently open - "
             f"would reach the limit of {limit} if they also lose",
         )
+
+
+def reset_consecutive_loss_lock(reset_by):
+    """The explicit, logged, reversible recovery action a hard
+    consecutive-loss lock needs (2026-07-19 product-design directive): a
+    lock that can ONLY clear via a future winning trade is unrecoverable
+    by construction, since the lock itself blocks every further trade,
+    win or lose. Does NOT erase or falsify the real loss streak - trades
+    before this moment stay exactly as they happened, they just stop
+    counting toward a NEW streak going forward. Distinct from silently
+    raising max_consecutive_losses (which would also let a WORSE streak
+    through) - this only affects the window boundary, the limit itself
+    is untouched."""
+    if not reset_by:
+        raise ValueError("reset_consecutive_loss_lock requires reset_by - this is a real, attributable decision")
+    reset_at = datetime.now().isoformat()
+    database.set_setting("consecutive_loss_reset_at", reset_at)
+    logger.warning("risk_manager: consecutive-loss lock reset by %s at %s", reset_by, reset_at)
+    return reset_at
 
 
 def check_cooldown_after_loss():

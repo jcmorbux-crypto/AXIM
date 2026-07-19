@@ -91,6 +91,10 @@
         <h3>Global Money Management Defaults</h3>
         <div class="muted" style="margin-bottom:14px;">Used by any session that doesn't have a Money Management Studio profile attached - see the Money Management Studio page for full profiles with Martingale/Compounding/Vault.</div>
         <div class="muted" id="mm-preview" style="margin-bottom:14px;"></div>
+        <div id="consecutive-loss-lock-banner" class="banner danger" style="display:none; margin-bottom:14px; align-items:center; justify-content:space-between; gap:14px;">
+          <span id="consecutive-loss-lock-text"></span>
+          <button class="subtle" onclick="resetConsecutiveLossLock()">Reset Loss-Streak Lock</button>
+        </div>
         <table><tbody id="settings-body"></tbody></table>
         <details class="advanced-toggle">
           <summary>Advanced <span class="hint">Daily limits, trade pacing, minimum payout</span></summary>
@@ -300,8 +304,28 @@ async function loadTradingSettings() {
       `Current bankroll: <b>$${data.current_bankroll.toFixed(2)}</b> (lifetime realized P/L: $${data.lifetime_realized_pnl.toFixed(2)}) - next trade without a Money Management Studio profile would be sized at <b>$${data.next_trade_amount_preview}</b>`;
     document.getElementById("settings-body").innerHTML = BASIC_SETTINGS_FIELDS.map(f => _settingsRow(f, data.overridden_keys)).join("");
     document.getElementById("settings-body-advanced").innerHTML = ADVANCED_SETTINGS_FIELDS.map(f => _settingsRow(f, data.overridden_keys)).join("");
+
+    const lockBanner = document.getElementById("consecutive-loss-lock-banner");
+    if (data.consecutive_loss_lock_active) {
+      lockBanner.style.display = "flex";
+      document.getElementById("consecutive-loss-lock-text").textContent =
+        "The consecutive-loss lock is currently blocking new trades - a real losing streak reached the configured limit. " +
+        "It can only clear on its own via a future winning trade, which can't happen while it's blocking everything.";
+    } else {
+      lockBanner.style.display = "none";
+    }
   } catch (e) {
     document.getElementById("mm-preview").textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function resetConsecutiveLossLock() {
+  if (!confirm("Reset the consecutive-loss lock? This does not erase the real loss streak or change the configured limit - trades before this moment just stop counting toward a new streak going forward. This action is logged.")) return;
+  try {
+    await fetchJSON("/api/settings/reset-consecutive-loss-lock", { method: "POST" });
+    loadTradingSettings();
+  } catch (e) {
+    alert("Failed: " + e.message);
   }
 }
 

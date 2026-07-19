@@ -621,13 +621,37 @@ def get_settings(user=Depends(get_current_user)):
     }
     lifetime_pnl = database.get_lifetime_realized_pnl()
     current_bankroll = effective["starting_bankroll"] + lifetime_pnl
+
+    # Real status, not a re-implementation - calls the exact same check
+    # trade_coordinator.py's preflight stage runs, so "active" here can
+    # never drift out of sync with what actually blocks the next signal.
+    try:
+        risk_manager.check_max_consecutive_losses()
+        consecutive_loss_lock_active = False
+    except risk_manager.RiskViolation:
+        consecutive_loss_lock_active = True
+
     return {
         "effective": effective,
         "overridden_keys": list(overrides.keys()),
         "lifetime_realized_pnl": lifetime_pnl,
         "current_bankroll": current_bankroll,
         "next_trade_amount_preview": risk_manager.compute_trade_amount(TRADE_AMOUNT),
+        "consecutive_loss_lock_active": consecutive_loss_lock_active,
+        "consecutive_loss_reset_at": database.get_setting("consecutive_loss_reset_at", default=None),
     }
+
+
+@app.post("/api/settings/reset-consecutive-loss-lock")
+def reset_consecutive_loss_lock(user=Depends(require_admin)):
+    """The explicit, logged, reversible recovery action for a hard
+    consecutive-loss lock (2026-07-19 product-design directive) - see
+    core/risk_manager.reset_consecutive_loss_lock's own docstring for
+    why a lock that only clears via a future winning trade needs one at
+    all. Does not touch the configured limit or any other risk rule."""
+    reset_at = risk_manager.reset_consecutive_loss_lock(reset_by=user["email"])
+    logger.info("api: consecutive-loss lock reset by %s at %s", user["email"], reset_at)
+    return {"reset_at": reset_at}
 
 
 @app.put("/api/settings")
