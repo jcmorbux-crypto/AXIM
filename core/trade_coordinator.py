@@ -143,7 +143,7 @@ class TradeCoordinator:
 
     async def handle_signal(self, signal, source=None, sender=None, message_id=None,
                              sent_at=None, timeline=None, session_id=None,
-                             fund_id=None, broker_account_id=None):
+                             fund_id=None, broker_account_id=None, channel_id=None):
         timeline = timeline or TradeTimeline()
         token = timeline.activate()
         try:
@@ -170,6 +170,28 @@ class TradeCoordinator:
             timeline.trade_id = trade_id
             self._log_stage(trade_id, TradeStatus.SIGNAL_RECEIVED.value, "recorded", time.monotonic() - stage_t0)
             await self.event_bus.publish("trade.signal_received", {"trade_id": trade_id, "signal": signal})
+
+            # Stage: Observation Mode gate - a source's provider_profile
+            # starts in 'observation' and only reaches 'demo'/'live' via
+            # an explicit human approval (core/provider_profile.py). Before
+            # this, its signals were still executed for real (only the
+            # separate shadow assembler observed them) - a real gap between
+            # what the Signal Sources UI implies and what actually happens,
+            # fixed here at the one funnel every execution path shares.
+            # channel_id is None for callers that aren't tied to a real
+            # Telegram channel (manual test trades) - the gate is a no-op
+            # then, same as a source with no profile row yet.
+            if channel_id is not None:
+                profile = await asyncio.to_thread(database.get_provider_profile_by_channel_id, channel_id)
+                if profile is not None and profile["trading_mode"] == "observation":
+                    reason = "source is still in Observation Mode - not yet approved for demo or live trading"
+                    self._log_stage(trade_id, "observation_mode", "skipped", 0.0, reason)
+                    await asyncio.to_thread(
+                        database.update_trade_status, trade_id, TradeStatus.ERROR, result="skipped:observation_mode",
+                    )
+                    await asyncio.to_thread(timeline.persist, database)
+                    await self.event_bus.publish("signal.ignored", {"trade_id": trade_id, "reason": "observation_mode"})
+                    return {"status": "ignored", "trade_id": trade_id, "reason": "observation_mode"}
 
             asset, direction, expiry = signal["asset"], signal["direction"], signal["expiry"]
             # risk_engine.compute_position_size falls through to the

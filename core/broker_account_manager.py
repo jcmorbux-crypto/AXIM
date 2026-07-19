@@ -271,7 +271,7 @@ async def resolve_coordinator_for_session(session_id):
 
 
 async def route_signal(signal, default_coordinator, source=None, sender=None, message_id=None,
-                        sent_at=None, timeline=None, session_id=None):
+                        sent_at=None, timeline=None, session_id=None, channel_id=None):
     """The single entry point core/telegram_listener.py calls instead of
     a bare coordinator.handle_signal() - resolves which broker account's
     coordinator should actually handle this signal and delegates to it.
@@ -293,7 +293,7 @@ async def route_signal(signal, default_coordinator, source=None, sender=None, me
     if session_id is None:
         return await default_coordinator.handle_signal(
             signal, source=source, sender=sender, message_id=message_id,
-            sent_at=sent_at, timeline=timeline, session_id=None,
+            sent_at=sent_at, timeline=timeline, session_id=None, channel_id=channel_id,
         )
 
     try:
@@ -312,7 +312,7 @@ async def route_signal(signal, default_coordinator, source=None, sender=None, me
     return await coordinator.handle_signal(
         signal, source=source, sender=sender, message_id=message_id,
         sent_at=sent_at, timeline=timeline, session_id=session_id,
-        fund_id=fund_id, broker_account_id=broker_account_id,
+        fund_id=fund_id, broker_account_id=broker_account_id, channel_id=channel_id,
     )
 
 

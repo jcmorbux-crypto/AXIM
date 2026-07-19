@@ -366,6 +366,7 @@ async def handler(event):
             sent_at=event.date,
             timeline=timeline,
             session_id=active_session["id"] if active_session else None,
+            channel_id=channel_row["id"] if channel_row else None,
         )
 
         print(f"Execution Status: {execution_result['status']}")

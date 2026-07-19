@@ -104,6 +104,43 @@ class TradeCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["status"], "ignored")
         self.assertEqual(result["reason"], "stale_signal")
 
+    def test_observation_mode_source_is_ignored_before_execution(self):
+        """A source's provider_profile starts in 'observation' and only
+        reaches 'demo'/'live' via explicit human approval
+        (core/provider_profile.py) - its signals must never reach
+        pocket_executor regardless of AUTO_EXECUTE/PREVIEW_ONLY, the same
+        way a stale signal never does."""
+        database.upsert_channel(chat_id=901, username="obs", title="Observation Source", kind="channel")
+        channel_id = database.list_channels()[0]["id"]
+        database.get_or_create_provider_profile(channel_id)  # defaults to trading_mode="observation"
+
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal(), channel_id=channel_id))
+        self.assertEqual(result["status"], "ignored")
+        self.assertEqual(result["reason"], "observation_mode")
+        self.assertEqual(pool.released, [])  # never touched the worker pool
+
+        trade = database.get_signal_detail(result["trade_id"])
+        self.assertEqual(trade["result"], "skipped:observation_mode")
+
+    def test_demo_mode_source_is_not_gated_by_observation_check(self):
+        trade_coordinator.PREVIEW_ONLY = True
+        database.upsert_channel(chat_id=902, username="demo", title="Demo Source", kind="channel")
+        channel_id = database.list_channels()[0]["id"]
+        profile = database.get_or_create_provider_profile(channel_id)
+        database.update_provider_profile(profile["id"], trading_mode="demo")
+
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal(), channel_id=channel_id))
+        self.assertEqual(result["status"], "preview")  # reached the real execution stages, not gated
+
+    def test_no_channel_id_is_not_gated_by_observation_check(self):
+        trade_coordinator.PREVIEW_ONLY = True
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal(), channel_id=None))
+        self.assertEqual(result["status"], "preview")
+
     def test_risk_violation_rejects_before_worker_pool(self):
         trade_coordinator.PREVIEW_ONLY = True
         risk_manager.MAX_TRADE_AMOUNT = 0.01  # TRADE_AMOUNT will exceed this

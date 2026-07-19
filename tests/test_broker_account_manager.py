@@ -103,6 +103,13 @@ class BrokerAccountManagerTests(unittest.TestCase):
         self.assertEqual(result["status"], "clicked")
         self.assertEqual(len(default_coordinator.calls), 1)
 
+    def test_route_signal_threads_channel_id_to_default_coordinator(self):
+        default_coordinator = FakeCoordinator()
+        _run(broker_account_manager.route_signal(
+            self._signal(), default_coordinator, session_id=None, channel_id=77,
+        ))
+        self.assertEqual(default_coordinator.calls[0]["channel_id"], 77)
+
     def test_route_signal_with_unusable_account_rejects_without_touching_default(self):
         fund_id = database.create_fund("F1", starting_balance=100)
         session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
@@ -132,12 +139,13 @@ class BrokerAccountManagerTests(unittest.TestCase):
         default_coordinator = FakeCoordinator()
 
         result = _run(broker_account_manager.route_signal(
-            self._signal(), default_coordinator, session_id=session_id,
+            self._signal(), default_coordinator, session_id=session_id, channel_id=55,
         ))
         self.assertEqual(default_coordinator.calls, [])  # the OTHER account, not default
         self.assertEqual(len(fake_coordinator.calls), 1)
         self.assertEqual(fake_coordinator.calls[0]["fund_id"], fund_id)
         self.assertEqual(fake_coordinator.calls[0]["broker_account_id"], account_id)
+        self.assertEqual(fake_coordinator.calls[0]["channel_id"], 55)
 
     def test_concurrent_resolution_for_same_account_only_builds_once(self):
         """get_or_build_account_context's lock should serialize concurrent

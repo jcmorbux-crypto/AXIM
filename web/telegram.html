@@ -665,10 +665,11 @@ async function renderProfileModal() {
   };
 
   bodyEl.innerHTML = `
-    <div class="row" style="gap:10px; margin-bottom:12px;">
+    <div class="row" style="gap:10px; margin-bottom:4px;">
       <span class="badge ${TRADING_MODE_BADGE_CLASS[p.trading_mode] || "off"}" style="font-size:13px;">${TRADING_MODE_LABELS[p.trading_mode] || p.trading_mode}</span>
       ${p.drift_detected_at ? `<span class="badge danger">Format drift detected</span>` : ""}
     </div>
+    ${p.trading_mode === "observation" ? `<div class="muted" style="font-size:11.5px; margin-bottom:12px;">Signals from this source are recorded but never executed while in Observation Mode.</div>` : `<div style="margin-bottom:12px;"></div>`}
     <div class="card solid" style="margin-bottom:12px;">
       <div class="stat-row"><span class="stat-label">Detected pattern</span><span class="stat-value">${escapeHtml(p.pattern_name || "not yet analyzed")}</span></div>
       <div class="stat-row"><span class="stat-label">Pattern coverage</span><span class="stat-value">${p.coverage !== null && p.coverage !== undefined ? (p.coverage * 100).toFixed(1) + "%" : "-"}</span></div>
