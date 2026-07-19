@@ -312,6 +312,21 @@ a { color: inherit; }
 .page-header h1 { font-size: 22px; margin: 0 0 4px 0; font-weight: 650; letter-spacing: -0.01em; }
 .page-header .subtitle { color: var(--text-dim); font-size: 13.5px; }
 
+/* Tab strip (Settings, Strategy Lab) - promoted from two near-identical
+   per-page <style> blocks (2026-07-19 design consolidation) into one
+   canonical version, since the two had already drifted slightly
+   (different tab-btn padding/weight) despite looking like the same
+   component. */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 20px; flex-wrap: wrap; }
+.tab-btn {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  border-radius: 0; padding: 10px 14px; color: var(--text-dim); font-weight: 550; cursor: pointer;
+}
+.tab-btn:hover { color: var(--text); background: none; }
+.tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
 /* ---- Greeting header: Mission Control's opening line ("Good evening,
    Jay") - the warmest, least "software" moment on the page. Large but
    not shouting; the fund name beneath it is the real headline. ---- */
