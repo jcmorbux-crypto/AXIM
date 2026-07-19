@@ -50,6 +50,7 @@ import session_manager
 import trade_statistics
 import timeline_report
 import log_reader
+import backtest_engine
 from signal_parser import parse_signal
 from settings import (
     WATCH_CHANNELS, ACCOUNT, MAX_TRADE_AMOUNT, MAX_TRADES_PER_HOUR,
@@ -113,6 +114,7 @@ logger = get_logger("axim.ui", filename="ui.log")
 database.initialize_database()
 database.seed_risk_profile_templates()
 database.seed_money_studio_templates()
+backtest_engine.recover_abandoned_runs()
 
 # /docs, /redoc, /openapi.json are unauthenticated by FastAPI's own
 # design - off by default (ENABLE_API_DOCS, config/settings.py) so

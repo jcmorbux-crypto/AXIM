@@ -973,5 +973,62 @@ class RunBacktestAsyncTests(DbBackedTestCase):
         _run(scenario())
 
 
+class RecoverAbandonedRunsTests(DbBackedTestCase):
+    """2026-07-19 directive: restart-safe recovery - a run still marked
+    'running' when the API boots can only mean the previous process
+    died mid-run, since this is called once, synchronously, before
+    anything new could legitimately be running yet."""
+
+    def test_running_run_is_marked_failed(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        database.update_backtest_run_status(run_id, "running")
+        recovered = backtest_engine.recover_abandoned_runs()
+        self.assertEqual(recovered, 1)
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "failed")
+        self.assertIn("restarted", run["error_message"])
+
+    def test_pending_run_is_left_untouched(self):
+        run_id = database.create_backtest_run("R", {}, 1000)  # defaults to pending
+        recovered = backtest_engine.recover_abandoned_runs()
+        self.assertEqual(recovered, 0)
+        self.assertEqual(database.get_backtest_run(run_id)["status"], "pending")
+
+    def test_completed_and_failed_and_cancelled_runs_are_left_untouched(self):
+        completed_id = database.create_backtest_run("C", {}, 1000)
+        database.update_backtest_run_status(completed_id, "completed")
+        failed_id = database.create_backtest_run("F", {}, 1000)
+        database.update_backtest_run_status(failed_id, "failed", error_message="real failure")
+        cancelled_id = database.create_backtest_run("X", {}, 1000)
+        database.update_backtest_run_status(cancelled_id, "cancelled")
+
+        recovered = backtest_engine.recover_abandoned_runs()
+
+        self.assertEqual(recovered, 0)
+        self.assertEqual(database.get_backtest_run(completed_id)["status"], "completed")
+        self.assertEqual(database.get_backtest_run(failed_id)["status"], "failed")
+        self.assertEqual(database.get_backtest_run(failed_id)["error_message"], "real failure")
+        self.assertEqual(database.get_backtest_run(cancelled_id)["status"], "cancelled")
+
+    def test_multiple_abandoned_runs_are_all_recovered(self):
+        ids = [database.create_backtest_run(f"R{i}", {}, 1000) for i in range(3)]
+        for run_id in ids:
+            database.update_backtest_run_status(run_id, "running")
+        recovered = backtest_engine.recover_abandoned_runs()
+        self.assertEqual(recovered, 3)
+        for run_id in ids:
+            self.assertEqual(database.get_backtest_run(run_id)["status"], "failed")
+
+    def test_recovery_is_audited(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        database.update_backtest_run_status(run_id, "running")
+        backtest_engine.recover_abandoned_runs()
+        log = database.list_backtest_data_audit_log(entity_type="backtest_run", entity_id=run_id)
+        self.assertTrue(any(entry["action"] == "status_failed" for entry in log))
+
+    def test_no_op_when_nothing_is_running(self):
+        self.assertEqual(backtest_engine.recover_abandoned_runs(), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

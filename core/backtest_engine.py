@@ -873,3 +873,26 @@ def estimate_backtest_run(pool_config, strategy_count):
         "eligibility_total_examined": eligibility["total"],
         "warnings": warnings,
     }
+
+
+def recover_abandoned_runs():
+    """Restart-safe recovery (2026-07-19 directive) - the backtest
+    analogue of core/recovery.py's mark_abandoned_preparations. Async
+    backtest jobs run entirely in-process (asyncio.create_task on the
+    API server's own event loop, see start_backtest_run_async) with no
+    separate worker process to resume them - a run still marked
+    'running' when this function is called can only mean the PREVIOUS
+    process died mid-run (this call itself only ever happens once, at
+    fresh API startup, before anything new could legitimately be
+    running yet). Never touches 'pending' rows - those may be about to
+    be started by this same fresh boot's own request handling, not
+    orphaned. Called once, synchronously, at API startup - see api/
+    main.py."""
+    orphaned = database.list_backtest_runs(status="running", limit=1000)
+    for run in orphaned:
+        logger.warning("backtest_engine: run %s abandoned mid-run by a process restart", run["id"])
+        database.update_backtest_run_status(
+            run["id"], "failed",
+            error_message="abandoned: the API process restarted while this run was still in progress",
+        )
+    return len(orphaned)

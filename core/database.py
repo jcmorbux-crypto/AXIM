@@ -6025,9 +6025,14 @@ def get_backtest_run(run_id):
 
 
 @timed("database")
-def list_backtest_runs(limit=50):
+def list_backtest_runs(limit=50, status=None):
     conn = get_connection()
-    rows = conn.execute("SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    if status is not None:
+        rows = conn.execute(
+            "SELECT * FROM backtest_runs WHERE status = ? ORDER BY id DESC LIMIT ?", (status, limit),
+        ).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     conn.close()
     return [_backtest_run_row_to_dict(r) for r in rows]
 
