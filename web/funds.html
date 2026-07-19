@@ -146,6 +146,11 @@
         <div class="box"><div class="label">Total Account Value</div><div class="value" id="d-total-value">-</div></div>
       </div>
 
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Health</div>
+      <div class="card" style="margin-bottom:18px;">
+        <div id="diagnostics-body" class="muted">Loading...</div>
+      </div>
+
       <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Automation</div>
       <div class="card" style="margin-bottom:18px;">
         <div class="row" style="justify-content:space-between;">
@@ -205,6 +210,16 @@
         <thead><tr><th>Name</th><th>Status</th><th>Created</th></tr></thead>
         <tbody id="backtests-body"><tr><td colspan="3" class="empty">No backtests yet.</td></tr></tbody>
       </table>
+
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:18px 0 8px 0; cursor:pointer;" onclick="toggleFundActivity()">
+        Activity History <span class="muted" style="font-weight:normal; text-transform:none;" id="activity-toggle-label">(show)</span>
+      </div>
+      <div id="activity-body" style="display:none;">
+        <table>
+          <thead><tr><th>When</th><th>Action</th><th>Changed By</th><th>Details</th></tr></thead>
+          <tbody id="activity-table-body"><tr><td colspan="4" class="empty">-</td></tr></tbody>
+        </table>
+      </div>
     </div>
   </main>
 </div>
@@ -389,6 +404,11 @@ async function loadPortfolioSummary() {
 async function selectFund(fundId) {
   currentFundId = fundId;
   renderFundsList();
+  // Collapse and clear any stale Activity History from a previously-
+  // viewed fund - lazily reloaded only if the operator expands it again.
+  document.getElementById("activity-body").style.display = "none";
+  document.getElementById("activity-toggle-label").textContent = "(show)";
+  document.getElementById("activity-table-body").innerHTML = '<tr><td colspan="4" class="empty">-</td></tr>';
   let report;
   try {
     report = await fetchJSON(`/api/funds/${fundId}`);
@@ -411,6 +431,73 @@ async function selectFund(fundId) {
     renderTransfers(transfers);
   } catch (e) {
     document.getElementById("transfers-body").innerHTML = `<tr><td colspan="4" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+  try {
+    const diagnostics = await fetchJSON(`/api/funds/${fundId}/diagnostics`);
+    renderDiagnostics(diagnostics);
+  } catch (e) {
+    document.getElementById("diagnostics-body").textContent = "Failed to load: " + e.message;
+  }
+}
+
+// ---------- Health diagnostics ----------
+
+const DIAGNOSTIC_LABELS = {
+  trade_readiness: "Trade readiness",
+  broker_attachment: "Broker account",
+  risk_profile: "Risk profile",
+  session_profile: "Session profile",
+  dangling_session: "Active session health",
+  orphaned_broker_attachment: "Broker attachment integrity",
+  exposure: "Exposure",
+};
+
+function renderDiagnostics(diagnostics) {
+  const body = document.getElementById("diagnostics-body");
+  const overallBadge = diagnostics.healthy
+    ? '<span class="badge on">Healthy</span>'
+    : '<span class="badge danger">Needs attention</span>';
+  const rows = diagnostics.checks.map(c => {
+    const label = DIAGNOSTIC_LABELS[c.category] || c.category;
+    return `
+      <div class="row" style="justify-content:space-between; align-items:baseline; padding-top:6px;">
+        <span style="font-size:13px;">${escapeHtml(label)}</span>
+        <span class="badge ${c.ok ? "on" : "danger"}" style="font-size:10.5px;">${c.ok ? "OK" : "Attention"}</span>
+      </div>
+      <div class="muted" style="font-size:11.5px;">${escapeHtml(c.detail)}</div>
+    `;
+  }).join("");
+  body.innerHTML = `<div style="margin-bottom:4px;">${overallBadge}</div>${rows}`;
+}
+
+// ---------- Activity history ----------
+
+async function toggleFundActivity() {
+  const body = document.getElementById("activity-body");
+  const label = document.getElementById("activity-toggle-label");
+  const showing = body.style.display !== "none";
+  if (showing) {
+    body.style.display = "none";
+    label.textContent = "(show)";
+    return;
+  }
+  body.style.display = "block";
+  label.textContent = "(hide)";
+  if (!currentFundId) return;
+  const tbody = document.getElementById("activity-table-body");
+  try {
+    const log = await fetchJSON(`/api/funds/${currentFundId}/activity`);
+    tbody.innerHTML = log.length ? log.map(entry => {
+      const detail = entry.reason || entry.changed_fields_json || "-";
+      return `<tr>
+        <td class="muted">${(entry.created_at || "").replace("T", " ").slice(0, 16)}</td>
+        <td>${escapeHtml(entry.action)}</td>
+        <td>${escapeHtml(entry.changed_by || "-")}</td>
+        <td class="muted" style="font-size:11.5px;">${escapeHtml(detail)}</td>
+      </tr>`;
+    }).join("") : '<tr><td colspan="4" class="empty">No activity yet.</td></tr>';
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="4" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
   }
 }
 
