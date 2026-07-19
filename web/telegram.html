@@ -669,6 +669,9 @@ async function renderProfileModal() {
       <span class="badge ${TRADING_MODE_BADGE_CLASS[p.trading_mode] || "off"}" style="font-size:13px;">${TRADING_MODE_LABELS[p.trading_mode] || p.trading_mode}</span>
       ${p.drift_detected_at ? `<span class="badge danger">Format drift detected</span>` : ""}
     </div>
+    ${p.drift_detected_at
+      ? `<div class="muted" style="font-size:11.5px; margin-bottom:6px; color:var(--red);">${escapeHtml(p.drift_reason || "Format drift detected.")} Detected ${fmtTime(p.drift_detected_at)} - trading was automatically paused if this source was live/demo. Re-run Analyze to clear this once you've confirmed the pattern still matches.</div>`
+      : ""}
     ${p.trading_mode === "observation" ? `<div class="muted" style="font-size:11.5px; margin-bottom:12px;">Signals from this source are recorded but never executed while in Observation Mode.</div>` : `<div style="margin-bottom:12px;"></div>`}
     <div class="card solid" style="margin-bottom:12px;">
       <div class="stat-row"><span class="stat-label">Detected pattern</span><span class="stat-value">${escapeHtml(p.pattern_name || "not yet analyzed")}</span></div>

@@ -140,6 +140,11 @@ def _update_provider_profile_from_analysis(chat_id, analysis, message_count):
         pattern_name=analysis["pattern"], coverage=analysis["coverage"],
         expected_sequence_json=json.dumps(["asset_announcement", "entry"] if is_multi else ["entry"]),
         last_analyzed_at=datetime.now().isoformat(),
+        # A human/operator re-running analysis is a deliberate corrective
+        # action - give the source a clean rolling window rather than
+        # leaving a stale drift flag (or a handful of pre-fix failures)
+        # counted against the freshly-relearned pattern.
+        drift_detected_at=None, drift_reason=None, recent_outcomes_json=None,
     )
     return database.get_provider_profile(profile["id"])
 

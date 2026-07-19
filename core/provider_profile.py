@@ -15,6 +15,7 @@ SEPARATE explicit human approval - graduation only makes a source
 ELIGIBLE for demo_ready, it never auto-advances to demo or live on its
 own, and reaching 'demo' never implies 'live' is authorized either.
 """
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,38 @@ import database
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
+
+# Format-change/drift detection (Universal Signal Intelligence Engine
+# directive: "Pocket Option interface changes [and provider format
+# changes] must produce an actionable failure state instead of silent
+# trade failures"). Compares a SHORT-TERM rolling window against the
+# LIFETIME parse success rate - a provider that was always somewhat
+# imperfect wouldn't show up in a slow-moving cumulative average, but a
+# real format change shows up immediately in the recent window.
+DRIFT_WINDOW_SIZE = 20
+DRIFT_MIN_WINDOW_FOR_CHECK = 15  # don't judge a source on a handful of early messages
+DRIFT_RATE_DROP_THRESHOLD = 0.3  # recent rate must be >=30 points below lifetime
+DRIFT_MIN_RECENT_RATE = 0.5  # and genuinely bad in absolute terms, not just "a bit lower"
+
+
+def check_for_drift(profile):
+    """Pure. Returns a human-readable reason string if the recent window
+    looks like real format drift, None otherwise."""
+    recent = json.loads(profile["recent_outcomes_json"]) if profile.get("recent_outcomes_json") else []
+    if len(recent) < DRIFT_MIN_WINDOW_FOR_CHECK:
+        return None
+    lifetime_observed = profile["observed_signal_count"] or 0
+    lifetime_success = profile["parse_success_count"] or 0
+    if lifetime_observed < DRIFT_MIN_WINDOW_FOR_CHECK:
+        return None
+    recent_rate = sum(recent) / len(recent)
+    lifetime_rate = lifetime_success / lifetime_observed
+    if recent_rate < DRIFT_MIN_RECENT_RATE and (lifetime_rate - recent_rate) >= DRIFT_RATE_DROP_THRESHOLD:
+        return (
+            f"parse success rate dropped to {recent_rate:.0%} over the last {len(recent)} messages, "
+            f"down from a {lifetime_rate:.0%} lifetime average"
+        )
+    return None
 
 
 def graduation_status(profile):
@@ -73,14 +106,38 @@ def record_observed_signal(profile_id, parsed_successfully, changed_by=None):
     attempted to interpret as a signal (not every raw message - a
     promotional/chatter message that was correctly recognized as "not a
     signal" is neither a hit nor a miss here). Increments the running
-    counters graduation_status reads."""
+    counters graduation_status reads, maintains the rolling window
+    check_for_drift reads, and - if this observation newly reveals real
+    format drift - flags it and (if the source is trading) reverts it to
+    Observation Mode automatically, rather than letting it keep trading
+    on a format AXIM no longer actually understands."""
     profile = database.get_provider_profile(profile_id)
     if profile is None:
         raise ProviderProfileError(f"no provider profile with id {profile_id}")
     fields = {"observed_signal_count": (profile["observed_signal_count"] or 0) + 1}
     if parsed_successfully:
         fields["parse_success_count"] = (profile["parse_success_count"] or 0) + 1
+
+    recent = json.loads(profile["recent_outcomes_json"]) if profile.get("recent_outcomes_json") else []
+    recent = (recent + [bool(parsed_successfully)])[-DRIFT_WINDOW_SIZE:]
+    fields["recent_outcomes_json"] = json.dumps(recent)
+    fields["last_drift_check_at"] = datetime.now().isoformat()
+
+    drift_reason = None
+    if not profile.get("drift_detected_at"):
+        drift_reason = check_for_drift({**profile, **fields})
+        if drift_reason:
+            fields["drift_detected_at"] = datetime.now().isoformat()
+            fields["drift_reason"] = drift_reason
+            logger.warning("provider_profile: profile_id=%s format drift detected: %s", profile_id, drift_reason)
+
     database.update_provider_profile(profile_id, changed_by=changed_by, reason="observed signal recorded", **fields)
+
+    if drift_reason and profile["trading_mode"] != "observation":
+        revert_to_observation(
+            profile_id, f"automatic: format drift detected - {drift_reason}",
+            changed_by="system:drift_detection",
+        )
 
 
 def graduate_to_demo_ready(profile_id, changed_by=None):

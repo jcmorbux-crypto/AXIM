@@ -85,6 +85,78 @@ class RecordObservedSignalTests(ProviderProfileTestCase):
         self.assertEqual(profile["parse_success_count"], 3)
 
 
+class DriftDetectionTests(ProviderProfileTestCase):
+    """core/provider_profile.py's check_for_drift + record_observed_signal
+    wiring - a real format change should be flagged, but a source that
+    was always somewhat imperfect (or one that just started) must not
+    be."""
+
+    def _seed_good_history(self, count=30, successes=29):
+        for i in range(count):
+            pp.record_observed_signal(self.profile_id, parsed_successfully=(i < successes))
+
+    def test_a_short_history_of_failures_is_not_drift(self):
+        for _ in range(5):
+            pp.record_observed_signal(self.profile_id, parsed_successfully=False)
+        profile = database.get_provider_profile(self.profile_id)
+        self.assertIsNone(profile["drift_detected_at"])
+
+    def test_a_source_that_was_always_imperfect_is_not_flagged(self):
+        # Consistently ~60% - never drifted, just not great.
+        for i in range(30):
+            pp.record_observed_signal(self.profile_id, parsed_successfully=(i % 5 != 0))
+        profile = database.get_provider_profile(self.profile_id)
+        self.assertIsNone(profile["drift_detected_at"])
+
+    def test_a_real_format_change_is_flagged(self):
+        self._seed_good_history(count=30, successes=29)  # ~97% lifetime rate
+        for _ in range(16):  # then a real break - almost everything fails now
+            pp.record_observed_signal(self.profile_id, parsed_successfully=False)
+        profile = database.get_provider_profile(self.profile_id)
+        self.assertIsNotNone(profile["drift_detected_at"])
+        self.assertIn("dropped", profile["drift_reason"])
+
+    def test_a_live_source_is_automatically_reverted_to_observation_on_drift(self):
+        self._seed_good_history(count=30, successes=29)
+        database.update_provider_profile(self.profile_id, coverage=0.9)
+        pp.graduate_to_demo_ready(self.profile_id)
+        pp.approve_demo(self.profile_id, approved_by="owner@axim.local")
+        pp.approve_live(self.profile_id, approved_by="owner@axim.local")
+        self.assertEqual(database.get_provider_profile(self.profile_id)["trading_mode"], "live")
+
+        for _ in range(16):
+            pp.record_observed_signal(self.profile_id, parsed_successfully=False)
+
+        profile = database.get_provider_profile(self.profile_id)
+        self.assertEqual(profile["trading_mode"], "observation")
+        self.assertIsNotNone(profile["drift_detected_at"])
+        # Live/demo approval history is preserved, not erased by the revert.
+        self.assertIsNotNone(profile["live_approved_at"])
+
+    def test_drift_is_only_flagged_once_not_repeatedly(self):
+        self._seed_good_history(count=30, successes=29)
+        for _ in range(16):
+            pp.record_observed_signal(self.profile_id, parsed_successfully=False)
+        first_flagged_at = database.get_provider_profile(self.profile_id)["drift_detected_at"]
+
+        pp.record_observed_signal(self.profile_id, parsed_successfully=False)
+        self.assertEqual(database.get_provider_profile(self.profile_id)["drift_detected_at"], first_flagged_at)
+
+    def test_reanalysis_clears_a_flagged_drift(self):
+        import provider_onboarding
+        self._seed_good_history(count=30, successes=29)
+        for _ in range(16):
+            pp.record_observed_signal(self.profile_id, parsed_successfully=False)
+        self.assertIsNotNone(database.get_provider_profile(self.profile_id)["drift_detected_at"])
+
+        provider_onboarding._update_provider_profile_from_analysis(
+            999, {"pattern": "custom", "coverage": 0.9}, message_count=30,
+        )
+        profile = database.get_provider_profile(self.profile_id)
+        self.assertIsNone(profile["drift_detected_at"])
+        self.assertIsNone(profile["recent_outcomes_json"])
+
+
 class TradingModeTransitionTests(ProviderProfileTestCase):
     def _make_eligible(self):
         database.update_provider_profile(
