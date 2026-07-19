@@ -123,5 +123,104 @@ class EstimateRunRouteTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
 
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+class AsyncRunRouteTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def _graded_signal(self, i=0):
+        sig_id = database.create_imported_signal(
+            "C", "EUR/USD OTC", "BUY", "1 Minute", f"2026-01-01T10:0{i}:00")
+        database.grade_imported_signal(sig_id, "win", payout_percent=85)
+
+    def test_create_run_async_returns_immediately_pending_or_running(self):
+        self._graded_signal()
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        body = backtest_routes.RunCreateRequest(
+            name="R", source="imported", starting_bankroll=1000, risk_profile_ids=[profile_id])
+        run = _run(backtest_routes.create_run_async(body, user=_FAKE_USER))
+        self.assertEqual(run["run_mode"], "async")
+        self.assertIn(run["status"], ("pending", "running", "completed"))
+
+    def test_async_run_eventually_completes(self):
+        self._graded_signal()
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        body = backtest_routes.RunCreateRequest(
+            name="R", source="imported", starting_bankroll=1000, risk_profile_ids=[profile_id])
+
+        async def scenario():
+            run = await backtest_routes.create_run_async(body, user=_FAKE_USER)
+            task = backtest_routes.backtest_engine._ACTIVE_BACKTEST_TASKS.get(run["id"])
+            if task is not None:
+                await task
+            return run["id"]
+
+        run_id = _run(scenario())
+        progress = backtest_routes.get_run_progress(run_id, user=_FAKE_USER)
+        self.assertEqual(progress["status"], "completed")
+        self.assertEqual(progress["progress_percent"], 100.0)
+
+    def test_get_progress_404_for_unknown_run(self):
+        with self.assertRaises(HTTPException) as ctx:
+            backtest_routes.get_run_progress(999999, user=_FAKE_USER)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_cancel_before_start_prevents_any_simulation(self):
+        self._graded_signal()
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        body = backtest_routes.RunCreateRequest(
+            name="R", source="imported", starting_bankroll=1000, risk_profile_ids=[profile_id])
+        run_id = database.create_backtest_run(
+            "R", {"source": "imported"}, 1000, run_mode="async")
+        database.create_backtest_strategy(run_id, profile_id, "S1", database.get_risk_profile(profile_id))
+
+        cancel_result = backtest_routes.cancel_run(run_id, user=_FAKE_USER)
+        self.assertTrue(cancel_result["cancelled"])
+
+        _run(backtest_routes.backtest_engine.run_backtest_async(run_id))
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "cancelled")
+
+    def test_cancel_404_for_unknown_run(self):
+        with self.assertRaises(HTTPException) as ctx:
+            backtest_routes.cancel_run(999999, user=_FAKE_USER)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_cancel_is_a_clean_no_op_once_completed(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        database.update_backtest_run_status(run_id, "running")
+        database.update_backtest_run_status(run_id, "completed")
+        result = backtest_routes.cancel_run(run_id, user=_FAKE_USER)
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(result["status"], "completed")
+
+    def test_audit_history_includes_creation_and_completion(self):
+        self._graded_signal()
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        body = backtest_routes.RunCreateRequest(
+            name="R", source="imported", starting_bankroll=1000, risk_profile_ids=[profile_id])
+        run = backtest_routes.create_run(body, user=_FAKE_USER)
+        history = backtest_routes.get_run_audit_history(run["run"]["id"], user=_FAKE_USER)
+        actions = [entry["action"] for entry in history]
+        self.assertIn("created", actions)
+        self.assertIn("status_completed", actions)
+
+    def test_audit_history_404_for_unknown_run(self):
+        with self.assertRaises(HTTPException) as ctx:
+            backtest_routes.get_run_audit_history(999999, user=_FAKE_USER)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

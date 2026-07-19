@@ -260,8 +260,7 @@ def estimate_run(body: RunEstimateRequest, user=Depends(get_current_user)):
     return backtest_engine.estimate_backtest_run(pool_config, len(body.risk_profile_ids))
 
 
-@router.post("/runs")
-def create_run(body: RunCreateRequest, user=Depends(require_admin)):
+def _validate_run_request(body):
     if body.source not in ("live", "imported", "both"):
         raise HTTPException(status_code=400, detail="source must be live, imported, or both")
     if body.session_window not in ("daily", "all"):
@@ -271,6 +270,8 @@ def create_run(body: RunCreateRequest, user=Depends(require_admin)):
     if body.min_trust_tier is not None and not database.is_valid_trust_tier(body.min_trust_tier):
         raise HTTPException(status_code=400, detail=f"invalid min_trust_tier: {body.min_trust_tier!r}")
 
+
+def _create_run_and_strategies(body, user, run_mode):
     signal_pool = {
         "source": body.source, "channel_filter": body.channel_filter,
         "date_from": body.date_from, "date_to": body.date_to,
@@ -279,15 +280,25 @@ def create_run(body: RunCreateRequest, user=Depends(require_admin)):
     run_id = database.create_backtest_run(
         body.name, signal_pool, body.starting_bankroll,
         default_payout_percent=body.default_payout_percent, session_window=body.session_window,
-        created_by=user["email"],
+        created_by=user["email"], run_mode=run_mode,
     )
-
     for profile_id in body.risk_profile_ids:
         profile = database.get_risk_profile(profile_id)
         if profile is None:
             database.update_backtest_run_status(run_id, "failed", error_message=f"risk profile {profile_id} not found")
             raise HTTPException(status_code=404, detail=f"risk profile {profile_id} not found")
         database.create_backtest_strategy(run_id, profile_id, profile["name"], profile)
+    return run_id
+
+
+@router.post("/runs")
+def create_run(body: RunCreateRequest, user=Depends(require_admin)):
+    """Synchronous - blocks until the run completes and returns the full
+    report, same as always (docs/AXIM_APP_PLAN.md's original, documented
+    design). Unchanged behavior; POST /runs/async below is the new
+    asynchronous path with progress + cancellation."""
+    _validate_run_request(body)
+    run_id = _create_run_and_strategies(body, user, run_mode="sync")
 
     try:
         backtest_engine.run_backtest(run_id)
@@ -295,6 +306,59 @@ def create_run(body: RunCreateRequest, user=Depends(require_admin)):
         raise HTTPException(status_code=422, detail=str(e))
 
     return database.get_backtest_report(run_id)
+
+
+@router.post("/runs/async")
+async def create_run_async(body: RunCreateRequest, user=Depends(require_admin)):
+    """The operator-facing "Run Backtest" button's real path (2026-07-19
+    async job execution directive): creates the run+strategies rows,
+    schedules the simulation as a background task via
+    backtest_engine.start_backtest_run_async, and returns immediately
+    with status='pending' - the caller polls GET /runs/{id}/progress and
+    may POST /runs/{id}/cancel. Begins only when this endpoint is
+    actually called (i.e. only when the operator presses the button) -
+    nothing here runs on any schedule or automatically."""
+    _validate_run_request(body)
+    run_id = _create_run_and_strategies(body, user, run_mode="async")
+    backtest_engine.start_backtest_run_async(run_id)
+    return database.get_backtest_run(run_id)
+
+
+@router.get("/runs/{run_id}/progress")
+def get_run_progress(run_id: int, user=Depends(get_current_user)):
+    run = database.get_backtest_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="backtest run not found")
+    return {
+        "id": run["id"], "status": run["status"], "progress_percent": run["progress_percent"],
+        "strategies_completed": run["strategies_completed"], "total_strategies": run["total_strategies"],
+        "cancel_requested": bool(run["cancel_requested"]), "error_message": run["error_message"],
+    }
+
+
+@router.post("/runs/{run_id}/cancel")
+def cancel_run(run_id: int, user=Depends(require_admin)):
+    """Sets the DB cancel_requested flag - the real, cooperative
+    mechanism a running async job checks between strategies (see
+    backtest_engine.run_backtest's cancel_check). Deliberately does NOT
+    also call asyncio.Task.cancel() on the tracked task:
+    run_backtest_async's simulation runs inside asyncio.to_thread, and
+    cancelling the wrapping Task cannot actually stop that underlying
+    thread (Python has no mechanism to force-kill a running thread) - it
+    would only produce a confusing dangling exception without genuinely
+    stopping anything, so it's not done here."""
+    run = database.get_backtest_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="backtest run not found")
+    took_effect = database.request_backtest_cancellation(run_id, changed_by=user["email"], reason="operator cancel")
+    return {"cancelled": took_effect, "status": database.get_backtest_run(run_id)["status"]}
+
+
+@router.get("/runs/{run_id}/audit-history")
+def get_run_audit_history(run_id: int, user=Depends(get_current_user)):
+    if database.get_backtest_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="backtest run not found")
+    return database.list_backtest_data_audit_log(entity_type="backtest_run", entity_id=run_id)
 
 
 @router.get("/runs")

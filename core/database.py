@@ -1241,6 +1241,28 @@ def initialize_database():
     if "fund_id" not in backtest_run_columns:
         conn.execute("ALTER TABLE backtest_runs ADD COLUMN fund_id INTEGER")
 
+    # Asynchronous job execution (2026-07-19 directive) - run_mode records
+    # whether POST /runs (sync, in-request, unchanged - still the path
+    # core/provider_onboarding.py's auto-onboard flow uses) or POST
+    # /runs/async created this row. progress_percent/total_strategies/
+    # strategies_completed back the progress bar; cancel_requested is the
+    # cooperative-cancellation flag a running async job polls between
+    # strategies (there is no real job queue in this single-uvicorn-
+    # process app - see _start_session_lock's own comment on that same
+    # assumption - so a DB flag, not an in-memory-only signal, is what
+    # actually gets checked, the same durable-state-over-memory
+    # philosophy as claim_broker_account_connecting).
+    _NEW_BACKTEST_RUN_ASYNC_COLUMNS = {
+        "run_mode": "TEXT DEFAULT 'sync'",
+        "progress_percent": "REAL DEFAULT 0",
+        "total_strategies": "INTEGER DEFAULT 0",
+        "strategies_completed": "INTEGER DEFAULT 0",
+        "cancel_requested": "INTEGER DEFAULT 0",
+    }
+    for column, sql_type in _NEW_BACKTEST_RUN_ASYNC_COLUMNS.items():
+        if column not in backtest_run_columns:
+            conn.execute(f"ALTER TABLE backtest_runs ADD COLUMN {column} {sql_type}")
+
     # One row per risk_profile being compared within a run.
     # profile_snapshot_json freezes the profile+martingale+compounding+
     # vault settings at run time - profiles are mutable and a backtest
@@ -5741,18 +5763,23 @@ def analyze_signal_eligibility(source, channel_filter=None, date_from=None, date
 
 @timed("database")
 def create_backtest_run(name, signal_pool, starting_bankroll, default_payout_percent=85,
-                         session_window="daily", created_by=None):
+                         session_window="daily", created_by=None, run_mode="sync"):
+    if run_mode not in ("sync", "async"):
+        raise ValueError(f"invalid run_mode: {run_mode!r}")
     conn = get_connection()
     now = datetime.now().isoformat()
     cursor = conn.execute("""
         INSERT INTO backtest_runs (
             name, signal_pool_json, starting_bankroll, default_payout_percent,
-            session_window, status, created_by, created_at
-        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+            session_window, status, created_by, created_at, run_mode
+        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
     """, (name, json.dumps(signal_pool), starting_bankroll, default_payout_percent,
-          session_window, created_by, now))
+          session_window, created_by, now, run_mode))
     conn.commit()
     run_id = cursor.lastrowid
+    _log_backtest_data_audit(conn, "backtest_run", run_id, "created",
+                              {"name": name, "run_mode": run_mode, "signal_pool": signal_pool}, created_by, None)
+    conn.commit()
     conn.close()
     return run_id
 
@@ -5779,16 +5806,69 @@ def list_backtest_runs(limit=50):
     return [_backtest_run_row_to_dict(r) for r in rows]
 
 
+_VALID_BACKTEST_RUN_STATUSES = ("pending", "running", "completed", "failed", "cancelled")
+
+
 @timed("database")
 def update_backtest_run_status(run_id, status, error_message=None):
-    if status not in ("pending", "running", "completed", "failed"):
+    if status not in _VALID_BACKTEST_RUN_STATUSES:
         raise ValueError(f"invalid backtest run status: {status!r}")
     conn = get_connection()
-    completed_at = datetime.now().isoformat() if status in ("completed", "failed") else None
+    completed_at = datetime.now().isoformat() if status in ("completed", "failed", "cancelled") else None
     conn.execute(
         "UPDATE backtest_runs SET status = ?, error_message = ?, completed_at = COALESCE(?, completed_at) WHERE id = ?",
         (status, error_message, completed_at, run_id),
     )
+    _log_backtest_data_audit(conn, "backtest_run", run_id, f"status_{status}",
+                              {"error_message": error_message} if error_message else None, None, None)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def request_backtest_cancellation(run_id, changed_by=None, reason=None):
+    """Atomic conditional claim (same shape as claim_broker_account_
+    connecting) - only takes effect while the run is still pending or
+    running, so a cancel request against an already-completed/failed run
+    is a clean no-op rather than a race that could resurrect a finished
+    row. Returns True if the flag was actually set. The running async
+    job (core/backtest_engine.run_backtest_async) is what actually stops
+    - this only requests it; see is_backtest_cancellation_requested."""
+    conn = get_connection()
+    cursor = conn.execute(
+        "UPDATE backtest_runs SET cancel_requested = 1 WHERE id = ? AND status IN ('pending', 'running')",
+        (run_id,),
+    )
+    took_effect = cursor.rowcount > 0
+    if took_effect:
+        _log_backtest_data_audit(conn, "backtest_run", run_id, "cancel_requested", None, changed_by, reason)
+    conn.commit()
+    conn.close()
+    return took_effect
+
+
+@timed("database")
+def is_backtest_cancellation_requested(run_id):
+    conn = get_connection()
+    row = conn.execute("SELECT cancel_requested FROM backtest_runs WHERE id = ?", (run_id,)).fetchone()
+    conn.close()
+    return bool(row and row["cancel_requested"])
+
+
+@timed("database")
+def update_backtest_run_progress(run_id, progress_percent, strategies_completed=None, total_strategies=None):
+    """Cheap, frequent-call-safe progress update - deliberately NOT
+    audited (unlike status transitions/cancellation/edits above): an
+    audit row per progress tick would be pure noise, not a real "what
+    changed and why" event."""
+    conn = get_connection()
+    fields = {"progress_percent": progress_percent}
+    if strategies_completed is not None:
+        fields["strategies_completed"] = strategies_completed
+    if total_strategies is not None:
+        fields["total_strategies"] = total_strategies
+    set_clauses = ", ".join(f"{key} = ?" for key in fields)
+    conn.execute(f"UPDATE backtest_runs SET {set_clauses} WHERE id = ?", list(fields.values()) + [run_id])
     conn.commit()
     conn.close()
 

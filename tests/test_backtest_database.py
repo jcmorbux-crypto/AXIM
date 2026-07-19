@@ -392,5 +392,78 @@ class SignalEligibilityTests(BacktestDbTestCase):
         self.assertEqual(sum(result["breakdown"].values()), 3)
 
 
+class AsyncRunLifecycleTests(BacktestDbTestCase):
+    """2026-07-19 async job execution directive: progress/cancellation
+    state and the run-lifecycle audit trail."""
+
+    def test_run_defaults_to_sync_mode_and_zero_progress(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["run_mode"], "sync")
+        self.assertEqual(run["progress_percent"], 0)
+        self.assertEqual(run["cancel_requested"], 0)
+
+    def test_create_run_rejects_invalid_run_mode(self):
+        with self.assertRaises(ValueError):
+            database.create_backtest_run("R", {}, 1000, run_mode="parallel")
+
+    def test_status_accepts_cancelled(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        database.update_backtest_run_status(run_id, "cancelled")
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "cancelled")
+        self.assertIsNotNone(run["completed_at"])
+
+    def test_request_cancellation_takes_effect_while_pending(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        took_effect = database.request_backtest_cancellation(run_id)
+        self.assertTrue(took_effect)
+        self.assertTrue(database.is_backtest_cancellation_requested(run_id))
+
+    def test_request_cancellation_is_a_no_op_once_completed(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        database.update_backtest_run_status(run_id, "running")
+        database.update_backtest_run_status(run_id, "completed")
+        took_effect = database.request_backtest_cancellation(run_id)
+        self.assertFalse(took_effect)
+        self.assertFalse(database.is_backtest_cancellation_requested(run_id))
+
+    def test_update_progress_partial_fields(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        database.update_backtest_run_progress(run_id, 50.0, strategies_completed=2, total_strategies=4)
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["progress_percent"], 50.0)
+        self.assertEqual(run["strategies_completed"], 2)
+        self.assertEqual(run["total_strategies"], 4)
+
+        database.update_backtest_run_progress(run_id, 75.0)
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["progress_percent"], 75.0)
+        self.assertEqual(run["strategies_completed"], 2)  # unchanged, not passed this call
+
+    def test_run_lifecycle_is_audited(self):
+        run_id = database.create_backtest_run("R", {}, 1000, created_by="ops@axim")
+        database.update_backtest_run_status(run_id, "running")
+        database.update_backtest_run_status(run_id, "completed")
+        log = database.list_backtest_data_audit_log(entity_type="backtest_run", entity_id=run_id)
+        actions = [entry["action"] for entry in log]
+        self.assertIn("created", actions)
+        self.assertIn("status_running", actions)
+        self.assertIn("status_completed", actions)
+
+    def test_cancellation_request_is_audited(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        database.request_backtest_cancellation(run_id, changed_by="ops@axim", reason="operator cancel")
+        log = database.list_backtest_data_audit_log(entity_type="backtest_run", entity_id=run_id)
+        self.assertTrue(any(entry["action"] == "cancel_requested" for entry in log))
+
+    def test_progress_updates_are_not_individually_audited(self):
+        run_id = database.create_backtest_run("R", {}, 1000)
+        for pct in (10, 20, 30, 40, 50):
+            database.update_backtest_run_progress(run_id, pct)
+        log = database.list_backtest_data_audit_log(entity_type="backtest_run", entity_id=run_id)
+        self.assertEqual(len(log), 1)  # only the "created" entry - no per-tick noise
+
+
 if __name__ == "__main__":
     unittest.main()

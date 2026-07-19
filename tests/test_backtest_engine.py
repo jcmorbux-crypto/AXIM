@@ -878,5 +878,100 @@ class EstimateBacktestRunTests(DbBackedTestCase):
         self.assertTrue(any("Select at least one strategy" in w for w in estimate["warnings"]))
 
 
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+class CooperativeCancellationTests(DbBackedTestCase):
+    def _run_with_two_strategies(self, cancel_check):
+        for i in range(5):
+            sig_id = database.create_imported_signal(
+                "C", "EUR/USD OTC", "BUY", "1 Minute", f"2026-01-01T10:0{i}:00")
+            database.grade_imported_signal(sig_id, "win", payout_percent=85)
+        run_id = database.create_backtest_run("R", {"source": "imported"}, 1000)
+        for label in ("S1", "S2"):
+            profile_id = database.create_risk_profile(label, sizing_mode="fixed", fixed_amount=10)
+            profile = database.get_risk_profile(profile_id)
+            database.create_backtest_strategy(run_id, profile_id, label, profile)
+        backtest_engine.run_backtest(run_id, cancel_check=cancel_check)
+        return run_id
+
+    def test_cancel_check_true_before_first_strategy_stops_immediately(self):
+        run_id = self._run_with_two_strategies(cancel_check=lambda: True)
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "cancelled")
+        report = database.get_backtest_report(run_id)
+        self.assertIsNone(report["strategies"][0]["metrics"])  # never simulated
+
+    def test_cancel_check_false_runs_to_completion_unaffected(self):
+        run_id = self._run_with_two_strategies(cancel_check=lambda: False)
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["progress_percent"], 100.0)
+        self.assertEqual(run["strategies_completed"], 2)
+
+    def test_cancel_check_fires_after_first_strategy_stops_before_second(self):
+        calls = {"n": 0}
+
+        def cancel_check():
+            calls["n"] += 1
+            return calls["n"] > 1  # False on strategy 1's check, True on strategy 2's
+
+        run_id = self._run_with_two_strategies(cancel_check=cancel_check)
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "cancelled")
+        self.assertEqual(run["strategies_completed"], 1)
+        report = database.get_backtest_report(run_id)
+        self.assertIsNotNone(report["strategies"][0]["metrics"])
+        self.assertIsNone(report["strategies"][1]["metrics"])
+
+    def test_default_none_never_checks_cancellation(self):
+        run_id = self._run_with_two_strategies(cancel_check=None)
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "completed")
+
+
+class RunBacktestAsyncTests(DbBackedTestCase):
+    def _make_run_with_signals(self, n=5):
+        for i in range(n):
+            sig_id = database.create_imported_signal(
+                "C", "EUR/USD OTC", "BUY", "1 Minute", f"2026-01-01T10:0{i}:00")
+            database.grade_imported_signal(sig_id, "win", payout_percent=85)
+        run_id = database.create_backtest_run("R", {"source": "imported"}, 1000, run_mode="async")
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        profile = database.get_risk_profile(profile_id)
+        database.create_backtest_strategy(run_id, profile_id, "S1", profile)
+        return run_id
+
+    def test_run_backtest_async_completes_normally(self):
+        run_id = self._make_run_with_signals()
+        _run(backtest_engine.run_backtest_async(run_id))
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["progress_percent"], 100.0)
+
+    def test_run_backtest_async_honors_a_cancellation_requested_before_it_starts(self):
+        run_id = self._make_run_with_signals()
+        database.request_backtest_cancellation(run_id)
+        _run(backtest_engine.run_backtest_async(run_id))
+        run = database.get_backtest_run(run_id)
+        self.assertEqual(run["status"], "cancelled")
+        report = database.get_backtest_report(run_id)
+        self.assertIsNone(report["strategies"][0]["metrics"])
+
+    def test_start_backtest_run_async_schedules_a_real_task_and_cleans_up(self):
+        async def scenario():
+            run_id = self._make_run_with_signals()
+            task = backtest_engine.start_backtest_run_async(run_id)
+            self.assertIn(run_id, backtest_engine._ACTIVE_BACKTEST_TASKS)
+            await task
+            self.assertNotIn(run_id, backtest_engine._ACTIVE_BACKTEST_TASKS)
+            run = database.get_backtest_run(run_id)
+            self.assertEqual(run["status"], "completed")
+
+        _run(scenario())
+
+
 if __name__ == "__main__":
     unittest.main()

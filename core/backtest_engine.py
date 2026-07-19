@@ -42,6 +42,7 @@ Honesty notes:
   (see _risk_score/_best_for_label below), not a scientific
   classification - labeled as such in the UI.
 """
+import asyncio
 import csv
 import io
 import sys
@@ -691,12 +692,29 @@ def rank_strategies(strategy_metrics):
     }
 
 
-def run_backtest(run_id):
+class BacktestCancelled(Exception):
+    """Raised internally when cancel_check fires between strategies -
+    caught separately from BacktestEngine's normal exception handling so
+    a deliberately-cancelled run is marked 'cancelled', not 'failed', and
+    doesn't propagate as an error to run_backtest_async's caller."""
+
+
+def run_backtest(run_id, cancel_check=None):
     """The DB-driving orchestrator: loads the run + its strategies,
     simulates each via the pure simulate_strategy() above, persists
     sessions/trades/metrics, ranks strategies against each other, and
     marks the run completed (or failed, with the real error message -
-    never silently swallowed)."""
+    never silently swallowed).
+
+    cancel_check (default None) is an optional zero-arg callable checked
+    BEFORE each strategy's simulation - None (every existing caller,
+    including core/provider_onboarding.py's auto-onboard path and
+    POST /runs) preserves the exact original behavior: no cancellation
+    is possible, nothing new is checked. Progress is always written to
+    the run row after each strategy regardless of cancel_check (cheap,
+    harmless for a synchronous caller that never reads it) - see
+    run_backtest_async below for the actual async/cancellable entry
+    point POST /runs/async uses."""
     run = database.get_backtest_run(run_id)
     if run is None:
         raise ValueError(f"no backtest run with id {run_id}")
@@ -715,8 +733,12 @@ def run_backtest(run_id):
             raise ValueError("no graded historical signals match this run's filters")
 
         strategies = database.list_backtest_strategies(run_id)
+        database.update_backtest_run_progress(run_id, 0, strategies_completed=0, total_strategies=len(strategies))
         strategy_metrics = []
-        for strategy in strategies:
+        for i, strategy in enumerate(strategies):
+            if cancel_check is not None and cancel_check():
+                raise BacktestCancelled()
+
             profile = strategy["profile_snapshot"]
             result = simulate_strategy(
                 signal_pool, profile, run["starting_bankroll"],
@@ -736,15 +758,60 @@ def run_backtest(run_id):
             database.save_backtest_metrics(strategy["id"], metrics)
             strategy_metrics.append((strategy["id"], metrics))
 
+            completed = i + 1
+            database.update_backtest_run_progress(
+                run_id, round(completed / len(strategies) * 100, 1), strategies_completed=completed)
+
         ranks = rank_strategies(strategy_metrics)
         for strategy_id, rank_fields in ranks.items():
             database.save_backtest_metrics(strategy_id, rank_fields)
 
         database.update_backtest_run_status(run_id, "completed")
+    except BacktestCancelled:
+        logger.info("backtest_engine: run %s cancelled", run_id)
+        database.update_backtest_run_status(run_id, "cancelled")
     except Exception as e:
         logger.exception("backtest_engine: run %s failed", run_id)
         database.update_backtest_run_status(run_id, "failed", error_message=str(e))
         raise
+
+
+# In-process convenience registry only (this app runs as a single
+# uvicorn process - see core/database.py's _start_session_lock comment
+# on that same assumption). The DB's cancel_requested flag is the real
+# correctness backbone (cross-process-safe, durable); this dict just
+# lets the API layer look up "is a task for this run still alive" and
+# optionally issue a real asyncio-level task.cancel() as defense in
+# depth. Never the only thing that determines whether a run stops.
+_ACTIVE_BACKTEST_TASKS = {}
+
+
+async def run_backtest_async(run_id):
+    """The async/cancellable entry point POST /runs/async uses - runs
+    the exact same orchestrator as run_backtest (same simulation math,
+    same persistence, same metrics) via asyncio.to_thread, since
+    simulate_strategy is CPU-bound synchronous code that would otherwise
+    block the event loop (and every other request) for its duration.
+    Cancellation is cooperative, checked once per strategy (not
+    mid-strategy) - simulate_strategy's own measured throughput
+    (~0.005ms/signal) makes finer-grained interruption unnecessary in
+    practice; a run with very many strategies stops within one
+    strategy's simulation time of a cancel request, not instantly."""
+    def cancel_check():
+        return database.is_backtest_cancellation_requested(run_id)
+
+    await asyncio.to_thread(run_backtest, run_id, cancel_check=cancel_check)
+
+
+def start_backtest_run_async(run_id):
+    """Schedules run_backtest_async as a background task on the current
+    event loop and tracks its handle - called from POST /runs/async's
+    (async def) request handler right after creating the run+strategies
+    rows, so a valid running loop always exists here."""
+    task = asyncio.get_event_loop().create_task(run_backtest_async(run_id))
+    _ACTIVE_BACKTEST_TASKS[run_id] = task
+    task.add_done_callback(lambda t: _ACTIVE_BACKTEST_TASKS.pop(run_id, None))
+    return task
 
 
 # Pre-run estimate (2026-07-19 directive: an operator should see what a
