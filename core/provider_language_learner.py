@@ -263,9 +263,16 @@ _OTC_ROBOT_OPTION_WORD_RE = re.compile(r"\bOPTION\b", re.IGNORECASE)
 
 
 def _score_otc_pro_robot_flow(messages):
-    total = sum(1 for m in messages if _normalize(m.get("text")))
-    if not total:
-        return 0.0
+    """Real bug fixed 2026-07-19 (found via Coverage Analysis on real
+    channel history): `total` used to count EVERY non-empty message,
+    including asset-announcement and terminal-result lines this
+    function's own comments already said "doesn't count as a hit or a
+    miss" - inflating the denominator with messages that were never
+    signal attempts in the first place, so a source could score as low
+    as 41% even when it correctly parsed ~99% of its actual signal
+    attempts. `total` now only counts option-word lines - genuine
+    signal attempts - matching what the loop actually scores."""
+    attempts = 0
     hits = 0
     carried_asset = None
     for m in messages:
@@ -279,10 +286,13 @@ def _score_otc_pro_robot_flow(messages):
         if _OTC_ROBOT_TERMINAL_RESULT_RE.search(text.upper()):
             continue  # a terminal result line, not a signal - doesn't count as a hit or a miss
         if not _OTC_ROBOT_OPTION_WORD_RE.search(text):
-            continue
+            continue  # promo/other chatter - not a signal attempt at all
+        attempts += 1
         if parse_signal(text, carried_asset=carried_asset):
             hits += 1
-    return hits / total
+    if not attempts:
+        return 0.0
+    return hits / attempts
 
 
 def _parse_otc_pro_robot_flow(messages):
@@ -579,9 +589,112 @@ def _parse_two_step(messages):
 def analyze_provider(messages):
     """Top-level entry point: detect + parse in one call. Returns
     {"pattern": ..., "coverage": ..., "signal_records": [...],
-    "result_links": [...]} or None if no pattern was viable."""
+    "result_links": [...], "coverage_breakdown": {...}} or None if no
+    pattern was viable."""
     detection = detect_pattern(messages)
     if detection is None:
         return None
     signal_records, result_links = parse_with_pattern(detection["pattern"], messages)
-    return {**detection, "signal_records": signal_records, "result_links": result_links}
+    coverage_breakdown = analyze_coverage_gaps(messages, detection["pattern"])
+    return {
+        **detection, "signal_records": signal_records, "result_links": result_links,
+        "coverage_breakdown": coverage_breakdown,
+    }
+
+
+# 2026-07-19 graduation-and-coverage policy: a single "coverage: 41%"
+# number hides WHY it's low. Every observed message must land in
+# exactly one of these buckets, attributable to a concrete reason - the
+# Coverage Analysis screen this backs is meant to drive gap-driven
+# development (fix the highest-impact reason, recalculate, repeat),
+# not just report a score.
+COVERAGE_CATEGORIES = [
+    "successfully_normalized",
+    "not_a_signal_asset_announcement",
+    "not_a_signal_terminal_result",
+    "not_a_signal_chatter",
+    "unknown_direction_keyword",
+    "unknown_expiration_format",
+    "unknown_asset_format",
+    "multi_message_sequence_incomplete",
+    "reply_chain_dependency",
+    "edited_message_dependency",
+    "cancellation_dependency",
+    "duplicate_detection",
+    "ambiguous",
+    "unsupported_format",
+    "other",
+]
+
+_ASSET_PAIR_PATTERN = r"\b([A-Z]{3})\s*/\s*([A-Z]{3})\b"
+_DIRECTION_WORD_RE = re.compile(r"\b(UP|DOWN|CALL|PUT|HIGH|LOWER|BUY|SELL)\b")
+
+
+def _has_asset_in_text(text_upper):
+    return _find_valid_pair(_ASSET_PAIR_PATTERN, text_upper) is not None
+
+
+def analyze_coverage_gaps(messages, pattern_name):
+    """Real, per-message classification of why this provider's coverage
+    score is what it is. Every message lands in exactly one bucket -
+    nothing fabricated: a pattern without deep diagnostics yet reports
+    its failures honestly as "unsupported_format" rather than inventing
+    a specific reason this function can't actually verify for it.
+
+    otc_pro_robot_flow gets real, specific diagnostics (it's the
+    pattern both of AXIM's real observed channels currently use) -
+    parse_signal only ever fails for exactly two reasons (no asset, no
+    direction word), so those are distinguishable with certainty here,
+    not guessed."""
+    counts = {cat: 0 for cat in COVERAGE_CATEGORIES}
+    total = 0
+
+    if pattern_name == "otc_pro_robot_flow":
+        carried_asset = None
+        for m in messages:
+            text = _normalize(m.get("text"))
+            if not text:
+                continue
+            total += 1
+            upper = text.upper()
+
+            announced = parse_asset_announcement(text)
+            if announced:
+                carried_asset = announced
+                counts["not_a_signal_asset_announcement"] += 1
+                continue
+            if _OTC_ROBOT_TERMINAL_RESULT_RE.search(upper):
+                counts["not_a_signal_terminal_result"] += 1
+                continue
+            if not _OTC_ROBOT_OPTION_WORD_RE.search(text):
+                counts["not_a_signal_chatter"] += 1
+                continue
+
+            if parse_signal(text, carried_asset=carried_asset):
+                counts["successfully_normalized"] += 1
+                continue
+
+            has_asset = _has_asset_in_text(upper) or carried_asset is not None
+            has_direction = _DIRECTION_WORD_RE.search(upper) is not None
+            if not has_asset:
+                counts["multi_message_sequence_incomplete"] += 1
+            elif not has_direction:
+                counts["unknown_direction_keyword"] += 1
+            else:
+                counts["other"] += 1
+    else:
+        signal_records, _ = parse_with_pattern(pattern_name, messages)
+        matched_ids = {r["source_message_id"] for r in signal_records}
+        for m in messages:
+            text = _normalize(m.get("text"))
+            if not text:
+                continue
+            total += 1
+            if _classify_result_token(text) is not None:
+                counts["not_a_signal_terminal_result"] += 1
+            elif m.get("message_id") in matched_ids:
+                counts["successfully_normalized"] += 1
+            else:
+                counts["unsupported_format"] += 1
+
+    return {"total_messages": total, "breakdown": counts}

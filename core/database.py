@@ -321,7 +321,7 @@ def initialize_database():
     # this SHORT-TERM rate against the lifetime parse_success_count/
     # observed_signal_count rate, since a provider that was always somewhat
     # imperfect wouldn't show drift in a slow-moving cumulative average.
-    _NEW_PROVIDER_PROFILE_COLUMNS = {"recent_outcomes_json": "TEXT"}
+    _NEW_PROVIDER_PROFILE_COLUMNS = {"recent_outcomes_json": "TEXT", "coverage_breakdown_json": "TEXT"}
     provider_profile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(provider_profiles)")}
     for column, sql_type in _NEW_PROVIDER_PROFILE_COLUMNS.items():
         if column not in provider_profile_columns:
@@ -2306,6 +2306,7 @@ _PROVIDER_PROFILE_FIELDS = {
     "graduation_min_signals", "graduation_min_success_rate", "graduation_min_confidence",
     "demo_approved_at", "demo_approved_by", "live_approved_at", "live_approved_by",
     "last_analyzed_at", "last_drift_check_at", "drift_detected_at", "drift_reason", "recent_outcomes_json",
+    "coverage_breakdown_json",
 }
 
 _VALID_TRADING_MODES = {"observation", "demo_ready", "demo", "live"}

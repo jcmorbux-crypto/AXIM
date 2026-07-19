@@ -300,5 +300,78 @@ class OtcProRobotFlowTests(unittest.TestCase):
                 self.assertEqual(score, 0.0, f"{name} unexpectedly matched OTC Pro Robot-style text")
 
 
+class OtcProRobotScoringDenominatorTests(unittest.TestCase):
+    """Real bug fixed 2026-07-19: the coverage score's denominator used
+    to count EVERY message (including asset-announcement and terminal-
+    result lines this function's own comments already said don't count
+    as a hit or a miss), diluting a source that correctly parses nearly
+    all its real signal attempts down to a misleadingly low score."""
+
+    PREP = OtcProRobotFlowTests.PREP
+    ENTRY = OtcProRobotFlowTests.ENTRY
+    TERMINAL_WIN = OtcProRobotFlowTests.TERMINAL_WIN
+
+    def test_many_non_signal_lines_do_not_dilute_a_clean_score(self):
+        # 1 real signal attempt (which succeeds), plus 10x as many
+        # announcement/result lines around it - none of those should
+        # count against the score now.
+        pairs = []
+        msg_id = 1
+        for _ in range(10):
+            pairs.append((msg_id, self.PREP)); msg_id += 1
+            pairs.append((msg_id, self.TERMINAL_WIN)); msg_id += 1
+        pairs.append((msg_id, self.PREP)); msg_id += 1
+        pairs.append((msg_id, self.ENTRY)); msg_id += 1
+        messages = _messages(*pairs)
+        score = learner._score_otc_pro_robot_flow(messages)
+        self.assertEqual(score, 1.0)
+
+    def test_score_is_zero_with_no_signal_attempts_at_all(self):
+        messages = _messages((1, self.PREP), (2, self.TERMINAL_WIN))
+        self.assertEqual(learner._score_otc_pro_robot_flow(messages), 0.0)
+
+
+class AnalyzeCoverageGapsTests(unittest.TestCase):
+    """The Coverage Analysis breakdown (2026-07-19 graduation-and-
+    coverage policy) - every observed message must land in exactly one
+    attributable bucket, never a single opaque percentage."""
+
+    PREP = OtcProRobotFlowTests.PREP
+    ENTRY = OtcProRobotFlowTests.ENTRY
+    TERMINAL_WIN = OtcProRobotFlowTests.TERMINAL_WIN
+
+    def test_buckets_a_clean_real_sequence_correctly(self):
+        messages = _messages((1, self.PREP), (2, self.ENTRY), (3, self.TERMINAL_WIN))
+        result = learner.analyze_coverage_gaps(messages, "otc_pro_robot_flow")
+        self.assertEqual(result["total_messages"], 3)
+        b = result["breakdown"]
+        self.assertEqual(b["not_a_signal_asset_announcement"], 1)
+        self.assertEqual(b["successfully_normalized"], 1)
+        self.assertEqual(b["not_a_signal_terminal_result"], 1)
+        self.assertEqual(sum(b.values()), 3)
+
+    def test_entry_with_no_preceding_prep_is_incomplete_sequence(self):
+        messages = _messages((1, self.ENTRY))
+        result = learner.analyze_coverage_gaps(messages, "otc_pro_robot_flow")
+        self.assertEqual(result["breakdown"]["multi_message_sequence_incomplete"], 1)
+        self.assertEqual(result["breakdown"]["successfully_normalized"], 0)
+
+    def test_chatter_is_bucketed_separately_from_real_attempts(self):
+        messages = _messages((1, "Good morning traders! Have a profitable session today"))
+        result = learner.analyze_coverage_gaps(messages, "otc_pro_robot_flow")
+        self.assertEqual(result["breakdown"]["not_a_signal_chatter"], 1)
+
+    def test_every_category_is_present_even_when_zero(self):
+        messages = _messages((1, self.PREP), (2, self.ENTRY), (3, self.TERMINAL_WIN))
+        result = learner.analyze_coverage_gaps(messages, "otc_pro_robot_flow")
+        self.assertEqual(set(result["breakdown"].keys()), set(learner.COVERAGE_CATEGORIES))
+
+    def test_generic_pattern_still_classifies_every_message_honestly(self):
+        messages = _messages((1, "EUR/USD OTC BUY M5"), (2, "just chatting, good luck everyone"))
+        result = learner.analyze_coverage_gaps(messages, "compact_buysell")
+        self.assertEqual(result["total_messages"], 2)
+        self.assertEqual(sum(result["breakdown"].values()), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

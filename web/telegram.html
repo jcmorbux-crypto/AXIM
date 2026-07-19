@@ -323,6 +323,63 @@ function tradingModeBadge(channelId) {
   return `<span class="badge ${cls}" title="Universal Signal Intelligence Engine trading mode">${label}</span>`;
 }
 
+// Coverage Analysis (2026-07-19 graduation-and-coverage policy) - every
+// observed message is attributable to one concrete reason, not folded
+// into a single opaque percentage. Rows marked "not a signal" are
+// expected/correct classifications, not failures - shown in a muted
+// tone so they read as context, not problems to fix.
+const COVERAGE_CATEGORY_LABELS = {
+  successfully_normalized: "Successfully normalized",
+  not_a_signal_asset_announcement: "Asset announcement (not a signal)",
+  not_a_signal_terminal_result: "Result/summary message (not a signal)",
+  not_a_signal_chatter: "Other chatter (not a signal)",
+  unknown_direction_keyword: "Unknown direction keyword",
+  unknown_expiration_format: "Unknown expiration format",
+  unknown_asset_format: "Unknown asset format",
+  multi_message_sequence_incomplete: "Multi-message sequence incomplete",
+  reply_chain_dependency: "Reply-chain dependency",
+  edited_message_dependency: "Edited-message dependency",
+  cancellation_dependency: "Cancellation dependency",
+  duplicate_detection: "Duplicate detected",
+  ambiguous: "Ambiguous",
+  unsupported_format: "Unsupported format",
+  other: "Other (unclassified)",
+};
+const COVERAGE_NOT_A_SIGNAL_KEYS = new Set([
+  "not_a_signal_asset_announcement", "not_a_signal_terminal_result", "not_a_signal_chatter",
+]);
+
+function renderCoverageAnalysis(breakdown) {
+  if (!breakdown || !breakdown.total_messages) {
+    return `<div class="card solid" style="margin-bottom:12px;">
+      <h3 style="margin-top:0; font-size:13px;">Coverage Analysis</h3>
+      <div class="muted" style="font-size:12.5px;">Run Analyze to see why coverage is what it is, broken down by concrete reason - not just a percentage.</div>
+    </div>`;
+  }
+  const rows = Object.entries(breakdown.breakdown)
+    .filter(([, count]) => count > 0)
+    .sort(([, a], [, b]) => b - a)
+    .map(([key, count]) => {
+      const pct = ((count / breakdown.total_messages) * 100).toFixed(1);
+      const isNotASignal = COVERAGE_NOT_A_SIGNAL_KEYS.has(key);
+      const isSuccess = key === "successfully_normalized";
+      const color = isSuccess ? "var(--green)" : (isNotASignal ? "var(--text-faint)" : "var(--red)");
+      return `
+        <div class="stat-row">
+          <span class="stat-label" style="${isNotASignal ? "color:var(--text-faint);" : ""}">${COVERAGE_CATEGORY_LABELS[key] || key}</span>
+          <span class="stat-value" style="color:${color};">${count} <span class="muted" style="font-size:11px;">(${pct}%)</span></span>
+        </div>
+      `;
+    }).join("");
+  return `
+    <div class="card solid" style="margin-bottom:12px;">
+      <h3 style="margin-top:0; font-size:13px;">Coverage Analysis</h3>
+      <div class="muted" style="font-size:11.5px; margin-bottom:8px;">Every one of ${breakdown.total_messages} observed messages, attributed to a concrete reason - "not a signal" rows are correct classifications, not problems.</div>
+      ${rows}
+    </div>
+  `;
+}
+
 function renderMySources() {
   const listEl = document.getElementById("my-sources-list");
   const followed = allChannels.filter(c => c.enabled);
@@ -680,6 +737,7 @@ async function renderProfileModal() {
       <div class="stat-row"><span class="stat-label">Observed signals</span><span class="stat-value">${p.observed_signal_count || 0}</span></div>
       <div class="stat-row"><span class="stat-label">Parse success rate</span><span class="stat-value">${successRate}</span></div>
     </div>
+    ${renderCoverageAnalysis(p.coverage_breakdown)}
     <div class="card solid" style="margin-bottom:12px;">
       <h3 style="margin-top:0; font-size:13px;">Graduation status</h3>
       ${grad.eligible

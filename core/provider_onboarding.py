@@ -135,9 +135,11 @@ def _update_provider_profile_from_analysis(chat_id, analysis, message_count):
         return None
     profile = database.get_or_create_provider_profile(channel["id"])
     is_multi = analysis["pattern"] in _MULTI_MESSAGE_PATTERNS
+    coverage_breakdown = analysis.get("coverage_breakdown")
     database.update_provider_profile(
         profile["id"], changed_by="provider_onboarding", reason="historical analysis",
         pattern_name=analysis["pattern"], coverage=analysis["coverage"],
+        coverage_breakdown_json=json.dumps(coverage_breakdown) if coverage_breakdown else None,
         expected_sequence_json=json.dumps(["asset_announcement", "entry"] if is_multi else ["entry"]),
         last_analyzed_at=datetime.now().isoformat(),
         # A human/operator re-running analysis is a deliberate corrective

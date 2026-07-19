@@ -61,7 +61,9 @@ def _get_or_404(profile_id):
 
 
 def _with_graduation(profile):
-    return {**profile, "graduation": pp.graduation_status(profile)}
+    import json
+    breakdown = json.loads(profile["coverage_breakdown_json"]) if profile.get("coverage_breakdown_json") else None
+    return {**profile, "graduation": pp.graduation_status(profile), "coverage_breakdown": breakdown}
 
 
 @router.get("")

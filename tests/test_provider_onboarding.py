@@ -127,6 +127,18 @@ class ProviderProfileWritingTestCase(unittest.TestCase):
         self.assertEqual(profile["trading_mode"], "observation")  # never auto-graduated
         self.assertIsNotNone(profile["last_analyzed_at"])
 
+    def test_analyze_and_onboard_persists_the_coverage_breakdown(self):
+        import json
+        fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
+        with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
+            _run(provider_onboarding.analyze_and_onboard_provider(chat_id=123))
+        profile = database.get_provider_profile_by_channel_id(self.channel_id)
+        self.assertIsNotNone(profile["coverage_breakdown_json"])
+        breakdown = json.loads(profile["coverage_breakdown_json"])
+        self.assertIn("total_messages", breakdown)
+        self.assertIn("breakdown", breakdown)
+        self.assertGreater(breakdown["breakdown"]["successfully_normalized"], 0)
+
     def test_preview_also_writes_the_profile_not_just_the_commit_step(self):
         fake_fetch = AsyncMock(return_value=(_daniel_fx_trade_like_messages(), "Test Provider"))
         with patch("telegram_channels.fetch_channel_raw_history", fake_fetch):
