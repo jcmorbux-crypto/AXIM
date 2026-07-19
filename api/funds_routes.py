@@ -248,3 +248,15 @@ def get_fund_activity(fund_id: int, user=Depends(get_current_user)):
     they already have their own real ledger at GET /{fund_id}/transfers."""
     _get_or_404(fund_id)
     return database.list_fund_activity_log(fund_id)
+
+
+@router.get("/{fund_id}/diagnostics")
+def get_fund_diagnostics(fund_id: int, user=Depends(get_current_user)):
+    """Health/diagnostics (2026-07-19 directive) - fund_manager.
+    get_fund_diagnostics's real checklist (trade readiness, broker
+    attachment, risk/session profile validity, dangling sessions,
+    orphaned broker attachments, exposure), not a re-derived summary."""
+    diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+    if diagnostics is None:
+        raise HTTPException(status_code=404, detail="fund not found")
+    return diagnostics

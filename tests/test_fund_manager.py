@@ -610,5 +610,114 @@ class CheckFundLimitsTests(FundManagerTestCase):
         fund_manager.check_fund_limits(fund_id)  # must not raise or re-evaluate
 
 
+class FundDiagnosticsTests(FundManagerTestCase):
+    """2026-07-19 directive: a real, attributable health checklist -
+    every category is a genuine DB read, never a fabricated default."""
+
+    def _connected_account(self, mode="demo"):
+        account_id = database.create_broker_account("Acc1", mode=mode)
+        database.update_broker_account(account_id, connection_status="connected")
+        return account_id
+
+    def test_missing_fund_returns_none(self):
+        self.assertIsNone(fund_manager.get_fund_diagnostics(999999))
+
+    def test_every_category_present(self):
+        fund_id = database.create_fund("F")
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        categories = {c["category"] for c in diagnostics["checks"]}
+        self.assertEqual(categories, set(fund_manager._DIAGNOSTIC_CATEGORIES))
+
+    def test_fully_healthy_fund_reports_healthy_true(self):
+        fund_id = database.create_fund("F")
+        account_id = self._connected_account()
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        self.assertTrue(diagnostics["healthy"])
+        self.assertTrue(all(c["ok"] for c in diagnostics["checks"]))
+
+    def test_no_broker_account_is_unhealthy_with_a_real_reason(self):
+        fund_id = database.create_fund("F")
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        self.assertFalse(diagnostics["healthy"])
+        broker_check = next(c for c in diagnostics["checks"] if c["category"] == "broker_attachment")
+        self.assertFalse(broker_check["ok"])
+        self.assertIn("no broker account attached", broker_check["detail"])
+
+    def test_archived_risk_profile_is_flagged(self):
+        fund_id = database.create_fund("F")
+        profile_id = database.create_risk_profile("P", sizing_mode="fixed", fixed_amount=10)
+        database.update_fund(fund_id, default_risk_profile_id=profile_id)
+        database.archive_risk_profile(profile_id)
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        risk_check = next(c for c in diagnostics["checks"] if c["category"] == "risk_profile")
+        self.assertFalse(risk_check["ok"])
+        self.assertIn("archived", risk_check["detail"])
+
+    def test_no_risk_profile_set_is_not_flagged_as_an_error(self):
+        fund_id = database.create_fund("F")
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        risk_check = next(c for c in diagnostics["checks"] if c["category"] == "risk_profile")
+        self.assertTrue(risk_check["ok"])
+
+    def test_dangling_active_session_is_flagged_when_broker_disconnects_later(self):
+        fund_id = database.create_fund("F")
+        account_id = self._connected_account()
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        database.start_trading_session("S", [1], "DEMO", fund_id=fund_id, broker_account_id=account_id)
+        # The session stays "active" but the broker account degrades afterward.
+        database.update_broker_account(account_id, connection_status="disconnected")
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        dangling_check = next(c for c in diagnostics["checks"] if c["category"] == "dangling_session")
+        self.assertFalse(dangling_check["ok"])
+
+    def test_no_active_session_is_not_flagged(self):
+        fund_id = database.create_fund("F")
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        dangling_check = next(c for c in diagnostics["checks"] if c["category"] == "dangling_session")
+        self.assertTrue(dangling_check["ok"])
+        self.assertEqual(dangling_check["detail"], "no active session")
+
+    def test_orphaned_broker_attachment_flagged_when_account_later_disabled(self):
+        fund_id = database.create_fund("F")
+        account_id = self._connected_account()
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        database.update_broker_account(account_id, status="disabled")
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        orphan_check = next(c for c in diagnostics["checks"] if c["category"] == "orphaned_broker_attachment")
+        self.assertFalse(orphan_check["ok"])
+        self.assertIn("Acc1", orphan_check["detail"])
+
+    def test_exposure_reports_real_pending_stake_and_reserve(self):
+        fund_id = database.create_fund("F", starting_balance=250)
+        account_id = self._connected_account()
+        database.update_broker_account(account_id, last_balance=1000)
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        exposure_check = next(c for c in diagnostics["checks"] if c["category"] == "exposure")
+        self.assertEqual(exposure_check["pending_trade_count"], 0)
+        self.assertEqual(exposure_check["pending_stake"], 0)
+        self.assertEqual(exposure_check["broker_account_reserve"], 750)
+
+    def test_trade_readiness_reuses_can_trade_verbatim(self):
+        fund_id = database.create_fund("F")  # no broker account -> a real, non-None reason
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        allowed, reason, can_go_live = fund_manager.can_trade(fund_id)
+        self.assertIsNotNone(reason)
+        readiness_check = next(c for c in diagnostics["checks"] if c["category"] == "trade_readiness")
+        self.assertEqual(readiness_check["ok"], allowed)
+        self.assertEqual(readiness_check["detail"], reason)
+        self.assertEqual(readiness_check["can_go_live"], can_go_live)
+
+    def test_trade_readiness_detail_is_friendly_when_no_reason(self):
+        fund_id = database.create_fund("F")
+        account_id = self._connected_account()
+        database.assign_broker_account_to_fund(fund_id, account_id)
+        diagnostics = fund_manager.get_fund_diagnostics(fund_id)
+        readiness_check = next(c for c in diagnostics["checks"] if c["category"] == "trade_readiness")
+        self.assertTrue(readiness_check["ok"])
+        self.assertEqual(readiness_check["detail"], "ready to start a session")
+
+
 if __name__ == "__main__":
     unittest.main()

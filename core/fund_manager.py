@@ -387,3 +387,111 @@ def can_trade(fund_id):
                 ), False
 
     return True, None, can_go_live
+
+
+_DIAGNOSTIC_CATEGORIES = [
+    "trade_readiness", "broker_attachment", "risk_profile", "session_profile",
+    "dangling_session", "orphaned_broker_attachment", "exposure",
+]
+
+
+def get_fund_diagnostics(fund_id):
+    """Health/diagnostics view (2026-07-19 directive) - answers "why
+    can't/shouldn't this Fund trade right now" as a real, attributable
+    checklist rather than leaving can_trade's reason as the only signal
+    (previously computed but never surfaced outside the session-start
+    gate). Every check below is a real DB read - nothing here is
+    fabricated or a placeholder "all green" default; a Fund with no
+    issues genuinely reports every check as ok. Returns None if the
+    fund doesn't exist (caller 404s)."""
+    fund = database.get_fund(fund_id)
+    if fund is None:
+        return None
+
+    checks = []
+
+    allowed, reason, can_go_live = can_trade(fund_id)
+    checks.append({
+        "category": "trade_readiness", "ok": allowed,
+        "detail": reason or "ready to start a session", "can_go_live": can_go_live,
+    })
+
+    primary_account = database.get_fund_primary_broker_account(fund_id)
+    if primary_account is None:
+        checks.append({"category": "broker_attachment", "ok": False,
+                        "detail": "no broker account attached"})
+    elif primary_account["status"] != "active":
+        checks.append({"category": "broker_attachment", "ok": False,
+                        "detail": f"attached broker account ({primary_account['name']}) is {primary_account['status']}"})
+    elif primary_account["connection_status"] != "connected":
+        checks.append({"category": "broker_attachment", "ok": False,
+                        "detail": f"attached broker account ({primary_account['name']}) is not connected "
+                                  f"({primary_account['connection_status']})"})
+    else:
+        checks.append({"category": "broker_attachment", "ok": True,
+                        "detail": f"{primary_account['name']} - connected"})
+
+    if fund["default_risk_profile_id"] is not None:
+        profile = database.get_risk_profile(fund["default_risk_profile_id"])
+        if profile is None:
+            checks.append({"category": "risk_profile", "ok": False,
+                            "detail": "default risk profile no longer exists"})
+        elif profile.get("archived_at"):
+            checks.append({"category": "risk_profile", "ok": False,
+                            "detail": f"default risk profile ({profile['name']}) is archived"})
+        else:
+            checks.append({"category": "risk_profile", "ok": True, "detail": profile["name"]})
+    else:
+        checks.append({"category": "risk_profile", "ok": True, "detail": "none set"})
+
+    if fund["default_session_profile_id"] is not None:
+        session_profile = database.get_session_profile(fund["default_session_profile_id"])
+        if session_profile is None:
+            checks.append({"category": "session_profile", "ok": False,
+                            "detail": "default session profile no longer exists"})
+        else:
+            checks.append({"category": "session_profile", "ok": True, "detail": session_profile["name"]})
+    else:
+        checks.append({"category": "session_profile", "ok": True, "detail": "none set"})
+
+    active_session = database.get_active_trading_session_for_fund(fund_id)
+    if active_session is not None:
+        session_account_id = active_session.get("broker_account_id")
+        session_account = database.get_broker_account(session_account_id) if session_account_id else None
+        if session_account is None or session_account["connection_status"] != "connected" or session_account["status"] != "active":
+            checks.append({
+                "category": "dangling_session", "ok": False,
+                "detail": f"session {active_session['id']} is active but its broker account is "
+                          f"{'missing' if session_account is None else session_account['connection_status']}",
+            })
+        else:
+            checks.append({"category": "dangling_session", "ok": True, "detail": "no issue"})
+    else:
+        checks.append({"category": "dangling_session", "ok": True, "detail": "no active session"})
+
+    orphaned = [
+        acct for acct in database.list_fund_broker_accounts(fund_id) if acct["status"] != "active"
+    ]
+    if orphaned:
+        checks.append({
+            "category": "orphaned_broker_attachment", "ok": False,
+            "detail": f"{len(orphaned)} attached broker account(s) archived: " +
+                      ", ".join(a["name"] for a in orphaned),
+        })
+    else:
+        checks.append({"category": "orphaned_broker_attachment", "ok": True, "detail": "no issue"})
+
+    pending_stake = database.get_fund_pending_stake(fund_id)
+    pending_count = database.count_fund_pending_trades(fund_id)
+    reserve = get_broker_account_reserve(primary_account["id"]) if primary_account is not None else None
+    checks.append({
+        "category": "exposure", "ok": True,
+        "detail": f"{pending_count} open trade(s), ${pending_stake:.2f} at risk",
+        "pending_stake": pending_stake, "pending_trade_count": pending_count,
+        "broker_account_reserve": reserve,
+    })
+
+    return {
+        "fund_id": fund_id, "healthy": all(c["ok"] for c in checks),
+        "checks": checks,
+    }

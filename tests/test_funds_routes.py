@@ -124,5 +124,36 @@ class FundActivityRouteTestCase(unittest.TestCase):
         self.assertEqual(len(source_log), 1)  # untouched by the duplicate
 
 
+class FundDiagnosticsRouteTestCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.fund_id = database.create_fund("Test Fund", starting_balance=1000.0)
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_diagnostics_404_for_unknown_fund(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            routes.get_fund_diagnostics(999999, user=_FAKE_ADMIN)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_diagnostics_reports_unhealthy_with_no_broker_account(self):
+        result = routes.get_fund_diagnostics(self.fund_id, user=_FAKE_ADMIN)
+        self.assertFalse(result["healthy"])
+        self.assertEqual(result["fund_id"], self.fund_id)
+
+    def test_diagnostics_reports_healthy_once_connected(self):
+        account_id = database.create_broker_account("Acc1")
+        database.update_broker_account(account_id, connection_status="connected")
+        database.assign_broker_account_to_fund(self.fund_id, account_id)
+        result = routes.get_fund_diagnostics(self.fund_id, user=_FAKE_ADMIN)
+        self.assertTrue(result["healthy"])
+
+
 if __name__ == "__main__":
     unittest.main()
