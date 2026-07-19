@@ -35,6 +35,7 @@ const AximShell = (() => {
     guide: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6.3"/><path d="M6.1 6.2c.2-1 1-1.6 1.9-1.6 1 0 1.9.6 1.9 1.7 0 1.4-1.9 1.3-1.9 3"/><circle cx="8" cy="11.2" r="0.15" fill="currentColor" stroke="currentColor" stroke-width="0.9"/></svg>',
     capital: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.8 14.2h12.4"/><rect x="2.5" y="9.5" width="2.6" height="4.7" fill="currentColor" stroke="none"/><rect x="6.7" y="6.5" width="2.6" height="7.7" fill="currentColor" stroke="none"/><rect x="10.9" y="2.8" width="2.6" height="11.4" fill="currentColor" stroke="none"/></svg>',
     bots: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5.5" width="10" height="8" rx="1.8"/><path d="M8 5.5V3M6 2.3h4"/><circle cx="6" cy="9.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="10" cy="9.5" r="0.9" fill="currentColor" stroke="none"/><path d="M6 12h4"/></svg>',
+    pipeline: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="2.5" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13.5" cy="13" r="1.5"/><path d="M3.8 4.2L6.8 6.8M9.2 9.2l3 2.8"/><path d="M2.5 6.5v3M13.5 6.5v3"/></svg>',
   };
 
   // Theme toggle icons (UI v2, 2026-07-18) - sun shown while in light
@@ -125,6 +126,7 @@ const AximShell = (() => {
     { key: "money", label: "Money Management", href: "/risk", icon: ICONS.money },
     { key: "automation", label: "Automation Studio", href: "/automation", icon: ICONS.rules },
     { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
+    { key: "pipeline", label: "Live Signal Pipeline", href: "/signal-pipeline", icon: ICONS.pipeline },
     { key: "pocketoption", label: "Broker Accounts", href: "/broker", icon: ICONS.pocketoption },
     { key: "bots", label: "Bot Control Center", href: "/bots", icon: ICONS.bots },
     { key: "logs", label: "Logs", href: "/logs", icon: ICONS.logs, adminOnly: true },

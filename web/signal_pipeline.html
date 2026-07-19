@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Live Signal Pipeline - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="/web/theme.css">
+<script>(function(){try{var t=localStorage.getItem("axim-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<style>
+  .journey-row { cursor: pointer; }
+  .journey-row:hover { background: var(--surface-hover); }
+  .timeline-step { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+  .timeline-step:last-child { border-bottom: none; }
+  .timeline-dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+  .timeline-body { flex: 1; }
+  .timeline-state { font-weight: 650; font-size: 13px; }
+  .timeline-detail { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .timeline-time { font-size: 11px; color: var(--text-faint); margin-top: 2px; }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Live Signal Pipeline</h1>
+        <div class="subtitle">Every signal's real journey - including everything that was skipped, rejected, or failed before it ever became a trade. Nothing here is fabricated: a signal with no eligible states below simply hasn't reached them yet.</div>
+      </div>
+    </div>
+
+    <div class="card solid" style="margin-bottom:16px;">
+      <div class="row" style="gap:10px; align-items:flex-end;">
+        <div class="field" style="max-width:280px;">
+          <label>Filter by current state</label>
+          <select id="state-filter" onchange="loadJourneys()">
+            <option value="">All states</option>
+          </select>
+        </div>
+        <button class="subtle" onclick="loadJourneys()">Refresh</button>
+        <span id="journeys-status" class="muted"></span>
+      </div>
+    </div>
+
+    <div class="card full-width">
+      <h3>Recent Journeys</h3>
+      <div class="signal-table-wrap">
+        <table>
+          <thead><tr><th>When</th><th>Channel</th><th>Message</th><th>Current State</th><th>Detail</th></tr></thead>
+          <tbody id="journeys-body"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<div class="modal-backdrop" id="journey-modal">
+  <div class="modal" style="width:520px;">
+    <h2 style="margin-top:0;">Signal Journey</h2>
+    <div class="muted" id="journey-modal-subtitle" style="font-size:12px; margin-bottom:14px;"></div>
+    <div id="journey-timeline"></div>
+    <div class="row" style="justify-content:flex-end; margin-top:16px;">
+      <button class="subtle" onclick="closeModal('journey-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<script src="/web/shell.js"></script>
+<script>
+// Every canonical state (2026-07-19 v2 mandate) gets a fixed label/color
+// so the same state always reads the same way everywhere on this page -
+// green for a genuinely good outcome, muted for a deliberate non-error
+// decline, red for something that actually went wrong, blue-ish for
+// steps still in progress toward a decision.
+const STATE_META = {
+  RECEIVED:        { label: "Received",          color: "var(--brand)" },
+  PARSED:          { label: "Parsed",             color: "var(--brand)" },
+  NORMALIZED:      { label: "Normalized",         color: "var(--brand)" },
+  VALIDATED:       { label: "Validated",          color: "var(--brand)" },
+  AUTHORIZED:      { label: "Authorized",         color: "var(--brand)" },
+  SIZED:           { label: "Sized",              color: "var(--brand)" },
+  QUEUED:          { label: "Queued",             color: "var(--brand)" },
+  SUBMITTING:      { label: "Submitting",         color: "var(--brand)" },
+  BROKER_ACCEPTED: { label: "Broker Accepted",    color: "var(--green)" },
+  BROKER_REJECTED: { label: "Broker Rejected",    color: "var(--red)" },
+  OPEN:            { label: "Open",               color: "var(--green)" },
+  WON:             { label: "Won",                color: "var(--green)" },
+  LOST:            { label: "Lost",               color: "var(--red)" },
+  DRAW:            { label: "Draw",               color: "var(--yellow)" },
+  SKIPPED:         { label: "Skipped",            color: "var(--text-faint)" },
+  FAILED:          { label: "Failed",             color: "var(--red)" },
+  UNKNOWN:         { label: "Unknown",            color: "var(--text-faint)" },
+};
+
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (e) {}
+    throw new Error(detail);
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "-"; }
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
+
+function stateBadge(state) {
+  const meta = STATE_META[state] || { label: state, color: "var(--text-dim)" };
+  return `<span style="color:${meta.color}; font-weight:600; font-size:12.5px;">${escapeHtml(meta.label)}</span>`;
+}
+
+function populateStateFilter() {
+  const select = document.getElementById("state-filter");
+  for (const [state, meta] of Object.entries(STATE_META)) {
+    const opt = document.createElement("option");
+    opt.value = state;
+    opt.textContent = meta.label;
+    select.appendChild(opt);
+  }
+}
+
+async function loadJourneys() {
+  const statusEl = document.getElementById("journeys-status");
+  const body = document.getElementById("journeys-body");
+  const state = document.getElementById("state-filter").value;
+  statusEl.textContent = "Loading...";
+  try {
+    const url = state ? `/api/signal-pipeline/journeys?state=${encodeURIComponent(state)}` : "/api/signal-pipeline/journeys";
+    const journeys = await fetchJSON(url);
+    statusEl.textContent = "";
+    if (!journeys.length) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">No signals recorded yet - real Telegram traffic will populate this as it arrives.</td></tr>';
+      return;
+    }
+    body.innerHTML = journeys.map(j => `
+      <tr class="journey-row" onclick="openJourney(${j.channel_id}, ${j.message_id})">
+        <td class="muted">${fmtTime(j.occurred_at)}</td>
+        <td>${j.channel_id ?? "-"}</td>
+        <td>${j.message_id ?? "-"}</td>
+        <td>${stateBadge(j.state)}</td>
+        <td class="muted" style="font-size:12px;">${escapeHtml(j.detail || "-")}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    statusEl.textContent = "";
+    body.innerHTML = `<tr><td colspan="5" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function openJourney(channelId, messageId) {
+  const subtitle = document.getElementById("journey-modal-subtitle");
+  const timeline = document.getElementById("journey-timeline");
+  subtitle.textContent = `Channel ${channelId} - Message ${messageId}`;
+  timeline.innerHTML = '<div class="muted">Loading...</div>';
+  openModal("journey-modal");
+  try {
+    const events = await fetchJSON(`/api/signal-pipeline/journeys/${channelId}/${messageId}`);
+    timeline.innerHTML = events.map(e => {
+      const meta = STATE_META[e.state] || { label: e.state, color: "var(--text-dim)" };
+      return `
+        <div class="timeline-step">
+          <div class="timeline-dot" style="background:${meta.color};"></div>
+          <div class="timeline-body">
+            <div class="timeline-state" style="color:${meta.color};">${escapeHtml(meta.label)}</div>
+            ${e.detail ? `<div class="timeline-detail">${escapeHtml(e.detail)}</div>` : ""}
+            <div class="timeline-time">${fmtTime(e.occurred_at)}${e.signal_id ? ` &middot; signal #${e.signal_id}` : ""}</div>
+          </div>
+        </div>
+      `;
+    }).join("");
+  } catch (e) {
+    timeline.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+(async () => {
+  const user = await AximShell.init({ active: "pipeline" });
+  if (!user) return;
+  populateStateFilter();
+  await loadJourneys();
+})();
+</script>
+</body>
+</html>

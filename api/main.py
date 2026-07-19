@@ -79,6 +79,7 @@ import capital_recommendation_routes as capital_recommendation_module
 import provider_onboarding_routes as provider_onboarding_module
 import provider_profile_routes as provider_profile_module
 import bots_routes as bots_module
+import signal_pipeline_routes as signal_pipeline_module
 from auth_routes import get_current_user, require_admin
 
 # 3x the listener's own HEARTBEAT_INTERVAL_SECONDS (30s) - margin for a
@@ -196,6 +197,7 @@ app.include_router(capital_recommendation_module.router)
 app.include_router(provider_onboarding_module.router)
 app.include_router(provider_profile_module.router)
 app.include_router(bots_module.router)
+app.include_router(signal_pipeline_module.router)
 
 WEB_DIR = PROJECT_ROOT / "web"
 
@@ -300,6 +302,11 @@ def telegram_page():
 @app.get("/inspector")
 def inspector_page():
     return _serve("inspector.html")
+
+
+@app.get("/signal-pipeline")
+def signal_pipeline_page():
+    return _serve("signal_pipeline.html")
 
 
 @app.get("/bots")
