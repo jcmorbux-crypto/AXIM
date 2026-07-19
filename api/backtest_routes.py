@@ -230,6 +230,34 @@ class RunCreateRequest(BaseModel):
     default_payout_percent: float = 85
     session_window: str = "daily"
     risk_profile_ids: list[int]
+    min_trust_tier: Optional[str] = None
+
+
+class RunEstimateRequest(BaseModel):
+    source: str = "both"
+    channel_filter: Optional[list] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    session_window: str = "daily"
+    min_trust_tier: Optional[str] = None
+    risk_profile_ids: list[int] = []
+
+
+@router.post("/runs/estimate")
+def estimate_run(body: RunEstimateRequest, user=Depends(get_current_user)):
+    """Pre-run estimate (2026-07-19 directive) - read-only, no run row is
+    created. Lets the operator see the eligible signal count, eligibility
+    breakdown, and a rough duration BEFORE pressing Run Backtest."""
+    if body.source not in ("live", "imported", "both"):
+        raise HTTPException(status_code=400, detail="source must be live, imported, or both")
+    if body.min_trust_tier is not None and not database.is_valid_trust_tier(body.min_trust_tier):
+        raise HTTPException(status_code=400, detail=f"invalid min_trust_tier: {body.min_trust_tier!r}")
+    pool_config = {
+        "source": body.source, "channel_filter": body.channel_filter,
+        "date_from": body.date_from, "date_to": body.date_to,
+        "session_window": body.session_window, "min_trust_tier": body.min_trust_tier,
+    }
+    return backtest_engine.estimate_backtest_run(pool_config, len(body.risk_profile_ids))
 
 
 @router.post("/runs")
@@ -240,10 +268,13 @@ def create_run(body: RunCreateRequest, user=Depends(require_admin)):
         raise HTTPException(status_code=400, detail="session_window must be daily or all")
     if not body.risk_profile_ids:
         raise HTTPException(status_code=400, detail="select at least one strategy to compare")
+    if body.min_trust_tier is not None and not database.is_valid_trust_tier(body.min_trust_tier):
+        raise HTTPException(status_code=400, detail=f"invalid min_trust_tier: {body.min_trust_tier!r}")
 
     signal_pool = {
         "source": body.source, "channel_filter": body.channel_filter,
         "date_from": body.date_from, "date_to": body.date_to,
+        "min_trust_tier": body.min_trust_tier,
     }
     run_id = database.create_backtest_run(
         body.name, signal_pool, body.starting_bankroll,

@@ -795,6 +795,88 @@ class RunBacktestIntegrationTests(DbBackedTestCase):
         self.assertEqual(run["status"], "failed")
         self.assertIsNotNone(run["error_message"])
 
+    def test_run_honors_min_trust_tier(self):
+        legacy_id = database.create_imported_signal(
+            "TestChannel", "EUR/USD OTC", "BUY", "1 Minute", "2026-01-01T10:00:00")
+        database.grade_imported_signal(legacy_id, "win", payout_percent=85)
+        verified_id = database.create_imported_signal(
+            "TestChannel", "EUR/USD OTC", "BUY", "1 Minute", "2026-01-01T10:01:00")
+        database.grade_imported_signal(verified_id, "win", payout_percent=85)
+        database.set_imported_signal_trust_tier(verified_id, "verified_only", changed_by="ops", reason="checked")
+
+        profile_id = database.create_risk_profile("P", sizing_mode="fixed", fixed_amount=10)
+        profile = database.get_risk_profile(profile_id)
+        run_id = database.create_backtest_run(
+            "Trust Tier Test", {"source": "imported", "min_trust_tier": "verified_only"}, 1000)
+        database.create_backtest_strategy(run_id, profile_id, "P", profile)
+
+        backtest_engine.run_backtest(run_id)
+
+        report = database.get_backtest_report(run_id)
+        # Only the verified_only signal should have been simulated - the
+        # legacy_unverified one must be excluded from THIS run entirely.
+        trades = database.list_backtest_trades_for_strategy(report["strategies"][0]["id"])
+        self.assertEqual(len(trades), 1)
+
+
+class EstimateBacktestRunTests(DbBackedTestCase):
+    def test_no_matching_signals_warns_and_reports_zero(self):
+        estimate = backtest_engine.estimate_backtest_run({"source": "imported"}, strategy_count=1)
+        self.assertEqual(estimate["eligible_signal_count"], 0)
+        self.assertEqual(estimate["estimated_total_trades"], 0)
+        self.assertTrue(any("No eligible signals" in w for w in estimate["warnings"]))
+
+    def test_small_sample_warns(self):
+        sig_id = database.create_imported_signal(
+            "C", "EUR/USD OTC", "BUY", "1 Minute", "2026-01-01T10:00:00")
+        database.grade_imported_signal(sig_id, "win", payout_percent=85)
+        estimate = backtest_engine.estimate_backtest_run({"source": "imported"}, strategy_count=1)
+        self.assertEqual(estimate["eligible_signal_count"], 1)
+        self.assertTrue(any("may not be statistically meaningful" in w for w in estimate["warnings"]))
+
+    def test_excluded_signals_are_reported_in_warnings_and_breakdown(self):
+        ungraded_id = database.create_imported_signal(
+            "C", "EUR/USD OTC", "BUY", "1 Minute", "2026-01-01T10:00:00")
+        graded_id = database.create_imported_signal(
+            "C", "EUR/USD OTC", "BUY", "1 Minute", "2026-01-01T10:01:00")
+        database.grade_imported_signal(graded_id, "win", payout_percent=85)
+        estimate = backtest_engine.estimate_backtest_run({"source": "imported"}, strategy_count=1)
+        self.assertEqual(estimate["eligibility_total_examined"], 2)
+        self.assertEqual(estimate["eligibility_breakdown"]["excluded_ungraded"], 1)
+        self.assertTrue(any("would be excluded" in w for w in estimate["warnings"]))
+
+    def test_estimated_total_trades_scales_with_strategy_count(self):
+        for i in range(5):
+            sig_id = database.create_imported_signal(
+                "C", "EUR/USD OTC", "BUY", "1 Minute", f"2026-01-01T10:0{i}:00")
+            database.grade_imported_signal(sig_id, "win", payout_percent=85)
+        estimate = backtest_engine.estimate_backtest_run({"source": "imported"}, strategy_count=3)
+        self.assertEqual(estimate["eligible_signal_count"], 5)
+        self.assertEqual(estimate["estimated_total_trades"], 15)
+        self.assertGreater(estimate["estimated_duration_seconds"], 0)
+
+    def test_session_count_uses_the_real_grouping_function(self):
+        database.grade_imported_signal(database.create_imported_signal(
+            "C", "EUR/USD OTC", "BUY", "1 Minute", "2026-01-01T10:00:00"), "win", payout_percent=85)
+        database.grade_imported_signal(database.create_imported_signal(
+            "C", "EUR/USD OTC", "BUY", "1 Minute", "2026-01-02T10:00:00"), "win", payout_percent=85)
+        estimate = backtest_engine.estimate_backtest_run(
+            {"source": "imported", "session_window": "daily"}, strategy_count=1)
+        self.assertEqual(estimate["estimated_session_count"], 2)
+
+    def test_min_trust_tier_narrows_the_estimate(self):
+        legacy_id = database.create_imported_signal(
+            "C", "EUR/USD OTC", "BUY", "1 Minute", "2026-01-01T10:00:00")
+        database.grade_imported_signal(legacy_id, "win", payout_percent=85)
+        estimate = backtest_engine.estimate_backtest_run(
+            {"source": "imported", "min_trust_tier": "verified_only"}, strategy_count=1)
+        self.assertEqual(estimate["eligible_signal_count"], 0)
+        self.assertEqual(estimate["eligibility_breakdown"]["excluded_below_trust_tier"], 1)
+
+    def test_zero_strategies_warns(self):
+        estimate = backtest_engine.estimate_backtest_run({"source": "imported"}, strategy_count=0)
+        self.assertTrue(any("Select at least one strategy" in w for w in estimate["warnings"]))
+
 
 if __name__ == "__main__":
     unittest.main()

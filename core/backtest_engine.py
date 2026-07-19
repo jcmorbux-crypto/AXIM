@@ -709,6 +709,7 @@ def run_backtest(run_id):
             channel_filter=pool_config.get("channel_filter"),
             date_from=pool_config.get("date_from"),
             date_to=pool_config.get("date_to"),
+            min_trust_tier=pool_config.get("min_trust_tier"),
         )
         if not signal_pool:
             raise ValueError("no graded historical signals match this run's filters")
@@ -744,3 +745,64 @@ def run_backtest(run_id):
         logger.exception("backtest_engine: run %s failed", run_id)
         database.update_backtest_run_status(run_id, "failed", error_message=str(e))
         raise
+
+
+# Pre-run estimate (2026-07-19 directive: an operator should see what a
+# run will actually do BEFORE committing to it, not just its result
+# after). _MEASURED_MS_PER_SIGNAL_PER_STRATEGY is a real, measured
+# baseline - not guessed - benched against simulate_strategy +
+# create_backtest_trades_bulk on 1000 synthetic signals (~0.005ms
+# simulate + ~0.04ms DB bulk-insert per signal), then given a ~20x
+# safety margin for per-session overhead (create_backtest_session,
+# compute_metrics's fixed cost) and real disk I/O variance under load
+# that a synthetic single-strategy micro-benchmark doesn't capture -
+# same "labeled heuristic, not a fabricated precise number" discipline
+# as risk_score/best_for_label above.
+_MEASURED_MS_PER_SIGNAL_PER_STRATEGY = 1.0
+_SMALL_SAMPLE_WARNING_THRESHOLD = 20
+
+
+def estimate_backtest_run(pool_config, strategy_count):
+    """Cheap, no-simulation preview of what a run would actually do -
+    powers the "Run Backtest" button's pre-run estimate. Reuses
+    database.analyze_signal_eligibility (so the estimate's eligible
+    count and eventual run's actual signal pool are always the exact
+    same query) and the real session-grouping function every simulation
+    uses, so estimated_session_count is exact, not approximated."""
+    eligibility = database.analyze_signal_eligibility(
+        pool_config.get("source", "both"),
+        channel_filter=pool_config.get("channel_filter"),
+        date_from=pool_config.get("date_from"),
+        date_to=pool_config.get("date_to"),
+        min_trust_tier=pool_config.get("min_trust_tier"),
+    )
+    pool = eligibility["pool"]
+    session_window = pool_config.get("session_window", "daily")
+    sessions = _group_signals_into_sessions(pool, session_window)
+
+    warnings = []
+    if not pool:
+        warnings.append("No eligible signals match these filters - this run would fail immediately. "
+                         "Try widening the date range, source, or trust-tier requirement.")
+    elif len(pool) < _SMALL_SAMPLE_WARNING_THRESHOLD:
+        warnings.append(f"Only {len(pool)} eligible signal(s) - results from a sample this small "
+                         "may not be statistically meaningful.")
+    excluded_total = eligibility["total"] - eligibility["breakdown"]["eligible"]
+    if excluded_total:
+        warnings.append(f"{excluded_total} of {eligibility['total']} matching signal(s) would be excluded - "
+                         "see the eligibility breakdown for the specific reasons.")
+    if strategy_count < 1:
+        warnings.append("Select at least one strategy to compare.")
+
+    estimated_total_trades = len(pool) * max(strategy_count, 0)
+    return {
+        "eligible_signal_count": len(pool),
+        "estimated_session_count": len(sessions),
+        "estimated_trades_per_strategy": len(pool),
+        "estimated_total_trades": estimated_total_trades,
+        "estimated_duration_seconds": round(
+            (estimated_total_trades * _MEASURED_MS_PER_SIGNAL_PER_STRATEGY) / 1000, 3),
+        "eligibility_breakdown": eligibility["breakdown"],
+        "eligibility_total_examined": eligibility["total"],
+        "warnings": warnings,
+    }

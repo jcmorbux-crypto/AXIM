@@ -5331,6 +5331,10 @@ _VALID_TRUST_TIERS = set(_TRUST_TIER_RANK)
 _VALID_IMPORTED_SIGNAL_RESULTS = {"win", "loss", "draw", "cancelled"}
 
 
+def is_valid_trust_tier(tier):
+    return tier in _VALID_TRUST_TIERS
+
+
 @timed("database")
 def create_imported_signal(source_label, asset, direction, expiry, received_at, raw_message=None,
                             result=None, payout_percent=None, profit_loss=None, notes=None, import_batch=None,

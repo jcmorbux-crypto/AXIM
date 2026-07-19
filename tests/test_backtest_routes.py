@@ -1,6 +1,9 @@
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+
+from fastapi import HTTPException
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 API_DIR = PROJECT_ROOT / "api"
@@ -10,7 +13,10 @@ sys.path.insert(0, str(API_DIR))
 sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CONFIG_DIR))
 
+import database
 import backtest_routes
+
+_FAKE_USER = {"id": 1, "email": "owner@axim.local", "role": "owner"}
 
 
 def _sample_metrics(**overrides):
@@ -76,6 +82,45 @@ class BuildBacktestPdfTests(unittest.TestCase):
         report["strategies"] = []
         pdf_bytes = backtest_routes._build_backtest_pdf(report)
         self.assertTrue(pdf_bytes.startswith(b"%PDF-"))
+
+
+class EstimateRunRouteTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_rejects_invalid_source(self):
+        body = backtest_routes.RunEstimateRequest(source="not_a_source")
+        with self.assertRaises(HTTPException) as ctx:
+            backtest_routes.estimate_run(body, user=_FAKE_USER)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_rejects_invalid_trust_tier(self):
+        body = backtest_routes.RunEstimateRequest(min_trust_tier="super_verified")
+        with self.assertRaises(HTTPException) as ctx:
+            backtest_routes.estimate_run(body, user=_FAKE_USER)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_estimate_reflects_real_eligible_signals(self):
+        sig_id = database.create_imported_signal("C", "EUR/USD", "BUY", "1m", "2026-01-01T10:00:00")
+        database.grade_imported_signal(sig_id, "win", payout_percent=85)
+        body = backtest_routes.RunEstimateRequest(source="imported", risk_profile_ids=[1, 2])
+        result = backtest_routes.estimate_run(body, user=_FAKE_USER)
+        self.assertEqual(result["eligible_signal_count"], 1)
+        self.assertEqual(result["estimated_total_trades"], 2)
+
+    def test_create_run_rejects_invalid_trust_tier(self):
+        body = backtest_routes.RunCreateRequest(
+            name="R", starting_bankroll=1000, risk_profile_ids=[1], min_trust_tier="bogus")
+        with self.assertRaises(HTTPException) as ctx:
+            backtest_routes.create_run(body, user=_FAKE_USER)
+        self.assertEqual(ctx.exception.status_code, 400)
 
 
 if __name__ == "__main__":
