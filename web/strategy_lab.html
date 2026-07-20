@@ -1244,7 +1244,7 @@ async function loadImportedSignals() {
       <td>${(s.received_at || "").replace("T", " ")}</td>
       <td>${s.result ? `<span class="badge ${s.result === "win" ? "on" : (s.result === "loss" ? "danger" : "off")}">${s.result}</span>` : '<span class="badge off">ungraded</span>'}</td>
       <td>${s.payout_percent !== null ? s.payout_percent + "%" : "-"}</td>
-      <td><button class="subtle" onclick="deleteSignal(${s.id})">Delete</button></td>
+      <td><button class="danger" onclick="deleteSignal(${s.id})">Delete</button></td>
     </tr>
   `).join("");
 }

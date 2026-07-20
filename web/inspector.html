@@ -193,7 +193,7 @@ async function loadRules(id) {
         </div>
         <div class="row">
           <button class="subtle" onclick="toggleRule(${r.id}, ${!r.enabled})">${r.enabled ? "Disable" : "Enable"}</button>
-          <button class="subtle" onclick="deleteRule(${r.id})">Delete</button>
+          <button class="danger" onclick="deleteRule(${r.id})">Delete</button>
         </div>
       </div>
     `).join("");

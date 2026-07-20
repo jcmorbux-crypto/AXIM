@@ -421,7 +421,7 @@ async function refreshProfiles() {
         <span class="stat-label">${escapeHtml(p.name)} <span class="muted" style="font-size:11px;">(${p.channel_ids.length} channel(s))</span></span>
         <span class="row">
           <button class="subtle" onclick="useProfile(${p.id})">Use</button>
-          <button class="subtle" onclick="deleteProfile(${p.id})">Delete</button>
+          <button class="danger" onclick="deleteProfile(${p.id})">Delete</button>
         </span>
       </div>
     `).join("");

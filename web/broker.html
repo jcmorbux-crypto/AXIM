@@ -292,7 +292,7 @@ async function refreshAccounts() {
       </td>
       <td class="row" style="gap:6px; justify-content:flex-end;">
         ${a.connection_status === "connected"
-          ? `<button class="subtle" onclick="disconnectAccount(${a.id})">Disconnect</button>`
+          ? `<button class="danger" onclick="disconnectAccount(${a.id})">Disconnect</button>`
           : `<button class="subtle" onclick="connectAccount(${a.id})" ${a.connection_status === "connecting" ? "disabled" : ""}>${a.connection_status === "connecting" ? "Connecting..." : "Connect"}</button>`}
         ${a.connection_status === "connected"
           ? `<button class="subtle" id="test-conn-btn-${a.id}" onclick="testConnection(${a.id})">Test Connection</button>`
