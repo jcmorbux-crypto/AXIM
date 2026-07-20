@@ -354,7 +354,7 @@ async function refreshActiveSession() {
   try {
     const sessions = await fetchJSON("/api/sessions/active-list");
     if (!sessions.length) {
-      bodyEl.innerHTML = '<div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No active sessions. Start one below.</div>';
+      bodyEl.innerHTML = AximShell.emptyPanel("No active sessions. Start one below.");
       return;
     }
     bodyEl.innerHTML = sessions.map(renderSessionCard).join("");

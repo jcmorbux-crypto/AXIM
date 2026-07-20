@@ -45,7 +45,7 @@
     </div>
 
     <div id="bots-list">
-      <div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>Loading...</div>
+      <div class="empty">Loading...</div>
     </div>
   </main>
 </div>
@@ -92,7 +92,7 @@ async function loadBots() {
     return;
   }
   if (!bots.length) {
-    list.innerHTML = `<div class="empty-panel"><span class="empty-panel-mark"><svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg></span>No Bot Command channels configured yet. Add one from Signal Sources and set its Source Type to "Bot Command".</div>`;
+    list.innerHTML = AximShell.emptyPanel('No Bot Command channels configured yet. Add one from Signal Sources and set its Source Type to "Bot Command".');
     return;
   }
   list.innerHTML = bots.map(bot => renderBotCard(bot)).join("");

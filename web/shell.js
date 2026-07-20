@@ -51,6 +51,16 @@ const AximShell = (() => {
   // via CSS). Same 0-100 coordinate space as the master SVG.
   const LOGO_MARK = '<svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 50 12 L 84 46 L 50 80 L 16 46 Z M 66 30 L 82 46 L 66 62 L 50 46 Z"/></svg>';
 
+  // Shared "empty state" panel (icon + message) - was copy-pasted as a
+  // ~200-char inline SVG verbatim across dashboard.html/bots.html/
+  // sessions.html (2026-07-19 design consolidation). `message` should
+  // already be escaped/trusted HTML, same convention as every other
+  // *.innerHTML = `...` call site in this codebase.
+  const EMPTY_PANEL_MARK = '<svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg>';
+  function emptyPanel(message) {
+    return `<div class="empty-panel"><span class="empty-panel-mark">${EMPTY_PANEL_MARK}</span>${message}</div>`;
+  }
+
   // Same convention as every page's own escapeHtml() (web/*.html) -
   // encodes quotes too, not just & < >, since escaped text sometimes
   // ends up inside an attribute value elsewhere in this codebase.
@@ -617,5 +627,6 @@ const AximShell = (() => {
   return {
     init, logout, fetchJSON, isDeveloperMode, _confirmPendingTrade, _rejectPendingTrade,
     _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents, toggleTheme, confirm: confirmDialog,
+    emptyPanel,
   };
 })();
