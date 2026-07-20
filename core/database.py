@@ -3,13 +3,68 @@ import re
 import sqlite3
 import sys
 import threading
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from timeline import timed
+from logger import get_logger
 
 DB_FILE = Path("data/axim.db")
+
+logger = get_logger("axim.lifecycle", filename="lifecycle.log")
+
+# Beyond busy_timeout's built-in wait-for-the-lock-to-clear behavior (see
+# get_connection() below), retry a genuinely still-locked write a couple
+# more times with a short backoff before giving up - guards against the
+# rare case busy_timeout itself was exceeded (a long-running write
+# transaction, or OS-level file-lock jitter on the two-OS-process reality
+# get_connection() describes), not a replacement for it. Kept small (worst
+# case ~350ms of extra blocking) since this runs on the same thread as
+# everything else, including the async listener process's event loop.
+_LOCK_RETRY_DELAYS = (0.1, 0.25)
+
+
+class _RetryingConnection(sqlite3.Connection):
+    """Every existing call site already does conn.execute(...)/
+    conn.commit()/conn.close() directly (hundreds of them) - subclassing
+    via sqlite3.connect(factory=...) adds retry-on-lock transparently to
+    all of them from this one place, rather than touching every call site.
+    Never swallows a non-lock error, and never swallows the FINAL lock
+    failure either - a silently-dropped write would be worse than a
+    slow, visible one."""
+
+    def _retrying(self, op_name, fn, *args, **kwargs):
+        for attempt in range(len(_LOCK_RETRY_DELAYS) + 1):
+            try:
+                result = fn(*args, **kwargs)
+            except sqlite3.OperationalError as e:
+                msg = str(e).lower()
+                if "locked" not in msg and "busy" not in msg:
+                    raise
+                if attempt >= len(_LOCK_RETRY_DELAYS):
+                    logger.error("database: %s still locked after %d retries, giving up: %s", op_name, len(_LOCK_RETRY_DELAYS), e)
+                    record_recovery_event("database_lock_retry", "failed", f"{op_name}: {e}")
+                    raise
+                delay = _LOCK_RETRY_DELAYS[attempt]
+                logger.warning("database: %s locked (attempt %d/%d), retrying in %.2fs: %s",
+                                op_name, attempt + 1, len(_LOCK_RETRY_DELAYS), delay, e)
+                time.sleep(delay)
+            else:
+                if attempt > 0:
+                    logger.info("database: %s succeeded on retry attempt %d after lock contention", op_name, attempt + 1)
+                    record_recovery_event("database_lock_retry", "succeeded", f"{op_name}: succeeded on attempt {attempt + 1}")
+                return result
+
+    def execute(self, sql, parameters=()):
+        return self._retrying("execute", super().execute, sql, parameters)
+
+    def executemany(self, sql, parameters):
+        return self._retrying("executemany", super().executemany, sql, parameters)
+
+    def commit(self):
+        return self._retrying("commit", super().commit)
 
 # start_trading_session()'s "no other active session on this broker
 # account" check and the INSERT that follows it are two separate DB
@@ -151,7 +206,7 @@ def get_connection():
     PRAGMA is cheap on every subsequent connection - SQLite no-ops if
     already in WAL mode."""
     DB_FILE.parent.mkdir(exist_ok=True)
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, factory=_RetryingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
@@ -3189,10 +3244,17 @@ _BROKER_ACCOUNT_FIELDS = {
     "name", "mode", "live_enabled", "user_data_dir", "connection_status",
     "last_connected_at", "last_balance", "last_balance_checked_at", "status",
     "emergency_stopped", "emergency_stopped_at", "emergency_stopped_by",
+    "last_error", "last_error_at",
 }
 _VALID_BROKER_ACCOUNT_MODES = {"demo", "live", "both"}
 _VALID_BROKER_ACCOUNT_STATUSES = {"active", "disabled", "archived"}
-_VALID_CONNECTION_STATUSES = {"disconnected", "connecting", "connected", "error"}
+# needs_reauth: distinct from "error" - set specifically when a
+# reconnect's mode-verification fails, which usually means the persisted
+# login session itself is no longer valid (see execution/browser_warmup.py
+# _reconnect()) rather than a transient crash/timeout. Retrying can't fix
+# this; it takes an operator re-completing the login flow (the same
+# "Connect" button every other non-connected status already shows).
+_VALID_CONNECTION_STATUSES = {"disconnected", "connecting", "connected", "error", "needs_reauth"}
 
 
 @timed("database")

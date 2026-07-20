@@ -288,5 +288,89 @@ class ReconnectAndStopTests(unittest.TestCase):
         self.assertIsNone(warmup._session)
 
 
+class NeedsReauthTests(unittest.TestCase):
+    """A reconnect's mode-verification failing (DemoModeVerificationError,
+    not a generic crash/timeout) usually means the persisted Pocket
+    Option login session is no longer valid - previously this just
+    retried forever via the caller's own backoff with no operator-visible
+    signal. Covers the detection in _reconnect() and _flag_needs_reauth's
+    own DB/notification side effects."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.owner_id = database.create_user("owner@axim.local", "pw12345678", role="owner", access_state="active")
+        self.account_id = database.create_broker_account("Test Account", mode="demo")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_flag_needs_reauth_updates_account_and_notifies_owner(self):
+        warmup = BrowserWarmupService(broker_account_id=self.account_id)
+        warmup._flag_needs_reauth("is-chart-demo class missing")
+
+        account = database.get_broker_account(self.account_id)
+        self.assertEqual(account["connection_status"], "needs_reauth")
+        self.assertIn("is-chart-demo class missing", account["last_error"])
+        self.assertIsNotNone(account["last_error_at"])
+
+        notifications = database.list_notifications(self.owner_id)
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0]["source"], "browser_warmup:reauth_required")
+        self.assertIn("session was logged out", notifications[0]["message"])
+
+    def test_flag_needs_reauth_does_not_raise_without_an_owner(self):
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim_no_owner.db"
+        database.initialize_database()
+        account_id = database.create_broker_account("Ownerless Account", mode="demo")
+        warmup = BrowserWarmupService(broker_account_id=account_id)
+        warmup._flag_needs_reauth("boom")  # must not raise even with no owner to notify
+        self.assertEqual(database.get_broker_account(account_id)["connection_status"], "needs_reauth")
+
+    def test_reconnect_demo_mode_verification_error_flags_needs_reauth(self):
+        warmup = BrowserWarmupService(broker_account_id=self.account_id)
+        with patch.object(warmup, "health_check", new=AsyncMock(return_value=False)), \
+             patch.object(warmup, "stop", new=AsyncMock()), \
+             patch.object(warmup, "start", new=AsyncMock(side_effect=browser_warmup.DemoModeVerificationError("mode mismatch"))):
+            with self.assertRaises(browser_warmup.DemoModeVerificationError):
+                _run(warmup._reconnect())
+
+        account = database.get_broker_account(self.account_id)
+        self.assertEqual(account["connection_status"], "needs_reauth")
+        # Still records the same browser_reconnect/failed event as any
+        # other reconnect failure - this is additive, not a replacement.
+        self.assertEqual(self._event_counts("browser_reconnect"), {"failed": 1})
+
+    def test_reconnect_generic_error_does_not_flag_needs_reauth(self):
+        warmup = BrowserWarmupService(broker_account_id=self.account_id)
+        with patch.object(warmup, "health_check", new=AsyncMock(return_value=False)), \
+             patch.object(warmup, "stop", new=AsyncMock()), \
+             patch.object(warmup, "start", new=AsyncMock(side_effect=RuntimeError("crashed"))):
+            with self.assertRaises(RuntimeError):
+                _run(warmup._reconnect())
+
+        account = database.get_broker_account(self.account_id)
+        self.assertEqual(account["connection_status"], "disconnected")  # unchanged from create_broker_account's default
+
+    def test_reconnect_demo_mode_verification_error_without_account_id_does_not_touch_db(self):
+        # The legacy single-shared-connection path (broker_account_id=None)
+        # has no broker_accounts row to attribute this to - must not try.
+        warmup = BrowserWarmupService()  # no broker_account_id
+        with patch.object(warmup, "health_check", new=AsyncMock(return_value=False)), \
+             patch.object(warmup, "stop", new=AsyncMock()), \
+             patch.object(warmup, "start", new=AsyncMock(side_effect=browser_warmup.DemoModeVerificationError("mode mismatch"))), \
+             patch.object(database, "update_broker_account") as mock_update:
+            with self.assertRaises(browser_warmup.DemoModeVerificationError):
+                _run(warmup._reconnect())
+        mock_update.assert_not_called()
+
+    def _event_counts(self, event_type):
+        stats = database.get_recovery_event_stats()
+        return {row["outcome"]: row["n"] for row in stats if row["event_type"] == event_type}
+
+
 if __name__ == "__main__":
     unittest.main()

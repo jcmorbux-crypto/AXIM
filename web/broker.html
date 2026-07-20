@@ -253,7 +253,10 @@ function openModal(id) { document.getElementById(id).style.display = "flex"; }
 function closeModal(id) { document.getElementById(id).style.display = "none"; }
 
 const CONNECTION_BADGE = {
-  connected: "on", connecting: "warn", disconnected: "off", error: "danger",
+  connected: "on", connecting: "warn", disconnected: "off", error: "danger", needs_reauth: "danger",
+};
+const CONNECTION_STATUS_LABEL = {
+  needs_reauth: "needs reconnect",
 };
 
 let lastLoadedAccounts = [];
@@ -277,8 +280,8 @@ async function refreshAccounts() {
       <td>${escapeHtml(a.name)} ${a.emergency_stopped ? '<span class="badge danger">Stopped</span>' : ""}</td>
       <td><span class="badge off">${a.mode}</span></td>
       <td>
-        <span class="badge ${CONNECTION_BADGE[a.connection_status] || "off"}">${a.connection_status}</span>
-        ${a.connection_status === "error" && a.last_error ? `<div class="muted" style="font-size:11px; color:var(--red); margin-top:3px; max-width:220px;" title="${escapeHtml(a.last_error)}">${escapeHtml(a.last_error)}</div>` : ""}
+        <span class="badge ${CONNECTION_BADGE[a.connection_status] || "off"}">${CONNECTION_STATUS_LABEL[a.connection_status] || a.connection_status}</span>
+        ${(a.connection_status === "error" || a.connection_status === "needs_reauth") && a.last_error ? `<div class="muted" style="font-size:11px; color:var(--red); margin-top:3px; max-width:220px;" title="${escapeHtml(a.last_error)}">${escapeHtml(a.last_error)}</div>` : ""}
       </td>
       <td>${a.last_balance !== null && a.last_balance !== undefined ? "$" + Number(a.last_balance).toFixed(2) : "-"}</td>
       <td>${a.reserve !== null && a.reserve !== undefined ? "$" + Number(a.reserve).toFixed(2) : "-"}</td>

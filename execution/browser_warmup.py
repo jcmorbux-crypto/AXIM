@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from datetime import datetime
 from pathlib import Path
 
 EXECUTION_DIR = Path(__file__).resolve().parent
@@ -55,7 +56,7 @@ class BrowserWarmupService:
     longer exists) and knows to rebuild itself, via ensure_alive().
     """
 
-    def __init__(self, user_data_dir=None, mode="demo"):
+    def __init__(self, user_data_dir=None, mode="demo", broker_account_id=None):
         # user_data_dir=None keeps the original single-shared-profile
         # behavior (PocketBrowserSession's own default) for any caller
         # that doesn't care - core/broker_account_manager.py is what
@@ -64,6 +65,12 @@ class BrowserWarmupService:
         # architecture), so different accounts' browser contexts and
         # login sessions can never bleed into each other.
         self._user_data_dir = user_data_dir
+        # None for the legacy single-shared-connection path (no
+        # broker_accounts row to attribute a reconnect failure to) -
+        # broker_account_manager.py passes the real id for every
+        # account-scoped context. Used by _reconnect() to surface a
+        # needs-reauth condition on the right account (see its docstring).
+        self._broker_account_id = broker_account_id
         # "demo" (default) or "live" - which cabinet URL this account's
         # persistent session loads and verifies against. Callers pass
         # the account's own effective mode (see
@@ -187,9 +194,45 @@ class BrowserWarmupService:
                 await self.start()
             except Exception as e:
                 database.record_recovery_event("browser_reconnect", "failed", str(e))
+                if isinstance(e, DemoModeVerificationError) and self._broker_account_id is not None:
+                    self._flag_needs_reauth(str(e))
                 raise
             else:
                 database.record_recovery_event("browser_reconnect", "succeeded", f"generation={self.generation}")
+
+    def _flag_needs_reauth(self, detail):
+        """A RECONNECT's mode-verification failing (not the very first
+        start(), which core/broker_account_manager.py's own
+        _build_account_context already handles) usually means the
+        persisted login session itself is no longer valid - retrying
+        can't fix that, only an operator re-completing the login flow can
+        (the existing "Connect" button on web/broker.html already handles
+        re-auth for any non-"connected" status, so no new UI flow is
+        needed). Worded honestly, not overclaimed: this is a CSS-class
+        presence check, not a definitive login-state read, so it could
+        also mean Pocket Option changed their page markup.
+
+        Everything downstream already does the right thing once this is
+        set: broker_account_manager._balance_refresh_loop already
+        self-evicts any context whose connection_status isn't
+        "connected" (within its own 30s cadence), and
+        get_or_build_account_context already rejects new signals for a
+        non-connected account with the status in the reason - so this
+        stops the reconnect-forever loop and makes it actionable without
+        any new plumbing beyond this flag."""
+        message = (
+            "Pocket Option verification failed after reconnecting - this usually means the "
+            "session was logged out and needs to be reconnected, but could also indicate a "
+            f"site change. Detail: {detail}"
+        )
+        database.update_broker_account(
+            self._broker_account_id, connection_status="needs_reauth",
+            last_error=message, last_error_at=datetime.now().isoformat(),
+        )
+        owner = database.get_owner_user()
+        if owner is not None:
+            database.create_notification(owner["id"], message, source="browser_warmup:reauth_required")
+        logger.error("browser_warmup: account_id=%s flagged needs_reauth: %s", self._broker_account_id, detail)
 
     async def stop(self):
         if self._session is not None:

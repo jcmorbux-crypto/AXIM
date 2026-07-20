@@ -101,7 +101,10 @@ async def _build_account_context(broker_account_id):
     cabinet_mode = account_effective_cabinet_mode(account)
     logger.info("broker_account_manager: building context for account_id=%s (%s), cabinet_mode=%s",
                 broker_account_id, account["name"], cabinet_mode)
-    warmup = BrowserWarmupService(user_data_dir=PROJECT_ROOT / account["user_data_dir"], mode=cabinet_mode)
+    warmup = BrowserWarmupService(
+        user_data_dir=PROJECT_ROOT / account["user_data_dir"], mode=cabinet_mode,
+        broker_account_id=broker_account_id,
+    )
     try:
         await warmup.start()
     except Exception as e:
