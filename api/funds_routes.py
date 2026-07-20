@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 import database
 import fund_manager
+import money_studio
 import risk_control_center
 from auth_routes import get_current_user, require_admin
 
@@ -28,6 +29,7 @@ class FundCreate(BaseModel):
     starting_balance: float = 0
     assigned_broker_label: Optional[str] = None
     default_risk_profile_id: Optional[int] = None
+    default_money_plan_key: Optional[str] = None
     default_session_profile_id: Optional[int] = None
     profit_target: float = 0
     loss_limit: float = 0
@@ -41,6 +43,7 @@ class FundUpdate(BaseModel):
     starting_balance: Optional[float] = None
     assigned_broker_label: Optional[str] = None
     default_risk_profile_id: Optional[int] = None
+    default_money_plan_key: Optional[str] = None
     default_session_profile_id: Optional[int] = None
     profit_target: Optional[float] = None
     loss_limit: Optional[float] = None
@@ -84,6 +87,8 @@ def list_funds(status: Optional[str] = None, user=Depends(get_current_user)):
 
 @router.post("")
 def create_fund(body: FundCreate, user=Depends(require_admin)):
+    if body.default_money_plan_key and body.default_money_plan_key not in money_studio.STRATEGIES_BY_KEY:
+        raise HTTPException(status_code=404, detail="money plan not found")
     try:
         fund_id = database.create_fund(body.name, starting_balance=body.starting_balance,
                                         changed_by=user["email"],
@@ -114,6 +119,8 @@ def update_fund(fund_id: int, body: FundUpdate, user=Depends(require_admin)):
     _get_or_404(fund_id)
     if body.default_risk_profile_id is not None and database.get_risk_profile(body.default_risk_profile_id) is None:
         raise HTTPException(status_code=404, detail="risk profile not found")
+    if body.default_money_plan_key and body.default_money_plan_key not in money_studio.STRATEGIES_BY_KEY:
+        raise HTTPException(status_code=404, detail="money plan not found")
     if body.default_session_profile_id is not None and database.get_session_profile(body.default_session_profile_id) is None:
         raise HTTPException(status_code=404, detail="session profile not found")
     try:

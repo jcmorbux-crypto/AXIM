@@ -51,22 +51,25 @@ _ILLUSTRATIVE_PAYOUT_PERCENT = 88
 def _resolve_active_profile(fund, active_session):
     """Only trusts what risk_engine.compute_position_size will ACTUALLY
     use. For a RUNNING session, that is exclusively its own persisted
-    risk_profile_id - api/sessions.py's fund-default fallback only runs
-    once, at session START, and writes the resolved id onto the session
-    row; a Fund's default changing afterward does not retroactively
-    reattach anything, and compute_position_size looks at the session's
-    own column, never the Fund's. Showing the Fund's default as "active"
-    for an already-running session with no profile of its own would be a
-    real mismatch between what's displayed and what's actually computed -
-    so that fallback only applies with NO session running, where it's
-    honestly "what a new session would use.\""""
+    risk_profile_id/money_plan_key - api/sessions.py's fund-default
+    fallback only runs once, at session START, and writes the resolved
+    reference onto the session row; a Fund's default changing afterward
+    does not retroactively reattach anything, and compute_position_size
+    looks at the session's own columns, never the Fund's. Showing the
+    Fund's default as "active" for an already-running session with no
+    profile of its own would be a real mismatch between what's displayed
+    and what's actually computed - so that fallback only applies with NO
+    session running, where it's honestly "what a new session would use."
+
+    Returns (risk_profile_id, money_plan_key, source) - resolve via
+    database.resolve_money_plan, exactly like risk_engine.py does."""
     if active_session is not None:
-        if active_session.get("risk_profile_id") is not None:
-            return active_session["risk_profile_id"], "session"
-        return None, None
-    if fund["default_risk_profile_id"] is not None:
-        return fund["default_risk_profile_id"], "fund_default"
-    return None, None
+        if active_session.get("risk_profile_id") is not None or active_session.get("money_plan_key"):
+            return active_session.get("risk_profile_id"), active_session.get("money_plan_key"), "session"
+        return None, None, None
+    if fund["default_risk_profile_id"] is not None or fund.get("default_money_plan_key"):
+        return fund["default_risk_profile_id"], fund.get("default_money_plan_key"), "fund_default"
+    return None, None, None
 
 
 def _reasoning_trail(session_row, profile):
@@ -267,8 +270,8 @@ def get_risk_control_center(fund_id):
     session_row = database.get_active_trading_session_for_fund(fund_id)
     active_session = session_manager.session_progress(session_row)
 
-    profile_id, profile_source = _resolve_active_profile(fund, active_session)
-    profile = database.get_risk_profile(profile_id) if profile_id is not None else None
+    profile_risk_id, profile_plan_key, profile_source = _resolve_active_profile(fund, active_session)
+    profile = database.resolve_money_plan(profile_risk_id, profile_plan_key)
 
     next_trade = _compute_next_trade(session_row, profile)
     protections = _global_protections() + _fund_and_session_protections(fund, diagnostics, active_session)
@@ -280,7 +283,11 @@ def get_risk_control_center(fund_id):
         "safe_to_trade": allowed and not any(c["configured"] and c["tripped"] for c in protections),
         "blocking_reason": blocking_reason,
         "current_bankroll": balances["trading_balance"],
-        "active_profile": {"id": profile["id"], "name": profile["name"], "source": profile_source} if profile else None,
+        "active_profile": (
+            {"id": profile["id"], "name": profile["name"], "source": profile_source,
+             "money_plan_key": profile.get("strategy_key") if profile.get("is_virtual") else None}
+            if profile else None
+        ),
         "active_session": {"id": active_session["id"], "name": active_session["name"]} if active_session else None,
         "next_trade": next_trade,
         "max_exposure_today": _max_exposure_today(fund, diagnostics, active_session),

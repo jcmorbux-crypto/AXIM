@@ -112,8 +112,6 @@ AXIM_VERSION = "0.9.0-dev"  # pre-release - see docs/AXIM_APP_PLAN.md build orde
 logger = get_logger("axim.ui", filename="ui.log")
 
 database.initialize_database()
-database.seed_risk_profile_templates()
-database.seed_money_studio_templates()
 backtest_engine.recover_abandoned_runs()
 
 # /docs, /redoc, /openapi.json are unauthenticated by FastAPI's own

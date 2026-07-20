@@ -161,12 +161,13 @@ def import_all_eligible_providers():
 
 def run_backtest_for_provider(title, import_batch, created_by="provider_research_import"):
     """Creates and immediately runs one backtest_run for this provider's
-    imported signal batch against every seeded Money Studio template
-    strategy (core/database.seed_money_studio_templates), then generates
-    and persists this provider's capital recommendation
-    (core/capital_recommendation.py) from the completed run. Returns
-    (run_id, recommendation_id), either of which may be None if this
-    provider had no importable trades or no rankable strategy."""
+    imported signal batch against each of money_studio's 5 canonical
+    strategies, sized as virtual (zero-DB-footprint) profile snapshots -
+    see money_studio.build_virtual_profile - then generates and persists
+    this provider's capital recommendation (core/capital_recommendation.py)
+    from the completed run. Returns (run_id, recommendation_id), either
+    of which may be None if this provider had no importable trades or no
+    rankable strategy."""
     import database
     import backtest_engine
     import capital_recommendation
@@ -181,11 +182,9 @@ def run_backtest_for_provider(title, import_batch, created_by="provider_research
     if not signals:
         return None, None
 
-    database.seed_money_studio_templates()
-    profiles = database.list_risk_profiles(include_templates=True)
-    strategy_profiles = [p for p in profiles if p["strategy_key"] in money_studio.STRATEGIES_BY_KEY]
-    if not strategy_profiles:
-        raise RuntimeError("no Money Studio strategy templates found - seed_money_studio_templates failed silently")
+    strategy_profiles = [
+        money_studio.build_virtual_profile(s["key"], s["name"], STARTING_BANKROLL) for s in money_studio.STRATEGIES
+    ]
 
     signal_pool = {"source": "imported", "channel_filter": [title]}
     run_id = database.create_backtest_run(
@@ -194,7 +193,7 @@ def run_backtest_for_provider(title, import_batch, created_by="provider_research
         created_by=created_by,
     )
     for profile in strategy_profiles:
-        database.create_backtest_strategy(run_id, profile["id"], profile["name"], profile)
+        database.create_backtest_strategy(run_id, None, profile["name"], profile)
 
     backtest_engine.run_backtest(run_id)
     recommendation_id = capital_recommendation.generate_recommendation_for_provider(

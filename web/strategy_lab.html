@@ -148,7 +148,7 @@
               </select>
             </div>
           </div>
-          <div id="trust-tier-warning" style="display:none; margin-bottom:12px; padding:8px 10px; border-radius:var(--radius-sm); background:var(--yellow-soft); border:1px solid var(--yellow-border); color:var(--yellow); font-size:12px;"></div>
+          <div id="trust-tier-warning" class="banner warn" style="display:none;"></div>
           <div id="run-estimate-panel"></div>
         </div>
 
@@ -395,6 +395,7 @@
 <script src="/web/smart_channel_search.js"></script>
 <script>
 let allProfiles = [];
+let allMoneyStrategies = [];
 let currentRunId = null;
 let currentReport = null;
 const STRATEGY_COLORS = ["#2452eb", "#14804a", "#b3261e", "#92610a", "#7c3aed", "#0891b2", "#db2777"];
@@ -569,12 +570,21 @@ function removeBacktestChannel(index) {
 
 async function loadSetupData() {
   try {
-    const profiles = await fetchJSON("/api/risk-profiles");
+    const [profiles, moneyStrategies] = await Promise.all([
+      fetchJSON("/api/risk-profiles?include_templates=false"),
+      fetchJSON("/api/money-strategies"),
+    ]);
     allProfiles = profiles;
+    allMoneyStrategies = moneyStrategies.strategies;
 
-    document.getElementById("strategy-checklist").innerHTML = profiles.map(p => `
+    const builtInRows = allMoneyStrategies.map(s => `
+      <label><input type="checkbox" value="plan:${s.key}" checked onchange="scheduleBacktestEstimate()"> ${escapeHtml(s.name)}</label>
+    `).join("");
+    const customRows = profiles.map(p => `
       <label><input type="checkbox" value="${p.id}" ${p.is_template ? "" : "checked"} onchange="scheduleBacktestEstimate()"> ${escapeHtml(p.name)}${p.is_template ? " <span class=\"faint\">(template)</span>" : ""}</label>
-    `).join("") || '<div class="empty">No risk profiles yet - create one in Money Management Studio first.</div>';
+    `).join("");
+    document.getElementById("strategy-checklist").innerHTML = builtInRows + customRows
+      || '<div class="empty">No strategies yet - create one in Money Management Studio first.</div>';
 
     backtestChannelSearch = SmartChannelSearch.mount("r-channel-search", {
       placeholder: "Search connected Telegram sources...",
@@ -624,8 +634,16 @@ const ELIGIBILITY_CATEGORY_LABELS = {
   excluded_non_trade_outcome: "Never a placed trade (rejected/ignored/error)",
 };
 
+function _selectedStrategyChecklistValues() {
+  const values = Array.from(document.querySelectorAll("#strategy-checklist input:checked")).map(el => el.value);
+  return {
+    risk_profile_ids: values.filter(v => !v.startsWith("plan:")).map(v => parseInt(v, 10)),
+    strategy_keys: values.filter(v => v.startsWith("plan:")).map(v => v.slice(5)),
+  };
+}
+
 function _currentBacktestPoolConfig() {
-  const selectedIds = Array.from(document.querySelectorAll("#strategy-checklist input:checked")).map(el => parseInt(el.value, 10));
+  const { risk_profile_ids, strategy_keys } = _selectedStrategyChecklistValues();
   return {
     source: document.getElementById("r-source").value,
     channel_filter: selectedBacktestChannelTitles.length ? selectedBacktestChannelTitles.slice() : null,
@@ -633,7 +651,8 @@ function _currentBacktestPoolConfig() {
     date_to: document.getElementById("r-date-to").value || null,
     session_window: document.getElementById("r-window").value,
     min_trust_tier: document.getElementById("r-trust-tier").value || null,
-    risk_profile_ids: selectedIds,
+    risk_profile_ids: risk_profile_ids,
+    strategy_keys: strategy_keys,
   };
 }
 
@@ -651,7 +670,7 @@ function updateTrustTierWarning() {
   const banner = document.getElementById("trust-tier-warning");
   const message = TRUST_TIER_WARNINGS[value];
   if (message) {
-    banner.textContent = "⚠ " + message;
+    banner.textContent = message;
     banner.style.display = "block";
   } else {
     banner.style.display = "none";
@@ -711,8 +730,8 @@ async function updateBacktestEstimate() {
 let _runProgressPoll = null;
 
 async function runBacktest() {
-  const selectedIds = Array.from(document.querySelectorAll("#strategy-checklist input:checked")).map(el => parseInt(el.value, 10));
-  if (selectedIds.length === 0) { alert("Select at least one strategy to compare."); return; }
+  const { risk_profile_ids, strategy_keys } = _selectedStrategyChecklistValues();
+  if (risk_profile_ids.length === 0 && strategy_keys.length === 0) { alert("Select at least one strategy to compare."); return; }
 
   const name = document.getElementById("r-name").value.trim() || `Backtest ${new Date().toLocaleString()}`;
   const pool = _currentBacktestPoolConfig();
@@ -722,7 +741,8 @@ async function runBacktest() {
     starting_bankroll: parseFloat(document.getElementById("r-bankroll").value) || 1000,
     default_payout_percent: parseFloat(document.getElementById("r-payout").value) || 85,
     session_window: pool.session_window, min_trust_tier: pool.min_trust_tier,
-    risk_profile_ids: selectedIds,
+    risk_profile_ids: risk_profile_ids,
+    strategy_keys: strategy_keys,
   };
 
   const btn = document.getElementById("run-btn");

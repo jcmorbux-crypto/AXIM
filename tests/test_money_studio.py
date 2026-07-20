@@ -189,5 +189,71 @@ class DailyCompoundingMathTests(unittest.TestCase):
         self.assertIn("trading day", timeline[0]["trigger"])
 
 
+class BuildVirtualProfileTests(unittest.TestCase):
+    """2026-07-19 architecture: the 5 canonical plans are code-only -
+    build_virtual_profile is the zero-DB-footprint stand-in for what a
+    real risk_profiles row used to be. These tests guard the contract
+    every consumer (risk_engine.py, risk_control_center.py,
+    backtest_engine.py) relies on: the same shape database.
+    get_risk_profile() returns, with no real DB row ever created."""
+
+    def test_returns_none_for_an_unknown_key(self):
+        self.assertIsNone(money_studio.build_virtual_profile("not_a_real_strategy"))
+
+    def test_shape_matches_a_real_risk_profile_dict(self):
+        profile = money_studio.build_virtual_profile("capital_preservation")
+        expected_top_level = {
+            "id", "name", "description", "is_template", "bankroll", "sizing_mode",
+            "fixed_amount", "percent_of_bankroll", "kelly_win_rate_estimate",
+            "kelly_payout_estimate", "kelly_fraction_multiplier", "max_trade_amount",
+            "max_daily_loss", "max_session_loss", "profit_target", "max_trades",
+            "live_allowed", "created_at", "updated_at", "strategy_key", "archived_at",
+            "martingale", "momentum", "compounding", "profit_vault", "apex_ascension",
+            "drawdown_protection", "cashflow", "strike", "fortress", "empire",
+            "daily_compounding", "is_virtual",
+        }
+        self.assertEqual(set(profile.keys()), expected_top_level)
+        for sub in ("martingale", "momentum", "compounding", "profit_vault", "apex_ascension",
+                    "drawdown_protection", "cashflow", "strike", "fortress", "empire",
+                    "daily_compounding"):
+            self.assertIn("enabled" if sub != "compounding" else "mode", profile[sub])
+            self.assertIn("id", profile[sub])
+            self.assertIn("risk_profile_id", profile[sub])
+
+    def test_has_no_real_id_and_is_flagged_virtual(self):
+        profile = money_studio.build_virtual_profile("growth_accelerator")
+        self.assertIsNone(profile["id"])
+        self.assertTrue(profile["is_virtual"])
+        self.assertEqual(profile["strategy_key"], "growth_accelerator")
+
+    def test_bankroll_defaults_and_can_be_overridden(self):
+        default = money_studio.build_virtual_profile("recovery_ladder")
+        self.assertEqual(default["bankroll"], money_studio.STARTING_BANKROLL)
+        overridden = money_studio.build_virtual_profile("recovery_ladder", bankroll=5000.0)
+        self.assertEqual(overridden["bankroll"], 5000.0)
+
+    def test_every_canonical_strategy_builds_a_valid_virtual_profile(self):
+        for strategy in money_studio.STRATEGIES:
+            profile = money_studio.build_virtual_profile(strategy["key"])
+            self.assertIsNotNone(profile, strategy["key"])
+            self.assertEqual(profile["name"], strategy["name"])
+
+    def test_recovery_ladders_martingale_is_wired_the_only_layer_enabled(self):
+        profile = money_studio.build_virtual_profile("recovery_ladder")
+        self.assertTrue(profile["martingale"]["enabled"])
+        for sub in ("momentum", "profit_vault", "apex_ascension",
+                    "drawdown_protection", "cashflow", "strike", "fortress", "empire"):
+            self.assertFalse(profile[sub]["enabled"])
+        self.assertEqual(profile["compounding"]["mode"], "disabled")
+
+    def test_daily_compoundings_only_daily_layer_is_enabled(self):
+        profile = money_studio.build_virtual_profile("daily_compounding")
+        self.assertTrue(profile["daily_compounding"]["enabled"])
+        self.assertEqual(profile["sizing_mode"], "daily_compounding")
+        for sub in ("martingale", "momentum", "profit_vault", "apex_ascension",
+                    "drawdown_protection", "cashflow", "strike", "fortress", "empire"):
+            self.assertFalse(profile[sub]["enabled"])
+
+
 if __name__ == "__main__":
     unittest.main()

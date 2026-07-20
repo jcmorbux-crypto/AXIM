@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import database
+import money_studio
 import session_manager
 import fund_manager
 from settings import ACCOUNT, TRADE_CONFIRMATION_TIMEOUT_SECONDS
@@ -46,11 +47,13 @@ class SessionStart(BaseModel):
     require_confirmation: bool = False
     profile_id: Optional[int] = None
     risk_profile_id: Optional[int] = None
+    money_plan_key: Optional[str] = None
     fund_id: int
 
 
 class AttachRiskProfile(BaseModel):
     risk_profile_id: Optional[int] = None
+    money_plan_key: Optional[str] = None
 
 
 class VaultTransfer(BaseModel):
@@ -198,13 +201,21 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
     if not can_trade:
         raise HTTPException(status_code=409, detail=reason)
 
-    risk_profile_id = body.risk_profile_id if body.risk_profile_id is not None else fund["default_risk_profile_id"]
-    if risk_profile_id is None:
+    risk_profile_id = body.risk_profile_id
+    money_plan_key = body.money_plan_key
+    if risk_profile_id is None and not money_plan_key:
+        risk_profile_id = fund["default_risk_profile_id"]
+        money_plan_key = fund.get("default_money_plan_key")
+    if risk_profile_id is None and not money_plan_key:
         raise HTTPException(
             status_code=400,
-            detail="select a Money Management profile before starting a session (either on this session or as the fund's default)",
+            detail="select a Money Management plan before starting a session (either on this session or as the fund's default)",
         )
-    if database.get_risk_profile(risk_profile_id) is None:
+    if money_plan_key:
+        if money_plan_key not in money_studio.STRATEGIES_BY_KEY:
+            raise HTTPException(status_code=404, detail="money plan not found")
+        risk_profile_id = None
+    elif database.get_risk_profile(risk_profile_id) is None:
         raise HTTPException(status_code=404, detail="risk profile not found")
 
     broker_account = database.get_fund_primary_broker_account(body.fund_id)
@@ -213,7 +224,7 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
             name=body.name, channel_ids=body.channel_ids, account_mode=ACCOUNT,
             profit_target=body.profit_target, loss_limit=body.loss_limit, max_trades=body.max_trades,
             require_confirmation=body.require_confirmation, profile_id=body.profile_id,
-            risk_profile_id=risk_profile_id, fund_id=body.fund_id,
+            risk_profile_id=risk_profile_id, money_plan_key=money_plan_key, fund_id=body.fund_id,
             broker_account_id=broker_account["id"] if broker_account else None,
         )
     except ValueError as e:
@@ -250,9 +261,12 @@ def attach_risk_profile(session_id: int, body: AttachRiskProfile, user=Depends(r
     session = database.get_trading_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="session not found")
-    if body.risk_profile_id is not None and database.get_risk_profile(body.risk_profile_id) is None:
+    if body.money_plan_key:
+        if body.money_plan_key not in money_studio.STRATEGIES_BY_KEY:
+            raise HTTPException(status_code=404, detail="money plan not found")
+    elif body.risk_profile_id is not None and database.get_risk_profile(body.risk_profile_id) is None:
         raise HTTPException(status_code=404, detail="risk profile not found")
-    database.set_session_risk_profile(session_id, body.risk_profile_id)
+    database.set_session_risk_profile(session_id, body.risk_profile_id, money_plan_key=body.money_plan_key)
     return _with_progress(database.get_trading_session(session_id))
 
 

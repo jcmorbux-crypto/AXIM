@@ -1,8 +1,14 @@
-"""Money Management Studio - the 4 official strategies + Custom
-Strategy Builder catalog (core/money_studio.py). Read-only content:
-"Use This Strategy"/"Create From This Template" saves through the
-existing, unchanged POST /api/risk-profiles + its martingale/vault
-PATCH sub-endpoints, not a new write path here.
+"""Money Management Studio - the 5 official strategies + Custom
+Strategy Builder catalog (core/money_studio.py). The 5 official
+strategies are defined ONLY in code and never become risk_profiles
+rows (2026-07-19 product directive - see money_studio.py's module
+docstring): "Use This Strategy" attaches a Fund directly to a
+canonical plan key (money_plan_key), no row created. "Create From This
+Template" is a genuinely different, unchanged path - it goes through
+the existing POST /api/risk-profiles + its martingale/vault PATCH
+sub-endpoints (web/risk.html's saveBuilder), producing a real,
+user-owned custom profile - that's a legitimate "permitted user
+customization," not a duplicate of the canonical catalog.
 """
 import sys
 from pathlib import Path
@@ -35,34 +41,27 @@ def get_strategy(strategy_key: str, user=Depends(get_current_user)):
     return detail
 
 
-class CreateFromStrategyRequest(BaseModel):
-    name: str
-    bankroll: float = 1000
+class AttachToFundRequest(BaseModel):
+    fund_id: int
 
 
-@router.post("/{strategy_key}/create-profile")
-def create_profile_from_strategy(strategy_key: str, body: CreateFromStrategyRequest, user=Depends(require_admin)):
-    """"Use This Strategy" - the ONE write path this router has, and it
-    goes through the exact same core/database.py functions the existing
-    hand-built risk-profile form already uses (create_risk_profile,
-    update_martingale_settings, update_profit_vault_settings,
-    update_compounding_settings) - not a new mechanism. See
-    core/money_studio.risk_profile_fields_for for exactly what's real vs
-    approximated per strategy."""
-    create_fields, martingale_fields, vault_fields, compounding_fields, daily_compounding_fields = (
-        money_studio.risk_profile_fields_for(strategy_key, body.name, body.bankroll)
-    )
-    if create_fields is None:
+@router.post("/{strategy_key}/attach-to-fund")
+def attach_strategy_to_fund(strategy_key: str, body: AttachToFundRequest, user=Depends(require_admin)):
+    """"Use This Strategy" - sets a Fund's default_money_plan_key
+    directly to this canonical strategy, clearing any real custom
+    default_risk_profile_id it had (the two are mutually exclusive - a
+    Fund's default is either a canonical plan or a real custom profile,
+    never both). No risk_profiles row is created or has ever needed to
+    be: a canonical plan's bankroll is always the Fund's own real,
+    live trading balance (core/risk_engine.py reads it fresh from
+    fund_manager at trade time), never a value frozen at "use" time."""
+    if strategy_key not in money_studio.STRATEGIES_BY_KEY:
         raise HTTPException(status_code=404, detail="strategy not found")
-    name = create_fields.pop("name")
-    description = create_fields.pop("description", None)
-    profile_id = database.create_risk_profile(name, description=description, **create_fields)
-    if martingale_fields:
-        database.update_martingale_settings(profile_id, **martingale_fields)
-    if vault_fields:
-        database.update_profit_vault_settings(profile_id, **vault_fields)
-    if compounding_fields:
-        database.update_compounding_settings(profile_id, **compounding_fields)
-    if daily_compounding_fields:
-        database.update_daily_compounding_settings(profile_id, **daily_compounding_fields)
-    return database.get_risk_profile(profile_id)
+    fund = database.get_fund(body.fund_id)
+    if fund is None:
+        raise HTTPException(status_code=404, detail="fund not found")
+    database.update_fund(
+        body.fund_id, default_money_plan_key=strategy_key, default_risk_profile_id=None,
+        changed_by=user["email"], reason=f"Use This Strategy: {strategy_key}",
+    )
+    return database.get_fund(body.fund_id)

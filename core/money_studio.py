@@ -509,3 +509,120 @@ def risk_profile_fields_for(key, name, bankroll):
         return create, None, None, None, daily
 
     return None, None, None, None, None
+
+
+# ---------------------------------------------------------------------
+# Virtual profiles - the zero-DB-footprint replacement for what a real
+# risk_profiles row used to look like for one of the 5 canonical
+# strategies (2026-07-19 product directive: "Do not create database
+# rows for the five plans merely to make them appear in selectors. Do
+# not seed them."). build_virtual_profile() below returns an in-memory
+# dict shape-identical to database.get_risk_profile()'s output (base
+# fields + all 11 sub-setting dicts: martingale, momentum, compounding,
+# profit_vault, apex_ascension, drawdown_protection, cashflow, strike,
+# fortress, empire, daily_compounding), built from risk_profile_fields_for
+# above plus this table's own hand-verified copies of every sub-table's
+# real schema DEFAULT (core/database.py's CREATE TABLE statements - kept
+# in sync by hand since a virtual profile, by definition, never has a
+# real row to read defaults from). Every strategy here touches at most
+# one of martingale/vault/compounding/daily_compounding; every other
+# sub-setting is a pure, untouched default - exactly what a freshly
+# create_risk_profile()'d row would also contain.
+# ---------------------------------------------------------------------
+
+_RISK_PROFILE_BASE_DEFAULTS = {
+    "description": None, "is_template": 0, "bankroll": STARTING_BANKROLL,
+    "sizing_mode": "fixed", "fixed_amount": 1, "percent_of_bankroll": 1,
+    "kelly_win_rate_estimate": None, "kelly_payout_estimate": None,
+    "kelly_fraction_multiplier": 0.5, "max_trade_amount": 0, "max_daily_loss": 0,
+    "max_session_loss": 0, "profit_target": 0, "max_trades": 0, "live_allowed": 0,
+    "created_at": None, "updated_at": None, "strategy_key": None, "archived_at": None,
+}
+_MARTINGALE_DEFAULTS = {
+    "enabled": 0, "max_steps": 0, "multiplier": 2.0, "custom_ladder_json": None,
+    "reset_after_win": 1, "reset_after_session": 1, "max_total_exposure": 0,
+    "confidence_threshold": None, "same_asset_only": 0, "same_source_only": 0,
+}
+_MOMENTUM_DEFAULTS = {
+    "enabled": 0, "max_steps": 0, "multiplier": 1.5, "custom_ladder_json": None,
+    "profit_lock_percent": 0,
+}
+_COMPOUNDING_DEFAULTS = {
+    "mode": "disabled", "base_risk_percent": 2.0, "steps_json": None,
+    "drawdown_reset_percent": 0, "max_risk_percent": 0, "min_risk_percent": 0,
+}
+_VAULT_DEFAULTS = {
+    "enabled": 0, "vault_percent": 0, "trigger_event": "every_winning_session",
+    "milestone_amount": 0,
+}
+_APEX_ASCENSION_DEFAULTS = {
+    "enabled": 0, "starting_bankroll": 1000, "starting_unit_value": 10,
+    "standard_units": 5, "first_reset_threshold": 2500, "reset_increment": 1000,
+    "reset_unit_step": 10, "downgrade_protection": 1, "highest_tier_reached": 0,
+}
+_DRAWDOWN_PROTECTION_DEFAULTS = {
+    "enabled": 0, "bands_json": None, "suspend_above_percent": 20, "scope": "account",
+}
+_CASHFLOW_DEFAULTS = {
+    "enabled": 0, "target_amount": 0, "target_period": "session",
+    "partial_target_percent": 75, "partial_reduction_percent": 50,
+}
+_STRIKE_DEFAULTS = {
+    "enabled": 0, "max_session_duration_minutes": 0, "max_consecutive_losses": 0,
+}
+_FORTRESS_DEFAULTS = {
+    "enabled": 0, "protection_threshold": 0, "protected_principal": 0,
+}
+_EMPIRE_DEFAULTS = {
+    "enabled": 0, "starting_amount": 10, "target_amount": 100, "num_levels": 10,
+    "levels_json": None, "failure_behavior": "reset_to_start", "checkpoint_level": 0,
+    "current_level": 0,
+}
+_DAILY_COMPOUNDING_DEFAULTS = {
+    "enabled": 0, "risk_percent": 1.0, "risk_fixed_amount": None,
+    "profit_target_percent": 50.0, "profit_target_fixed_amount": None,
+    "loss_limit_percent": 25.0, "loss_limit_fixed_amount": None, "timezone": "UTC",
+    "max_trades_per_day": 0, "max_concurrent_trades": 0, "cooldown_after_loss_seconds": 0,
+    "consecutive_loss_stop": 0, "vault_enabled": 0, "vault_percent_on_target": 0,
+    "stop_after_target": 1, "stop_after_loss_limit": 1,
+}
+
+
+def _sub_settings(defaults, overrides=None):
+    d = {"id": None, "risk_profile_id": None, **defaults}
+    if overrides:
+        d.update(overrides)
+    return d
+
+
+def build_virtual_profile(key, name=None, bankroll=None):
+    """Zero-DB-footprint stand-in for a real risk_profiles row, for any
+    of the 5 canonical strategies - see the module comment above. Every
+    field risk_engine.py / risk_control_center.py read from a real
+    profile is present here with the correct real-schema default, so
+    either can consume this as a drop-in replacement. Returns None if
+    key isn't one of the 5 canonical strategies."""
+    strategy = STRATEGIES_BY_KEY.get(key)
+    if strategy is None:
+        return None
+    bankroll = bankroll if bankroll is not None else STARTING_BANKROLL
+    name = name or strategy["name"]
+    create_fields, martingale_fields, vault_fields, compounding_fields, daily_compounding_fields = (
+        risk_profile_fields_for(key, name, bankroll)
+    )
+    create_fields = dict(create_fields)
+    create_fields.pop("name", None)
+
+    profile = {"id": None, "name": name, "is_virtual": True, **_RISK_PROFILE_BASE_DEFAULTS, **create_fields}
+    profile["martingale"] = _sub_settings(_MARTINGALE_DEFAULTS, martingale_fields)
+    profile["momentum"] = _sub_settings(_MOMENTUM_DEFAULTS)
+    profile["compounding"] = _sub_settings(_COMPOUNDING_DEFAULTS, compounding_fields)
+    profile["profit_vault"] = _sub_settings(_VAULT_DEFAULTS, vault_fields)
+    profile["apex_ascension"] = _sub_settings(_APEX_ASCENSION_DEFAULTS)
+    profile["drawdown_protection"] = _sub_settings(_DRAWDOWN_PROTECTION_DEFAULTS)
+    profile["cashflow"] = _sub_settings(_CASHFLOW_DEFAULTS)
+    profile["strike"] = _sub_settings(_STRIKE_DEFAULTS)
+    profile["fortress"] = _sub_settings(_FORTRESS_DEFAULTS)
+    profile["empire"] = _sub_settings(_EMPIRE_DEFAULTS)
+    profile["daily_compounding"] = _sub_settings(_DAILY_COMPOUNDING_DEFAULTS, daily_compounding_fields)
+    return profile

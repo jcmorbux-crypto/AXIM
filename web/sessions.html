@@ -150,9 +150,13 @@ async function loadChannelPicker() {
 async function loadRiskProfiles() {
   const select = document.getElementById("new-risk-profile");
   try {
-    const profiles = (await fetchJSON("/api/risk-profiles?include_templates=false"));
-    select.innerHTML = '<option value="">None - use global Money Management defaults</option>' +
-      profiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)} (${p.sizing_mode})</option>`).join("");
+    const [profiles, strategies] = await Promise.all([
+      fetchJSON("/api/risk-profiles?include_templates=false"),
+      fetchJSON("/api/money-strategies"),
+    ]);
+    select.innerHTML = '<option value="">None - use global Money Management defaults</option>'
+      + '<optgroup label="Built-in Plans">' + strategies.strategies.map(s => `<option value="plan:${s.key}">${escapeHtml(s.name)}</option>`).join("") + '</optgroup>'
+      + '<optgroup label="My Custom Profiles">' + profiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)} (${p.sizing_mode})</option>`).join("") + '</optgroup>';
   } catch (e) {
     select.innerHTML = '<option value="">Failed to load risk profiles</option>';
   }
@@ -185,7 +189,9 @@ async function onFundSelectChange() {
   const fundId = document.getElementById("new-fund").value;
   const summaryEl = document.getElementById("fund-broker-summary");
   const fund = allFunds.find(f => f.id === parseInt(fundId, 10));
-  if (fund && fund.default_risk_profile_id) {
+  if (fund && fund.default_money_plan_key) {
+    document.getElementById("new-risk-profile").value = `plan:${fund.default_money_plan_key}`;
+  } else if (fund && fund.default_risk_profile_id) {
     document.getElementById("new-risk-profile").value = fund.default_risk_profile_id;
   }
   if (!fundId) {
@@ -241,7 +247,8 @@ function currentFormValues() {
     loss_limit: parseFloat(document.getElementById("new-loss-limit").value) || 0,
     max_trades: parseInt(document.getElementById("new-max-trades").value, 10) || 0,
     require_confirmation: document.getElementById("new-require-confirmation").checked,
-    risk_profile_id: riskProfileValue ? parseInt(riskProfileValue, 10) : null,
+    money_plan_key: riskProfileValue.startsWith("plan:") ? riskProfileValue.slice(5) : null,
+    risk_profile_id: (riskProfileValue && !riskProfileValue.startsWith("plan:")) ? parseInt(riskProfileValue, 10) : null,
     fund_id: fundValue ? parseInt(fundValue, 10) : null,
   };
 }
@@ -251,7 +258,8 @@ async function confirmStartSession() {
   const body = currentFormValues();
   if (!body.fund_id) { statusEl.textContent = "Select a Fund before starting a session."; return; }
   if (!body.channel_ids.length) { statusEl.textContent = "Select at least one channel."; return; }
-  if (!body.risk_profile_id && !(allFunds.find(f => f.id === body.fund_id) || {}).default_risk_profile_id) {
+  const selectedFund = allFunds.find(f => f.id === body.fund_id) || {};
+  if (!body.risk_profile_id && !body.money_plan_key && !selectedFund.default_risk_profile_id && !selectedFund.default_money_plan_key) {
     statusEl.textContent = "Select a Money Management profile before starting a session.";
     return;
   }

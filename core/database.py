@@ -152,6 +152,15 @@ _NEW_SESSION_COLUMNS = {
     # current_martingale_step above, just advancing on a WIN instead of a
     # loss (see core/risk_engine.py's on_trade_closed).
     "current_momentum_step": "INTEGER DEFAULT 0",
+    # References one of core/money_studio.py's 5 canonical built-in plan
+    # keys directly (e.g. "capital_preservation") - mutually exclusive
+    # with risk_profile_id above. The 5 plans are defined ONLY in code
+    # (money_studio.STRATEGIES); they are never seeded as risk_profiles
+    # rows (2026-07-19 product directive - see money_studio.py's
+    # docstring). When set, risk_engine.py builds a virtual (in-memory)
+    # profile via money_studio.build_virtual_profile instead of reading
+    # risk_profile_id from the DB.
+    "money_plan_key": "TEXT",
 }
 
 # Billing scaffold (docs/AXIM_APP_PLAN.md Phase 6) - links a user to a
@@ -175,6 +184,11 @@ _NEW_USER_COLUMNS = {
 # fund_manager.can_trade_live).
 _NEW_FUND_COLUMNS = {
     "live_enabled": "INTEGER DEFAULT 0",
+    # Same money_plan_key mechanism as trading_sessions.money_plan_key
+    # (see its comment above) - mutually exclusive with
+    # default_risk_profile_id. A Fund references EITHER a canonical
+    # built-in plan key OR a real custom risk_profiles row, never both.
+    "default_money_plan_key": "TEXT",
 }
 
 # AXIM Capital Strategies (tm) - links a risk_profile instance to its
@@ -3074,8 +3088,8 @@ def get_decrypted_telegram_credentials():
 
 _FUND_FIELDS = {
     "name", "starting_balance", "assigned_broker_label", "default_risk_profile_id",
-    "default_session_profile_id", "profit_target", "loss_limit", "max_trades", "status",
-    "live_enabled",
+    "default_money_plan_key", "default_session_profile_id", "profit_target", "loss_limit",
+    "max_trades", "status", "live_enabled",
 }
 _VALID_FUND_STATUSES = {"active", "paused", "archived"}
 
@@ -3168,6 +3182,7 @@ def duplicate_fund(fund_id, new_name, changed_by=None, reason=None):
         new_name, starting_balance=source["starting_balance"],
         assigned_broker_label=source["assigned_broker_label"],
         default_risk_profile_id=source["default_risk_profile_id"],
+        default_money_plan_key=source["default_money_plan_key"],
         default_session_profile_id=source["default_session_profile_id"],
         profit_target=source["profit_target"], loss_limit=source["loss_limit"],
         max_trades=source["max_trades"], changed_by=changed_by, reason=reason,
@@ -3649,7 +3664,7 @@ def get_active_trading_session_for_channel(channel_id):
 @timed("database")
 def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss_limit=0, max_trades=0,
                            require_confirmation=False, profile_id=None, risk_profile_id=None, fund_id=None,
-                           broker_account_id=None):
+                           broker_account_id=None, money_plan_key=None):
     """Raises ValueError if a session is already active ON THE SAME
     BROKER ACCOUNT - that's the real concurrency boundary (one physical
     Pocket Option login can only run one session at a time; different
@@ -3661,8 +3676,11 @@ def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss
 
     profile_id is the Phase 3 session_profiles start-config template;
     risk_profile_id is the Risk Engine sizing/martingale/compounding/
-    vault profile; fund_id is the Fund this session's P&L should be
-    attributed to - three independent, optional attachments, not the
+    vault profile for a real, user-owned custom profile; money_plan_key
+    references one of core/money_studio.py's 5 canonical built-in plans
+    directly (mutually exclusive with risk_profile_id - see
+    database.resolve_money_plan); fund_id is the Fund this session's P&L
+    should be attributed to - independent, optional attachments, not the
     same concept. fund_id defaults to None (not required at the database
     layer) so every existing test/call site keeps working unchanged -
     "a session must have a fund" is a UI/API-layer rule (api/sessions.py),
@@ -3689,11 +3707,12 @@ def start_trading_session(name, channel_ids, account_mode, profit_target=0, loss
             INSERT INTO trading_sessions (
                 profile_id, name, channel_ids_json, account_mode, profit_target, loss_limit,
                 max_trades, require_confirmation, status, trades_count, realized_pnl, started_at,
-                risk_profile_id, fund_id, broker_account_id
+                risk_profile_id, fund_id, broker_account_id, money_plan_key
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, 0, ?, ?, ?, ?, ?)
         """, (profile_id, name, json.dumps(channel_ids), account_mode, profit_target, loss_limit,
-              max_trades, 1 if require_confirmation else 0, now, risk_profile_id, fund_id, broker_account_id))
+              max_trades, 1 if require_confirmation else 0, now, risk_profile_id, fund_id, broker_account_id,
+              money_plan_key))
         conn.commit()
         session_id = cursor.lastrowid
         conn.close()
@@ -4428,11 +4447,39 @@ def get_fund_pending_stake_since(fund_id, since_iso):
 
 
 @timed("database")
-def set_session_risk_profile(session_id, risk_profile_id):
+def set_session_risk_profile(session_id, risk_profile_id, money_plan_key=None):
+    """Sets exactly one of the two mutually exclusive references - a real
+    custom risk_profiles row (risk_profile_id) or one of money_studio's 5
+    canonical plan keys (money_plan_key). Whichever is passed clears the
+    other, so a session can never end up pointing at both at once."""
     conn = get_connection()
-    conn.execute("UPDATE trading_sessions SET risk_profile_id = ? WHERE id = ?", (risk_profile_id, session_id))
+    conn.execute(
+        "UPDATE trading_sessions SET risk_profile_id = ?, money_plan_key = ? WHERE id = ?",
+        (risk_profile_id if not money_plan_key else None, money_plan_key, session_id),
+    )
     conn.commit()
     conn.close()
+
+
+def resolve_money_plan(risk_profile_id=None, money_plan_key=None):
+    """Single source of truth for turning a Fund/Session's stored profile
+    reference into a full profile dict, whichever of the two mutually
+    exclusive references is set: a real, user-owned risk_profiles row
+    (risk_profile_id) or one of money_studio's 5 canonical built-in plans
+    (money_plan_key, resolved as a virtual, zero-DB-footprint profile -
+    see money_studio.build_virtual_profile). money_plan_key wins if both
+    are somehow set, since it's the current, product-mandated path.
+    Returns None if neither resolves to anything. Every caller that used
+    to do `if session["risk_profile_id"]: get_risk_profile(...)` directly
+    (risk_engine.py, risk_control_center.py, session_manager.py) should
+    go through this instead, so the two paths can never silently drift
+    apart."""
+    if money_plan_key:
+        import money_studio
+        return money_studio.build_virtual_profile(money_plan_key)
+    if risk_profile_id:
+        return get_risk_profile(risk_profile_id)
+    return None
 
 
 @timed("database")
@@ -4475,109 +4522,6 @@ def add_to_vault(session_id, amount):
     conn.execute("UPDATE trading_sessions SET vaulted_amount = vaulted_amount + ? WHERE id = ?", (amount, session_id))
     conn.commit()
     conn.close()
-
-
-# name, description, percent_of_bankroll, martingale(enabled, steps, multiplier),
-# compounding(mode, base_risk_percent), vault(enabled, percent, trigger_event).
-# bankroll is deliberately 0 on every template (read-only, meant to be
-# duplicated - the user sets their own bankroll on the copy). Grouped by
-# risk archetype implied by each name rather than hand-tuned individually
-# - real differentiation (conservative/balanced/aggressive/martingale/
-# vault-focused/compounding-focused) rather than 27 copies of one config.
-_RISK_PROFILE_TEMPLATES = [
-    ("Capital Shield", "Capital preservation first - small stakes, no martingale, vaults every win.", 1.0, (False, 0, 2.0), ("disabled", 1.0), (True, 25, "every_winning_session")),
-    ("Vault Builder", "Aggressively protects profit with a large vault skim at every milestone.", 1.5, (False, 0, 2.0), ("disabled", 1.5), (True, 35, "milestone_based")),
-    ("Balanced Builder", "Even mix of growth and protection - the default starting point.", 2.0, (True, 2, 1.8), ("target_based", 2.0), (True, 10, "daily_target")),
-    ("Momentum Rider", "Rides winning streaks - compounds after every win, no brakes.", 2.5, (False, 0, 2.0), ("every_win", 2.0), (False, 0, "every_winning_session")),
-    ("Target Hunter", "Fixed daily profit target, stops the moment it's hit.", 2.0, (False, 0, 2.0), ("disabled", 2.0), (False, 0, "daily_target")),
-    ("Session Closer", "Tight session profit/loss limits - built for short, decisive sessions.", 2.0, (False, 0, 2.0), ("disabled", 2.0), (False, 0, "every_winning_session")),
-    ("Growth Engine", "Milestone-based compounding for steady bankroll growth.", 2.5, (False, 0, 2.0), ("milestone_based", 2.0), (False, 0, "milestone_based")),
-    ("Recovery Guard", "Conservative martingale strictly capped - built to recover, not chase.", 1.0, (True, 3, 1.7), ("disabled", 1.0), (True, 15, "every_winning_session")),
-    ("Precision Compounding", "Kelly-criterion sizing for mathematically precise position sizes.", 0, (False, 0, 2.0), ("disabled", 2.0), (False, 0, "every_winning_session")),
-    ("Greenline Builder", "Smart compounding that only ever risks realized profit.", 2.0, (False, 0, 2.0), ("smart", 2.0), (True, 20, "every_winning_session")),
-    ("SafeStack", "Stacks small, steady wins - minimal risk per trade.", 0.75, (False, 0, 2.0), ("disabled", 0.75), (True, 30, "every_winning_session")),
-    ("Mission Control", "Full-visibility balanced profile for hands-on operators.", 2.0, (False, 0, 2.0), ("daily", 2.0), (False, 0, "daily_target")),
-    ("Signal Sprint", "Fast, frequent small trades - built for high-signal-volume sources.", 1.5, (False, 0, 2.0), ("disabled", 1.5), (False, 0, "every_winning_session")),
-    ("Daily Climb", "Daily compounding - risk steps up once per day, resets each morning.", 2.0, (False, 0, 2.0), ("daily", 2.0), (False, 0, "daily_target")),
-    ("Lock & Grow", "Vaults profit weekly while letting the trading balance compound.", 2.0, (False, 0, 2.0), ("weekly", 2.0), (True, 20, "weekly_target")),
-    ("RiskBound", "Hard risk ceiling - risk % never exceeds a strict cap regardless of streak.", 2.0, (False, 0, 2.0), ("target_based", 2.0), (False, 0, "every_winning_session")),
-    ("Base Camp", "Minimal-risk starting profile for new, unproven signal sources.", 1.0, (False, 0, 2.0), ("disabled", 1.0), (False, 0, "every_winning_session")),
-    ("StepUp", "Fixed-ladder risk increases after each profit milestone.", 2.0, (False, 0, 2.0), ("milestone_based", 2.0), (False, 0, "milestone_based")),
-    ("Snowball", "Classic compounding snowball - every win increases the next stake.", 2.0, (False, 0, 2.0), ("every_win", 2.0), (False, 0, "every_winning_session")),
-    ("TargetRun", "Sprints toward a fixed profit target then stops cold.", 2.5, (False, 0, 2.0), ("disabled", 2.5), (False, 0, "daily_target")),
-    ("Shielded Martingale", "Martingale with a hard exposure cap and same-asset-only guard.", 1.0, (True, 4, 2.0), ("disabled", 1.0), (False, 0, "every_winning_session")),
-    ("Controlled Recovery", "Short martingale ladder that resets after every session regardless of outcome.", 1.0, (True, 3, 1.9), ("disabled", 1.0), (False, 0, "every_winning_session")),
-    ("Profit Staircase", "Risk climbs one step at a time as profit milestones are reached.", 1.5, (False, 0, 2.0), ("milestone_based", 1.5), (False, 0, "milestone_based")),
-    ("Bankroll Architect", "Structures the bankroll into trading and protected balances from day one.", 1.5, (False, 0, 2.0), ("disabled", 1.5), (True, 25, "milestone_based")),
-    ("AutoPilot Conservative", "Set-and-forget low-risk defaults for unattended sessions.", 1.0, (False, 0, 2.0), ("disabled", 1.0), (True, 20, "every_winning_session")),
-    ("AutoPilot Growth", "Set-and-forget growth defaults - smart compounding, no martingale.", 2.5, (False, 0, 2.0), ("smart", 2.5), (False, 0, "every_winning_session")),
-    ("Elite Session", "Premium high-conviction profile for the most trusted signal sources.", 3.0, (False, 0, 2.0), ("smart", 3.0), (True, 15, "every_winning_session")),
-]
-
-
-@timed("database")
-def seed_money_studio_templates():
-    """Populates the 5 official Money Studio strategies (core/money_studio.py)
-    as reusable is_template=True risk_profile rows, using the exact same
-    risk_profile_fields_for() fields "Use This Strategy" saves for a user -
-    a no-op if any strategy_key-tagged template already exists, same
-    one-time-migration pattern as seed_risk_profile_templates. Without
-    this, the 5 official strategies could never be selected in Strategy
-    Lab's risk_profile_ids picker (which only lists is_template rows plus
-    the current user's own) unless a user had already personally
-    instantiated one by hand first - this is what makes automatic,
-    unattended provider backtesting possible."""
-    conn = get_connection()
-    count = conn.execute(
-        "SELECT COUNT(*) AS n FROM risk_profiles WHERE is_template = 1 AND strategy_key IS NOT NULL"
-    ).fetchone()["n"]
-    conn.close()
-    if count > 0:
-        return
-
-    import money_studio
-    for strategy in money_studio.STRATEGIES:
-        key = strategy["key"]
-        create_fields, martingale_fields, vault_fields, compounding_fields, daily_compounding_fields = (
-            money_studio.risk_profile_fields_for(key, strategy["name"], money_studio.STARTING_BANKROLL)
-        )
-        create_fields = dict(create_fields)
-        name = create_fields.pop("name")
-        description = create_fields.pop("description", None)
-        profile_id = create_risk_profile(name, is_template=True, description=description, **create_fields)
-        if martingale_fields:
-            update_martingale_settings(profile_id, **martingale_fields)
-        if vault_fields:
-            update_profit_vault_settings(profile_id, **vault_fields)
-        if compounding_fields:
-            update_compounding_settings(profile_id, **compounding_fields)
-        if daily_compounding_fields:
-            update_daily_compounding_settings(profile_id, **daily_compounding_fields)
-
-
-@timed("database")
-def seed_risk_profile_templates():
-    """Populates the 27 starter templates - a no-op if any template
-    already exists, same one-time-migration pattern as
-    seed_channels_from_env."""
-    conn = get_connection()
-    count = conn.execute("SELECT COUNT(*) AS n FROM risk_profiles WHERE is_template = 1").fetchone()["n"]
-    conn.close()
-    if count > 0:
-        return
-
-    for name, description, percent, martingale, compounding, vault in _RISK_PROFILE_TEMPLATES:
-        sizing_mode = "kelly" if name == "Precision Compounding" else "percent"
-        kwargs = dict(sizing_mode=sizing_mode, percent_of_bankroll=percent)
-        if sizing_mode == "kelly":
-            kwargs.update(kelly_win_rate_estimate=0.55, kelly_payout_estimate=0.85, kelly_fraction_multiplier=0.5)
-        profile_id = create_risk_profile(name, is_template=True, description=description, **kwargs)
-        m_enabled, m_steps, m_mult = martingale
-        update_martingale_settings(profile_id, enabled=m_enabled, max_steps=m_steps, multiplier=m_mult)
-        c_mode, c_base = compounding
-        update_compounding_settings(profile_id, mode=c_mode, base_risk_percent=c_base)
-        v_enabled, v_pct, v_trigger = vault
-        update_profit_vault_settings(profile_id, enabled=v_enabled, vault_percent=v_pct, trigger_event=v_trigger)
 
 
 # ---------------------------------------------------------------------

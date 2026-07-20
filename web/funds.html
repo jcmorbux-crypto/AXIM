@@ -267,6 +267,7 @@
 let allFunds = [];
 let allChannels = [];
 let allRiskProfiles = [];
+let allMoneyStrategies = [];
 let allSessionProfiles = [];
 let allBrokerAccounts = [];
 let currentFundId = null;
@@ -288,16 +289,18 @@ function closeModal(id) { document.getElementById(id).style.display = "none"; }
 
 async function refreshAll() {
   try {
-    const [funds, channels, riskProfiles, sessionProfiles, brokerAccounts] = await Promise.all([
+    const [funds, channels, riskProfiles, moneyStrategies, sessionProfiles, brokerAccounts] = await Promise.all([
       fetchJSON("/api/funds"),
       fetchJSON("/api/channels"),
-      fetchJSON("/api/risk-profiles"),
+      fetchJSON("/api/risk-profiles?include_templates=false"),
+      fetchJSON("/api/money-strategies"),
       fetchJSON("/api/sessions/profiles").catch(() => []),
       fetchJSON("/api/broker-accounts").catch(() => []),
     ]);
     allFunds = funds;
     allChannels = channels;
     allRiskProfiles = riskProfiles;
+    allMoneyStrategies = moneyStrategies.strategies;
     allSessionProfiles = sessionProfiles;
     allBrokerAccounts = brokerAccounts;
     renderFundsList();
@@ -577,8 +580,10 @@ function renderDetail(report) {
   document.getElementById("f-max-trades").value = fund.max_trades;
 
   const riskSelect = document.getElementById("f-risk-profile");
-  riskSelect.innerHTML = '<option value="">None</option>' + allRiskProfiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
-  riskSelect.value = fund.default_risk_profile_id || "";
+  riskSelect.innerHTML = '<option value="">None</option>'
+    + '<optgroup label="Built-in Plans">' + allMoneyStrategies.map(s => `<option value="plan:${s.key}">${escapeHtml(s.name)}</option>`).join("") + '</optgroup>'
+    + '<optgroup label="My Custom Profiles">' + allRiskProfiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("") + '</optgroup>';
+  riskSelect.value = fund.default_money_plan_key ? `plan:${fund.default_money_plan_key}` : (fund.default_risk_profile_id || "");
 
   const sessionSelect = document.getElementById("f-session-profile");
   sessionSelect.innerHTML = '<option value="">None</option>' + allSessionProfiles.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join("");
@@ -606,11 +611,13 @@ function renderDetail(report) {
 
 async function saveFund() {
   const statusEl = document.getElementById("save-status");
+  const riskValue = document.getElementById("f-risk-profile").value;
   const body = {
     name: document.getElementById("f-name").value.trim(),
     starting_balance: parseFloat(document.getElementById("f-starting-balance").value) || 0,
     assigned_broker_label: document.getElementById("f-broker-label").value || null,
-    default_risk_profile_id: document.getElementById("f-risk-profile").value ? parseInt(document.getElementById("f-risk-profile").value, 10) : null,
+    default_money_plan_key: riskValue.startsWith("plan:") ? riskValue.slice(5) : null,
+    default_risk_profile_id: (riskValue && !riskValue.startsWith("plan:")) ? parseInt(riskValue, 10) : null,
     default_session_profile_id: document.getElementById("f-session-profile").value ? parseInt(document.getElementById("f-session-profile").value, 10) : null,
     profit_target: parseFloat(document.getElementById("f-profit-target").value) || 0,
     loss_limit: parseFloat(document.getElementById("f-loss-limit").value) || 0,

@@ -132,6 +132,24 @@
     <div id="view-builder" style="display:none;"></div>
   </main>
 </div>
+
+<div class="modal-backdrop" id="use-strategy-modal">
+  <div class="modal">
+    <h2 style="margin-top:0;">Use This Strategy</h2>
+    <div class="muted" style="font-size:12.5px; margin-bottom:14px;">
+      Sets the chosen Fund's default Money Management plan to this official strategy. It always sizes off that Fund's real, live balance - no starting bankroll to enter, no new profile created.
+    </div>
+    <div class="field">
+      <label>Fund</label>
+      <select id="use-strategy-fund-select"></select>
+    </div>
+    <div class="row" style="justify-content:flex-end;">
+      <button class="subtle" onclick="closeModal('use-strategy-modal')">Cancel</button>
+      <button class="primary" onclick="confirmUseStrategy()">Use This Strategy</button>
+    </div>
+    <span id="use-strategy-status" class="muted"></span>
+  </div>
+</div>
 <script src="/web/shell.js"></script>
 <script>
 let allProfiles = [];
@@ -461,24 +479,49 @@ async function showStrategyDetail(key) {
   `;
 }
 
+function openModal(id) { document.getElementById(id).style.display = "flex"; }
+function closeModal(id) { document.getElementById(id).style.display = "none"; }
+
 async function useStrategy(key) {
-  const fundBankroll = prompt(`Starting bankroll for this profile ($):`, "1000");
-  if (fundBankroll === null) return;
-  const bankroll = parseFloat(fundBankroll) || 1000;
-  await createFromStrategy(key, currentStrategy.name, bankroll);
+  const select = document.getElementById("use-strategy-fund-select");
+  document.getElementById("use-strategy-status").textContent = "";
+  select.innerHTML = '<option value="">Loading Funds...</option>';
+  select.dataset.strategyKey = key;
+  openModal("use-strategy-modal");
+  let funds;
+  try {
+    funds = await fetchJSON("/api/funds?status=active");
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load Funds</option>';
+    return;
+  }
+  if (!funds.length) {
+    select.innerHTML = '<option value="">No Funds yet - create one first</option>';
+    return;
+  }
+  select.innerHTML = funds.map(f => `<option value="${f.id}">${escapeHtml(displayProfileName(f.name))}</option>`).join("");
 }
 
-async function createFromStrategy(key, name, bankroll) {
+async function confirmUseStrategy() {
+  const select = document.getElementById("use-strategy-fund-select");
+  const fundId = select.value;
+  const key = select.dataset.strategyKey;
+  if (!fundId) return;
+  const statusEl = document.getElementById("use-strategy-status");
+  statusEl.textContent = "Saving...";
   try {
-    const created = await fetchJSON(`/api/money-strategies/${key}/create-profile`, {
+    await fetchJSON(`/api/money-strategies/${key}/attach-to-fund`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, bankroll }),
+      body: JSON.stringify({ fund_id: parseInt(fundId, 10) }),
     });
-    alert(`"${created.name}" created. You can select it from any Session's Money Management dropdown, or manage it under My Strategies below.`);
-    await loadProfiles();
-    showView("view-list");
+    closeModal("use-strategy-modal");
+    const fundName = select.options[select.selectedIndex] ? select.options[select.selectedIndex].textContent : "this Fund";
+    alert(`"${currentStrategy ? currentStrategy.name : key}" is now ${fundName}'s default Money Management plan.`);
+    if (document.getElementById("rcc-fund-select").value === fundId) {
+      await loadRiskControlCenter();
+    }
   } catch (e) {
-    alert("Failed to create strategy: " + e.message);
+    statusEl.textContent = "Failed: " + e.message;
   }
 }
 

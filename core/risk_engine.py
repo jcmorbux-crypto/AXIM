@@ -224,8 +224,9 @@ def _apply_martingale(amount, martingale, step):
 def compute_position_size(session_id, static_default_amount, record_events=True):
     """The one entry point trade_coordinator.py calls. Returns
     risk_manager.compute_trade_amount(static_default_amount) unchanged if
-    the session has no risk_profile_id - a profile-less session's sizing
-    is completely untouched by this module.
+    the session has neither risk_profile_id nor money_plan_key set (see
+    database.resolve_money_plan) - a profile-less session's sizing is
+    completely untouched by this module.
 
     record_events=False (a real-Fund "what would the next trade be sized
     at right now" preview - see api/funds_routes.py's risk-control-center
@@ -243,11 +244,11 @@ def compute_position_size(session_id, static_default_amount, record_events=True)
         return risk_manager.compute_trade_amount(static_default_amount)
 
     session = database.get_trading_session(session_id)
-    if session is None or session["risk_profile_id"] is None:
+    if session is None:
         import risk_manager
         return risk_manager.compute_trade_amount(static_default_amount)
 
-    profile = database.get_risk_profile(session["risk_profile_id"])
+    profile = database.resolve_money_plan(session["risk_profile_id"], session["money_plan_key"])
     if profile is None:
         import risk_manager
         return risk_manager.compute_trade_amount(static_default_amount)
@@ -456,9 +457,9 @@ def on_trade_closed(session_id, won, profit_loss):
     trade.closed subscriber, right alongside its own P&L update, so both
     happen from the same single hook into the outcome-tracking path."""
     session = database.get_trading_session(session_id)
-    if session is None or session["risk_profile_id"] is None:
+    if session is None:
         return
-    profile = database.get_risk_profile(session["risk_profile_id"])
+    profile = database.resolve_money_plan(session["risk_profile_id"], session["money_plan_key"])
     if profile is None:
         return
 
@@ -545,9 +546,9 @@ def on_session_ended(session_id):
     api/sessions.py's manual/emergency stop both route through
     core/session_manager.end_session so this always runs)."""
     session = database.get_trading_session(session_id)
-    if session is None or session["risk_profile_id"] is None:
+    if session is None:
         return
-    profile = database.get_risk_profile(session["risk_profile_id"])
+    profile = database.resolve_money_plan(session["risk_profile_id"], session["money_plan_key"])
     if profile is None:
         return
     vault = profile["profit_vault"]

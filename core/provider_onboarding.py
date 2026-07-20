@@ -285,9 +285,9 @@ async def analyze_and_onboard_provider(chat_id, source_label=None, created_by="p
             ),
         }
 
-    database.seed_money_studio_templates()
-    profiles = database.list_risk_profiles(include_templates=True)
-    strategy_profiles = [p for p in profiles if p["strategy_key"] in money_studio.STRATEGIES_BY_KEY]
+    strategy_profiles = [
+        money_studio.build_virtual_profile(s["key"], s["name"], STARTING_BANKROLL) for s in money_studio.STRATEGIES
+    ]
 
     signal_pool = {"source": "imported", "channel_filter": [title]}
     run_id = database.create_backtest_run(
@@ -295,7 +295,7 @@ async def analyze_and_onboard_provider(chat_id, source_label=None, created_by="p
         default_payout_percent=DEFAULT_PAYOUT_PERCENT, session_window="daily", created_by=created_by,
     )
     for profile in strategy_profiles:
-        database.create_backtest_strategy(run_id, profile["id"], profile["name"], profile)
+        database.create_backtest_strategy(run_id, None, profile["name"], profile)
     backtest_engine.run_backtest(run_id)
 
     recommendation_id = capital_recommendation.generate_recommendation_for_provider(

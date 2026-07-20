@@ -12,6 +12,7 @@ sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CONFIG_DIR))
 
 import database
+import money_studio
 import capital_recommendation_routes as routes
 from fastapi import HTTPException
 
@@ -24,10 +25,8 @@ class CreateDemoFundTestCase(unittest.TestCase):
         self._original_db_file = database.DB_FILE
         database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
         database.initialize_database()
-        database.seed_money_studio_templates()
 
-        templates = database.list_risk_profiles(include_templates=True)
-        self.ladder_profile = next(p for p in templates if p["strategy_key"] == "recovery_ladder")
+        self.ladder_profile = money_studio.build_virtual_profile("recovery_ladder")
 
         run_id = database.create_backtest_run(
             "Auto: Martin Trader", {"source": "imported", "channel_filter": ["Martin Trader"]}, 1000.0,

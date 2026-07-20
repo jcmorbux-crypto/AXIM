@@ -162,9 +162,9 @@ def check_session_limits(session_id):
             raise SessionLimitReached("session_max_trades",
                                        f"session {session_id} reached its max trades - session stopped")
 
-    if session["risk_profile_id"] is not None:
-        profile = database.get_risk_profile(session["risk_profile_id"])
-        if profile is not None and profile["strike"] is not None and profile["strike"]["enabled"]:
+    profile = database.resolve_money_plan(session["risk_profile_id"], session.get("money_plan_key"))
+    if profile is not None:
+        if profile["strike"] is not None and profile["strike"]["enabled"]:
             # Strike (tm) names the profit_target/loss/max_trades trio
             # above (this profile's OWN copy of those fields, which can
             # differ from this session's) and adds two genuinely new

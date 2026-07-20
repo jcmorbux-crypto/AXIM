@@ -28,6 +28,7 @@ from pydantic import BaseModel
 import database
 import backtest_engine
 import ai_analysis
+import money_studio
 import telegram_channels
 from auth_routes import get_current_user, require_admin
 
@@ -91,12 +92,15 @@ _SCORECARD_MAX_CANDIDATES = 15
 @router.get("/scorecard/{source_label}")
 def get_scorecard(source_label: str, user=Depends(get_current_user)):
     """Signal Provider Scorecard (docs/AXIM_APP_PLAN.md) - runs a real
-    backtest across every available risk profile (templates + the
-    user's own, capped) restricted to this source's own graded signal
-    history, and reports the result via core/ai_analysis.py. Returns 404
-    if the source has no graded history at all - never a fabricated
-    scorecard for a source with no evidence."""
-    candidates = database.list_risk_profiles(include_templates=True)[:_SCORECARD_MAX_CANDIDATES]
+    backtest across every available risk profile (money_studio's 5
+    canonical strategies, as virtual zero-DB-footprint profiles, plus
+    the user's own real profiles, capped) restricted to this source's
+    own graded signal history, and reports the result via
+    core/ai_analysis.py. Returns 404 if the source has no graded history
+    at all - never a fabricated scorecard for a source with no evidence."""
+    candidates = [money_studio.build_virtual_profile(s["key"], s["name"]) for s in money_studio.STRATEGIES]
+    candidates += database.list_risk_profiles(include_templates=True)
+    candidates = candidates[:_SCORECARD_MAX_CANDIDATES]
     card = ai_analysis.generate_signal_provider_scorecard(source_label, candidates)
     if card is None:
         raise HTTPException(status_code=404, detail=f"no graded signal history for {source_label!r}")
@@ -229,7 +233,8 @@ class RunCreateRequest(BaseModel):
     starting_bankroll: float
     default_payout_percent: float = 85
     session_window: str = "daily"
-    risk_profile_ids: list[int]
+    risk_profile_ids: list[int] = []
+    strategy_keys: list[str] = []
     min_trust_tier: Optional[str] = None
 
 
@@ -241,6 +246,7 @@ class RunEstimateRequest(BaseModel):
     session_window: str = "daily"
     min_trust_tier: Optional[str] = None
     risk_profile_ids: list[int] = []
+    strategy_keys: list[str] = []
 
 
 @router.post("/runs/estimate")
@@ -257,7 +263,7 @@ def estimate_run(body: RunEstimateRequest, user=Depends(get_current_user)):
         "date_from": body.date_from, "date_to": body.date_to,
         "session_window": body.session_window, "min_trust_tier": body.min_trust_tier,
     }
-    return backtest_engine.estimate_backtest_run(pool_config, len(body.risk_profile_ids))
+    return backtest_engine.estimate_backtest_run(pool_config, len(body.risk_profile_ids) + len(body.strategy_keys))
 
 
 def _validate_run_request(body):
@@ -265,7 +271,7 @@ def _validate_run_request(body):
         raise HTTPException(status_code=400, detail="source must be live, imported, or both")
     if body.session_window not in ("daily", "all"):
         raise HTTPException(status_code=400, detail="session_window must be daily or all")
-    if not body.risk_profile_ids:
+    if not body.risk_profile_ids and not body.strategy_keys:
         raise HTTPException(status_code=400, detail="select at least one strategy to compare")
     if body.min_trust_tier is not None and not database.is_valid_trust_tier(body.min_trust_tier):
         raise HTTPException(status_code=400, detail=f"invalid min_trust_tier: {body.min_trust_tier!r}")
@@ -288,6 +294,12 @@ def _create_run_and_strategies(body, user, run_mode):
             database.update_backtest_run_status(run_id, "failed", error_message=f"risk profile {profile_id} not found")
             raise HTTPException(status_code=404, detail=f"risk profile {profile_id} not found")
         database.create_backtest_strategy(run_id, profile_id, profile["name"], profile)
+    for strategy_key in body.strategy_keys:
+        profile = money_studio.build_virtual_profile(strategy_key)
+        if profile is None:
+            database.update_backtest_run_status(run_id, "failed", error_message=f"strategy {strategy_key} not found")
+            raise HTTPException(status_code=404, detail=f"strategy {strategy_key} not found")
+        database.create_backtest_strategy(run_id, None, profile["name"], profile)
     return run_id
 
 

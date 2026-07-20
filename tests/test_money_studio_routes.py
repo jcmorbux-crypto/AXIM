@@ -45,50 +45,37 @@ class MoneyStudioRoutesTestCase(unittest.TestCase):
         result = routes.get_strategy("not_a_real_strategy", user=_FAKE_USER)
         self.assertIn("error", result)
 
-    def test_create_profile_from_strategy_saves_a_real_risk_profile(self):
-        body = routes.CreateFromStrategyRequest(name="My OTC Fund", bankroll=500.0)
-        created = routes.create_profile_from_strategy("capital_preservation", body, user=_FAKE_USER)
-        self.assertEqual(created["name"], "My OTC Fund")
-        self.assertEqual(created["strategy_key"], "capital_preservation")
-        self.assertEqual(created["percent_of_bankroll"], 1.0)
+    def test_attach_to_fund_sets_the_funds_money_plan_key_with_no_new_profile_row(self):
+        fund_id = database.create_fund("My OTC Fund", starting_balance=500.0)
+        before = len(database.list_risk_profiles(include_templates=True))
+        body = routes.AttachToFundRequest(fund_id=fund_id)
+        result = routes.attach_strategy_to_fund("capital_preservation", body, user=_FAKE_USER)
+        self.assertEqual(result["default_money_plan_key"], "capital_preservation")
+        self.assertIsNone(result["default_risk_profile_id"])
+        after = len(database.list_risk_profiles(include_templates=True))
+        self.assertEqual(before, after)  # no risk_profiles row was created
 
-    def test_create_profile_from_strategy_wires_up_martingale_for_recovery_ladder(self):
-        body = routes.CreateFromStrategyRequest(name="Recovery Fund", bankroll=1000.0)
-        created = routes.create_profile_from_strategy("recovery_ladder", body, user=_FAKE_USER)
-        martingale = database.get_martingale_settings(created["id"])
-        self.assertTrue(martingale["enabled"])
-        self.assertEqual(martingale["max_steps"], money_studio.DEFAULT_RECOVERY_MAX_STEPS)
+    def test_attach_to_fund_clears_any_existing_custom_default(self):
+        profile_id = database.create_risk_profile("Old Custom Profile", sizing_mode="fixed", fixed_amount=5)
+        fund_id = database.create_fund("Fund With Custom Default", default_risk_profile_id=profile_id)
+        body = routes.AttachToFundRequest(fund_id=fund_id)
+        result = routes.attach_strategy_to_fund("growth_accelerator", body, user=_FAKE_USER)
+        self.assertEqual(result["default_money_plan_key"], "growth_accelerator")
+        self.assertIsNone(result["default_risk_profile_id"])
 
-    def test_create_profile_from_strategy_wires_up_vault_for_capital_preservation(self):
-        body = routes.CreateFromStrategyRequest(name="Preservation Fund", bankroll=1000.0)
-        created = routes.create_profile_from_strategy("capital_preservation", body, user=_FAKE_USER)
-        vault = database.get_profit_vault_settings(created["id"])
-        self.assertTrue(vault["enabled"])
-        self.assertEqual(vault["vault_percent"], 25)
-
-    def test_create_profile_from_strategy_wires_up_the_real_cycle_for_alternating_compound(self):
-        import json
-        body = routes.CreateFromStrategyRequest(name="Alternating Fund", bankroll=1000.0)
-        created = routes.create_profile_from_strategy("alternating_compound", body, user=_FAKE_USER)
-        compounding = database.get_compounding_settings(created["id"])
-        self.assertEqual(compounding["mode"], "alternating_cycle")
-        self.assertEqual(json.loads(compounding["steps_json"]), [2.5, 5.0, 2.5, 5.0])
-
-    def test_create_profile_from_strategy_wires_up_daily_compounding_settings(self):
-        body = routes.CreateFromStrategyRequest(name="Daily Fund", bankroll=1000.0)
-        created = routes.create_profile_from_strategy("daily_compounding", body, user=_FAKE_USER)
-        self.assertEqual(created["sizing_mode"], "daily_compounding")
-        daily = database.get_daily_compounding_settings(created["id"])
-        self.assertTrue(daily["enabled"])
-        self.assertEqual(daily["risk_percent"], money_studio.DAILY_COMPOUNDING_RISK_PERCENT)
-        self.assertEqual(daily["profit_target_percent"], money_studio.DAILY_COMPOUNDING_PROFIT_TARGET_PERCENT)
-        self.assertEqual(daily["loss_limit_percent"], money_studio.DAILY_COMPOUNDING_LOSS_LIMIT_PERCENT)
-
-    def test_create_profile_from_strategy_rejects_an_unknown_key(self):
+    def test_attach_to_fund_rejects_an_unknown_strategy_key(self):
         from fastapi import HTTPException
-        body = routes.CreateFromStrategyRequest(name="Bogus", bankroll=1000.0)
+        fund_id = database.create_fund("Some Fund")
+        body = routes.AttachToFundRequest(fund_id=fund_id)
         with self.assertRaises(HTTPException) as ctx:
-            routes.create_profile_from_strategy("not_a_real_strategy", body, user=_FAKE_USER)
+            routes.attach_strategy_to_fund("not_a_real_strategy", body, user=_FAKE_USER)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_attach_to_fund_rejects_an_unknown_fund(self):
+        from fastapi import HTTPException
+        body = routes.AttachToFundRequest(fund_id=999999)
+        with self.assertRaises(HTTPException) as ctx:
+            routes.attach_strategy_to_fund("capital_preservation", body, user=_FAKE_USER)
         self.assertEqual(ctx.exception.status_code, 404)
 
 
