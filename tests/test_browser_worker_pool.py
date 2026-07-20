@@ -1,5 +1,7 @@
 import asyncio
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -8,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "execution"))
 sys.path.insert(0, str(PROJECT_ROOT / "core"))
 
+import database
 import browser_worker_pool
 from browser_worker_pool import BrowserWorker, BrowserWorkerPool
 
@@ -118,6 +121,90 @@ class BrowserWorkerPoolTests(unittest.TestCase):
         pool, _ = self._pool_with_workers(n=1)
         _run(pool.acquire_worker(timeout=0))
         browser_worker_pool.pocket_dom._close_active_dropdown_modal.assert_awaited()
+
+
+class EnsurePoolHealthyTests(unittest.TestCase):
+    """_ensure_pool_healthy() is the whole-browser-crash detector: every
+    acquire_worker() call asks warmup_service.ensure_alive() for the
+    current generation (subject to a TTL cache) and rebuilds every worker
+    if it doesn't match what this pool was last built from. Previously
+    untested - only the release-side stale-generation discard was covered
+    (test_release_discards_worker_from_a_stale_generation above)."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def _event_counts(self, event_type):
+        stats = database.get_recovery_event_stats()
+        return {row["outcome"]: row["n"] for row in stats if row["event_type"] == event_type}
+
+    def _pool(self, warmup_generation=1):
+        warmup = MagicMock()
+        warmup.ensure_alive = AsyncMock(return_value=warmup_generation)
+        pool = BrowserWorkerPool(warmup, num_workers=1)
+        pool._warmup_generation = warmup_generation
+        return pool, warmup
+
+    def test_within_ttl_skips_the_check_entirely(self):
+        pool, warmup = self._pool()
+        pool._last_pool_health_check = time.monotonic()  # "just checked"
+        _run(pool._ensure_pool_healthy())
+        warmup.ensure_alive.assert_not_called()
+
+    def test_expired_ttl_same_generation_does_not_rebuild(self):
+        pool, warmup = self._pool(warmup_generation=1)
+        pool._last_pool_health_check = 0.0  # force past TTL
+        with patch.object(pool, "_build_workers", new=AsyncMock()) as mock_build:
+            _run(pool._ensure_pool_healthy())
+        warmup.ensure_alive.assert_awaited_once()
+        mock_build.assert_not_called()
+        self.assertEqual(self._event_counts("worker_pool_rebuild"), {})
+        self.assertGreater(pool._last_pool_health_check, 0.0)  # TTL clock was refreshed
+
+    def test_expired_ttl_changed_generation_rebuilds_and_records_succeeded(self):
+        pool, warmup = self._pool(warmup_generation=1)
+        warmup.ensure_alive = AsyncMock(return_value=2)  # browser reconnected under us
+        pool._last_pool_health_check = 0.0
+        with patch.object(pool, "_build_workers", new=AsyncMock()) as mock_build:
+            _run(pool._ensure_pool_healthy())
+        mock_build.assert_awaited_once()
+        self.assertEqual(pool._warmup_generation, 2)
+        self.assertEqual(self._event_counts("worker_pool_rebuild"), {"succeeded": 1})
+
+    def test_rebuild_failure_records_failed_event_and_reraises(self):
+        pool, warmup = self._pool(warmup_generation=1)
+        warmup.ensure_alive = AsyncMock(return_value=2)
+        pool._last_pool_health_check = 0.0
+        with patch.object(pool, "_build_workers", new=AsyncMock(side_effect=RuntimeError("rebuild failed"))):
+            with self.assertRaises(RuntimeError):
+                _run(pool._ensure_pool_healthy())
+        self.assertEqual(self._event_counts("worker_pool_rebuild"), {"failed": 1})
+
+    def test_concurrent_caller_already_refreshed_ttl_after_lock_skips_rebuild(self):
+        # Simulates two callers racing past the outer TTL check before
+        # either acquires _health_lock - the second one's re-check inside
+        # the lock finds the first already refreshed it, so it must not
+        # call ensure_alive() or rebuild a second time.
+        pool, warmup = self._pool(warmup_generation=1)
+        pool._last_pool_health_check = 0.0
+
+        real_acquire = pool._health_lock.acquire
+
+        async def acquire_and_mark_fresh():
+            await real_acquire()
+            pool._last_pool_health_check = time.monotonic()
+            return True
+
+        with patch.object(pool._health_lock, "acquire", new=AsyncMock(side_effect=acquire_and_mark_fresh)):
+            _run(pool._ensure_pool_healthy())
+        warmup.ensure_alive.assert_not_called()
 
 
 if __name__ == "__main__":
