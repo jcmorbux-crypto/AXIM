@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 import database
 import fund_manager
+import risk_control_center
 from auth_routes import get_current_user, require_admin
 
 router = APIRouter(prefix="/api/funds", tags=["funds"])
@@ -260,3 +261,18 @@ def get_fund_diagnostics(fund_id: int, user=Depends(get_current_user)):
     if diagnostics is None:
         raise HTTPException(status_code=404, detail="fund not found")
     return diagnostics
+
+
+@router.get("/{fund_id}/risk-control-center")
+def get_risk_control_center(fund_id: int, user=Depends(get_current_user)):
+    """Money Management Studio's "Risk Control Center" (2026-07-19 UX
+    pass) - is this Fund safe to trade, what will the next trade risk and
+    why, what protections are active, what a win/loss would do to the
+    balance. Every field traces to a real computation - see
+    core/risk_control_center.py's own module docstring. Read-only:
+    computes the next-trade preview with record_events=False, so viewing
+    this can never itself advance real strategy state."""
+    result = risk_control_center.get_risk_control_center(fund_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="fund not found")
+    return result

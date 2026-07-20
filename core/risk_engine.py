@@ -221,11 +221,23 @@ def _apply_martingale(amount, martingale, step):
     return stepped
 
 
-def compute_position_size(session_id, static_default_amount):
+def compute_position_size(session_id, static_default_amount, record_events=True):
     """The one entry point trade_coordinator.py calls. Returns
     risk_manager.compute_trade_amount(static_default_amount) unchanged if
     the session has no risk_profile_id - a profile-less session's sizing
-    is completely untouched by this module."""
+    is completely untouched by this module.
+
+    record_events=False (a real-Fund "what would the next trade be sized
+    at right now" preview - see api/funds_routes.py's risk-control-center
+    endpoint) suppresses every DB write this function can make: passed
+    through to _base_amount for apex_ascension's tier-crossing event (the
+    same flag core/backtest_engine.py already relies on), and additionally
+    gates Fortress's protected_principal persistence below, which
+    _base_amount's own flag does not cover. The returned amount is still
+    exactly what a live trade would compute right now - only the
+    as-a-side-effect PERSISTENCE of newly-crossed tier/protection state is
+    deferred until an actual trade makes it real, so a preview can never
+    advance real strategy state just by being looked at."""
     if session_id is None:
         import risk_manager
         return risk_manager.compute_trade_amount(static_default_amount)
@@ -262,7 +274,7 @@ def compute_position_size(session_id, static_default_amount):
         if fund_balances is not None:
             profile["bankroll"] = fund_balances["trading_balance"] - session["realized_pnl"]
 
-    amount = _base_amount(profile, session)
+    amount = _base_amount(profile, session, record_events=record_events)
     if not session["martingale_disabled"]:
         amount = _apply_martingale(amount, profile["martingale"], session["current_martingale_step"])
 
@@ -312,7 +324,7 @@ def compute_position_size(session_id, static_default_amount):
         amount, new_protected, should_stop = capital_strategies.fortress_adjusted_amount(
             fortress, amount, current_bankroll, profile["bankroll"],
         )
-        if new_protected != fortress["protected_principal"]:
+        if record_events and new_protected != fortress["protected_principal"]:
             database.update_fortress_settings(profile["id"], protected_principal=new_protected)
         if should_stop:
             raise FortressPrincipalProtected(new_protected)

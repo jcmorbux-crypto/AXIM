@@ -195,6 +195,34 @@ def check_session_limits(session_id):
                                            f"session {session_id} met Strike's {reason} condition - session stopped")
 
 
+def session_progress(session):
+    """Derived, never-stored fields the Trading Sessions UI (and the
+    Money Management "Risk Control Center") need: how much headroom is
+    left before this session's own profit_target/loss_limit trips.
+    remaining_to_loss_limit nets out pending stake the same pessimistic
+    way check_session_limits() enforces it, so this never shows
+    reassuring headroom that doesn't match why the very next signal
+    would actually get rejected. Was api/sessions.py's own _with_progress
+    (moved here, 2026-07-19, so core/risk_control_center.py can reuse the
+    identical computation instead of a second, driftable copy) - that
+    route now delegates to this."""
+    if session is None:
+        return None
+    remaining_to_target = (
+        max(session["profit_target"] - session["realized_pnl"], 0) if session["profit_target"] > 0 else None
+    )
+    remaining_to_loss_limit = None
+    if session["loss_limit"] > 0:
+        pending_stake = database.get_session_pending_stake(session["id"])
+        effective_pnl = session["realized_pnl"] - pending_stake
+        remaining_to_loss_limit = max(session["loss_limit"] + effective_pnl, 0)
+    return {
+        **session,
+        "remaining_to_target": remaining_to_target,
+        "remaining_to_loss_limit": remaining_to_loss_limit,
+    }
+
+
 def record_trade_started(session_id):
     """Raises SessionLimitReached - same exception check_session_limits()
     already raises for this exact condition - if a concurrent trade

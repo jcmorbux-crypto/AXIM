@@ -600,6 +600,38 @@ class ApexAscensionSizingTests(unittest.TestCase):
         risk_engine.compute_position_size(self.session_id, 5.0)
         self.assertEqual(len(database.list_tier_events(profile_id)), 1)
 
+    def test_record_events_false_returns_same_amount_but_records_no_tier_event(self):
+        # The Risk Control Center preview path (record_events=False) must
+        # show the exact same live number a real trade would get, without
+        # persisting the tier crossing as if a real trade already made it.
+        profile_id = database.create_risk_profile(
+            "Apex Test", sizing_mode="apex_ascension", bankroll=1000, fixed_amount=3,
+        )
+        database.update_apex_ascension_settings(profile_id, enabled=True, starting_bankroll=1000)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 1500)  # crosses into tier 1
+
+        preview = risk_engine.compute_position_size(self.session_id, 5.0, record_events=False)
+
+        self.assertEqual(preview, 100.0)
+        self.assertEqual(database.list_tier_events(profile_id), [])
+        self.assertEqual(database.get_apex_ascension_settings(profile_id)["highest_tier_reached"], 0)
+
+    def test_a_real_trade_after_a_preview_still_records_the_crossing_once(self):
+        profile_id = database.create_risk_profile(
+            "Apex Test", sizing_mode="apex_ascension", bankroll=1000, fixed_amount=3,
+        )
+        database.update_apex_ascension_settings(profile_id, enabled=True, starting_bankroll=1000)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 1500)
+
+        risk_engine.compute_position_size(self.session_id, 5.0, record_events=False)  # preview, no-op
+        risk_engine.compute_position_size(self.session_id, 5.0)  # the real trade
+
+        events = database.list_tier_events(profile_id)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["tier_index"], 1)
+
 
 class CashflowSentinelSizingTests(unittest.TestCase):
     """AXIM Capital Strategies (tm) - Cashflow/Sentinel opt-in
@@ -748,6 +780,19 @@ class FortressSizingTests(unittest.TestCase):
         with self.assertRaises(risk_engine.FortressPrincipalProtected) as ctx:
             risk_engine.compute_position_size(self.session_id, 5.0)
         self.assertEqual(ctx.exception.rule, "fortress_principal_protected")
+
+    def test_record_events_false_does_not_persist_a_newly_crossed_principal(self):
+        # Same preview contract as Apex Ascension above - _base_amount's
+        # own record_events flag doesn't reach this Fortress write, which
+        # is why compute_position_size gates it separately.
+        profile_id = database.create_risk_profile("Fortress Test", sizing_mode="fixed", fixed_amount=10, bankroll=1000)
+        database.update_fortress_settings(profile_id, enabled=True, protection_threshold=500)
+        database.set_session_risk_profile(self.session_id, profile_id)
+        database.update_session_pnl(self.session_id, 600)
+
+        risk_engine.compute_position_size(self.session_id, 5.0, record_events=False)
+
+        self.assertEqual(database.get_fortress_settings(profile_id)["protected_principal"], 0)
 
 
 class EmpireSizingTests(unittest.TestCase):

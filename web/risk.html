@@ -96,8 +96,6 @@
   .scenario-box.win .sc-title { color: var(--green); }
   .scenario-box.loss .sc-title { color: var(--red); }
   .sc-amount { font-size: 22px; font-weight: 750; font-family: monospace; margin: 4px 0; }
-  .warning-box { background: var(--red-soft); border: 1.5px solid var(--red); border-radius: 10px; padding: 12px 14px; font-size: 12.5px; color: var(--red); font-weight: 600; line-height: 1.5; margin-top: 10px; }
-  .info-box { background: var(--surface); border-radius: 10px; padding: 12px 14px; font-size: 12.5px; color: var(--text-dim); line-height: 1.5; }
   .sizing-sub { display: none; }
   .sizing-sub.visible { display: block; }
 </style>
@@ -112,7 +110,12 @@
           <h1>Money Management Studio <a href="/guide#sec-risk-engine" class="help-link" title="Help: Money Management Studio">?</a></h1>
           <div class="subtitle">5 official strategies plus a Custom Strategy Builder. Every card shows the real rules - nothing is created until you say so.</div>
         </div>
+        <select id="rcc-fund-select" style="width:220px;" onchange="loadRiskControlCenter()"></select>
       </div>
+
+      <div id="rcc-panel" style="margin-bottom:28px;"></div>
+
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">Strategy Catalog</div>
       <div class="ms-grid" id="strategy-grid" style="margin-bottom:28px;"></div>
 
       <div id="my-strategies-section" style="display:none;">
@@ -166,6 +169,99 @@ function showView(id) {
     document.getElementById(v).style.display = v === id ? "block" : "none";
   });
   window.scrollTo(0, 0);
+}
+
+// ---------------- Risk Control Center ----------------
+// "Is AXIM safe to trade right now, and why" for one Fund - every field
+// traces to a real computation (core/risk_control_center.py), nothing
+// here is invented. Anchored on a Fund picker since risk profiles are
+// per-Fund/per-session, not global - see that module's own docstring.
+
+let allFundsForRcc = [];
+
+async function loadFundsForRcc() {
+  const select = document.getElementById("rcc-fund-select");
+  try {
+    allFundsForRcc = await fetchJSON("/api/funds?status=active");
+  } catch (e) {
+    select.innerHTML = '<option value="">Failed to load Funds</option>';
+    return;
+  }
+  if (!allFundsForRcc.length) {
+    select.innerHTML = '<option value="">No Funds yet</option>';
+    document.getElementById("rcc-panel").innerHTML =
+      '<div class="card solid"><div class="empty">Create a Fund to see its live risk state here.</div></div>';
+    return;
+  }
+  select.innerHTML = allFundsForRcc.map(f => `<option value="${f.id}">${escapeHtml(displayProfileName(f.name))}</option>`).join("");
+  await loadRiskControlCenter();
+}
+
+async function loadRiskControlCenter() {
+  const fundId = document.getElementById("rcc-fund-select").value;
+  const panel = document.getElementById("rcc-panel");
+  if (!fundId) return;
+  panel.innerHTML = '<div class="card solid"><div class="empty">Loading...</div></div>';
+  let rcc;
+  try {
+    rcc = await fetchJSON(`/api/funds/${fundId}/risk-control-center`);
+  } catch (e) {
+    panel.innerHTML = `<div class="card solid"><div class="empty">Failed to load: ${escapeHtml(e.message)}</div></div>`;
+    return;
+  }
+  panel.innerHTML = renderRiskControlCenter(rcc);
+}
+
+const PROTECTION_SCOPE_LABEL = { global: "App-wide", fund: "This Fund", session: "This Session" };
+
+function renderProtectionRow(p) {
+  const status = !p.configured ? "off" : (p.tripped ? "danger" : "on");
+  const label = !p.configured ? "Not configured" : (p.tripped ? "Blocking" : "Active");
+  return `
+    <div class="stat-row">
+      <span class="stat-label">${escapeHtml(p.name)} <span class="muted" style="font-size:10.5px; text-transform:uppercase;">${PROTECTION_SCOPE_LABEL[p.scope] || p.scope}</span></span>
+      <span class="badge ${status}">${label}</span>
+    </div>
+    <div class="muted" style="font-size:11.5px; margin:-2px 0 6px;">${escapeHtml(p.detail)}</div>
+  `;
+}
+
+function renderRiskControlCenter(rcc) {
+  const nt = rcc.next_trade;
+  const strategyValue = rcc.active_profile ? escapeHtml(rcc.active_profile.name) : "None active";
+  const nextTradeValue = nt.amount !== null ? fmtMoney(nt.amount) : "-";
+  const exposure = rcc.max_exposure_today;
+  const exposureValue = exposure.pending_stake > 0
+    ? `${fmtMoney(exposure.pending_stake)} at risk`
+    : (exposure.headroom_to_loss_limit !== null ? `${fmtMoney(exposure.headroom_to_loss_limit)} headroom` : "No open exposure");
+
+  const banner = rcc.safe_to_trade
+    ? `<div class="banner success">Safe to trade - every active protection is currently clear.</div>`
+    : `<div class="banner danger">Not safe to trade right now${rcc.blocking_reason ? ": " + escapeHtml(rcc.blocking_reason) : " - a protection below is blocking."}</div>`;
+
+  const outcomes = (nt.amount !== null) ? `
+    <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:16px 0 8px;">If the next trade...</div>
+    <div class="scenario-pair">
+      <div class="scenario-box win"><div class="sc-title">Wins (estimate)</div><div class="sc-amount">+${fmtMoney(rcc.if_it_wins.amount)}</div><div style="font-size:12px; color:var(--text-dim);">Balance &rarr; ${fmtMoney(rcc.if_it_wins.bankroll_after)}</div><div class="muted" style="font-size:11px; margin-top:4px;">Assumes ~${rcc.if_it_wins.payout_assumption_percent}% payout (real historical average) - actual payout is read live at trade time.</div></div>
+      <div class="scenario-box loss"><div class="sc-title">Loses</div><div class="sc-amount">${fmtMoney(rcc.if_it_loses.amount)}</div><div style="font-size:12px; color:var(--text-dim);">Balance &rarr; ${fmtMoney(rcc.if_it_loses.bankroll_after)}</div></div>
+    </div>
+  ` : "";
+
+  return `
+    <div class="card solid">
+      ${banner}
+      <div class="mm-grid">
+        <div class="mm-tile ${rcc.active_profile ? "on" : ""}"><div class="mm-tile-label">Active Strategy</div><div class="mm-tile-value">${strategyValue}</div></div>
+        <div class="mm-tile on"><div class="mm-tile-label">Current Bankroll</div><div class="mm-tile-value">${fmtMoney(rcc.current_bankroll)}</div></div>
+        <div class="mm-tile ${nt.amount !== null ? "on" : ""}"><div class="mm-tile-label">Next Trade</div><div class="mm-tile-value">${nextTradeValue}</div></div>
+        <div class="mm-tile"><div class="mm-tile-label">Exposure Today</div><div class="mm-tile-value">${exposureValue}</div></div>
+      </div>
+      <div class="muted" style="font-size:12px; margin-top:12px;">${escapeHtml(nt.reason)}</div>
+      ${outcomes}
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:16px 0 8px;">Protection Status</div>
+      ${rcc.protections.map(renderProtectionRow).join("")}
+    </div>
+  `;
 }
 
 function ruleRow(label, active, onText) {
@@ -343,7 +439,7 @@ async function showStrategyDetail(key) {
         <div class="card"><h3 style="margin-top:0;">The rules, at a glance</h3>${renderRulesGrid(s)}</div>
         <div class="card"><h3 style="margin-top:0;">Worked $1,000 example</h3>${renderWorkedExample(s)}</div>
         <div class="card"><h3 style="margin-top:0;">Growth recalculation timeline</h3>${renderTimeline(s)}
-          <div class="warning-box" style="margin-top:12px;">This recalculation isn't enforced by the live trading engine yet - saving this strategy below uses its base risk (${s.risk.headline}) as a fixed value. Building real cross-session growth-threshold recalculation is tracked as a follow-up.</div>
+          <div class="banner info" style="margin-top:12px;">This recalculation isn't enforced by the live trading engine yet - saving this strategy below uses its base risk (${s.risk.headline}) as a fixed value. Building real cross-session growth-threshold recalculation is tracked as a follow-up.</div>
         </div>
         <div class="row" style="gap:16px;">
           <div class="card" style="flex:1;"><h3 style="margin-top:0;">Pros</h3><ul class="pro-con-list pros">${s.pros.map(p => `<li>${p}</li>`).join("")}</ul></div>
@@ -445,7 +541,7 @@ async function showBuilder(baseKey, existingProfileId) {
   el.innerHTML = `
     <div class="breadcrumb"><a onclick="showView('view-list')">Money Management Studio</a> / ${heading}</div>
     <div class="page-header"><div><h1 style="margin-bottom:4px;">${heading}</h1><div class="subtitle">${existing ? "Editing your own saved strategy." : "AXIM Trader's signature feature - nothing is saved until you confirm" + (baseName ? `, and "${baseName}" itself is never modified.` : ".")}</div></div></div>
-    ${baseName ? `<div class="info-box" style="margin-bottom:16px;">Starting from <b>${baseName}</b>'s rules as a template.</div>` : ""}
+    ${baseName ? `<div class="banner info" style="margin-bottom:16px;">Starting from <b>${baseName}</b>'s rules as a template.</div>` : ""}
     <div class="row" style="align-items:flex-start; gap:16px;">
       <div style="flex:2; min-width:0;">
         <div class="card">
@@ -467,7 +563,7 @@ async function showBuilder(baseKey, existingProfileId) {
           <div id="sizing-percent" class="sizing-sub"><div class="field"><label>Percent of bankroll (%)</label><input type="number" id="f-percent" step="0.1" min="0.1" value="${preset.percent || 1}"></div></div>
           <div id="sizing-dynamic" class="sizing-sub"><div class="field"><label>Percent of current balance (%)</label><input type="number" id="f-dynamic-percent" step="0.1" min="0.1" value="${preset.percent || 1}"></div></div>
           <div id="sizing-daily_compounding" class="sizing-sub">
-            <div class="info-box">Full settings (profit target, loss limit, timezone, and more) are below.</div>
+            <div class="banner info">Full settings (profit target, loss limit, timezone, and more) are below.</div>
           </div>
           <div id="sizing-kelly" class="sizing-sub">
             <div class="row"><div class="field"><label>Estimated win rate (%)</label><input type="number" id="f-kelly-p" value="55"></div><div class="field"><label>Estimated payout (0-1)</label><input type="number" id="f-kelly-b" step="0.01" value="0.88"></div></div>
@@ -476,7 +572,7 @@ async function showBuilder(baseKey, existingProfileId) {
         </div>
         <div class="card" id="daily-compounding-card" style="display:${preset.sizing_mode === "daily_compounding" ? "block" : "none"};">
           <h3 style="margin-top:0;">Daily Compounding Settings</h3>
-          <div class="info-box">Risk per trade, the profit target, and the loss limit are all recalculated once at the start of each trading day, from that day's real starting Fund balance - never mid-day, never per-trade.</div>
+          <div class="banner info">Risk per trade, the profit target, and the loss limit are all recalculated once at the start of each trading day, from that day's real starting Fund balance - never mid-day, never per-trade.</div>
           <div class="row" style="margin-top:10px;">
             <div class="field"><label>Risk % of today's starting balance (min 1%)</label><input type="number" id="f-daily-risk-percent" step="0.1" min="1" value="${preset.daily_risk_percent || 1}"></div>
             <div class="field"><label>Or fixed $ per trade (optional, overrides %)</label><input type="number" id="f-daily-risk-fixed" step="1" min="0" value="${preset.daily_risk_fixed ?? ""}"></div>
@@ -511,7 +607,7 @@ async function showBuilder(baseKey, existingProfileId) {
               <div class="field"><label>Multiplier</label><input type="number" id="f-mart-mult" step="0.1" min="1" value="${preset.mart_mult || 2}"></div>
             </div>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px;"><input type="checkbox" id="f-mart-reset" style="width:auto;" ${preset.mart_reset !== false ? "checked" : ""}> Reset to base stake after a win</label>
-            <div class="warning-box" id="mart-unlimited-warning" style="display:none;">⚠ A long losing streak with no cap can consume an entire bankroll. Keep max steps low unless you fully understand the exposure - use "Preview Projected Exposure" on the strategy after saving to see the worst case in dollars.</div>
+            <div class="banner warn" id="mart-unlimited-warning" style="display:none;">A long losing streak with no cap can consume an entire bankroll. Keep max steps low unless you fully understand the exposure - use "Preview Projected Exposure" on the strategy after saving to see the worst case in dollars.</div>
           </div>
         </div>
         <div class="card">
@@ -523,7 +619,7 @@ async function showBuilder(baseKey, existingProfileId) {
             </select>
           </div>
           <div id="comp-milestone-fields" style="display:${preset.comp_mode === "milestone_based" ? "block" : "none"}; margin-top:10px;">
-            <div class="info-box">Risk percent steps up as this session's profit crosses each threshold below, and resets to the base percent after a large enough drawdown. Only applies when sizing mode is Percent or Dynamic.</div>
+            <div class="banner info">Risk percent steps up as this session's profit crosses each threshold below, and resets to the base percent after a large enough drawdown. Only applies when sizing mode is Percent or Dynamic.</div>
             <div class="row">
               <div class="field"><label>Threshold 1 ($)</label><input type="number" id="f-comp-t1" min="0" value="${(preset.comp_steps[0] || {}).profit_threshold ?? ""}"></div>
               <div class="field"><label>Risk % at threshold 1</label><input type="number" id="f-comp-p1" step="0.1" min="0" value="${(preset.comp_steps[0] || {}).risk_percent ?? ""}"></div>
@@ -543,7 +639,7 @@ async function showBuilder(baseKey, existingProfileId) {
             </div>
           </div>
           <div id="comp-cycle-fields" style="display:${preset.comp_mode === "alternating_cycle" ? "block" : "none"}; margin-top:10px;">
-            <div class="info-box">Cycles through this list of risk percents, one per trade this session, repeating - never reacts to profit or loss. Only applies when sizing mode is Percent or Dynamic.</div>
+            <div class="banner info">Cycles through this list of risk percents, one per trade this session, repeating - never reacts to profit or loss. Only applies when sizing mode is Percent or Dynamic.</div>
             <div class="field"><label>Percent cycle (comma-separated, e.g. 2.5, 5, 2.5, 5)</label><input type="text" id="f-comp-cycle" value="${escapeHtml(compCycleText)}"></div>
           </div>
         </div>
@@ -569,7 +665,7 @@ async function showBuilder(baseKey, existingProfileId) {
             <div class="field"><label>Profit target ($, 0=off)</label><input type="number" id="f-profit-target" value="0"></div>
             <div class="field"><label>Max per trade ($, 0=off)</label><input type="number" id="f-max-trade" value="0"></div>
           </div>
-          <div class="info-box">Emergency Stop always applies immediately, across every strategy including this one - it can never be disabled here.</div>
+          <div class="banner info">Emergency Stop always applies immediately, across every strategy including this one - it can never be disabled here.</div>
         </div>
       </div>
       <div style="flex:1; position:sticky; top:20px;">
@@ -718,7 +814,7 @@ async function saveBuilder(existingProfileId) {
 (async () => {
   const user = await AximShell.init({ active: "money" });
   if (!user) return;
-  await Promise.all([loadStrategies(), loadProfiles()]);
+  await Promise.all([loadStrategies(), loadProfiles(), loadFundsForRcc()]);
 })();
 </script>
 </body>

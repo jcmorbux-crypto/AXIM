@@ -58,30 +58,12 @@ class VaultTransfer(BaseModel):
 
 
 def _with_progress(session):
-    """Adds the derived fields the Trading Sessions UI needs (section 7:
-    "Active session progress ... Remaining target") without storing them -
-    always computed fresh from profit_target/loss_limit/realized_pnl.
-
-    remaining_to_loss_limit nets out pending stake (trades placed but not
-    yet resolved) the same pessimistic way core/session_manager.py's
-    check_session_limits now does - otherwise this could show reassuring
-    headroom that doesn't match why the very next signal actually gets
-    rejected."""
-    if session is None:
-        return None
-    remaining_to_target = (
-        max(session["profit_target"] - session["realized_pnl"], 0) if session["profit_target"] > 0 else None
-    )
-    remaining_to_loss_limit = None
-    if session["loss_limit"] > 0:
-        pending_stake = database.get_session_pending_stake(session["id"])
-        effective_pnl = session["realized_pnl"] - pending_stake
-        remaining_to_loss_limit = max(session["loss_limit"] + effective_pnl, 0)
-    return {
-        **session,
-        "remaining_to_target": remaining_to_target,
-        "remaining_to_loss_limit": remaining_to_loss_limit,
-    }
+    """Thin wrapper - the actual computation moved to
+    core/session_manager.session_progress() (2026-07-19) so
+    core/risk_control_center.py can reuse the identical logic instead of
+    a second, driftable copy. Kept here since every route below already
+    calls this exact name."""
+    return session_manager.session_progress(session)
 
 
 @router.get("/profiles")
