@@ -1843,6 +1843,26 @@ def find_recent_duplicate(asset, direction, expiry, window_seconds, exclude_id=N
     return row["id"] if row else None
 
 
+# A real, live-observed lockout (2026-07-20): counting every row
+# regardless of execution_status made max_trades_per_hour/_per_day count
+# their OWN past rejections, not just real trades. Once a provider's
+# natural signal volume pushed the count to the limit even once, every
+# subsequent signal - including ones that would otherwise be perfectly
+# valid - got rejected as "max_trades_per_hour" too, and that rejection
+# ITSELF added another counted row, permanently re-triggering the same
+# rejection for the rest of the rolling window (and often well beyond
+# it, since new signals keep arriving and re-adding to the count).
+# Confirmed live: one real, actively-trading provider had 188 of 225
+# signals today (83.5%) rejected this way, with only 7 ever reaching the
+# broker. A trade that never reached the broker (signal_received/
+# trade_prepared/error) never consumed real capital or a real rate-limit
+# "slot" and must not count against a cap whose entire purpose is
+# limiting how much REAL trading happens per hour/day.
+_REAL_TRADE_STATUSES = (
+    "trade_clicked", "trade_opened", "trade_closed", "result_win", "result_loss", "result_draw",
+)
+
+
 @timed("database")
 def count_trades_since(since_iso, broker_account_id=None):
     """broker_account_id, when given, scopes the count to just that
@@ -1851,16 +1871,21 @@ def count_trades_since(since_iso, broker_account_id=None):
     another account's quota against the SAME configured limit (a real
     cross-account interference bug: previously this counted every
     account's trades together, so a busy account could silently starve
-    a different one)."""
+    a different one). Only counts signals that actually reached the
+    broker (_REAL_TRADE_STATUSES above) - see that constant's own
+    comment for why a rejected/never-submitted signal must not count."""
+    placeholders = ", ".join("?" for _ in _REAL_TRADE_STATUSES)
     conn = get_connection()
     if broker_account_id is not None:
         row = conn.execute(
-            "SELECT COUNT(*) AS n FROM signals WHERE received_at >= ? AND broker_account_id = ?",
-            (since_iso, broker_account_id),
+            f"SELECT COUNT(*) AS n FROM signals WHERE received_at >= ? AND broker_account_id = ? "
+            f"AND execution_status IN ({placeholders})",
+            (since_iso, broker_account_id, *_REAL_TRADE_STATUSES),
         ).fetchone()
     else:
         row = conn.execute(
-            "SELECT COUNT(*) AS n FROM signals WHERE received_at >= ?", (since_iso,)
+            f"SELECT COUNT(*) AS n FROM signals WHERE received_at >= ? AND execution_status IN ({placeholders})",
+            (since_iso, *_REAL_TRADE_STATUSES),
         ).fetchone()
     conn.close()
     return row["n"]

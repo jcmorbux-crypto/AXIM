@@ -70,12 +70,31 @@ class RiskManagerTests(unittest.TestCase):
     def test_max_trade_amount_within_limit(self):
         risk_manager.check_max_trade_amount(1)
 
+    def _insert_real_trade(self, broker_account_id=None):
+        """A signal that actually reached the broker (trade_clicked) -
+        count_trades_since/the rate-limit checks only count these, not
+        every raw signal attempt (see count_trades_since's own comment:
+        counting rejected attempts against their own cap created a
+        permanent lockout once triggered, confirmed live 2026-07-20)."""
+        trade_id = self._insert_signal(broker_account_id=broker_account_id)
+        database.update_trade_status(trade_id, TradeStatus.TRADE_CLICKED, trade_amount=10)
+        return trade_id
+
     def test_max_trades_per_hour(self):
         for _ in range(risk_manager.MAX_TRADES_PER_HOUR):
-            self._insert_signal()
+            self._insert_real_trade()
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_max_trades_per_hour()
         self.assertEqual(ctx.exception.rule, "max_trades_per_hour")
+
+    def test_rejected_signals_never_count_toward_the_hourly_limit(self):
+        # The real bug this guards against: a signal that never reached
+        # the broker (still at signal_received, e.g. rejected by an
+        # earlier gate) must not count against - or worse, perpetually
+        # re-trip - a cap whose purpose is limiting REAL trades.
+        for _ in range(risk_manager.MAX_TRADES_PER_HOUR * 3):
+            self._insert_signal()  # stays at signal_received - never reached the broker
+        risk_manager.check_max_trades_per_hour()  # must not raise
 
     def test_max_trades_per_hour_is_scoped_per_broker_account(self):
         # A busy account must not exhaust the quota for a DIFFERENT
@@ -84,7 +103,7 @@ class RiskManagerTests(unittest.TestCase):
         account_a = database.create_broker_account("Account A")
         account_b = database.create_broker_account("Account B")
         for _ in range(risk_manager.MAX_TRADES_PER_HOUR):
-            self._insert_signal(broker_account_id=account_a)
+            self._insert_real_trade(broker_account_id=account_a)
         with self.assertRaises(risk_manager.RiskViolation):
             risk_manager.check_max_trades_per_hour(account_a)
         risk_manager.check_max_trades_per_hour(account_b)  # must not raise - a separate quota
@@ -93,7 +112,7 @@ class RiskManagerTests(unittest.TestCase):
         # The legacy session_id=None path (no Fund/account attached) has
         # no account to scope to - unchanged, still counts every trade.
         for _ in range(risk_manager.MAX_TRADES_PER_HOUR):
-            self._insert_signal()
+            self._insert_real_trade()
         with self.assertRaises(risk_manager.RiskViolation):
             risk_manager.check_max_trades_per_hour()
 
@@ -351,7 +370,7 @@ class RiskManagerTests(unittest.TestCase):
     def test_max_trades_per_day_trips_once_configured(self):
         database.set_setting("max_trades_per_day", 3)
         for _ in range(3):
-            self._insert_signal()
+            self._insert_real_trade()
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_max_trades_per_day()
         self.assertEqual(ctx.exception.rule, "max_trades_per_day")
@@ -361,7 +380,7 @@ class RiskManagerTests(unittest.TestCase):
         account_a = database.create_broker_account("Account A")
         account_b = database.create_broker_account("Account B")
         for _ in range(3):
-            self._insert_signal(broker_account_id=account_a)
+            self._insert_real_trade(broker_account_id=account_a)
         with self.assertRaises(risk_manager.RiskViolation):
             risk_manager.check_max_trades_per_day(account_a)
         risk_manager.check_max_trades_per_day(account_b)  # must not raise - a separate quota
