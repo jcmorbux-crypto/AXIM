@@ -2010,16 +2010,28 @@ def get_recent_results(limit, fund_id=None, session_id=None, since=None):
     it - backs the consecutive-loss lock's explicit, logged reset action
     (core/risk_manager.reset_consecutive_loss_lock): the streak itself
     isn't erased or fabricated, real trades before the reset just stop
-    counting toward a NEW streak going forward."""
+    counting toward a NEW streak going forward.
+
+    Restricted to real terminal outcomes (win/loss/draw), not just
+    "result IS NOT NULL" - a rejected/never-submitted signal's result
+    column holds a string like "rejected:max_trades_per_hour", which is
+    NOT NULL too. In practice this was protected from actually corrupting
+    a streak count by SQLite's NULL-sorts-last-in-DESC behavior (a
+    rejected row's closed_at is always NULL, so it could only ever pad
+    the tail of the ORDER BY closed_at DESC results, never displace a
+    real recent outcome) - but that protection was implicit and fragile,
+    not a real guarantee, so this is now explicit (2026-07-20, found
+    while auditing every risk_manager counting function after the
+    max_trades_per_hour sibling bug)."""
     conn = get_connection()
     if session_id is not None:
-        query = "SELECT result FROM signals WHERE result IS NOT NULL AND session_id = ?"
+        query = "SELECT result FROM signals WHERE result IN ('win','loss','draw') AND session_id = ?"
         params = [session_id]
     elif fund_id is not None:
-        query = "SELECT result FROM signals WHERE result IS NOT NULL AND fund_id = ?"
+        query = "SELECT result FROM signals WHERE result IN ('win','loss','draw') AND fund_id = ?"
         params = [fund_id]
     else:
-        query = "SELECT result FROM signals WHERE result IS NOT NULL"
+        query = "SELECT result FROM signals WHERE result IN ('win','loss','draw')"
         params = []
     if since is not None:
         query += " AND closed_at >= ?"
