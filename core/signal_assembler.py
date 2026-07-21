@@ -108,6 +108,23 @@ class ChannelAssemblerState:
         for mid in sig.message_ids:
             self.pending_by_reply_to[mid] = sig
 
+    def remove_pending(self, sig):
+        """Drops a pending sequence entirely (a real Telegram edit
+        cancelling it, or the same effect expire_stale already has for a
+        timeout) - it can never complete into a trade after this."""
+        self.pending_by_asset.pop(sig.asset, None)
+        for mid in sig.message_ids:
+            self.pending_by_reply_to.pop(mid, None)
+
+    def rekey_pending_asset(self, sig, new_asset):
+        """A real Telegram edit correcting the announced asset (e.g. a
+        provider fixing a typo before the entry message arrives) -
+        pending_by_asset must be re-keyed too, or the old, now-wrong
+        asset would still resolve a later completing message."""
+        self.pending_by_asset.pop(sig.asset, None)
+        sig.asset = new_asset
+        self.pending_by_asset[new_asset] = sig
+
     def resolve_for_entry(self, reply_to_message_id):
         """Which pending sequence a non-asset-only message should attach
         to: an explicit Telegram reply wins outright (directive: "reply
@@ -235,6 +252,50 @@ class SignalAssembler:
                 }
 
         return {"action": "no_signal", "reason": "unrecognized", "expired_assets": expired}
+
+    def handle_edit(self, channel_id, message_id, new_text, now=None):
+        """A real Telegram edit to a message this assembler has already
+        seen (directive: providers correcting or cancelling a signal by
+        editing it, rather than posting a follow-up). The only real,
+        safe window for an edit to matter is BEFORE its signal completes
+        and executes - once process_message has already returned a
+        "signal_ready" result, the caller executes synchronously in that
+        same call, so there is no later point where an edit could
+        retroactively change or cancel a trade that already happened;
+        this deliberately never tries to. Only ever affects a message
+        that is STILL part of a currently-pending (not yet completed,
+        not yet expired) announcement - completing/standalone messages
+        are never tracked in pending_by_reply_to once resolved, so an
+        edit to one of those is correctly a no-op here.
+
+        Returns {"action": ...}:
+        - "not_pending": this message_id isn't part of any currently-
+          pending sequence (never was one, already completed into a
+          trade, or already expired) - nothing to do, by design.
+        - "updated": the edited text still names a recognizable asset -
+          the pending sequence's asset (and audit-trail
+          announcement_text) are corrected to the new value.
+        - "cancelled": the edited text no longer names a recognizable
+          asset announcement at all - the pending sequence is dropped so
+          it can never complete into a trade, exactly as if it had timed
+          out."""
+        now = now if now is not None else time.monotonic()
+        state = self._state_for(channel_id)
+        sig = state.pending_by_reply_to.get(message_id)
+        if sig is None:
+            return {"action": "not_pending"}
+
+        new_asset = learner._asset_only(new_text) or parse_asset_announcement(new_text)
+        if not new_asset:
+            state.remove_pending(sig)
+            return {"action": "cancelled", "asset": sig.asset}
+
+        old_asset = sig.asset
+        if new_asset != old_asset:
+            state.rekey_pending_asset(sig, new_asset)
+        sig.announcement_text = new_text
+        sig.updated_at = now
+        return {"action": "updated", "old_asset": old_asset, "new_asset": new_asset}
 
     def pending_count(self, channel_id):
         return len(self._state_for(channel_id).pending_by_asset)

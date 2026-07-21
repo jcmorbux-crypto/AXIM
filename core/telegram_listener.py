@@ -455,6 +455,62 @@ async def handler(event):
     print(f"Expiry    : {signal['expiry']}")
 
 
+@client.on(events.MessageEdited)
+async def edit_handler(event):
+    """Real edit/cancellation support for a still-pending multi-message
+    announcement (mandate: providers correcting or cancelling a signal
+    by editing the original message, rather than posting a follow-up).
+    Deliberately narrow in scope - see SignalAssembler.handle_edit's own
+    docstring for exactly which window this can and cannot affect: only
+    a message that is STILL part of a pending, not-yet-completed
+    sequence. A signal that already reached "signal_ready" was already
+    routed to real execution synchronously in that same NewMessage
+    handler call - there is no later point an edit could retroactively
+    touch an already-placed trade, and this never tries to. Runs
+    regardless of channel_allowed/emergency-stop/paused state (it never
+    itself executes anything, only keeps in-memory assembly state
+    accurate for whenever a real completing message next arrives)."""
+    chat = await event.get_chat()
+    chat_title = getattr(chat, "title", "") or getattr(chat, "first_name", "") or ""
+    chat_username = getattr(chat, "username", "") or ""
+
+    try:
+        database.record_channel_message(
+            chat_id=event.chat_id, username=chat_username, title=chat_title, message_text=event.raw_text,
+        )
+    except Exception as e:
+        logger.error("telegram_listener: record_channel_message (edit) failed: %s", e)
+
+    channel_row = database.find_channel(chat_id=event.chat_id, username=chat_username, title=chat_title)
+    if channel_row is None or channel_row.get("source_type") == "bot_command":
+        return
+
+    message_text = event.raw_text
+    rules = database.get_enabled_rules_for_channel(channel_row["id"])
+    if rules:
+        message_text = apply_signal_rules(message_text, rules)
+
+    try:
+        result = _shadow_assembler.handle_edit(channel_row["id"], event.id, message_text)
+    except Exception as e:
+        logger.error("telegram_listener: edit handling failed for channel_id=%s message_id=%s: %s",
+                     channel_row["id"], event.id, e)
+        return
+
+    if result["action"] == "not_pending":
+        return
+    if result["action"] == "cancelled":
+        print(f"[SIGNAL EDIT] {_debug_safe(chat_title)!r} edited its pending {result['asset']!r} "
+              f"announcement to something no longer recognizable - treating it as cancelled.")
+        _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                               detail="edit_cancelled_pending_signal")
+    elif result["action"] == "updated":
+        print(f"[SIGNAL EDIT] {_debug_safe(chat_title)!r} corrected its pending announcement from "
+              f"{result['old_asset']!r} to {result['new_asset']!r}.")
+        _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                               detail=f"edit_corrected_to_{result['new_asset']}")
+
+
 HEARTBEAT_INTERVAL_SECONDS = 30
 MAINTENANCE_INTERVAL_SECONDS = 3600  # hourly - cheap, infrequent housekeeping
 

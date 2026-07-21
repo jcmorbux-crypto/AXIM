@@ -241,5 +241,70 @@ class ClearChannelTests(unittest.TestCase):
         self.assertEqual(result["action"], "no_signal")
 
 
+class HandleEditTests(unittest.TestCase):
+    """A real Telegram edit to a message this assembler has already seen
+    (directive: providers correcting/cancelling a signal via edit). Only
+    a still-pending (not yet completed) announcement can meaningfully be
+    affected - a signal that already went "signal_ready" was already
+    routed to execution synchronously in that same call, so there is no
+    later point an edit could retroactively touch it."""
+
+    def test_editing_an_unknown_message_id_is_a_safe_no_op(self):
+        asm = sa.SignalAssembler()
+        result = asm.handle_edit(1, 999, "whatever", now=0)
+        self.assertEqual(result["action"], "not_pending")
+
+    def test_editing_a_pending_announcement_to_a_different_asset_corrects_it(self):
+        asm = sa.SignalAssembler()
+        asm.process_message(1, 100, "EUR/USD", now=0)
+        result = asm.handle_edit(1, 100, "GBP/JPY", now=5)
+        self.assertEqual(result["action"], "updated")
+        self.assertEqual(result["old_asset"], "EUR/USD")
+        self.assertEqual(result["new_asset"], "GBP/JPY")
+        # The corrected asset - not the original - is what a later entry
+        # message completes against.
+        entry = asm.process_message(1, 101, "BUY 1 min", now=10)
+        self.assertEqual(entry["action"], "signal_ready")
+        self.assertEqual(entry["asset"], "GBP/JPY")
+        self.assertEqual(asm.pending_count(1), 0)
+
+    def test_editing_a_pending_announcement_to_gibberish_cancels_it(self):
+        asm = sa.SignalAssembler()
+        asm.process_message(1, 100, "EUR/USD", now=0)
+        result = asm.handle_edit(1, 100, "Trade cancelled, sorry everyone", now=5)
+        self.assertEqual(result["action"], "cancelled")
+        self.assertEqual(result["asset"], "EUR/USD")
+        self.assertEqual(asm.pending_count(1), 0)
+        # No pending sequence left to complete - a later message that
+        # would have completed it must not trade on stale, cancelled state.
+        entry = asm.process_message(1, 101, "BUY 1 min", now=10)
+        self.assertEqual(entry["action"], "no_signal")
+
+    def test_editing_an_already_completed_signals_message_is_a_safe_no_op(self):
+        asm = sa.SignalAssembler()
+        asm.process_message(1, 100, "EUR/USD", now=0)
+        asm.process_message(1, 101, "BUY 1 min", now=5)  # completes and clears the pending sequence
+        result = asm.handle_edit(1, 100, "GBP/JPY", now=10)
+        self.assertEqual(result["action"], "not_pending")
+
+    def test_editing_a_standalone_signals_message_is_a_safe_no_op(self):
+        # A standalone (single-message) signal is never added to
+        # pending_by_reply_to at all - nothing to edit.
+        asm = sa.SignalAssembler()
+        asm.process_message(1, 100, "EUR/USD OTC BUY 5 MIN", now=0)
+        result = asm.handle_edit(1, 100, "GBP/USD OTC BUY 5 MIN", now=5)
+        self.assertEqual(result["action"], "not_pending")
+
+    def test_editing_one_of_two_pending_asset_announcements_leaves_the_other_untouched(self):
+        asm = sa.SignalAssembler()
+        asm.process_message(1, 100, "EUR/USD", now=0)
+        asm.process_message(1, 101, "GBP/JPY", now=1)
+        asm.handle_edit(1, 100, "Trade cancelled", now=2)
+        self.assertEqual(asm.pending_count(1), 1)
+        entry = asm.process_message(1, 102, "BUY 1 min", now=5)
+        self.assertEqual(entry["action"], "signal_ready")
+        self.assertEqual(entry["asset"], "GBP/JPY")
+
+
 if __name__ == "__main__":
     unittest.main()
