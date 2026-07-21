@@ -19,6 +19,11 @@ class SingleMessageSignalTests(unittest.TestCase):
         self.assertFalse(result["is_multi_message"])
         self.assertEqual(result["message_ids"], [100])
 
+    def test_standalone_signal_carries_its_own_raw_message(self):
+        asm = sa.SignalAssembler()
+        result = asm.process_message(1, 100, "EUR/USD OTC BUY 5 MIN", now=0)
+        self.assertEqual(result["raw_message"], "EUR/USD OTC BUY 5 MIN")
+
     def test_noise_message_is_no_signal(self):
         asm = sa.SignalAssembler()
         result = asm.process_message(1, 100, "Good morning traders! Big win yesterday", now=0)
@@ -47,6 +52,12 @@ class TwoStepAssemblyTests(unittest.TestCase):
         self.assertTrue(entry["is_multi_message"])
         self.assertEqual(entry["message_ids"], [100, 101])
 
+    def test_multi_message_raw_message_preserves_both_real_messages(self):
+        asm = sa.SignalAssembler()
+        asm.process_message(1, 100, "EUR/USD OTC", now=0)
+        entry = asm.process_message(1, 101, "BUY now, 3 minutes", now=10)
+        self.assertEqual(entry["raw_message"], "EUR/USD OTC\nBUY now, 3 minutes")
+
     def test_completing_a_pending_signal_clears_it(self):
         asm = sa.SignalAssembler()
         asm.process_message(1, 100, "EUR/USD", now=0)
@@ -63,6 +74,70 @@ class TwoStepAssemblyTests(unittest.TestCase):
         entry = asm.process_message(1, 101, "SELL, 1 minute", now=5)
         self.assertEqual(entry["action"], "signal_ready")
         self.assertEqual(entry["asset"], "GBP/JPY")
+
+
+class PhraseWrappedAnnouncementRegressionTests(unittest.TestCase):
+    """Real captured messages from "Pro Trading Robot" (channel_id 162 in
+    production - AXIM's one currently demo_ready, actively-trading
+    provider) and "OTC Pro Trading Robot". Both wrap their announcement
+    in a full sentence ("Preparing trading asset X\nRobot has started
+    peforming analysis") rather than sending a bare asset - too long for
+    _asset_only's generic bare-asset shape (correctly rejected, it isn't
+    one), so this only works via the parse_asset_announcement phrase-
+    match fallback. Written after discovering live that the generic-only
+    check alone would have silently stopped this provider from ever
+    producing a signal via this path - not a hypothetical edge case."""
+
+    def test_phrase_wrapped_announcement_is_recognized(self):
+        asm = sa.SignalAssembler()
+        result = asm.process_message(
+            162, 1, "Preparing trading asset GBP/USD\nRobot has started peforming analysis", now=0,
+        )
+        self.assertEqual(result["action"], "announced")
+        self.assertEqual(result["asset"], "GBP/USD")
+
+    def test_an_unrelated_middle_message_does_not_disrupt_the_pending_announcement(self):
+        # This provider sends a real "Economical calendar..." filler
+        # message between the announcement and the entry - it must be
+        # recognized as no_signal without completing or dropping the
+        # pending sequence.
+        asm = sa.SignalAssembler()
+        asm.process_message(162, 1, "Preparing trading asset GBP/USD\nRobot has started peforming analysis", now=0)
+        filler = asm.process_message(
+            162, 2, "Economical calendar: No news\n\nSupport levels:\n\nResistance levels:", now=63,
+        )
+        self.assertEqual(filler["action"], "no_signal")
+        self.assertEqual(asm.pending_count(162), 1)
+        entry = asm.process_message(162, 3, "Summary:  BUY OPTION\nExpiration time:  5 MINUTES \nOpening price: 1.34300", now=65)
+        self.assertEqual(entry["action"], "signal_ready")
+        self.assertEqual(entry["asset"], "GBP/USD")
+        self.assertEqual(entry["direction"], "BUY")
+        self.assertEqual(entry["expiry"], "5 Minute")
+
+    def test_the_real_safe_option_double_down_messages_each_produce_their_own_signal(self):
+        # This provider's real "Result: FIRST/SECOND Safe OPTION BUY (x2
+        # BET)" messages carry their own asset - each is a genuine,
+        # separate, real signal (matching what's currently actually
+        # executing live), not a duplicate/phantom re-trade of the
+        # original entry.
+        asm = sa.SignalAssembler()
+        first = asm.process_message(
+            162, 1, "Result: FIRST Safe OPTION  BUY (x2 BET)\n\nAUD/USD\nOpening price: 0.70044\nExpiration time: 1 minutes",
+            now=0,
+        )
+        second = asm.process_message(
+            162, 2, "Result: SECOND Safe OPTION  BUY (x2 BET)\n\nAUD/USD\nOpening price: 0.70042\nExpiration time: 1 minutes",
+            now=60,
+        )
+        self.assertEqual(first["action"], "signal_ready")
+        self.assertEqual(first["asset"], "AUD/USD")
+        self.assertEqual(second["action"], "signal_ready")
+        self.assertEqual(second["asset"], "AUD/USD")
+
+    def test_the_real_closing_summary_message_never_produces_a_phantom_signal(self):
+        asm = sa.SignalAssembler()
+        result = asm.process_message(162, 1, "Safe option has been completed!\nClosing price: 0.70049\nSummary: AUD/USD Profit", now=0)
+        self.assertEqual(result["action"], "no_signal")
 
 
 class StaleTimeoutTests(unittest.TestCase):

@@ -145,10 +145,16 @@ def channel_allowed(chat_title, chat_username=None, chat_id=None):
     return False
 
 
-# Some real providers (confirmed live: OTC Pro Trading Robot) split one
-# trade across two separate Telegram messages - a standalone "Preparing
-# trading asset X" announcement, then a later entry message with
-# direction/expiry but no asset repeated at all. Keyed by chat_id so
+# Legacy single-slot fallback for a chat AXIM has NO ui_channels record
+# for at all (an informal .env WATCH_CHANNELS title match that's never
+# been synced into the channel manager - core/signal_assembler.py below
+# is the real, general mechanism for every properly-registered channel,
+# which is every channel actually used in practice). Kept only for this
+# narrow legacy path since it needs no channel_id to key its per-channel
+# state. Some real providers (confirmed live: OTC Pro Trading Robot)
+# split one trade across two separate Telegram messages - a standalone
+# "Preparing trading asset X" announcement, then a later entry message
+# with direction/expiry but no asset repeated at all. Keyed by chat_id so
 # concurrently-active channels never cross-contaminate each other's
 # pending asset. In-memory only (not persisted) - a process restart
 # losing an in-flight announcement just means that one entry message is
@@ -178,27 +184,44 @@ def _get_carried_asset(chat_id):
     return asset
 
 
-# Universal Signal Intelligence Engine (2026-07-18 directive) - runs the
-# new provider-agnostic core/signal_assembler.py alongside (never
-# instead of) the real execution path above, for every channel AXIM
-# watches. Deliberately SHADOW-only right now: it never executes a
-# trade and never affects what parsers/signal_parser.py's own real-time
-# parser decides above - it only builds the real observation evidence
-# (provider_profiles.observed_signal_count/parse_success_count) that
-# core/provider_profile.py's graduation_status needs before a source
-# could ever be considered for Demo/Live via this new path. Swapping
-# actual EXECUTION over to the new assembler+profile system is real,
-# separate follow-up work that depends on this evidence existing first
-# - not something to silently skip to.
+# Universal Signal Intelligence Engine (2026-07-18 directive, promoted
+# from shadow-only to the real per-channel decision path 2026-07-20 per
+# the live-trading refocus mandate) - core/signal_assembler.py is now
+# what actually decides whether a message completes a tradeable signal
+# for any channel AXIM has a ui_channels record for (the legacy
+# _carried_assets_by_channel mechanism above only still runs for a chat
+# with no record at all). Real, concrete correctness fix over the old
+# mechanism it replaces: the old single-slot-per-channel carried-asset
+# dict silently OVERWROTE an earlier pending announcement if a second
+# one arrived before the first resolved (two different assets in flight
+# at once, which the mandate explicitly requires never merging) -
+# signal_assembler tracks one pending sequence PER ASSET, plus
+# Telegram-reply correlation and a configurable per-provider timeout.
 _shadow_assembler = signal_assembler.SignalAssembler()
 
 
 def _observe_message(channel_row, message_text, message_id, reply_to_message_id=None):
-    """Fails silent (logged, never raised) - a bug here must never be
-    able to affect real signal execution, which happens entirely
-    independently of this function."""
+    """The ONE call into signal_assembler.process_message() per message
+    for a channel AXIM has a record for - serves both the real trade
+    decision (the returned dict is what the caller routes to
+    broker_account_manager.route_signal) AND the Universal Signal
+    Intelligence Engine's observation/graduation bookkeeping
+    (core/provider_profile.py), from the same call. These must never be
+    two separate calls: signal_assembler is stateful (a pending sequence
+    is consumed/deleted once completed), so calling it twice for the
+    same message would have a second, redundant call fail to find a
+    pending sequence the first call already resolved - silently
+    misclassifying a real, completable multi-message signal as
+    unparseable and dropping the trade.
+
+    Fails closed: returns None (no signal, no trade) if anything here
+    raises, logged - a bug in observation bookkeeping must never
+    silently execute an unintended trade, and skipping a real signal on
+    an internal error is the safe default, consistent with this
+    module's fail-closed philosophy elsewhere (see channel_allowed's own
+    docstring)."""
     if channel_row is None:
-        return
+        return None
     try:
         profile = database.get_or_create_provider_profile(channel_row["id"])
         timeout = profile["assembly_timeout_seconds"] or signal_assembler.DEFAULT_ASSEMBLY_TIMEOUT_SECONDS
@@ -210,8 +233,10 @@ def _observe_message(channel_row, message_text, message_id, reply_to_message_id=
             provider_profile.record_observed_signal(profile["id"], parsed_successfully=False)
         if result["action"] == "signal_ready":
             provider_profile.record_observed_signal(profile["id"], parsed_successfully=True)
+        return result
     except Exception as e:
-        logger.error("telegram_listener: shadow observation failed for channel_id=%s: %s", channel_row.get("id"), e)
+        logger.error("telegram_listener: signal assembly failed for channel_id=%s: %s", channel_row.get("id"), e)
+        return None
 
 
 def _track_pipeline_event(chat_id, message_id, channel_id, state, detail=None):
@@ -358,66 +383,76 @@ async def handler(event):
         if rules:
             message_text = apply_signal_rules(message_text, rules)
 
-    # Universal Signal Intelligence Engine shadow observation - see
-    # _observe_message's own docstring. Runs on the same normalized
-    # message text the real parser below uses, never affects it.
     reply_to_message_id = getattr(getattr(event.message, "reply_to", None), "reply_to_msg_id", None)
-    _observe_message(channel_row, message_text, event.id, reply_to_message_id=reply_to_message_id)
 
-    # A standalone asset announcement (e.g. OTC Pro Trading Robot's
-    # "Preparing trading asset X") is never itself a tradeable signal -
-    # remember it for this channel's next message and stop here, rather
-    # than falling through to parse_signal (which would correctly reject
-    # it anyway for having no direction, but exiting early keeps the
-    # debug log/print output honest about what this message actually was).
-    announced_asset = parse_asset_announcement(message_text)
-    if announced_asset:
-        _remember_asset_announcement(event.chat_id, announced_asset)
-        print(f"[ASSET ANNOUNCED] {_debug_safe(chat_title)!r} announced {announced_asset!r} - "
-              f"carrying it forward for this channel's next entry message.")
-        if channel_row is not None:
-            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
-                                   detail="asset_announcement_only")
-        return
-
-    signal = parse_signal(message_text, carried_asset=_get_carried_asset(event.chat_id))
-    timeline.mark("signal_parsed")
     if channel_row is not None:
-        if signal:
-            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.PARSED)
-        else:
+        # The real, general multi-message-aware decision path for any
+        # properly-registered channel - see _observe_message's own
+        # docstring for why this must be the ONE call into the assembler.
+        assembly_result = _observe_message(channel_row, message_text, event.id, reply_to_message_id=reply_to_message_id)
+        timeline.mark("signal_parsed")
+
+        if assembly_result is None or assembly_result["action"] == "no_signal":
             _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.FAILED,
                                    detail="parse_failed")
+            return
 
-    if signal and signal["expiry"] == "Unknown" and channel_row and channel_row.get("default_expiry"):
+        if assembly_result["action"] == "announced":
+            print(f"[ASSET ANNOUNCED] {_debug_safe(chat_title)!r} announced {assembly_result['asset']!r} - "
+                  f"carrying it forward for this channel's next entry message.")
+            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                                   detail="asset_announcement_only")
+            return
+
+        # action == "signal_ready"
+        signal = {
+            "asset": assembly_result["asset"], "direction": assembly_result["direction"],
+            "expiry": assembly_result.get("expiry") or "Unknown", "raw_message": assembly_result["raw_message"],
+        }
+        _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.PARSED)
+    else:
+        # Legacy fallback for a chat with no ui_channels record at all -
+        # see _carried_assets_by_channel's own comment.
+        announced_asset = parse_asset_announcement(message_text)
+        if announced_asset:
+            _remember_asset_announcement(event.chat_id, announced_asset)
+            print(f"[ASSET ANNOUNCED] {_debug_safe(chat_title)!r} announced {announced_asset!r} - "
+                  f"carrying it forward for this channel's next entry message.")
+            return
+
+        signal = parse_signal(message_text, carried_asset=_get_carried_asset(event.chat_id))
+        timeline.mark("signal_parsed")
+        if signal is None:
+            return
+
+    if signal["expiry"] == "Unknown" and channel_row and channel_row.get("default_expiry"):
         print(f"[EXPIRY FALLBACK] {_debug_safe(chat_title)!r} sent no expiry - using its configured "
               f"default_expiry={channel_row['default_expiry']!r} instead of rejecting.")
         signal = apply_expiry_fallback(signal, channel_row["default_expiry"])
 
-    if signal:
-        # route_signal resolves which broker account's coordinator should
-        # actually handle this (via the session's Fund -> attached Pocket
-        # Option account - see core/broker_account_manager.py), falling
-        # back to `coordinator` (the legacy single-shared-connection
-        # default) only when no session covers this channel at all.
-        execution_result = await broker_account_manager.route_signal(
-            signal,
-            coordinator,
-            source=chat_title,
-            sender=str(sender.id),
-            message_id=event.id,
-            sent_at=event.date,
-            timeline=timeline,
-            session_id=active_session["id"] if active_session else None,
-            channel_id=channel_row["id"] if channel_row else None,
-        )
+    # route_signal resolves which broker account's coordinator should
+    # actually handle this (via the session's Fund -> attached Pocket
+    # Option account - see core/broker_account_manager.py), falling
+    # back to `coordinator` (the legacy single-shared-connection
+    # default) only when no session covers this channel at all.
+    execution_result = await broker_account_manager.route_signal(
+        signal,
+        coordinator,
+        source=chat_title,
+        sender=str(sender.id),
+        message_id=event.id,
+        sent_at=event.date,
+        timeline=timeline,
+        session_id=active_session["id"] if active_session else None,
+        channel_id=channel_row["id"] if channel_row else None,
+    )
 
-        print(f"Execution Status: {execution_result['status']}")
+    print(f"Execution Status: {execution_result['status']}")
 
-        print("\nAXIM SIGNAL PARSED")
-        print(f"Asset     : {signal['asset']}")
-        print(f"Direction : {signal['direction']}")
-        print(f"Expiry    : {signal['expiry']}")
+    print("\nAXIM SIGNAL PARSED")
+    print(f"Asset     : {signal['asset']}")
+    print(f"Direction : {signal['direction']}")
+    print(f"Expiry    : {signal['expiry']}")
 
 
 HEARTBEAT_INTERVAL_SECONDS = 30

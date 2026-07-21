@@ -43,7 +43,7 @@ CORE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CORE_DIR.parent / "parsers"))
 
-from signal_parser import parse_signal  # noqa: E402
+from signal_parser import parse_signal, parse_asset_announcement  # noqa: E402
 import provider_language_learner as learner  # noqa: E402
 
 DEFAULT_ASSEMBLY_TIMEOUT_SECONDS = 300
@@ -53,13 +53,18 @@ class PendingSignal:
     """One in-progress multi-message signal for a specific asset on a
     specific channel. `message_ids` accumulates every message that
     contributed to this signal (directive schema's message_ids field) -
-    a single-message signal ends up with exactly one entry."""
+    a single-message signal ends up with exactly one entry.
+    `announcement_text` preserves the original announcement's raw text
+    so a completed multi-message signal's audit trail (signals.message)
+    can show the full real conversation that produced it, not just the
+    final completing message."""
 
-    def __init__(self, asset, first_message_id, now):
+    def __init__(self, asset, first_message_id, now, announcement_text=""):
         self.asset = asset
         self.direction = None
         self.expiry = None
         self.message_ids = [first_message_id]
+        self.announcement_text = announcement_text
         self.created_at = now
         self.updated_at = now
 
@@ -157,7 +162,9 @@ class SignalAssembler:
           optional) is ready to trade NOW - either because this one
           message was self-contained, or because it completed a pending
           announcement. Includes "asset"/"direction"/"expiry"/
-          "message_ids"/"is_multi_message".
+          "message_ids"/"is_multi_message"/"raw_message" (the full real
+          text that produced this signal - both messages, newline-joined,
+          for a multi-message signal).
         - "no_signal": this message wasn't a signal at all (didn't match
           any known shape) - the normal, common case for chatter/promo.
 
@@ -177,10 +184,20 @@ class SignalAssembler:
         # Step 1: a bare asset-only message - the generic shape
         # core/provider_language_learner.py's _asset_only already proved
         # out against multiple real providers (NTrade, OTC Pro Robot,
-        # Pocket Option Signals) - not one hardcoded phrase.
-        announced_asset = learner._asset_only(text)
+        # Pocket Option Signals) - not one hardcoded phrase. Falls back to
+        # parsers.signal_parser.parse_asset_announcement's "Preparing
+        # trading asset X" phrase match for providers (confirmed live:
+        # OTC Pro Trading Robot AND Pro Trading Robot) that wrap the
+        # announcement in extra sentences _asset_only's length check
+        # correctly rejects as "too long to be a bare asset" - without
+        # this fallback, this genuinely real, currently-demo_ready
+        # provider's actual 3-message pattern (announce -> unrelated
+        # analysis message -> entry with no asset repeated) would never
+        # be recognized as a signal at all. Verified against this
+        # provider's real captured messages, not assumed.
+        announced_asset = learner._asset_only(text) or parse_asset_announcement(text)
         if announced_asset:
-            sig = PendingSignal(announced_asset, message_id, now)
+            sig = PendingSignal(announced_asset, message_id, now, announcement_text=text)
             state.add_pending(sig)
             return {"action": "announced", "asset": announced_asset, "message_id": message_id, "expired_assets": expired}
 
@@ -194,7 +211,7 @@ class SignalAssembler:
             return {
                 "action": "signal_ready", "asset": standalone["asset"], "direction": standalone["direction"],
                 "expiry": standalone.get("expiry"), "message_ids": [message_id], "is_multi_message": False,
-                "expired_assets": expired,
+                "raw_message": text, "expired_assets": expired,
             }
 
         # Step 3: does this message complete a currently-pending
@@ -210,10 +227,11 @@ class SignalAssembler:
                 for mid in pending.message_ids:
                     state.pending_by_reply_to.pop(mid, None)
                 message_ids = pending.message_ids + [message_id]
+                raw_message = f"{pending.announcement_text}\n{text}" if pending.announcement_text else text
                 return {
                     "action": "signal_ready", "asset": completed["asset"], "direction": completed["direction"],
                     "expiry": completed.get("expiry"), "message_ids": message_ids, "is_multi_message": True,
-                    "expired_assets": expired,
+                    "raw_message": raw_message, "expired_assets": expired,
                 }
 
         return {"action": "no_signal", "reason": "unrecognized", "expired_assets": expired}
