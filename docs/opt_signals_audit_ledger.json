@@ -1,9 +1,9 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "folder_name": "OPT SIGNALS",
   "last_telegram_sync": "2026-07-24T21:43:41",
   "last_telegram_sync_count": 16,
-  "notes": "Persistent, resumable audit ledger for the full OPT SIGNALS replay-validation mandate. Resume from the first provider not marked VERIFIED. Do not restart from the beginning after a commit. Only rerun providers impacted by a given code change (see 'Smart Revalidation' in the governing instructions) unless a shared component (assembler/parser/normalization/routing) changes, in which case all VERIFIED providers get a quick smoke re-check, not a full replay.",
+  "notes": "AXIM Phase Gate 2026-07-25: the OPT SIGNALS provider audit is COMPLETE and now the frozen baseline, not an ongoing activity. Do not restart, repeat, or expand this provider audit. Only revalidate a provider when a parser, normalization, assembler, replay-engine, or routing change directly affects it (see docs/opt_signals_gap_queue.md for the smart-revalidation trigger list). parser_readiness (VERIFIED/PARTIALLY_VERIFIED/BLOCKED) measures ONLY whether AXIM can correctly interpret this provider's signals through the production pipeline - it must never be reduced by operational configuration. operational_status (LIVE/DEMO/OBSERVATION_ONLY/DISABLED/NOT_ASSIGNED) measures ONLY whether AXIM should currently execute trades from this provider. graduation_stage tracks lifecycle position: DISCOVERED -> PROFILED -> REPLAY_VALIDATED -> PARSER_VERIFIED -> OBSERVATION_MODE -> DEMO_VERIFIED -> LIVE_VERIFIED. See docs/opt_signals_capability_matrix.md for the cross-provider capability baseline and docs/opt_signals_engineering_dashboard.md for the consolidated summary. Regression fixtures (tests/fixtures/provider_corpus.py) are permanent and must never be deleted.",
   "sources": [
     {
       "axim_channel_id": 162,
@@ -32,11 +32,16 @@
       "ambiguous": 0,
       "edits_handled": "code path exists (handle_edit), not exercised by real historical edit event in this provider's corpus",
       "cancellations_handled": "code path exists (handle_edit), not exercised by real historical cancellation event in this provider's corpus",
-      "readiness": "VERIFIED_FOR_DEMO",
       "remaining_blocker": "none for demo; live blocked globally on LIVE_URL/LIVE_MODE_VERIFICATION_CLASS not configured (see Live Readiness notes)",
       "last_validated_at": "2026-07-20",
       "last_validated_commit": "986dc6e (shared assembler/parser unaffected since; last direct fix was the 2026-07-20 promotion + phrase-announcement fix)",
-      "regression_fixtures": ["tests/test_signal_assembler.py: TwoStepAssemblyTests, PhraseWrappedAnnouncementRegressionTests"]
+      "regression_fixtures": [
+        "tests/test_signal_assembler.py: TwoStepAssemblyTests, PhraseWrappedAnnouncementRegressionTests"
+      ],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "DEMO",
+      "graduation_stage": "DEMO_VERIFIED",
+      "graduation_stage_note": "enabled, actively demo-trading via Fund 25 / broker account #11 (Demo); real trades executing and reconciling"
     },
     {
       "axim_channel_id": 167,
@@ -65,11 +70,16 @@
       "ambiguous": 0,
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation (parser already proven correct via replay)",
       "last_validated_at": "2026-07-20",
       "last_validated_commit": "986dc6e",
-      "regression_fixtures": ["tests/test_signal_assembler.py: PhraseWrappedAnnouncementRegressionTests"]
+      "regression_fixtures": [
+        "tests/test_signal_assembler.py: PhraseWrappedAnnouncementRegressionTests"
+      ],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "DISABLED",
+      "graduation_stage": "PARSER_VERIFIED",
+      "graduation_stage_note": "provider_profile exists (trading_mode=observation) but channel currently disabled; parser proven correct via full replay, never advanced to OBSERVATION_MODE while disabled"
     },
     {
       "axim_channel_id": 187,
@@ -98,11 +108,14 @@
       "ambiguous": "6 commentary messages naming a pair with no direction, verified via real surrounding context as genuine educational chatter, not missed signals",
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation (parser already proven correct via full-corpus replay)",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "no code change needed - already correct",
-      "regression_fixtures": []
+      "regression_fixtures": [],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "DISABLED",
+      "graduation_stage": "PARSER_VERIFIED",
+      "graduation_stage_note": "provider_profile exists (trading_mode=observation) but channel currently disabled"
     },
     {
       "axim_channel_id": 207,
@@ -131,11 +144,17 @@
       "ambiguous": "20 flagged-then-verified cases (session summaries, promotional chatter, correct timeout/orphan expirations) - all confirmed legitimate, none are bugs",
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "VERIFIED_FOR_DEMO",
       "remaining_blocker": "none for demo (already enabled, accumulating real evidence); known unsupported: a handful of stock-name assets (Tesla/McDonald's/Apple OTC) - different asset class, not a decoration bug, needs real Pocket Option naming-convention data before attempting",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "986dc6e",
-      "regression_fixtures": ["tests/test_provider_language_learner.py: emoji-decoration tests", "tests/test_signal_assembler.py: NTradeEmojiDecoratedAnnouncementRegressionTests"]
+      "regression_fixtures": [
+        "tests/test_provider_language_learner.py: emoji-decoration tests",
+        "tests/test_signal_assembler.py: NTradeEmojiDecoratedAnnouncementRegressionTests"
+      ],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "OBSERVATION_ONLY",
+      "graduation_stage": "OBSERVATION_MODE",
+      "graduation_stage_note": "enabled, trading_mode=observation, no broker/fund assigned yet - actively accumulating real observation evidence"
     },
     {
       "axim_channel_id": 9,
@@ -164,11 +183,16 @@
       "ambiguous": 0,
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation. Known unsupported: ~33 'BUY NOW/SELL NOW <crypto> (OTC)' messages (Bitcoin, TRON, Toncoin, Dogecoin, Cardano, BNB, Solana, Avalanche, Chainlink) - different asset class (crypto, not forex pairs), needs real Pocket Option naming-convention data before attempting, same category as NTrade's stock-name gap.",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "data fix only (not code): ui_channels.default_expiry corrected from an incorrect '5 Minute' to the verified-constant real value '2 Minute' (100% consistent across all 277 real 'Trade time' announcements) - the entry message itself never repeats the pair's expiry, relying entirely on this per-channel default. This was WRONG before the fix and would have sized every trade's expiry incorrectly had this channel ever been enabled.",
-      "regression_fixtures": ["none applicable - config/data fix, not logic; protection is the replay script itself confirming zero 'Unknown' expiries remain for this channel"]
+      "regression_fixtures": [
+        "none applicable - config/data fix, not logic; protection is the replay script itself confirming zero 'Unknown' expiries remain for this channel"
+      ],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "DISABLED",
+      "graduation_stage": "PARSER_VERIFIED",
+      "graduation_stage_note": "Fund 20 assigned but channel itself disabled; parser proven correct via full replay + default_expiry data fix"
     },
     {
       "axim_channel_id": 16,
@@ -197,11 +221,14 @@
       "ambiguous": null,
       "edits_handled": null,
       "cancellations_handled": null,
-      "readiness": "BOT_INTERACTION_UNSUPPORTED",
       "remaining_blocker": "real message history shows a multi-step, button-driven flow (select currency pair -> select expiration -> analyzing -> signal delivered), interleaved with promotional spam. telegram_bot_trigger.py only supports a single send-command/get-text-reply round trip, not button clicks. AXIM's passive message capture does not log inline-keyboard button labels/callback_data, so there is currently no stored evidence of the actual buttons - needs either manual interaction to capture button structure, or a code change to log message.buttons going forward.",
       "last_validated_at": "2026-07-20",
       "last_validated_commit": null,
-      "regression_fixtures": []
+      "regression_fixtures": [],
+      "parser_readiness": "BLOCKED",
+      "operational_status": "DISABLED",
+      "graduation_stage": "PROFILED",
+      "graduation_stage_note": "button-driven interactive bot; sampled and classified but never replay-validated (no capturable passive signal content, no button/callback adapter exists)"
     },
     {
       "axim_channel_id": 25,
@@ -230,11 +257,14 @@
       "ambiguous": 0,
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation. No parser gap found.",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "no code change needed - already correct",
-      "regression_fixtures": []
+      "regression_fixtures": [],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "PARSER_VERIFIED",
+      "graduation_stage_note": "no provider_profile row yet; parser proven correct via full replay"
     },
     {
       "axim_channel_id": 44,
@@ -263,11 +293,14 @@
       "ambiguous": 0,
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation. No parser gap found.",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "no code change needed - already correct",
-      "regression_fixtures": []
+      "regression_fixtures": [],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "PARSER_VERIFIED",
+      "graduation_stage_note": "no provider_profile row yet; parser proven correct via full replay"
     },
     {
       "axim_channel_id": 116,
@@ -296,11 +329,14 @@
       "ambiguous": 0,
       "edits_handled": "n/a",
       "cancellations_handled": "n/a",
-      "readiness": "NOT_A_SIGNAL_PROVIDER",
       "remaining_blocker": "none - real message history is an account setup/sales conversation (\"Account has been funded\", \"I'll accept you into the VIP signal group\"), not a trading signal source at all. No further action needed.",
       "last_validated_at": "2026-07-20",
       "last_validated_commit": null,
-      "regression_fixtures": []
+      "regression_fixtures": [],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "REPLAY_VALIDATED",
+      "graduation_stage_note": "terminal - confirmed via full replay to be an account-setup sales conversation, not a signal source; excluded from further lifecycle"
     },
     {
       "axim_channel_id": 163,
@@ -329,11 +365,16 @@
       "ambiguous": 0,
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation.",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "6e61944",
-      "regression_fixtures": ["tests/fixtures/provider_corpus.py: mt_signal_complete, mt_session_report_must_not_become_a_signal"]
+      "regression_fixtures": [
+        "tests/fixtures/provider_corpus.py: mt_signal_complete, mt_session_report_must_not_become_a_signal"
+      ],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "PARSER_VERIFIED",
+      "graduation_stage_note": "no provider_profile row yet; parser proven correct via full replay after SESSION REPORT false-positive fix"
     },
     {
       "axim_channel_id": 166,
@@ -362,11 +403,16 @@
       "ambiguous": 0,
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation. Reviewed a 2000-message sample of 2068 total.",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "4a33fe2",
-      "regression_fixtures": ["tests/fixtures/provider_corpus.py: pocket5m_hyphenated_otc_with_cnh"]
+      "regression_fixtures": [
+        "tests/fixtures/provider_corpus.py: pocket5m_hyphenated_otc_with_cnh"
+      ],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "PARSER_VERIFIED",
+      "graduation_stage_note": "no provider_profile row yet; parser proven correct via full replay after CNH/hyphenated-OTC fix"
     },
     {
       "axim_channel_id": 199,
@@ -395,11 +441,16 @@
       "ambiguous": 0,
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation.",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "data fix only (not code): ui_channels.default_expiry was unset (None); set to the verified-constant real value '2 Minute' (100% consistent across all 160 real 'Trade time' announcements), same sister-channel template as TYLER VIP CLUB (channel 9).",
-      "regression_fixtures": ["none applicable - config/data fix, not logic"]
+      "regression_fixtures": [
+        "none applicable - config/data fix, not logic"
+      ],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "PARSER_VERIFIED",
+      "graduation_stage_note": "no provider_profile row yet; parser proven correct via full replay + default_expiry data fix"
     },
     {
       "axim_channel_id": 216,
@@ -428,11 +479,14 @@
       "ambiguous": "~190 'More up/down X minute' martingale-continuation messages that never repeat their own asset and arrive after the original pending sequence already completed - correctly rejected today (no valid context to attach to), but represent a real, understood gap: correctly attributing them would need the assembler to remember the last COMPLETED asset per channel for a short grace window, a genuinely different mechanism than anything built so far, with real false-merge risk if done carelessly. NOT implemented this pass - the core entry signal is never lost without it, only the optional secondary continuation.",
       "edits_handled": "code path exists, not exercised by real historical event",
       "cancellations_handled": "code path exists, not exercised by real historical event",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence. Separately: the martingale-continuation-message gap described above is a real, deliberate follow-up, not implemented this pass per 'do not add broad guessing rules'.",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "no code change made - documented limitation, not fixed",
-      "regression_fixtures": []
+      "regression_fixtures": [],
+      "parser_readiness": "PARTIALLY_VERIFIED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "REPLAY_VALIDATED",
+      "graduation_stage_note": "primary entry cycle fully correct, but martingale-continuation gap documented and unfixed - has not cleared the PARSER_VERIFIED gate"
     },
     {
       "axim_channel_id": 231,
@@ -461,11 +515,14 @@
       "ambiguous": 0,
       "edits_handled": "n/a - no edits observed in history",
       "cancellations_handled": "n/a - no cancellations observed in history",
-      "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "channel currently disabled/not onboarded (no provider_profile, no Fund/broker assignment) - needs onboarding + live observation before graduation, not a parser gap. Confirmed the \"SIL/VER\"/\"NVI/DIA\" commodity-naming quirk is SAFE: correctly and consistently rejected (fail-closed) by the existing currency-code allowlist rather than mis-parsed - not a bug.",
       "last_validated_at": "2026-07-24",
       "last_validated_commit": "no code change needed - already correct",
-      "regression_fixtures": []
+      "regression_fixtures": [],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "PARSER_VERIFIED",
+      "graduation_stage_note": "no provider_profile row yet; parser proven correct via full replay, SIL/VER quirk confirmed safe"
     },
     {
       "axim_channel_id": 370,
@@ -494,11 +551,14 @@
       "ambiguous": 0,
       "edits_handled": "n/a",
       "cancellations_handled": "n/a",
-      "readiness": "BOT_INTERACTION_UNSUPPORTED",
       "remaining_blocker": "Exact interaction sequence observed in real history: /start -> bot intro (4 fixed messages) -> MANDATORY registration of a NEW Pocket Option account via the bot's own referral link (https://trading-booster.rocks/register) -> user replies with new account ID as plain text -> bot requires a REAL DEPOSIT of $50+ into that new account before it will proceed -> bot presents an inline keyboard to pick a currency pair (callback button, e.g. 'Choose a trading pair:') -> inline keyboard to pick expiry -> ~15s fake 'analysis' -> bot emits one CALL/PUT signal with asset+direction+probability stats (no explicit expiry echoed in the text itself). This is NOT a passive/unsolicited signal push - a signal only appears after a live human presses two sequential inline-keyboard buttons. AXIM has no adapter or automation for driving Telegram inline-keyboard callback_query buttons for this bot, and none should be built casually: consuming this source would require creating a brand-new Pocket Option account outside AXIM's existing broker-account model and funding it with a real deposit, which is a real-money authorization decision reserved for the user, not an engineering gap to close silently. Precise blocker: (1) no callback-button-driving adapter exists, (2) even if built, using it requires new-account creation + real deposit that needs explicit user authorization first.",
       "last_validated_at": "2026-07-25",
       "last_validated_commit": "no code change - documented as unsupported from existing message history, no button/deposit interaction performed",
-      "regression_fixtures": []
+      "regression_fixtures": [],
+      "parser_readiness": "BLOCKED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "PROFILED",
+      "graduation_stage_note": "button-driven interactive bot gated behind new-account registration + real deposit; sampled and classified, no adapter exists, real-money authorization would be required even if one were built"
     },
     {
       "axim_channel_id": 372,
@@ -527,11 +587,14 @@
       "ambiguous": 0,
       "edits_handled": "n/a - no edits observed in history",
       "cancellations_handled": "n/a - no cancellations observed in history",
-      "readiness": "ADAPTER_REQUIRED",
       "remaining_blocker": "Real format: each session opens with a labeled block ('Pair: GBPUSD\\nExpiration: 2 minute\\nCandles: 30 seconds') followed by free-text market commentary; individual trades are bare direction-only posts ('\\ud83d\\udeab PUT (Low!)' / '\\ud83d\\udeab CALL (High!)'); the platform echoes each trade's outcome as 'GBPUSD \\u2705'/'\\u274c' (pair name + check/cross, NOT a new announcement); mid-session pair switches are announced only as free text ('We change the pair to EURCAD'); sessions close with a free-text wrap-up including balance figures. CONFIRMED REAL BUG (evidence, not hypothetical) found via chronological replay of the actual 38 stored messages: (1) FALSE POSITIVE - message [51781], the session-2 opening narrative ('...The pair is in a clear downtrend...Our priority is to look for sell opportunities in line with the trend...'), was parsed as a complete standalone signal (AUD/CAD SELL, 2 Minute, is_multi_message=False) purely because parsers.signal_parser.parse_signal's direction search (`re.search(r'\\\\bBUY\\\\b'/'\\\\bSELL\\\\b'...)`) scans the ENTIRE message text unanchored once a labeled 'Pair:' field is found, so the incidental English word 'sell' inside a descriptive sentence was read as a trade instruction - this is a real, general false-positive risk in the shared parser (not unique to this provider), but was NOT patched this pass because parse_signal is a shared component used by all 14 already-VERIFIED providers and a same-day, well-tested fix could not be produced without re-running full smoke revalidation against every verified provider; flagged here as a precise, scoped follow-up rather than rushed. (2) MISSED SIGNALS - because this channel's own asset/expiry announcement block is never recognized as an announcement (no adapter for it) and 'GBPUSD \\u2705'/'\\u274c' result-echoes are misread as fresh bare-asset announcements (harmless only by coincidence, since they happen to repeat the currently-correct pair name), the assembler's normal 300-second pending-signal timeout is repeatedly exceeded during this provider's real 7-12 minute gaps between trades, silently dropping at least 6 of the 15 real trade signals in this history (e.g. [50851], [51095], [51788], [51834], [51918], [51960], [52062]). (3) 'We change the pair to X' mid-session pair switches are never recognized at all, so the carried asset is never correctly updated by that message (only accidentally corrected later by the next result-echo, if the assembly window hasn't already expired). Fixing this provider properly requires real new adapter work - not a one-line patch: recognizing this provider's specific announcement/result-echo/pair-change vocabulary, and giving it a session-scoped carried-asset lifetime instead of the short per-signal assembly timeout. Channel is disabled, never onboarded, no Fund/broker assignment - zero live risk today, so this was deliberately left as scoped future adapter work rather than a rushed shared-component change. Raw message IDs 50825-52092 preserved in channel_messages for future replay.",
       "last_validated_at": "2026-07-25",
       "last_validated_commit": null,
-      "regression_fixtures": []
+      "regression_fixtures": [],
+      "parser_readiness": "BLOCKED",
+      "operational_status": "NOT_ASSIGNED",
+      "graduation_stage": "REPLAY_VALIDATED",
+      "graduation_stage_note": "full replay performed against real history; confirmed false-positive + missed-signal gaps mean it has not cleared the PARSER_VERIFIED gate"
     }
   ]
 }
