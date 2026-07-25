@@ -631,7 +631,7 @@
       "cancellations_handled": "code path exists, not exercised by any real event for this provider yet",
       "remaining_blocker": "none for observation; needs an explicit Fund + Demo broker account assignment (user authorization required) before any Demo execution can begin; no Live authorization under any circumstance without explicit approval",
       "last_validated_at": "2026-07-25",
-      "last_validated_commit": "pending (fix committed same session, see git log for exact hash)",
+      "last_validated_commit": "a22960584434d68d5fd30358f248d3ac0a49eb4a",
       "regression_fixtures": [
         "tests/fixtures/provider_corpus.py: payday_bot_bare_stock_ticker_without_rule_is_not_parsed",
         "tests/test_signal_parser.py: ApplySignalRulesTests.test_payday_bare_stock_ticker_rule_fixes_the_gap"
