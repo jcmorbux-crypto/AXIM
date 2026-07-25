@@ -306,5 +306,31 @@ class HandleEditTests(unittest.TestCase):
         self.assertEqual(entry["asset"], "GBP/JPY")
 
 
+class NTradeEmojiDecoratedAnnouncementRegressionTests(unittest.TestCase):
+    """Real captured NTrade Private Trading Group (channel_id 207 in
+    production) messages, found during the 2026-07-24 historical replay-
+    validation pass. NTrade decorates its bare-asset announcement with a
+    leading/trailing emoji ("⚡️AUDCAD OTC", "AUDCAD❌") - before the fix,
+    _asset_only's anchored pair regex rejected these outright, so this
+    provider's real two-step signals never assembled at all despite the
+    completing direction message being sent correctly moments later."""
+
+    def test_leading_emoji_decorated_announcement_still_assembles(self):
+        asm = sa.SignalAssembler()
+        announce = asm.process_message(207, 1, "⚡️AUDCAD OTC", now=0)
+        self.assertEqual(announce["action"], "announced")
+        self.assertEqual(announce["asset"], "AUD/CAD")
+        entry = asm.process_message(207, 2, "⬆️ CALL (BUY) for 3 minutes", now=8)
+        self.assertEqual(entry["action"], "signal_ready")
+        self.assertEqual(entry["asset"], "AUD/CAD")
+        self.assertEqual(entry["direction"], "BUY")
+
+    def test_trailing_emoji_decorated_announcement_still_assembles(self):
+        asm = sa.SignalAssembler()
+        announce = asm.process_message(207, 1, "AUDCAD❌", now=0)
+        self.assertEqual(announce["action"], "announced")
+        self.assertEqual(announce["asset"], "AUD/CAD")
+
+
 if __name__ == "__main__":
     unittest.main()

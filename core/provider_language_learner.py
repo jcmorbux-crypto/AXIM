@@ -402,7 +402,19 @@ def _asset_only(text):
     stripped = text.strip()
     if len(stripped) > 40:
         return None
-    pair = _resolve_pair(re.sub(r"\bOTC\b", "", stripped, flags=re.IGNORECASE).strip())
+    core = re.sub(r"\bOTC\b", "", stripped, flags=re.IGNORECASE).strip()
+    # Real providers (confirmed live, found during 2026-07-24 historical
+    # replay validation of NTrade's actual message history) decorate a
+    # bare asset announcement with a leading/trailing emoji or symbol -
+    # "⚡️AUDCAD OTC", "AUDCAD❌", "❌ AUDCAD OTC". _resolve_pair's own
+    # regexes are anchored (^...$), so even one stray decoration
+    # character made the whole announcement invisible to this function -
+    # a real, live, currently-missed signal, not a hypothetical edge
+    # case. Stripping leading/trailing non-letter characters (emoji,
+    # symbols, zero-width spaces) mirrors the OTC-keyword removal just
+    # above, generalized to any decoration rather than one specific word.
+    core = re.sub(r"^[^A-Za-z]+|[^A-Za-z]+$", "", core)
+    pair = _resolve_pair(core)
     if not pair:
         return None
     if _LABELED_DIRECTION_RE.search(stripped):

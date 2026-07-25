@@ -76,6 +76,24 @@ class CompactPatternTests(unittest.TestCase):
     def test_asset_only_rejects_a_line_with_a_direction_word(self):
         self.assertIsNone(learner._asset_only("EUR/USD BUY"))
 
+    def test_asset_only_strips_a_leading_decoration_emoji(self):
+        # Real NTrade message shape (2026-07-24 historical replay
+        # validation finding) - a leading "hot pick" emoji made the
+        # anchored pair regex fail entirely, silently missing a real
+        # bare-asset announcement.
+        self.assertEqual(learner._asset_only("⚡️AUDCAD OTC"), "AUD/CAD")
+
+    def test_asset_only_strips_a_trailing_decoration_emoji(self):
+        self.assertEqual(learner._asset_only("AUDCAD❌"), "AUD/CAD")
+
+    def test_asset_only_strips_a_leading_emoji_with_a_space(self):
+        self.assertEqual(learner._asset_only("❌ AUDCAD OTC"), "AUD/CAD")
+
+    def test_asset_only_still_rejects_a_company_name_not_a_currency_pair(self):
+        # A genuinely unsupported asset class (stocks), not a decoration
+        # issue - must not resolve to a bogus pair.
+        self.assertIsNone(learner._asset_only("Tesla OTC"))
+
     def test_direction_only_matches_ntrade_second_message_shape(self):
         info = learner._direction_only("BUY 5 minutes")
         self.assertEqual(info["direction"], "BUY")
