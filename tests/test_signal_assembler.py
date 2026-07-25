@@ -305,6 +305,30 @@ class HandleEditTests(unittest.TestCase):
         self.assertEqual(entry["action"], "signal_ready")
         self.assertEqual(entry["asset"], "GBP/JPY")
 
+    def test_real_ntrade_announcement_edited_to_a_different_real_asset_corrects_it(self):
+        # Real captured NTrade (channel 207) vocabulary - a provider
+        # fixing a typo'd pair before the entry message arrives.
+        asm = sa.SignalAssembler()
+        asm.process_message(207, 100, "AUDCAD OTC", now=0)
+        result = asm.handle_edit(207, 100, "EURJPY OTC", now=3)
+        self.assertEqual(result["action"], "updated")
+        self.assertEqual(result["old_asset"], "AUD/CAD")
+        self.assertEqual(result["new_asset"], "EUR/JPY")
+        entry = asm.process_message(207, 101, "⬆️  CALL (BUY) for 1 minutes", now=8)
+        self.assertEqual(entry["action"], "signal_ready")
+        self.assertEqual(entry["asset"], "EUR/JPY")
+
+    def test_real_ntrade_announcement_edited_to_pure_noise_cancels_it(self):
+        # Real captured NTrade noise ("\U0001F525\U0001F525\U0001F525")
+        # with no recognizable asset at all - the provider pulling a
+        # signal by replacing it with decoration/nothing.
+        asm = sa.SignalAssembler()
+        asm.process_message(207, 100, "⚡️AUDCAD OTC", now=0)
+        result = asm.handle_edit(207, 100, "\U0001F525\U0001F525\U0001F525", now=3)
+        self.assertEqual(result["action"], "cancelled")
+        entry = asm.process_message(207, 101, "⬇️ PUT (SELL) for 1 minutes", now=8)
+        self.assertEqual(entry["action"], "no_signal")
+
 
 class NTradeEmojiDecoratedAnnouncementRegressionTests(unittest.TestCase):
     """Real captured NTrade Private Trading Group (channel_id 207 in
