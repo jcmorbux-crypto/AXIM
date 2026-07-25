@@ -365,7 +365,7 @@
       "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation. Reviewed a 2000-message sample of 2068 total.",
       "last_validated_at": "2026-07-24",
-      "last_validated_commit": "pending",
+      "last_validated_commit": "4a33fe2",
       "regression_fixtures": ["tests/fixtures/provider_corpus.py: pocket5m_hyphenated_otc_with_cnh"]
     },
     {
