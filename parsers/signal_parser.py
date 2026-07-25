@@ -52,17 +52,22 @@ def _normalize(text):
     return t.strip()
 
 
-# ISO 4217 3-letter currency codes. Used to validate both halves of a
-# concatenated asset pair (e.g. "NZDJPY") before accepting it as an asset -
-# without this, a plain 6-letter English word standalone in message
-# boilerplate (e.g. "SIGNAL" -> "SIG"+"NAL") would false-positive-match as
-# a fake asset and reach the browser as a garbage search term. Real bug hit
-# live in production: a Go+ message reading "...Signal: BUY" parsed as
-# asset "SIG/NAL" and the platform correctly rejected it as not found.
+# ISO 4217 3-letter currency codes, plus CNH (Offshore Chinese Yuan - not
+# a formal ISO 4217 code, but a real, distinct, commonly OTC-traded FX
+# designation confirmed live: Pocket 5M Trader's real "USDCNH-OTC"
+# signals were silently rejected before this - CNY alone wasn't enough,
+# CNH is a genuinely different currency). Used to validate both halves of
+# a concatenated asset pair (e.g. "NZDJPY") before accepting it as an
+# asset - without this, a plain 6-letter English word standalone in
+# message boilerplate (e.g. "SIGNAL" -> "SIG"+"NAL") would false-
+# positive-match as a fake asset and reach the browser as a garbage
+# search term. Real bug hit live in production: a Go+ message reading
+# "...Signal: BUY" parsed as asset "SIG/NAL" and the platform correctly
+# rejected it as not found.
 _CURRENCY_CODES = frozenset({
     "AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN",
     "BAM", "BBD", "BDT", "BGN", "BHD", "BIF", "BMD", "BND", "BOB", "BRL",
-    "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHF", "CLP", "CNY",
+    "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHF", "CLP", "CNH", "CNY",
     "COP", "CRC", "CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD", "EGP",
     "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS", "GIP", "GMD",
     "GNF", "GTQ", "GYD", "HKD", "HNL", "HTG", "HUF", "IDR", "ILS", "INR",
@@ -168,9 +173,13 @@ def parse_signal(message, carried_asset=None):
         # CAD/CHF OTC
         # Stock: Intel OTC
         # NZDJPY OTC (concatenated pair, no slash - normalized to NZD/JPY OTC)
+        # USDCNH-OTC (hyphen, no space, before "OTC" - confirmed live:
+        # Pocket 5M Trader always formats it this way; [\s\-]* accepts
+        # either separator instead of only whitespace, so the OTC suffix
+        # isn't silently dropped from the asset name).
         stock_match = re.search(r"\bSTOCK:\s*([A-Z0-9 ]+?\s+OTC)\b", text)
-        slash_match = _find_valid_pair(r"\b([A-Z]{3})\s*/\s*([A-Z]{3})\b(\s*OTC)?", text)
-        concat_match = _find_valid_pair(r"\b([A-Z]{3})([A-Z]{3})\b(\s*OTC)?", text)
+        slash_match = _find_valid_pair(r"\b([A-Z]{3})\s*/\s*([A-Z]{3})\b([\s\-]*OTC)?", text)
+        concat_match = _find_valid_pair(r"\b([A-Z]{3})([A-Z]{3})\b([\s\-]*OTC)?", text)
 
         if stock_match:
             signal["asset"] = stock_match.group(1).title().replace("Otc", "OTC")

@@ -93,4 +93,15 @@ PRODUCTION_PARSER_CORPUS = [
     ("mt_session_report_must_not_become_a_signal",
      "SESSION REPORT\n\nSunday, 12 July 2026\n\nResults:\nAccuracy: 93.00%\nWins: 14\nLosses: 1\n\nTrades:\nNight Session\n00:05 - AUD/JPY - Buy\n00:20 - EUR/USD - Sell",
      None),
+
+    # ---- Pocket 5M Trader-style signal - hyphen-attached OTC suffix
+    # with no space ("USDCNH-OTC"), and CNH (Offshore Chinese Yuan) as a
+    # currency code. Real gap found and fixed 2026-07-24 (historical
+    # replay validation): CNH was missing from the known-currency-code
+    # allowlist entirely (rejecting the whole pair), and separately the
+    # OTC-suffix regex only accepted whitespace before "OTC", silently
+    # dropping the suffix for this provider's hyphenated format ----
+    ("pocket5m_hyphenated_otc_with_cnh",
+     "USDCNH-OTC\nEntry 09:05\n5 Minutes\nCall UP",
+     {"asset": "USD/CNH OTC", "direction": "BUY", "expiry": "5 Minute"}),
 ]
