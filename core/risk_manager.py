@@ -440,17 +440,30 @@ def diagnose_settings(effective):
     return findings
 
 
-def evaluate_all(asset, direction, expiry, amount, exclude_id=None):
+def evaluate_all(asset, direction, expiry, amount, exclude_id=None, broker_account_id=None, channel_id=None):
+    """Convenience bundle of every check trade_coordinator.py's
+    _run_preflight_checks also runs individually (that stage-timed path
+    is what real signals actually go through - this exists as one
+    simple, well-tested entry point for anything else that needs the
+    full check set, e.g. a manual test signal). broker_account_id/
+    channel_id (2026-07-25 Execution Reliability directive: the
+    permanent per-broker-account safety hierarchy) are threaded through
+    to every check that needs them, so a caller here gets the exact same
+    per-account isolation and per-channel duplicate scoping real signals
+    get - not a stale, unscoped shortcut a future caller could
+    accidentally rely on instead of the real preflight path."""
     checks = [
+        lambda: check_not_stopped(broker_account_id),
+        lambda: check_global_daily_loss(),
         lambda: check_demo_only(),
-        lambda: check_duplicate_signal(asset, direction, expiry, exclude_id=exclude_id),
+        lambda: check_duplicate_signal(asset, direction, expiry, exclude_id=exclude_id, channel_id=channel_id),
         lambda: check_max_trade_amount(amount),
-        lambda: check_max_trades_per_hour(),
-        lambda: check_max_trades_per_day(),
-        lambda: check_max_consecutive_losses(),
-        lambda: check_cooldown_after_loss(),
-        lambda: check_max_daily_loss(),
-        lambda: check_daily_profit_target(),
+        lambda: check_max_trades_per_hour(broker_account_id),
+        lambda: check_max_trades_per_day(broker_account_id),
+        lambda: check_max_consecutive_losses(broker_account_id),
+        lambda: check_cooldown_after_loss(broker_account_id),
+        lambda: check_max_daily_loss(broker_account_id),
+        lambda: check_daily_profit_target(broker_account_id),
     ]
     for check in checks:
         check()
