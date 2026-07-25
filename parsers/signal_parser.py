@@ -283,6 +283,20 @@ def parse_signal(message, carried_asset=None):
         else:
             signal["expiry"] = "Unknown"
 
+    # Entry timing (2026-07-25 Execution Reliability directive, gap queue
+    # item 2) - captures an explicitly labeled entry time (confirmed
+    # real: Martin Trader's "Entry: 09:00" field) as a new, optional
+    # field. Parsing only - deliberately does NOT change any execution
+    # behavior: whether AXIM should wait for this time, reject a signal
+    # whose entry time has already passed, or something else is a
+    # product decision, not a parsing question (see
+    # docs/opt_signals_gap_queue.md item 2). Every existing caller
+    # ignores this key entirely, so nothing downstream changes until
+    # that decision is made and a real consumer is built.
+    entry_time_match = re.search(r"\bEntry\s*:\s*(\d{1,2}:\d{2})\b", message, re.IGNORECASE)
+    if entry_time_match:
+        signal["entry_time"] = entry_time_match.group(1)
+
     signal["raw_message"] = message
 
     return signal

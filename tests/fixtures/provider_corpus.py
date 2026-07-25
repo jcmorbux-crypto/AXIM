@@ -143,10 +143,12 @@ PRODUCTION_PARSER_CORPUS = [
      None),
 
     # ---- Martin Trader-style full labeled signal - a real, complete
-    # entry, correctly parsed ----
+    # entry, correctly parsed. entry_time is captured (2026-07-25,
+    # Execution Reliability directive) but not yet acted on by any
+    # execution path - see docs/opt_signals_gap_queue.md item 2. ----
     ("mt_signal_complete",
      "SIGNAL\n\nAUD/JPY OTC\nTimeframe: M5\nExpiration: 5 minutes\nEntry: 09:00\nDirection: SELL\n\nMartingale:\n1 09:05\n2 09:10\n3 09:15",
-     {"asset": "AUD/JPY OTC", "direction": "SELL", "expiry": "5 Minute"}),
+     {"asset": "AUD/JPY OTC", "direction": "SELL", "expiry": "5 Minute", "entry_time": "09:00"}),
 
     # ---- Martin Trader-style daily session report - real gap found and
     # fixed 2026-07-24 (historical replay validation): a summary listing
