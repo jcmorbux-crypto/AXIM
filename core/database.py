@@ -1851,16 +1851,29 @@ def append_screenshot_path(trade_id, path):
 
 
 @timed("database")
-def find_recent_duplicate(asset, direction, expiry, window_seconds, exclude_id=None):
+def find_recent_duplicate(asset, direction, expiry, window_seconds, exclude_id=None, channel_id=None):
+    """Scoped to the SAME channel_id (using SQL IS, not =, so two rows
+    that both have channel_id NULL - e.g. manual test trades - still
+    correctly match each other rather than silently never matching).
+
+    Real gap found and fixed 2026-07-25 (Execution Reliability
+    directive): before this, the query had no channel scoping at all,
+    so two DIFFERENT, independently legitimate providers (assigned to
+    different Funds/broker accounts) sending the same asset+direction+
+    expiry within the window would have the second one wrongly rejected
+    as a "duplicate" of the first - conflating "overlapping provider
+    signals" (must both execute) with "duplicate Telegram delivery"
+    (must only execute once), two explicitly distinct scenarios."""
     cutoff = (datetime.now() - timedelta(seconds=window_seconds)).isoformat()
     conn = get_connection()
     row = conn.execute("""
         SELECT id FROM signals
         WHERE asset = ? AND direction = ? AND timeframe = ? AND received_at >= ?
           AND (? IS NULL OR id != ?)
+          AND channel_id IS ?
         ORDER BY received_at DESC
         LIMIT 1
-    """, (asset, direction, expiry, cutoff, exclude_id, exclude_id)).fetchone()
+    """, (asset, direction, expiry, cutoff, exclude_id, exclude_id, channel_id)).fetchone()
     conn.close()
     return row["id"] if row else None
 

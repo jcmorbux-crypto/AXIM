@@ -25,10 +25,10 @@ class RiskManagerTests(unittest.TestCase):
         self._tmp_dir.cleanup()
 
     def _insert_signal(self, asset="EUR/USD OTC", direction="BUY", expiry="1 Minute",
-                        result=None, closed_at=None, profit_loss=None, broker_account_id=None):
+                        result=None, closed_at=None, profit_loss=None, broker_account_id=None, channel_id=None):
         trade_id = database.record_signal_received(
             {"asset": asset, "direction": direction, "expiry": expiry, "raw_message": "test"},
-            broker_account_id=broker_account_id,
+            broker_account_id=broker_account_id, channel_id=channel_id,
         )
         if result:
             database.update_trade_status(
@@ -61,6 +61,29 @@ class RiskManagerTests(unittest.TestCase):
     def test_duplicate_signal_different_direction_not_flagged(self):
         self._insert_signal(direction="BUY")
         risk_manager.check_duplicate_signal("EUR/USD OTC", "SELL", "1 Minute")
+
+    def test_duplicate_signal_from_a_different_channel_is_not_flagged(self):
+        # Real gap found and fixed 2026-07-25 (Execution Reliability
+        # directive): "overlapping provider signals" - two independent,
+        # legitimately different providers sending the same asset/
+        # direction/expiry within the window must BOTH execute, not have
+        # the second one wrongly rejected as a duplicate of the first.
+        self._insert_signal(channel_id=1)
+        risk_manager.check_duplicate_signal("EUR/USD OTC", "BUY", "1 Minute", channel_id=2)
+
+    def test_duplicate_signal_from_the_same_channel_is_still_flagged(self):
+        self._insert_signal(channel_id=1)
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_duplicate_signal("EUR/USD OTC", "BUY", "1 Minute", channel_id=1)
+        self.assertEqual(ctx.exception.rule, "duplicate_signal")
+
+    def test_duplicate_signal_with_no_channel_still_matches_other_no_channel_signals(self):
+        # Manual/non-Telegram-sourced signals (channel_id=None) must still
+        # protect against duplicating each other - SQL IS, not =, so two
+        # NULLs correctly match instead of silently never matching.
+        self._insert_signal(channel_id=None)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_duplicate_signal("EUR/USD OTC", "BUY", "1 Minute", channel_id=None)
 
     def test_max_trade_amount_over_limit(self):
         with self.assertRaises(risk_manager.RiskViolation) as ctx:

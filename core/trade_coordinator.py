@@ -68,7 +68,7 @@ class TradeCoordinator:
             trade_id, stage, status, elapsed, reason,
         )
 
-    def _run_preflight_checks(self, trade_id, amount, session_id, asset, direction, expiry, sent_at, timeline, broker_account_id=None):
+    def _run_preflight_checks(self, trade_id, amount, session_id, asset, direction, expiry, sent_at, timeline, broker_account_id=None, channel_id=None):
         """The Validation/Risk Manager/Session limits/Duplicate Detection
         stages, extracted verbatim from handle_signal so they can run via
         asyncio.to_thread instead of directly on the event loop thread -
@@ -136,7 +136,7 @@ class TradeCoordinator:
         # Stage: Duplicate Detection
         stage_t0 = time.monotonic()
         try:
-            risk_manager.check_duplicate_signal(asset, direction, expiry, exclude_id=trade_id)
+            risk_manager.check_duplicate_signal(asset, direction, expiry, exclude_id=trade_id, channel_id=channel_id)
         except risk_manager.RiskViolation as violation:
             timeline.persist(database)
             return "rejected", self._reject(trade_id, violation, time.monotonic() - stage_t0)
@@ -235,7 +235,7 @@ class TradeCoordinator:
             try:
                 outcome, payload = await asyncio.to_thread(
                     self._run_preflight_checks, trade_id, amount, session_id, asset, direction, expiry,
-                    sent_at, timeline, broker_account_id,
+                    sent_at, timeline, broker_account_id, channel_id,
                 )
                 if outcome == "stale":
                     await self.event_bus.publish("signal.ignored", {"trade_id": trade_id, "reason": "stale_signal"})

@@ -260,16 +260,16 @@ def check_daily_profit_target():
         )
 
 
-def check_duplicate_signal(asset, direction, expiry, exclude_id=None):
+def check_duplicate_signal(asset, direction, expiry, exclude_id=None, channel_id=None):
     window = _setting("duplicate_signal_window_seconds", DUPLICATE_SIGNAL_WINDOW_SECONDS)
     duplicate_id = database.find_recent_duplicate(
-        asset, direction, expiry, window, exclude_id=exclude_id,
+        asset, direction, expiry, window, exclude_id=exclude_id, channel_id=channel_id,
     )
     if duplicate_id is not None:
         raise RiskViolation(
             "duplicate_signal",
             f"identical signal (asset={asset}, direction={direction}, expiry={expiry}) "
-            f"already recorded as trade id {duplicate_id} within {window}s",
+            f"already recorded as trade id {duplicate_id} within {window}s on the same source",
         )
 
 
