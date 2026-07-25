@@ -332,7 +332,7 @@
       "readiness": "OBSERVATION_REQUIRED",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation.",
       "last_validated_at": "2026-07-24",
-      "last_validated_commit": "pending - see next commit",
+      "last_validated_commit": "6e61944",
       "regression_fixtures": ["tests/fixtures/provider_corpus.py: mt_signal_complete, mt_session_report_must_not_become_a_signal"]
     },
     {
