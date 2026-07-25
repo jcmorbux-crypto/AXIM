@@ -3,7 +3,7 @@
   "folder_name": "OPT SIGNALS",
   "last_telegram_sync": "2026-07-24T21:43:41",
   "last_telegram_sync_count": 16,
-  "notes": "AXIM Phase Gate 2026-07-25: the OPT SIGNALS provider audit is COMPLETE and now the frozen baseline, not an ongoing activity. Do not restart, repeat, or expand this provider audit. Only revalidate a provider when a parser, normalization, assembler, replay-engine, or routing change directly affects it (see docs/opt_signals_gap_queue.md for the smart-revalidation trigger list). parser_readiness (VERIFIED/PARTIALLY_VERIFIED/BLOCKED) measures ONLY whether AXIM can correctly interpret this provider's signals through the production pipeline - it must never be reduced by operational configuration. operational_status (LIVE/DEMO/OBSERVATION_ONLY/DISABLED/NOT_ASSIGNED) measures ONLY whether AXIM should currently execute trades from this provider. graduation_stage tracks lifecycle position: DISCOVERED -> PROFILED -> REPLAY_VALIDATED -> PARSER_VERIFIED -> OBSERVATION_MODE -> DEMO_VERIFIED -> LIVE_VERIFIED. See docs/opt_signals_capability_matrix.md for the cross-provider capability baseline and docs/opt_signals_engineering_dashboard.md for the consolidated summary. Regression fixtures (tests/fixtures/provider_corpus.py) are permanent and must never be deleted.",
+  "notes": "AXIM Phase Gate 2026-07-25: the OPT SIGNALS provider audit is COMPLETE and now the frozen baseline, not an ongoing activity. Do not restart, repeat, or expand this provider audit. Only revalidate a provider when a parser, normalization, assembler, replay-engine, or routing change directly affects it (see docs/opt_signals_gap_queue.md for the smart-revalidation trigger list). parser_readiness (VERIFIED/PARTIALLY_VERIFIED/BLOCKED) measures ONLY whether AXIM can correctly interpret this provider's signals through the production pipeline - it must never be reduced by operational configuration. operational_status (LIVE/DEMO/OBSERVATION_ONLY/DISABLED/NOT_ASSIGNED) measures ONLY whether AXIM should currently execute trades from this provider. graduation_stage tracks lifecycle position: DISCOVERED -> PROFILED -> REPLAY_VALIDATED -> PARSER_VERIFIED -> OBSERVATION_MODE -> DEMO_VERIFIED -> LIVE_VERIFIED. See docs/opt_signals_capability_matrix.md for the cross-provider capability baseline and docs/opt_signals_engineering_dashboard.md for the consolidated summary. Regression fixtures (tests/fixtures/provider_corpus.py) are permanent and must never be deleted. | 2026-07-25: PayDay Signals PO (channel 382) onboarded - discovered via real OPT SIGNALS folder sync, historical replay validated (39 messages), bare stock-ticker parser gap found and fixed via signal_rule, set to OBSERVATION_MODE pending explicit Fund/broker assignment.",
   "sources": [
     {
       "axim_channel_id": 162,
@@ -111,7 +111,9 @@
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation (parser already proven correct via full-corpus replay)",
       "last_validated_at": "2026-07-25",
       "last_validated_commit": "315798e",
-      "regression_fixtures": ["tests/fixtures/provider_corpus.py: daniel_analysis_commentary_mentioning_high_is_not_a_signal"],
+      "regression_fixtures": [
+        "tests/fixtures/provider_corpus.py: daniel_analysis_commentary_mentioning_high_is_not_a_signal"
+      ],
       "parser_readiness": "VERIFIED",
       "operational_status": "DISABLED",
       "graduation_stage": "PARSER_VERIFIED",
@@ -592,11 +594,52 @@
       "remaining_blocker": "RESOLVED 2026-07-25. Real format: each session opens with a labeled block ('Pair: GBPUSD\\nExpiration: 2 minute\\nCandles: 30 seconds'); individual trades are bare direction-only posts ('\\ud83d\\udeab PUT (Low!)' / '\\ud83d\\udeab CALL (High!)'); the platform echoes each trade's outcome as 'GBPUSD \\u2705'/'\\u274c'; mid-session pair switches are announced as free text ('We change the pair to EURCAD'); sessions close with a free-text wrap-up including a balance-change figure. Fixed entirely via 3 channel-scoped signal_rules (data, not shared code - zero risk to any other provider): (1) 'Pair:\\\\s*([A-Z]{3,6})' -> 'Preparing trading asset \\\\1' makes the session-opening announcement recognized by the EXISTING generic parse_asset_announcement mechanism; (2) 'We change the pair to\\\\s*([A-Z]{3,6})' -> 'Preparing trading asset \\\\1' does the same for mid-session pair switches; (3) a rule neutralizing this provider's exact closing-summary signature (mentions 'balance increased from') to an empty message, since once a valid carried asset exists, the FIRST closing-summary message (2026-07-24) was found to introduce a NEW false positive - the phrase 'wrapping up' contains the ordinary word 'up', misread as a directional keyword now that a real carried-asset context exists (previously masked entirely, since no valid announcement had ever been recognized before this fix). Combined with provider_profile.assembly_timeout_seconds=1200 (vs the 300s default), this correctly captures all 15 real trade signals with zero false positives and zero false merges across the complete real 38-message history - verified via the corrected replay harness (see the entry_time_extraction/harness-bug note below) directly against production. A SEPARATE, real bug was found and fixed while validating this: the scratchpad replay harness (not part of this repo) never actually read a channel's configured assembly_timeout_seconds at all, always silently using the hardcoded 300s default - checked, and no OTHER channel's provider_profile has a non-default value, so this did not affect any other provider's prior VERIFIED conclusion.",
       "last_validated_at": "2026-07-25",
       "last_validated_commit": "no code change - 3 signal_rules + 1 provider_profile config value, applied directly (data, not code, per this repo's established pattern for per-channel fixes e.g. TYLER VIP/PRO CLUB's default_expiry)",
-      "regression_fixtures": ["tests/fixtures/provider_corpus.py: narrative_announcement_with_incidental_direction_word_is_not_a_signal (the shared parser fix this provider also benefits from)"],
+      "regression_fixtures": [
+        "tests/fixtures/provider_corpus.py: narrative_announcement_with_incidental_direction_word_is_not_a_signal (the shared parser fix this provider also benefits from)"
+      ],
       "parser_readiness": "VERIFIED",
       "operational_status": "NOT_ASSIGNED",
       "graduation_stage": "PARSER_VERIFIED",
       "graduation_stage_note": "provider_profile now exists (created 2026-07-25, trading_mode=observation by default) with the 3 signal_rules and extended timeout applied; channel itself still disabled/not onboarded - needs enabling + Fund/broker assignment to advance to OBSERVATION_MODE"
+    },
+    {
+      "axim_channel_id": 382,
+      "title": "PayDay Signals PO",
+      "username": null,
+      "chat_id": "-1003873886177",
+      "kind": "channel",
+      "source_type": "passive",
+      "folder_membership": "in_folder",
+      "enabled": true,
+      "trading_mode": "observation",
+      "fund_assignment": "none",
+      "broker_account_assignment": "none",
+      "adapter_parser": "generic signal_assembler + parsers.signal_parser (bare stock-ticker gap fixed via channel-scoped signal_rule, id=4)",
+      "last_message_received": "2026-07-25 (live, first seen today - brand-new source, not yet in prior audit sweeps)",
+      "raw_messages_available": 39,
+      "classification": "passive_single_post_signal_provider",
+      "audit_status": "VERIFIED",
+      "historical_messages_reviewed": 39,
+      "real_signal_sequences_found": 19,
+      "correctly_assembled": true,
+      "correctly_normalized": true,
+      "false_positives": 0,
+      "false_merges": 0,
+      "rejected": 20,
+      "ambiguous": 0,
+      "edits_handled": "code path exists, not exercised by any real event for this provider yet",
+      "cancellations_handled": "code path exists, not exercised by any real event for this provider yet",
+      "remaining_blocker": "none for observation; needs an explicit Fund + Demo broker account assignment (user authorization required) before any Demo execution can begin; no Live authorization under any circumstance without explicit approval",
+      "last_validated_at": "2026-07-25",
+      "last_validated_commit": "pending (fix committed same session, see git log for exact hash)",
+      "regression_fixtures": [
+        "tests/fixtures/provider_corpus.py: payday_bot_bare_stock_ticker_without_rule_is_not_parsed",
+        "tests/test_signal_parser.py: ApplySignalRulesTests.test_payday_bare_stock_ticker_rule_fixes_the_gap"
+      ],
+      "parser_readiness": "VERIFIED",
+      "operational_status": "OBSERVATION_ONLY",
+      "graduation_stage": "OBSERVATION_MODE",
+      "graduation_stage_note": "enabled 2026-07-25, trading_mode=observation, no Fund/broker assigned - accumulating real observation evidence; stock-ticker asset-extraction false-negative found and fixed same day via channel-scoped signal_rule (~35% of this provider signal volume was silently dropping before the fix)"
     }
   ]
 }

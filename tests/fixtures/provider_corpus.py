@@ -190,4 +190,25 @@ PRODUCTION_PARSER_CORPUS = [
      "downtrend\n\nOur priority is to look for sell opportunities in line "
      "with the trend. Stay tuned for the signals",
      None),
+
+    # ---- PayDay Signals PO-style bare stock ticker - real gap found
+    # 2026-07-25 (onboarding/historical replay). Format: an emoji-labeled
+    # asset line with no recognized label word ("Curr"/"Pair"/"Stock"/
+    # etc.) and a 2-5 letter bare ticker (not a 6-letter concatenated
+    # forex pair, so concat_match doesn't catch it either) - confirmed
+    # live: GME-OTC/TSLA-OTC/AAPL-OTC/MARA-OTC/PFE-OTC/COIN-OTC signals
+    # all silently returned None (~35% of this provider's real signal
+    # volume). This corpus entry locks in the RAW shared-parser gap
+    # itself (no signal_rule applied) so nobody "fixes" it by accident
+    # without deliberately choosing to change the shared parser. The
+    # actual fix is a channel-scoped signal_rule (core/database.py
+    # signal_rules, channel_id=382) that rewrites the emoji-labeled line
+    # to "Stock: <TICKER> OTC" before parse_signal() sees it - see
+    # ApplySignalRulesTests.test_payday_bare_stock_ticker_rule_fixes_the_gap
+    # in tests/test_signal_parser.py for the end-to-end fix verification
+    # (kept separate from this file since a signal_rule is DB state, not
+    # something parse_signal() alone can be asked to apply). ----
+    ("payday_bot_bare_stock_ticker_without_rule_is_not_parsed",
+     "⚡️PayDay Bot \n\n\U0001F4B5 XOM-OTC\n\U0001F525 M1\n⏳ 09:15:00\n\U0001F53C BUY",
+     None),
 ]

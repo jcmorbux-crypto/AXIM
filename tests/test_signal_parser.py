@@ -240,6 +240,42 @@ class ApplySignalRulesTests(unittest.TestCase):
         # Should not raise, and the message passes through unmodified.
         self.assertEqual(apply_signal_rules("hello", rules), "hello")
 
+    def test_payday_bare_stock_ticker_rule_fixes_the_gap(self):
+        """The real fix for PayDay Signals PO (channel_id=382, onboarded
+        2026-07-25): parse_signal() alone can't recognize a bare 2-5
+        letter stock ticker with an emoji label (see
+        tests/fixtures/provider_corpus.py's
+        payday_bot_bare_stock_ticker_without_rule_is_not_parsed for that
+        raw gap) - the channel-scoped signal_rule rewrites it to a form
+        parse_signal() already understands, case-preserved, without
+        touching the 6-letter forex pairs this same provider also sends
+        (those already parse fine via concat_match and must stay
+        untouched by the {2,5} bound)."""
+        rules = [{
+            "find_pattern": r"\U0001F4B5\s*([A-Z]{2,5})-OTC",
+            "replace_with": r"Stock: \1 OTC",
+        }]
+        stock_signal = apply_signal_rules(
+            "⚡️PayDay Bot \n\n\U0001F4B5 XOM-OTC\n\U0001F525 M1\n⏳ 09:15:00\n\U0001F53C BUY",
+            rules,
+        )
+        result = parse_signal(stock_signal)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["asset"], "XOM OTC")
+        self.assertEqual(result["direction"], "BUY")
+        self.assertEqual(result["expiry"], "1 Minute")
+
+        # The same provider's forex-pair signals (6 letters) must be
+        # completely untouched by this rule and keep parsing as before.
+        forex_signal = apply_signal_rules(
+            "⚡️PayDay Bot \n\n\U0001F4B5 LBPUSD-OTC\n\U0001F525 M1\n⏳ 15:02:00\n\U0001F53D SELL",
+            rules,
+        )
+        forex_result = parse_signal(forex_signal)
+        self.assertIsNotNone(forex_result)
+        self.assertEqual(forex_result["asset"], "LBP/USD OTC")
+        self.assertEqual(forex_result["direction"], "SELL")
+
 
 class ApplyExpiryFallbackTests(unittest.TestCase):
     def test_fills_unknown_expiry_from_configured_default(self):
