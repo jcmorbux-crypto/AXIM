@@ -35,6 +35,19 @@ _SUMMARY_REPORT_RE = re.compile(
 )
 _WIN_LOSS_TALLY_RE = re.compile(r"\bWINS?\s*[:\-]\s*\d+\b.{0,60}\bLOSS(ES)?\s*[:\-]\s*\d+\b", re.IGNORECASE | re.DOTALL)
 
+# See the direction-extraction comment in parse_signal() below for why this
+# exists. 16 sits in the real gap between the longest legitimate
+# direction-bearing line observed across all 16 OPT SIGNALS providers (14
+# words - OTC Pro Trading Robot's heavily emoji-decorated "Summary: BUY
+# OPTION ... Expiration time: 3 MINUTES ... Opening price: X" entry
+# message) and the shortest confirmed real narrative-prose false positive
+# (18 words - see the shared parser false-positive comment below). A
+# tighter threshold (10) was tried first and broke that real OTC Pro
+# Trading Robot entry shape - caught by tests/test_signal_parser.py's
+# CarriedAssetTests/FlagEmojiNormalizationTests before it ever reached
+# production.
+_MAX_DIRECTION_LINE_WORDS = 16
+
 
 def _normalize(text):
     """Provider-agnostic decoration cleanup applied before any parsing -
@@ -107,8 +120,18 @@ def _find_valid_pair(pattern, text):
 # uppercasing and reconstructing with .title() (the old approach) silently
 # mismatches the platform's exact display text (e.g. "Gamestop Corp OTC" !=
 # "GameStop Corp OTC"), which is exact-text-matched by execution/pocket_dom.py.
+#
+# Whitespace around the colon is deliberately restricted to spaces/tabs,
+# not \s (which also matches newlines) - every real provider's labeled
+# field puts "Label: value" on one line. Real bug found live (2026-07-25):
+# with \s* on both sides, a label word ending its own line right before a
+# colon (e.g. a chart-education post's "...what the pattern indicates:\n")
+# let the regex's whitespace consume that trailing newline and read the
+# UNRELATED following line's text as the asset value - confirmed live on
+# TYLER VIP CLUB message [22513], a phantom signal from "indicates:"
+# leaking into "Sellers' interest is waning..." on the next line.
 _LABELED_ASSET_RE = re.compile(
-    r"\b(Curr\w*\s*pair|Curr\w*|Pair|Crypto\w*|Commodit\w*|Stock\w*|Index|Indic\w*)\s*:\s*([^\r\n]+)",
+    r"\b(Curr\w*\s*pair|Curr\w*|Pair|Crypto\w*|Commodit\w*|Stock\w*|Index|Indic\w*)[ \t]*:[ \t]*([^\r\n]+)",
     re.IGNORECASE,
 )
 _FOREX_LABEL_RE = re.compile(r"^(curr|pair)", re.IGNORECASE)
@@ -203,13 +226,31 @@ def parse_signal(message, carried_asset=None):
     # BUY/SELL is incidental wording. HIGH/LOWER confirmed against a real
     # provider's live format (Daniel FX Trade: "GBP/CAD HIGH ⬆ 15 MIN" /
     # "GBP/CHF LOWER ⬇ 15 MIN") - not a guess.
-    directional_match = re.search(r"\b(UP|DOWN|CALL|PUT|HIGH|LOWER)\b", text)
+    #
+    # Scoped to short lines only (<= _MAX_DIRECTION_LINE_WORDS words), not
+    # the whole message: a labeled asset field can leave several sentences
+    # of free-text market commentary in the remainder, and an unscoped
+    # search would misread an incidental word like "sell" inside a
+    # sentence such as "look for sell opportunities in line with the
+    # trend" as a real trade instruction. Real bug found live (2026-07-25,
+    # replay validation): Trading Booster Elite Membership message
+    # [51781] parsed as a phantom AUD/CAD SELL signal purely from that
+    # kind of narrative sentence, not an actual entry instruction. Every
+    # real verified provider's direction indicator - a bare word, a short
+    # structured line, an emoji-prefixed line, or a "Direction: X" labeled
+    # field - fits comfortably within a short line; multi-sentence
+    # commentary never legitimately carries the trade instruction itself.
+    direction_text = "\n".join(
+        line for line in text.split("\n")
+        if 0 < len(line.split()) <= _MAX_DIRECTION_LINE_WORDS
+    )
+    directional_match = re.search(r"\b(UP|DOWN|CALL|PUT|HIGH|LOWER)\b", direction_text)
 
     if directional_match:
         signal["direction"] = "BUY" if directional_match.group(1) in ("UP", "CALL", "HIGH") else "SELL"
-    elif re.search(r"\bBUY\b", text):
+    elif re.search(r"\bBUY\b", direction_text):
         signal["direction"] = "BUY"
-    elif re.search(r"\bSELL\b", text):
+    elif re.search(r"\bSELL\b", direction_text):
         signal["direction"] = "SELL"
     else:
         return None
