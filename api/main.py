@@ -657,15 +657,20 @@ def get_settings(user=Depends(get_current_user)):
 
 
 @app.post("/api/settings/reset-consecutive-loss-lock")
-def reset_consecutive_loss_lock(user=Depends(require_admin)):
+def reset_consecutive_loss_lock(broker_account_id: int | None = None, user=Depends(require_admin)):
     """The explicit, logged, reversible recovery action for a hard
     consecutive-loss lock (2026-07-19 product-design directive) - see
     core/risk_manager.reset_consecutive_loss_lock's own docstring for
     why a lock that only clears via a future winning trade needs one at
-    all. Does not touch the configured limit or any other risk rule."""
-    reset_at = risk_manager.reset_consecutive_loss_lock(reset_by=user["email"])
-    logger.info("api: consecutive-loss lock reset by %s at %s", user["email"], reset_at)
-    return {"reset_at": reset_at}
+    all. Does not touch the configured limit or any other risk rule.
+
+    broker_account_id (2026-07-25 Execution Reliability directive: the
+    per-broker-account safety hierarchy) resets just that account's own
+    lock - omitted, it resets the legacy global/unscoped lock only."""
+    reset_at = risk_manager.reset_consecutive_loss_lock(reset_by=user["email"], broker_account_id=broker_account_id)
+    logger.info("api: consecutive-loss lock reset by %s at %s (broker_account_id=%s)",
+                user["email"], reset_at, broker_account_id)
+    return {"reset_at": reset_at, "broker_account_id": broker_account_id}
 
 
 @app.put("/api/settings")

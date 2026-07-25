@@ -104,18 +104,28 @@ class TradeCoordinator:
                 return "stale", {"status": "ignored", "trade_id": trade_id, "reason": "stale_signal", "age_seconds": age_seconds}
         self._log_stage(trade_id, "validation", "passed", time.monotonic() - stage_t0)
 
-        # Stage: Risk Manager
+        # Stage: Risk Manager - ordered per the permanent per-broker-
+        # account safety hierarchy (2026-07-25 Execution Reliability
+        # directive): Global Emergency Stop -> Global Safety (optional,
+        # off by default) -> Broker Account Safety (default tier - a
+        # problem on one account never pauses an unrelated one) ->
+        # [Fund/Provider tiers follow in the stages below].
+        # check_not_stopped itself checks the GLOBAL emergency_stop flag
+        # first, then this specific account's own, so it alone covers
+        # both the "Global Emergency Stop" and "Broker Account" halves of
+        # that one control.
         stage_t0 = time.monotonic()
         try:
             risk_manager.check_not_stopped(broker_account_id)
+            risk_manager.check_global_daily_loss()
             risk_manager.check_demo_only()
             risk_manager.check_max_trade_amount(amount)
             risk_manager.check_max_trades_per_hour(broker_account_id)
             risk_manager.check_max_trades_per_day(broker_account_id)
-            risk_manager.check_max_consecutive_losses()
-            risk_manager.check_cooldown_after_loss()
-            risk_manager.check_max_daily_loss()
-            risk_manager.check_daily_profit_target()
+            risk_manager.check_max_consecutive_losses(broker_account_id)
+            risk_manager.check_cooldown_after_loss(broker_account_id)
+            risk_manager.check_max_daily_loss(broker_account_id)
+            risk_manager.check_daily_profit_target(broker_account_id)
         except risk_manager.RiskViolation as violation:
             timeline.persist(database)
             return "rejected", self._reject(trade_id, violation, time.monotonic() - stage_t0)

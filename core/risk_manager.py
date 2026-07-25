@@ -126,24 +126,41 @@ def check_max_trades_per_day(broker_account_id=None):
         )
 
 
-def check_max_consecutive_losses():
+def _consecutive_loss_reset_key(broker_account_id):
+    """2026-07-25 Execution Reliability directive: per-broker-account
+    safety hierarchy - each account gets its own independent reset
+    marker, keyed by account, so recovering one account's lock can never
+    silently also clear (or leave untouched) a different account's real
+    streak. None keeps the legacy global/unscoped key, for callers with
+    no specific account routing."""
+    return "consecutive_loss_reset_at" if broker_account_id is None else f"consecutive_loss_reset_at:{broker_account_id}"
+
+
+def check_max_consecutive_losses(broker_account_id=None):
     """Pessimistic: every currently-open (placed, unresolved) trade is
     treated as a hypothetical loss extending the current streak - a burst
     of signals arriving within one expiry window would otherwise all read
     the same closed-only get_recent_results and could all pass this check
     before any of them resolve (execution/pocket_executor.py's
     track_outcome docstring: MAX_CONCURRENT_WORKERS bounds simultaneous
-    placements, not simultaneous open positions)."""
+    placements, not simultaneous open positions).
+
+    broker_account_id (2026-07-25 Execution Reliability directive: the
+    per-broker-account safety hierarchy) scopes this to just that
+    account - a losing streak on a different account must never lock
+    this one, matching check_max_trades_per_hour/_per_day's own
+    established per-account scoping. None keeps the legacy global/
+    unscoped behavior for the single-shared-connection path."""
     limit = _setting("max_consecutive_losses", MAX_CONSECUTIVE_LOSSES)
-    pending_count = database.count_pending_trades()
+    pending_count = database.count_pending_trades(broker_account_id=broker_account_id)
     if pending_count >= limit:
         raise RiskViolation(
             "max_consecutive_losses",
             f"{pending_count} trade(s) currently open - if they all lose, that alone reaches the limit of {limit} consecutive losses",
         )
     remaining = limit - pending_count
-    reset_at = database.get_setting("consecutive_loss_reset_at", default=None)
-    recent = database.get_recent_results(remaining, since=reset_at)
+    reset_at = database.get_setting(_consecutive_loss_reset_key(broker_account_id), default=None)
+    recent = database.get_recent_results(remaining, broker_account_id=broker_account_id, since=reset_at)
     if len(recent) == remaining and all(r == "loss" for r in recent):
         raise RiskViolation(
             "max_consecutive_losses",
@@ -152,7 +169,7 @@ def check_max_consecutive_losses():
         )
 
 
-def reset_consecutive_loss_lock(reset_by):
+def reset_consecutive_loss_lock(reset_by, broker_account_id=None):
     """The explicit, logged, reversible recovery action a hard
     consecutive-loss lock needs (2026-07-19 product-design directive): a
     lock that can ONLY clear via a future winning trade is unrecoverable
@@ -162,18 +179,29 @@ def reset_consecutive_loss_lock(reset_by):
     counting toward a NEW streak going forward. Distinct from silently
     raising max_consecutive_losses (which would also let a WORSE streak
     through) - this only affects the window boundary, the limit itself
-    is untouched."""
+    is untouched.
+
+    broker_account_id (2026-07-25 Execution Reliability directive: the
+    per-broker-account safety hierarchy) scopes the reset to just that
+    account's own lock - recovering one account never touches a
+    different account's real streak."""
     if not reset_by:
         raise ValueError("reset_consecutive_loss_lock requires reset_by - this is a real, attributable decision")
     reset_at = datetime.now().isoformat()
-    database.set_setting("consecutive_loss_reset_at", reset_at, changed_by=reset_by, source="consecutive_loss_lock_reset")
-    logger.warning("risk_manager: consecutive-loss lock reset by %s at %s", reset_by, reset_at)
+    database.set_setting(_consecutive_loss_reset_key(broker_account_id), reset_at,
+                          changed_by=reset_by, source="consecutive_loss_lock_reset")
+    logger.warning("risk_manager: consecutive-loss lock reset by %s at %s (broker_account_id=%s)",
+                    reset_by, reset_at, broker_account_id)
     return reset_at
 
 
-def check_cooldown_after_loss():
+def check_cooldown_after_loss(broker_account_id=None):
+    """broker_account_id (2026-07-25 Execution Reliability directive: the
+    per-broker-account safety hierarchy) scopes the cooldown to just that
+    account - a loss on a different account must never trigger a
+    cooldown here. None keeps the legacy global/unscoped behavior."""
     limit = _setting("cooldown_after_loss_seconds", COOLDOWN_AFTER_LOSS_SECONDS)
-    last_loss = database.get_last_loss_time()
+    last_loss = database.get_last_loss_time(broker_account_id=broker_account_id)
     if not last_loss:
         return
     elapsed = (datetime.now() - datetime.fromisoformat(last_loss)).total_seconds()
@@ -211,7 +239,7 @@ def check_minimum_payout(payout):
         )
 
 
-def check_max_daily_loss():
+def check_max_daily_loss(broker_account_id=None):
     """Drawdown circuit breaker - flagged as a genuine gap in
     docs/AXIM_LIVE_READINESS_REVIEW.md. check_max_consecutive_losses only
     catches an unbroken losing STREAK; it never trips on a steady bleed-out
@@ -223,16 +251,23 @@ def check_max_daily_loss():
 
     limit <= 0 disables the check (an operator's explicit choice, not a
     default - see settings.py's own comment on why the static default is a
-    real active threshold rather than 0)."""
+    real active threshold rather than 0).
+
+    broker_account_id (2026-07-25 Execution Reliability directive: the
+    per-broker-account safety hierarchy) scopes this to just that
+    account's own day - a bad day on a different account must never
+    pause this one. This is the "Broker Account Safety" tier check; see
+    check_global_daily_loss for the separate, optional "Global Safety"
+    tier counterpart."""
     limit = _setting("max_daily_loss", MAX_DAILY_LOSS)
     if limit <= 0:
         return
     midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    realized_pnl = database.get_realized_pnl_since(midnight)
+    realized_pnl = database.get_realized_pnl_since(midnight, broker_account_id=broker_account_id)
     # Pessimistic: every currently-open trade placed today is treated as
     # a worst-case loss of its full stake - same reasoning as
     # check_max_consecutive_losses above.
-    pending_stake = database.get_pending_stake_since(midnight)
+    pending_stake = database.get_pending_stake_since(midnight, broker_account_id=broker_account_id)
     effective_pnl = realized_pnl - pending_stake
     if effective_pnl <= -limit:
         raise RiskViolation(
@@ -242,17 +277,47 @@ def check_max_daily_loss():
         )
 
 
-def check_daily_profit_target():
+def check_global_daily_loss():
+    """The "Global Safety" tier counterpart of check_max_daily_loss's
+    per-account "Broker Account Safety" tier check (2026-07-25 Execution
+    Reliability directive: the permanent per-broker-account safety
+    hierarchy - Global Emergency Stop -> Broker Account limits -> Fund
+    limits -> Provider limits -> execution). Off by default (0) - an
+    operator's explicit, optional choice to ALSO cap realized P/L across
+    every broker account combined, independent of and in addition to each
+    account's own per-account limit. Deliberately a separate setting
+    (global_max_daily_loss) from max_daily_loss, so enabling one never
+    silently changes the meaning of the other."""
+    limit = _setting("global_max_daily_loss", 0)
+    if limit <= 0:
+        return
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    realized_pnl = database.get_realized_pnl_since(midnight)
+    pending_stake = database.get_pending_stake_since(midnight)
+    effective_pnl = realized_pnl - pending_stake
+    if effective_pnl <= -limit:
+        raise RiskViolation(
+            "global_max_daily_loss",
+            f"realized P/L today across all broker accounts is ${realized_pnl:.2f} with ${pending_stake:.2f} "
+            f"at risk in open trades - would be at or beyond -GLOBAL_MAX_DAILY_LOSS ${limit:.2f} if they all lose",
+        )
+
+
+def check_daily_profit_target(broker_account_id=None):
     """The upside mirror of check_max_daily_loss - stop trading for the
     day once a profit TARGET has been reached, not just a loss limit. Off
     by default (0): a target is inherently a discretionary choice (unlike
     a loss limit, there's no safety argument for a nonzero default), so
-    this only activates once the operator sets a real value via the UI."""
+    this only activates once the operator sets a real value via the UI.
+
+    broker_account_id (2026-07-25 Execution Reliability directive: the
+    per-broker-account safety hierarchy) scopes this to just that
+    account's own day, matching check_max_daily_loss."""
     target = _setting("daily_profit_target", 0)
     if target <= 0:
         return
     midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-    realized_pnl = database.get_realized_pnl_since(midnight)
+    realized_pnl = database.get_realized_pnl_since(midnight, broker_account_id=broker_account_id)
     if realized_pnl >= target:
         raise RiskViolation(
             "daily_profit_target",

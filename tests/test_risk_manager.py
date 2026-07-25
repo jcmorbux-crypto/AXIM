@@ -213,6 +213,42 @@ class RiskManagerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             risk_manager.reset_consecutive_loss_lock(reset_by=None)
 
+    # -- Per-broker-account safety hierarchy (2026-07-25 Execution
+    # Reliability directive) - a losing streak, cooldown, or bad day on
+    # one broker account must never pause a different, unrelated one.
+    # Same established pattern as test_max_trades_per_hour_is_scoped_
+    # per_broker_account above. ---------------------------------------
+
+    def test_max_consecutive_losses_is_scoped_per_broker_account(self):
+        account_a = database.create_broker_account("Account A")
+        account_b = database.create_broker_account("Account B")
+        for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
+            self._insert_signal(result="loss", broker_account_id=account_a)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_consecutive_losses(account_a)
+        risk_manager.check_max_consecutive_losses(account_b)  # must not raise - unrelated account
+
+    def test_reset_consecutive_loss_lock_only_clears_the_specified_account(self):
+        account_a = database.create_broker_account("Account A")
+        account_b = database.create_broker_account("Account B")
+        for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
+            self._insert_signal(result="loss", broker_account_id=account_a)
+            self._insert_signal(result="loss", broker_account_id=account_b)
+        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local", broker_account_id=account_a)
+        risk_manager.check_max_consecutive_losses(account_a)  # must not raise - reset
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_consecutive_losses(account_b)  # untouched - still locked
+
+    def test_cooldown_after_loss_is_scoped_per_broker_account(self):
+        if risk_manager.COOLDOWN_AFTER_LOSS_SECONDS <= 0:
+            self.skipTest("COOLDOWN_AFTER_LOSS_SECONDS is 0 - cooldown intentionally disabled")
+        account_a = database.create_broker_account("Account A")
+        account_b = database.create_broker_account("Account B")
+        self._insert_signal(result="loss", closed_at=datetime.now().isoformat(), broker_account_id=account_a)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_cooldown_after_loss(account_a)
+        risk_manager.check_cooldown_after_loss(account_b)  # must not raise - unrelated account
+
     def test_cooldown_after_loss_blocks(self):
         if risk_manager.COOLDOWN_AFTER_LOSS_SECONDS <= 0:
             self.skipTest("COOLDOWN_AFTER_LOSS_SECONDS is 0 - cooldown intentionally disabled")
@@ -366,6 +402,45 @@ class RiskManagerTests(unittest.TestCase):
         finally:
             risk_manager.MAX_DAILY_LOSS = original
 
+    def test_max_daily_loss_is_scoped_per_broker_account(self):
+        # 2026-07-25 Execution Reliability directive: a bad day on one
+        # broker account must never pause an unrelated one.
+        original = risk_manager.MAX_DAILY_LOSS
+        risk_manager.MAX_DAILY_LOSS = 5
+        try:
+            account_a = database.create_broker_account("Account A")
+            account_b = database.create_broker_account("Account B")
+            self._insert_signal(result="loss", profit_loss=-1000, broker_account_id=account_a)
+            with self.assertRaises(risk_manager.RiskViolation):
+                risk_manager.check_max_daily_loss(account_a)
+            risk_manager.check_max_daily_loss(account_b)  # must not raise - unrelated account
+        finally:
+            risk_manager.MAX_DAILY_LOSS = original
+
+    def test_global_daily_loss_disabled_by_default(self):
+        self._insert_signal(result="loss", profit_loss=-1000)
+        risk_manager.check_global_daily_loss()  # must not raise - off (0) by default
+
+    def test_global_daily_loss_trips_across_combined_broker_accounts(self):
+        # The "Global Safety" tier: catches a combined bad day across
+        # every account even when each account's OWN per-account limit
+        # individually stays within bounds.
+        original_max_daily = risk_manager.MAX_DAILY_LOSS
+        risk_manager.MAX_DAILY_LOSS = 1000  # per-account limit stays well clear
+        database.set_setting("global_max_daily_loss", 5)
+        try:
+            account_a = database.create_broker_account("Account A")
+            account_b = database.create_broker_account("Account B")
+            self._insert_signal(result="loss", profit_loss=-3, broker_account_id=account_a)
+            self._insert_signal(result="loss", profit_loss=-3, broker_account_id=account_b)
+            risk_manager.check_max_daily_loss(account_a)  # must not raise - -3 alone is within -1000
+            risk_manager.check_max_daily_loss(account_b)  # must not raise - -3 alone is within -1000
+            with self.assertRaises(risk_manager.RiskViolation) as ctx:
+                risk_manager.check_global_daily_loss()  # combined -6 breaches the global -5 limit
+            self.assertEqual(ctx.exception.rule, "global_max_daily_loss")
+        finally:
+            risk_manager.MAX_DAILY_LOSS = original_max_daily
+
     def test_evaluate_all_passes_clean_signal(self):
         risk_manager.evaluate_all("GBP/USD OTC", "SELL", "5 Minute", 1)
 
@@ -426,6 +501,16 @@ class RiskManagerTests(unittest.TestCase):
         database.set_setting("daily_profit_target", 100)
         self._insert_signal(result="win", profit_loss=6)
         risk_manager.check_daily_profit_target()  # must not raise
+
+    def test_daily_profit_target_is_scoped_per_broker_account(self):
+        # 2026-07-25 Execution Reliability directive.
+        database.set_setting("daily_profit_target", 10)
+        account_a = database.create_broker_account("Account A")
+        account_b = database.create_broker_account("Account B")
+        self._insert_signal(result="win", profit_loss=100, broker_account_id=account_a)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_daily_profit_target(account_a)
+        risk_manager.check_daily_profit_target(account_b)  # must not raise - unrelated account
 
     # -- compute_trade_amount (new position sizing) -----------------------
 

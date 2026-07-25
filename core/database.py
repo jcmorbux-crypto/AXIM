@@ -1982,33 +1982,53 @@ def count_session_pending_trades(session_id):
 
 
 @timed("database")
-def get_pending_stake_since(since_iso):
-    """Global (not session-scoped) counterpart of get_session_pending_stake
-    - for core/risk_manager.py's check_max_daily_loss, which is itself
-    app-wide, not per-Fund/session."""
+def get_pending_stake_since(since_iso, broker_account_id=None):
+    """Counterpart of get_session_pending_stake - for core/risk_manager.py's
+    check_max_daily_loss. broker_account_id scopes this the same way
+    count_trades_since does (see its own comment) - 2026-07-25 Execution
+    Reliability directive: the per-broker-account safety hierarchy means
+    one account's pending exposure must never count against a different
+    account's daily-loss budget. None keeps the legacy global/unscoped
+    behavior for callers with no specific account routing."""
     conn = get_connection()
     placeholders = ", ".join("?" for _ in _PENDING_TRADE_STATUSES)
-    row = conn.execute(
-        f"SELECT SUM(trade_amount) AS total FROM signals "
-        f"WHERE received_at >= ? AND execution_status IN ({placeholders})",
-        (since_iso, *_PENDING_TRADE_STATUSES),
-    ).fetchone()
+    if broker_account_id is not None:
+        row = conn.execute(
+            f"SELECT SUM(trade_amount) AS total FROM signals "
+            f"WHERE received_at >= ? AND broker_account_id = ? AND execution_status IN ({placeholders})",
+            (since_iso, broker_account_id, *_PENDING_TRADE_STATUSES),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"SELECT SUM(trade_amount) AS total FROM signals "
+            f"WHERE received_at >= ? AND execution_status IN ({placeholders})",
+            (since_iso, *_PENDING_TRADE_STATUSES),
+        ).fetchone()
     conn.close()
     return row["total"] or 0.0
 
 
 @timed("database")
-def count_pending_trades():
-    """App-wide count of currently open trades, for
-    core/risk_manager.py's check_max_consecutive_losses - not time-windowed
-    since any of these could still resolve as a loss and extend the
-    current streak regardless of when they were placed."""
+def count_pending_trades(broker_account_id=None):
+    """Count of currently open trades, for core/risk_manager.py's
+    check_max_consecutive_losses - not time-windowed since any of these
+    could still resolve as a loss and extend the current streak
+    regardless of when they were placed. broker_account_id scopes this
+    per the 2026-07-25 per-broker-account safety hierarchy - a different
+    account's open trades must never extend THIS account's streak.
+    None keeps the legacy global/unscoped behavior."""
     conn = get_connection()
     placeholders = ", ".join("?" for _ in _PENDING_TRADE_STATUSES)
-    row = conn.execute(
-        f"SELECT COUNT(*) AS n FROM signals WHERE execution_status IN ({placeholders})",
-        _PENDING_TRADE_STATUSES,
-    ).fetchone()
+    if broker_account_id is not None:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM signals WHERE broker_account_id = ? AND execution_status IN ({placeholders})",
+            (broker_account_id, *_PENDING_TRADE_STATUSES),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            f"SELECT COUNT(*) AS n FROM signals WHERE execution_status IN ({placeholders})",
+            _PENDING_TRADE_STATUSES,
+        ).fetchone()
     conn.close()
     return row["n"]
 
@@ -2045,11 +2065,18 @@ def count_fund_pending_trades(fund_id):
 
 
 @timed("database")
-def get_recent_results(limit, fund_id=None, session_id=None, since=None):
+def get_recent_results(limit, fund_id=None, session_id=None, broker_account_id=None, since=None):
     """fund_id and session_id are mutually exclusive scopes - session_id
     added for core/capital_strategies.py's Strike (tm) strategy, whose
     max_consecutive_losses is a per-session streak, distinct from
     core/risk_manager.py's app-wide one and from a Fund's lifetime one.
+
+    broker_account_id (2026-07-25 Execution Reliability directive: the
+    per-broker-account safety hierarchy) is a separate, combinable scope
+    - core/risk_manager.py's check_max_consecutive_losses passes ONLY
+    this one (never together with fund_id/session_id), so a losing
+    streak on one broker account is never extended by a different
+    account's results.
 
     since (ISO timestamp), when given, excludes any trade closed before
     it - backs the consecutive-loss lock's explicit, logged reset action
@@ -2078,6 +2105,9 @@ def get_recent_results(limit, fund_id=None, session_id=None, since=None):
     else:
         query = "SELECT result FROM signals WHERE result IN ('win','loss','draw')"
         params = []
+    if broker_account_id is not None:
+        query += " AND broker_account_id = ?"
+        params.append(broker_account_id)
     if since is not None:
         query += " AND closed_at >= ?"
         params.append(since)
@@ -2089,32 +2119,57 @@ def get_recent_results(limit, fund_id=None, session_id=None, since=None):
 
 
 @timed("database")
-def get_last_loss_time():
+def get_last_loss_time(broker_account_id=None):
+    """broker_account_id (2026-07-25 Execution Reliability directive: the
+    per-broker-account safety hierarchy) scopes the post-loss cooldown to
+    just that account - a loss on a different account must never trigger
+    a cooldown on this one. None keeps the legacy global/unscoped
+    behavior."""
     conn = get_connection()
-    row = conn.execute("""
-        SELECT closed_at FROM signals
-        WHERE result = 'loss'
-        ORDER BY closed_at DESC
-        LIMIT 1
-    """).fetchone()
+    if broker_account_id is not None:
+        row = conn.execute("""
+            SELECT closed_at FROM signals
+            WHERE result = 'loss' AND broker_account_id = ?
+            ORDER BY closed_at DESC
+            LIMIT 1
+        """, (broker_account_id,)).fetchone()
+    else:
+        row = conn.execute("""
+            SELECT closed_at FROM signals
+            WHERE result = 'loss'
+            ORDER BY closed_at DESC
+            LIMIT 1
+        """).fetchone()
     conn.close()
     return row["closed_at"] if row else None
 
 
 @timed("database")
-def get_realized_pnl_since(since_iso):
+def get_realized_pnl_since(since_iso, broker_account_id=None):
     """Sum of profit_loss across every trade CLOSED (not just placed) since
     since_iso - a win contributes positively, a loss negatively, so this is
     the actual net realized result for the window, not a trade count.
     NULL profit_loss rows (never reached a terminal win/loss/draw) are
     excluded via the SUM's own NULL-skipping behavior. Returns 0.0 (not
     None) when there are no closed trades in the window, so callers can
-    compare directly against a threshold without a None check."""
+    compare directly against a threshold without a None check.
+
+    broker_account_id (2026-07-25 Execution Reliability directive: the
+    per-broker-account safety hierarchy) scopes the daily-loss/profit-
+    target checks to just that account - None keeps the legacy global/
+    unscoped behavior, used by the separate, optional GLOBAL daily-loss
+    limit."""
     conn = get_connection()
-    row = conn.execute("""
-        SELECT SUM(profit_loss) AS total FROM signals
-        WHERE closed_at >= ? AND profit_loss IS NOT NULL
-    """, (since_iso,)).fetchone()
+    if broker_account_id is not None:
+        row = conn.execute("""
+            SELECT SUM(profit_loss) AS total FROM signals
+            WHERE closed_at >= ? AND broker_account_id = ? AND profit_loss IS NOT NULL
+        """, (since_iso, broker_account_id)).fetchone()
+    else:
+        row = conn.execute("""
+            SELECT SUM(profit_loss) AS total FROM signals
+            WHERE closed_at >= ? AND profit_loss IS NOT NULL
+        """, (since_iso,)).fetchone()
     conn.close()
     return row["total"] if row["total"] is not None else 0.0
 
