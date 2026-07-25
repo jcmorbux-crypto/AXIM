@@ -40,6 +40,7 @@ import event_stream
 import telegram_bot_trigger
 import signal_assembler
 import provider_profile
+import build_info
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -877,4 +878,6 @@ def run_forever():
 
 
 if __name__ == "__main__":
+    _running_commit = build_info.record_process_startup(database, "listener")
+    print(f"AXIM: listener starting at commit {_running_commit or 'unknown'}")
     run_forever()

@@ -126,6 +126,13 @@ app = FastAPI(
     openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
 )
 
+# Real running-build identification (2026-07-25 Execution Reliability
+# lesson) - see core/build_info.py's own docstring for why this exists:
+# a long-running process keeps executing whatever was loaded in memory
+# when it started, regardless of what's since landed on disk.
+import build_info  # noqa: E402
+build_info.record_process_startup(database, "api")
+
 # CORS (docs/AXIM_REMOTE_ACCESS.md) - empty ALLOWED_ORIGINS (the default)
 # means no cross-origin browser requests are permitted at all, matching
 # today's local-only behavior exactly. A Remote Client's browser only
@@ -622,6 +629,34 @@ def _compute_effective_settings():
         key: overrides.get(key, static_default)
         for key, static_default in _SETTING_STATIC_DEFAULTS.items()
     }, overrides
+
+
+@app.get("/api/build-info")
+def get_build_info(user=Depends(get_current_user)):
+    """Real answer to "is AXIM actually running current code" (2026-07-25
+    Execution Reliability lesson) - compares what's on disk right now
+    against what each long-running process actually recorded loading at
+    its own startup (core/build_info.py). A mismatch means that process
+    is serving stale code and needs restarting - this was found live
+    this session: the listener ran 5 days of stale code, unnoticed,
+    across this entire session's fixes, purely because nobody had
+    restarted it since its last launch."""
+    disk_commit = build_info.get_repo_head_commit()
+    api_commit = database.get_setting("api_running_commit", default=None)
+    listener_commit = database.get_setting("listener_running_commit", default=None)
+    return {
+        "disk_commit": disk_commit,
+        "api": {
+            "running_commit": api_commit,
+            "started_at": database.get_setting("api_started_at", default=None),
+            "current": api_commit == disk_commit if disk_commit else None,
+        },
+        "listener": {
+            "running_commit": listener_commit,
+            "started_at": database.get_setting("listener_started_at", default=None),
+            "current": listener_commit == disk_commit if disk_commit else None,
+        },
+    }
 
 
 @app.get("/api/settings")
