@@ -19,6 +19,23 @@ _TEN_KEYCAP_RE = re.compile(r"\U0001F51F")
 _NBSP_RE = re.compile(r"[  ]")
 
 
+# A daily/session results summary (confirmed live: Martin Trader's real
+# "SESSION REPORT" message - "Accuracy: 93.00% / Wins: 14 / Losses: 1"
+# followed by a list of that day's already-closed trades) is never a new
+# tradeable signal - but because it lists past trades, it genuinely
+# contains a real asset+direction pair, so the ordinary asset/direction
+# search below would otherwise extract the FIRST one and misfire a
+# phantom trade off historical data, not a live entry. Rejected before
+# any extraction runs, on the presence of BOTH an accuracy/win-rate
+# figure and a win/loss tally - the combination genuinely distinguishes
+# "this is a scoreboard" from a real single-trade signal, which never
+# reports its own historical accuracy.
+_SUMMARY_REPORT_RE = re.compile(
+    r"\b(ACCURACY|WIN\s*RATE)\b.{0,30}[:\-]?\s*\d{1,3}(\.\d+)?\s*%", re.IGNORECASE | re.DOTALL,
+)
+_WIN_LOSS_TALLY_RE = re.compile(r"\bWINS?\s*[:\-]\s*\d+\b.{0,60}\bLOSS(ES)?\s*[:\-]\s*\d+\b", re.IGNORECASE | re.DOTALL)
+
+
 def _normalize(text):
     """Provider-agnostic decoration cleanup applied before any parsing -
     see _FLAG_PAIR_RE comment. Safe to apply universally: every
@@ -120,6 +137,10 @@ def parse_signal(message, carried_asset=None):
         return None
 
     message = _normalize(message)
+
+    if _SUMMARY_REPORT_RE.search(message) and _WIN_LOSS_TALLY_RE.search(message):
+        return None
+
     signal = {}
 
     # Labeled formats take priority - checked against the original message

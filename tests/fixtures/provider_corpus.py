@@ -74,4 +74,23 @@ PRODUCTION_PARSER_CORPUS = [
     ("mt_signal_missing_direction",
      "SIGNAL\n\nAUD/JPY OTC\nTimeframe: M5\nExpiration: 5 minutes\nEntry: 09:00",
      None),
+
+    # ---- Martin Trader-style full labeled signal - a real, complete
+    # entry, correctly parsed ----
+    ("mt_signal_complete",
+     "SIGNAL\n\nAUD/JPY OTC\nTimeframe: M5\nExpiration: 5 minutes\nEntry: 09:00\nDirection: SELL\n\nMartingale:\n1 09:05\n2 09:10\n3 09:15",
+     {"asset": "AUD/JPY OTC", "direction": "SELL", "expiry": "5 Minute"}),
+
+    # ---- Martin Trader-style daily session report - real gap found and
+    # fixed 2026-07-24 (historical replay validation): a summary listing
+    # that day's already-closed trades genuinely contains a real
+    # asset+direction pair, so the ordinary search below used to extract
+    # the FIRST one and misfire a phantom trade off historical data, not
+    # a live entry. Confirmed live: 49 of 857 "signals" produced by this
+    # provider's real message history were actually session reports, not
+    # live signals, before this fix. Must always be rejected regardless
+    # of which pair happens to appear first in the trade list. ----
+    ("mt_session_report_must_not_become_a_signal",
+     "SESSION REPORT\n\nSunday, 12 July 2026\n\nResults:\nAccuracy: 93.00%\nWins: 14\nLosses: 1\n\nTrades:\nNight Session\n00:05 - AUD/JPY - Buy\n00:20 - EUR/USD - Sell",
+     None),
 ]
