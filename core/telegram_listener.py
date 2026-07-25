@@ -266,14 +266,19 @@ async def handler(event):
     chat = await event.get_chat()
     chat_title = getattr(chat, "title", "") or getattr(chat, "first_name", "") or ""
     chat_username = getattr(chat, "username", "") or ""
+    reply_to_message_id = getattr(getattr(event.message, "reply_to", None), "reply_to_msg_id", None)
 
     # Captured unconditionally - even for channels not yet enabled/allowed -
     # so the Telegram Sources / Signal Inspector pages can show "last
     # message received" and a recent-messages preview for a channel BEFORE
-    # the operator decides whether to enable it, not just after.
+    # the operator decides whether to enable it, not just after. Real
+    # Telegram ids (not channel_messages' own unrelated autoincrement id)
+    # so a future replay can reconstruct genuine edit/reply relationships -
+    # see _NEW_CHANNEL_MESSAGE_COLUMNS' comment in core/database.py.
     try:
         database.record_channel_message(
             chat_id=event.chat_id, username=chat_username, title=chat_title, message_text=event.raw_text,
+            telegram_message_id=event.id, reply_to_message_id=reply_to_message_id,
         )
     except Exception as e:
         logger.error("telegram_listener: record_channel_message failed: %s", e)
@@ -383,8 +388,6 @@ async def handler(event):
         if rules:
             message_text = apply_signal_rules(message_text, rules)
 
-    reply_to_message_id = getattr(getattr(event.message, "reply_to", None), "reply_to_msg_id", None)
-
     if channel_row is not None:
         # The real, general multi-message-aware decision path for any
         # properly-registered channel - see _observe_message's own
@@ -473,10 +476,19 @@ async def edit_handler(event):
     chat = await event.get_chat()
     chat_title = getattr(chat, "title", "") or getattr(chat, "first_name", "") or ""
     chat_username = getattr(chat, "username", "") or ""
+    reply_to_message_id = getattr(getattr(event.message, "reply_to", None), "reply_to_msg_id", None)
 
+    # telegram_message_id is deliberately the SAME id as the original
+    # message being edited - Telegram preserves identity across an edit,
+    # it doesn't create a new message. Storing it lets every version
+    # (original + each edit) of one real message be found by querying
+    # telegram_message_id=X, satisfying "persist original and edited
+    # versions for auditability" precisely, not just by approximate
+    # chat_id/timestamp proximity.
     try:
         database.record_channel_message(
             chat_id=event.chat_id, username=chat_username, title=chat_title, message_text=event.raw_text,
+            telegram_message_id=event.id, reply_to_message_id=reply_to_message_id,
         )
     except Exception as e:
         logger.error("telegram_listener: record_channel_message (edit) failed: %s", e)

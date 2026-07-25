@@ -206,6 +206,21 @@ _NEW_RISK_PROFILE_COLUMNS = {
     "archived_at": "TEXT",
 }
 
+# Real Telegram identifiers (2026-07-25 Execution Reliability directive) -
+# NULL for every pre-existing row. Without these, replay validation and
+# any future edit/reply-correlation testing has no way to reconstruct the
+# real message_id/reply_to_msg_id relationships core/signal_assembler.py's
+# pending_by_reply_to actually keys on in production (core/
+# telegram_listener.py's handler/edit_handler pass event.id and
+# event.message.reply_to.reply_to_msg_id straight into the assembler, but
+# channel_messages never stored either one - so a replay harness reading
+# this table could only ever use its own unrelated autoincrement `id`,
+# never the real Telegram ids a genuine edit or reply event carries).
+_NEW_CHANNEL_MESSAGE_COLUMNS = {
+    "telegram_message_id": "INTEGER",
+    "reply_to_message_id": "INTEGER",
+}
+
 
 def get_connection():
     """WAL mode + a busy_timeout are required now that two OS processes
@@ -256,6 +271,11 @@ def _migrate_schema(conn):
     for column, sql_type in _NEW_RISK_PROFILE_COLUMNS.items():
         if column not in risk_profile_columns:
             conn.execute(f"ALTER TABLE risk_profiles ADD COLUMN {column} {sql_type}")
+
+    channel_message_columns = {row["name"] for row in conn.execute("PRAGMA table_info(channel_messages)")}
+    for column, sql_type in _NEW_CHANNEL_MESSAGE_COLUMNS.items():
+        if column not in channel_message_columns:
+            conn.execute(f"ALTER TABLE channel_messages ADD COLUMN {column} {sql_type}")
 
 
 def initialize_database():
@@ -450,7 +470,9 @@ def initialize_database():
         username TEXT,
         title TEXT,
         message_text TEXT,
-        received_at TEXT
+        received_at TEXT,
+        telegram_message_id INTEGER,
+        reply_to_message_id INTEGER
     );
     """)
 
@@ -2816,12 +2838,15 @@ def set_channel_config(channel_id, **fields):
 # ---------------------------------------------------------------------
 
 @timed("database")
-def record_channel_message(chat_id=None, username=None, title=None, message_text=""):
+def record_channel_message(chat_id=None, username=None, title=None, message_text="",
+                            telegram_message_id=None, reply_to_message_id=None):
     conn = get_connection()
     conn.execute(
-        """INSERT INTO channel_messages (chat_id, username, title, message_text, received_at)
-           VALUES (?, ?, ?, ?, ?)""",
-        (str(chat_id) if chat_id is not None else None, username, title, message_text, datetime.now().isoformat()),
+        """INSERT INTO channel_messages
+           (chat_id, username, title, message_text, received_at, telegram_message_id, reply_to_message_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (str(chat_id) if chat_id is not None else None, username, title, message_text, datetime.now().isoformat(),
+         telegram_message_id, reply_to_message_id),
     )
     conn.commit()
     conn.close()

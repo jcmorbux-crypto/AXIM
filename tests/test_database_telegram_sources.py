@@ -136,6 +136,33 @@ class ChannelMessageTests(unittest.TestCase):
     def test_get_last_channel_message_none_when_empty(self):
         self.assertIsNone(database.get_last_channel_message(chat_id="999"))
 
+    def test_telegram_message_id_and_reply_to_are_persisted(self):
+        # 2026-07-25 Execution Reliability directive: without these, a
+        # replay harness has no way to reconstruct the real message_id/
+        # reply_to_msg_id relationships the assembler actually keys on in
+        # production - see _NEW_CHANNEL_MESSAGE_COLUMNS' comment.
+        database.record_channel_message(
+            chat_id="1", message_text="EUR/USD", telegram_message_id=100, reply_to_message_id=None,
+        )
+        database.record_channel_message(
+            chat_id="1", message_text="BUY 1 min", telegram_message_id=101, reply_to_message_id=100,
+        )
+        recent = database.list_recent_channel_messages(chat_id="1")
+        by_telegram_id = {r["telegram_message_id"]: r for r in recent}
+        self.assertEqual(by_telegram_id[101]["reply_to_message_id"], 100)
+        self.assertIsNone(by_telegram_id[100]["reply_to_message_id"])
+
+    def test_edit_is_a_new_row_sharing_the_same_telegram_message_id(self):
+        # An edit never overwrites the original - both stay queryable by
+        # the same telegram_message_id (real Telegram identity across an
+        # edit), satisfying "persist original and edited versions for
+        # auditability" precisely rather than by timestamp proximity.
+        database.record_channel_message(chat_id="1", message_text="EUR/USD", telegram_message_id=200)
+        database.record_channel_message(chat_id="1", message_text="GBP/JPY", telegram_message_id=200)
+        versions = [r for r in database.list_recent_channel_messages(chat_id="1") if r["telegram_message_id"] == 200]
+        self.assertEqual(len(versions), 2)
+        self.assertEqual({v["message_text"] for v in versions}, {"EUR/USD", "GBP/JPY"})
+
 
 class SignalRuleTests(unittest.TestCase):
     def setUp(self):
