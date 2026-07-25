@@ -1,5 +1,6 @@
 from telethon import TelegramClient, events
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -261,6 +262,33 @@ def _debug_safe(text):
     return (text or "").encode(encoding, "replace").decode(encoding, "replace")
 
 
+def _serialize_buttons(message):
+    """Passive capture ONLY (2026-07-25 Execution Reliability directive,
+    gap queue item 6) - never clicks or drives anything. Confirmed real
+    blocker for Go+ | Trading Bot and Trading Booster Bot by AITA:
+    neither's inline-keyboard structure had ever been captured, so there
+    was no evidence to evaluate them from short of a live manual
+    interaction. Returns None if the message has no buttons at all (the
+    overwhelmingly common case), so normal passive/channel providers pay
+    no extra storage cost."""
+    buttons = getattr(message, "buttons", None)
+    if not buttons:
+        return None
+    try:
+        rows = [
+            [
+                {"text": getattr(btn, "text", None), "data": getattr(btn, "data", None).hex()
+                 if getattr(btn, "data", None) else None}
+                for btn in row
+            ]
+            for row in buttons
+        ]
+        return json.dumps(rows)
+    except Exception as e:
+        logger.error("telegram_listener: button serialization failed: %s", e)
+        return None
+
+
 @client.on(events.NewMessage)
 async def handler(event):
     chat = await event.get_chat()
@@ -279,6 +307,7 @@ async def handler(event):
         database.record_channel_message(
             chat_id=event.chat_id, username=chat_username, title=chat_title, message_text=event.raw_text,
             telegram_message_id=event.id, reply_to_message_id=reply_to_message_id,
+            buttons_json=_serialize_buttons(event.message),
         )
     except Exception as e:
         logger.error("telegram_listener: record_channel_message failed: %s", e)
@@ -489,6 +518,7 @@ async def edit_handler(event):
         database.record_channel_message(
             chat_id=event.chat_id, username=chat_username, title=chat_title, message_text=event.raw_text,
             telegram_message_id=event.id, reply_to_message_id=reply_to_message_id,
+            buttons_json=_serialize_buttons(event.message),
         )
     except Exception as e:
         logger.error("telegram_listener: record_channel_message (edit) failed: %s", e)

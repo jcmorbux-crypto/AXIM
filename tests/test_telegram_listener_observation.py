@@ -78,6 +78,46 @@ class ShadowObservationTestCase(unittest.TestCase):
             database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
 
 
+class FakeButton:
+    def __init__(self, text, data=None):
+        self.text = text
+        self.data = data
+
+
+class SerializeButtonsTests(unittest.TestCase):
+    """Passive capture only (2026-07-25 Execution Reliability directive,
+    gap queue item 6) - confirmed real blocker for Go+ | Trading Bot and
+    Trading Booster Bot by AITA: neither's inline-keyboard structure was
+    ever captured. Never clicks or drives anything - this only makes
+    button structure inspectable without a live manual interaction."""
+
+    def test_no_buttons_returns_none(self):
+        class FakeMessage:
+            buttons = None
+        self.assertIsNone(telegram_listener._serialize_buttons(FakeMessage()))
+
+    def test_button_rows_with_callback_data_are_serialized(self):
+        import json as _json
+
+        class FakeMessage:
+            buttons = [[FakeButton("EUR/USD", data=b"\x01\x02")], [FakeButton("GBP/USD", data=b"\x03")]]
+
+        result = _json.loads(telegram_listener._serialize_buttons(FakeMessage()))
+        self.assertEqual(result, [
+            [{"text": "EUR/USD", "data": "0102"}],
+            [{"text": "GBP/USD", "data": "03"}],
+        ])
+
+    def test_url_button_with_no_data_serializes_data_as_none(self):
+        import json as _json
+
+        class FakeMessage:
+            buttons = [[FakeButton("Register", data=None)]]
+
+        result = _json.loads(telegram_listener._serialize_buttons(FakeMessage()))
+        self.assertEqual(result, [[{"text": "Register", "data": None}]])
+
+
 class RealExecutionDecisionTestCase(unittest.TestCase):
     """2026-07-20: _observe_message's return value is now what the real
     handler routes to broker_account_manager.route_signal - these tests

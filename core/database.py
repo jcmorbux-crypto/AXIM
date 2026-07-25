@@ -219,6 +219,15 @@ _NEW_RISK_PROFILE_COLUMNS = {
 _NEW_CHANNEL_MESSAGE_COLUMNS = {
     "telegram_message_id": "INTEGER",
     "reply_to_message_id": "INTEGER",
+    # Passive capture only (2026-07-25 Execution Reliability directive,
+    # gap queue item 6) - inline-keyboard button labels/callback_data for
+    # interactive bots (confirmed real blocker for Go+ | Trading Bot and
+    # Trading Booster Bot by AITA: neither could be evaluated because
+    # AXIM had never logged what buttons they present at all). JSON list
+    # of rows, each a list of {"text", "data"} - NEVER auto-clicked or
+    # driven from here; this only makes existing button structure
+    # inspectable without a live manual interaction.
+    "buttons_json": "TEXT",
 }
 
 
@@ -472,7 +481,8 @@ def initialize_database():
         message_text TEXT,
         received_at TEXT,
         telegram_message_id INTEGER,
-        reply_to_message_id INTEGER
+        reply_to_message_id INTEGER,
+        buttons_json TEXT
     );
     """)
 
@@ -2852,14 +2862,14 @@ def set_channel_config(channel_id, **fields):
 
 @timed("database")
 def record_channel_message(chat_id=None, username=None, title=None, message_text="",
-                            telegram_message_id=None, reply_to_message_id=None):
+                            telegram_message_id=None, reply_to_message_id=None, buttons_json=None):
     conn = get_connection()
     conn.execute(
         """INSERT INTO channel_messages
-           (chat_id, username, title, message_text, received_at, telegram_message_id, reply_to_message_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+           (chat_id, username, title, message_text, received_at, telegram_message_id, reply_to_message_id, buttons_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
         (str(chat_id) if chat_id is not None else None, username, title, message_text, datetime.now().isoformat(),
-         telegram_message_id, reply_to_message_id),
+         telegram_message_id, reply_to_message_id, buttons_json),
     )
     conn.commit()
     conn.close()
