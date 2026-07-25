@@ -139,6 +139,46 @@ class RiskManagerTests(unittest.TestCase):
         with self.assertRaises(risk_manager.RiskViolation):
             risk_manager.check_max_trades_per_hour()
 
+    # -- Per-account limit OVERRIDES (2026-07-25 Execution Reliability
+    # directive: "Independent limits for each broker account" - not just
+    # independent counting against a shared limit, but a genuinely
+    # different configured limit per account). -------------------------
+
+    def test_max_trades_per_hour_account_override_is_stricter_than_global(self):
+        account_a = database.create_broker_account("Account A")
+        database.update_broker_account(account_a, max_trades_per_hour_override=1)
+        self._insert_real_trade(broker_account_id=account_a)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_trades_per_hour(account_a)  # 1 real trade already >= override of 1
+
+    def test_max_trades_per_hour_account_override_is_looser_than_global(self):
+        account_a = database.create_broker_account("Account A")
+        database.update_broker_account(account_a, max_trades_per_hour_override=risk_manager.MAX_TRADES_PER_HOUR * 10)
+        for _ in range(risk_manager.MAX_TRADES_PER_HOUR):
+            self._insert_real_trade(broker_account_id=account_a)
+        risk_manager.check_max_trades_per_hour(account_a)  # must not raise - override permits far more
+
+    def test_account_without_an_override_still_uses_the_shared_global_limit(self):
+        account_a = database.create_broker_account("Account A")  # no override set
+        for _ in range(risk_manager.MAX_TRADES_PER_HOUR):
+            self._insert_real_trade(broker_account_id=account_a)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_trades_per_hour(account_a)  # falls back to the shared MAX_TRADES_PER_HOUR
+
+    def test_max_consecutive_losses_account_override(self):
+        account_a = database.create_broker_account("Account A")
+        database.update_broker_account(account_a, max_consecutive_losses_override=1)
+        self._insert_signal(result="loss", broker_account_id=account_a)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_consecutive_losses(account_a)  # 1 loss already >= override of 1
+
+    def test_max_daily_loss_account_override(self):
+        account_a = database.create_broker_account("Account A")
+        database.update_broker_account(account_a, max_daily_loss_override=1)
+        self._insert_signal(result="loss", profit_loss=-2, broker_account_id=account_a)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_max_daily_loss(account_a)  # -2 breaches the stricter override of -1
+
     def test_max_consecutive_losses(self):
         for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
             self._insert_signal(result="loss")

@@ -133,6 +133,52 @@
     <span id="edit-account-status" class="muted"></span>
   </div>
 </div>
+
+<div class="modal-backdrop" id="safety-settings-modal">
+  <div class="modal" style="width:560px; max-width:95vw;">
+    <h2 style="margin-top:0;">Safety Settings</h2>
+    <input type="hidden" id="safety-acc-id">
+    <div class="subtitle" style="margin-bottom:14px;">Independent per-account limits (2026-07-25 architecture) - leave a field blank to use the shared global default. A problem on this account never pauses a different one.</div>
+
+    <div class="card solid" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">Live Status</h3>
+      <div id="safety-status-body" class="muted">Loading...</div>
+    </div>
+
+    <div class="field-grid" style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+      <div class="field">
+        <label>Max consecutive losses</label>
+        <input type="number" id="safety-max-consecutive-losses" min="1" placeholder="Global default">
+      </div>
+      <div class="field">
+        <label>Cooldown after loss (seconds)</label>
+        <input type="number" id="safety-cooldown-after-loss" min="0" placeholder="Global default">
+      </div>
+      <div class="field">
+        <label>Max daily loss ($)</label>
+        <input type="number" id="safety-max-daily-loss" min="0" step="0.01" placeholder="Global default">
+      </div>
+      <div class="field">
+        <label>Daily profit target ($)</label>
+        <input type="number" id="safety-daily-profit-target" min="0" step="0.01" placeholder="Global default (0 = off)">
+      </div>
+      <div class="field">
+        <label>Max trades per hour</label>
+        <input type="number" id="safety-max-trades-per-hour" min="1" placeholder="Global default">
+      </div>
+      <div class="field">
+        <label>Max trades per day</label>
+        <input type="number" id="safety-max-trades-per-day" min="0" placeholder="Global default (0 = off)">
+      </div>
+    </div>
+
+    <div class="row" style="justify-content:flex-end; margin-top:16px;">
+      <button class="subtle" onclick="closeModal('safety-settings-modal')">Cancel</button>
+      <button class="primary" onclick="saveSafetySettings()">Save</button>
+    </div>
+    <span id="safety-settings-status" class="muted"></span>
+  </div>
+</div>
 <script src="/web/shell.js"></script>
 <script>
 async function fetchJSON(url, opts) {
@@ -300,6 +346,7 @@ async function refreshAccounts() {
         ${a.emergency_stopped
           ? `<button class="subtle" onclick="clearAccountEmergencyStop(${a.id})">Resume Account</button>`
           : `<button class="danger" onclick="emergencyStopAccount(${a.id})">Emergency Stop</button>`}
+        <button class="subtle" onclick="openSafetySettingsModal(${a.id})">Safety Settings</button>
         <button class="subtle" onclick="openEditAccountModal(${a.id})">Edit</button>
         <button class="subtle" onclick="archiveAccount(${a.id})">Archive</button>
       </td>
@@ -332,6 +379,82 @@ async function testConnection(id) {
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;
+  }
+}
+
+const SAFETY_OVERRIDE_FIELDS = [
+  ["safety-max-consecutive-losses", "max_consecutive_losses_override", "max_consecutive_losses"],
+  ["safety-cooldown-after-loss", "cooldown_after_loss_seconds_override", "cooldown_after_loss_seconds"],
+  ["safety-max-daily-loss", "max_daily_loss_override", "max_daily_loss"],
+  ["safety-daily-profit-target", "daily_profit_target_override", "daily_profit_target"],
+  ["safety-max-trades-per-hour", "max_trades_per_hour_override", "max_trades_per_hour"],
+  ["safety-max-trades-per-day", "max_trades_per_day_override", "max_trades_per_day"],
+];
+
+function renderSafetyStatus(id, status) {
+  const parts = [];
+  parts.push(status.consecutive_loss_lock_active
+    ? `<span class="badge danger">Consecutive-loss lock ACTIVE</span> <button class="subtle" style="margin-left:8px;" onclick="resetAccountConsecutiveLossLock(${id})">Reset Lock</button>`
+    : '<span class="badge off">Consecutive-loss lock clear</span>');
+  if (status.cooldown_remaining_seconds) {
+    parts.push(`<div>Cooldown: ${Math.ceil(status.cooldown_remaining_seconds)}s remaining</div>`);
+  }
+  if (status.max_daily_loss_active) parts.push('<div><span class="badge danger">Daily loss limit reached</span></div>');
+  if (status.daily_profit_target_reached) parts.push('<div><span class="badge on">Daily profit target reached</span></div>');
+  parts.push(`<div class="muted" style="margin-top:8px;">Trades this hour: ${status.trades_this_hour} &middot; Trades today: ${status.trades_today} &middot; Realized P/L today: $${Number(status.daily_realized_pnl).toFixed(2)}</div>`);
+  return parts.join("");
+}
+
+async function openSafetySettingsModal(id) {
+  document.getElementById("safety-acc-id").value = id;
+  document.getElementById("safety-settings-status").textContent = "";
+  document.getElementById("safety-status-body").textContent = "Loading...";
+  openModal("safety-settings-modal");
+  try {
+    const data = await fetchJSON(`/api/broker-accounts/${id}/safety-settings`);
+    for (const [inputId, overrideKey, effectiveKey] of SAFETY_OVERRIDE_FIELDS) {
+      const el = document.getElementById(inputId);
+      el.value = data.overrides[overrideKey] ?? "";
+      el.placeholder = `Global default: ${data.effective_limits[effectiveKey]}`;
+    }
+    document.getElementById("safety-status-body").innerHTML = renderSafetyStatus(id, data);
+  } catch (e) {
+    document.getElementById("safety-status-body").textContent = "Failed to load: " + e.message;
+  }
+}
+
+async function saveSafetySettings() {
+  const id = document.getElementById("safety-acc-id").value;
+  const statusEl = document.getElementById("safety-settings-status");
+  const body = {};
+  for (const [inputId, overrideKey] of SAFETY_OVERRIDE_FIELDS) {
+    const raw = document.getElementById(inputId).value;
+    body[overrideKey] = raw === "" ? null : Number(raw);
+  }
+  try {
+    const data = await fetchJSON(`/api/broker-accounts/${id}/safety-settings`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    for (const [inputId, overrideKey, effectiveKey] of SAFETY_OVERRIDE_FIELDS) {
+      const el = document.getElementById(inputId);
+      el.value = data.overrides[overrideKey] ?? "";
+      el.placeholder = `Global default: ${data.effective_limits[effectiveKey]}`;
+    }
+    document.getElementById("safety-status-body").innerHTML = renderSafetyStatus(id, data);
+    statusEl.textContent = "Saved.";
+  } catch (e) {
+    statusEl.textContent = "Failed: " + e.message;
+  }
+}
+
+async function resetAccountConsecutiveLossLock(id) {
+  if (!confirm("Reset this account's consecutive-loss lock? Past trades are never erased - only the streak boundary moves forward from now.")) return;
+  try {
+    await fetchJSON(`/api/broker-accounts/${id}/reset-consecutive-loss-lock`, { method: "POST" });
+    await openSafetySettingsModal(id);
+  } catch (e) {
+    document.getElementById("safety-settings-status").textContent = "Failed: " + e.message;
   }
 }
 

@@ -33,6 +33,60 @@ def _setting(key, static_default):
     return database.get_setting(key, default=static_default)
 
 
+# Maps each per-account-overridable safety-limit setting key to its
+# broker_accounts override column (2026-07-25 Execution Reliability
+# directive: "Independent limits for each broker account").
+_ACCOUNT_OVERRIDE_COLUMNS = {
+    "max_consecutive_losses": "max_consecutive_losses_override",
+    "cooldown_after_loss_seconds": "cooldown_after_loss_seconds_override",
+    "max_daily_loss": "max_daily_loss_override",
+    "daily_profit_target": "daily_profit_target_override",
+    "max_trades_per_hour": "max_trades_per_hour_override",
+    "max_trades_per_day": "max_trades_per_day_override",
+}
+
+
+def _account_setting(broker_account_id, key, static_default):
+    """3-tier resolution for a per-broker-account-overridable safety
+    limit: this account's own explicit override
+    (broker_accounts.<key>_override), if set -> the shared global UI
+    setting -> the static .env-derived default. An account with no
+    override configured behaves exactly like the shared-limit behavior
+    every check already had before per-account overrides existed - only
+    an operator explicitly setting one changes anything for that
+    specific account, never silently for every account at once."""
+    if broker_account_id is not None:
+        column = _ACCOUNT_OVERRIDE_COLUMNS[key]
+        account = database.get_broker_account(broker_account_id)
+        if account is not None and account[column] is not None:
+            return account[column]
+    return _setting(key, static_default)
+
+
+_ACCOUNT_LIMIT_STATIC_DEFAULTS = {
+    "max_consecutive_losses": lambda: MAX_CONSECUTIVE_LOSSES,
+    "cooldown_after_loss_seconds": lambda: COOLDOWN_AFTER_LOSS_SECONDS,
+    "max_daily_loss": lambda: MAX_DAILY_LOSS,
+    "daily_profit_target": lambda: 0,
+    "max_trades_per_hour": lambda: MAX_TRADES_PER_HOUR,
+    "max_trades_per_day": lambda: 0,
+}
+
+
+def get_effective_limits(broker_account_id=None):
+    """Every per-account-overridable safety limit's resolved value for
+    this account (its own override if set, else the shared global
+    setting, else the static default) - the API/UI's one source of
+    truth for "what will actually apply here", so a settings page never
+    re-implements _account_setting's 3-tier resolution itself and risks
+    drifting out of sync with what real signals are actually checked
+    against."""
+    return {
+        key: _account_setting(broker_account_id, key, default_fn())
+        for key, default_fn in _ACCOUNT_LIMIT_STATIC_DEFAULTS.items()
+    }
+
+
 class RiskViolation(Exception):
     def __init__(self, rule, reason):
         self.rule = rule
@@ -91,13 +145,15 @@ def check_max_trade_amount(amount):
 def check_max_trades_per_hour(broker_account_id=None):
     """broker_account_id, when this signal is routed to a specific multi-
     broker-account Fund, scopes the count to just that account - each
-    account gets its own independent quota against the SAME configured
-    limit, rather than every account's trades counting against one
-    shared global bucket (previously a busy account could silently
-    exhaust the quota for every other account too). session_id=None's
+    account gets its own independent quota, rather than every account's
+    trades counting against one shared global bucket (previously a busy
+    account could silently exhaust the quota for every other account
+    too). Also resolves this account's own limit OVERRIDE if one is set
+    (2026-07-25: "Independent limits for each broker account") - falling
+    back to the shared configured limit otherwise. session_id=None's
     legacy single-shared-connection path has no account to scope to, so
-    it keeps counting globally, unchanged."""
-    limit = _setting("max_trades_per_hour", MAX_TRADES_PER_HOUR)
+    it keeps counting globally against the shared limit, unchanged."""
+    limit = _account_setting(broker_account_id, "max_trades_per_hour", MAX_TRADES_PER_HOUR)
     since = (datetime.now() - timedelta(hours=1)).isoformat()
     count = database.count_trades_since(since, broker_account_id=broker_account_id)
     if count >= limit:
@@ -112,9 +168,10 @@ def check_max_trades_per_day(broker_account_id=None):
     default (0), since it's a brand-new concept this project didn't have
     before the UI, and MAX_TRADES_PER_HOUR already provides real
     rate-limiting; this only activates once the operator sets a real value
-    via the UI. broker_account_id scopes the count the same way
-    check_max_trades_per_hour does - see its own docstring."""
-    limit = _setting("max_trades_per_day", 0)
+    via the UI (globally or for this specific account). broker_account_id
+    scopes the count the same way check_max_trades_per_hour does - see
+    its own docstring."""
+    limit = _account_setting(broker_account_id, "max_trades_per_day", 0)
     if limit <= 0:
         return
     midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -149,9 +206,10 @@ def check_max_consecutive_losses(broker_account_id=None):
     per-broker-account safety hierarchy) scopes this to just that
     account - a losing streak on a different account must never lock
     this one, matching check_max_trades_per_hour/_per_day's own
-    established per-account scoping. None keeps the legacy global/
-    unscoped behavior for the single-shared-connection path."""
-    limit = _setting("max_consecutive_losses", MAX_CONSECUTIVE_LOSSES)
+    established per-account scoping. Also resolves this account's own
+    limit OVERRIDE if one is set. None keeps the legacy global/unscoped
+    behavior for the single-shared-connection path."""
+    limit = _account_setting(broker_account_id, "max_consecutive_losses", MAX_CONSECUTIVE_LOSSES)
     pending_count = database.count_pending_trades(broker_account_id=broker_account_id)
     if pending_count >= limit:
         raise RiskViolation(
@@ -199,8 +257,9 @@ def check_cooldown_after_loss(broker_account_id=None):
     """broker_account_id (2026-07-25 Execution Reliability directive: the
     per-broker-account safety hierarchy) scopes the cooldown to just that
     account - a loss on a different account must never trigger a
-    cooldown here. None keeps the legacy global/unscoped behavior."""
-    limit = _setting("cooldown_after_loss_seconds", COOLDOWN_AFTER_LOSS_SECONDS)
+    cooldown here. Also resolves this account's own limit OVERRIDE if
+    one is set. None keeps the legacy global/unscoped behavior."""
+    limit = _account_setting(broker_account_id, "cooldown_after_loss_seconds", COOLDOWN_AFTER_LOSS_SECONDS)
     last_loss = database.get_last_loss_time(broker_account_id=broker_account_id)
     if not last_loss:
         return
@@ -256,10 +315,12 @@ def check_max_daily_loss(broker_account_id=None):
     broker_account_id (2026-07-25 Execution Reliability directive: the
     per-broker-account safety hierarchy) scopes this to just that
     account's own day - a bad day on a different account must never
-    pause this one. This is the "Broker Account Safety" tier check; see
+    pause this one. Also resolves this account's own limit OVERRIDE if
+    one is set. This is the "Broker Account Safety" tier check; see
     check_global_daily_loss for the separate, optional "Global Safety"
-    tier counterpart."""
-    limit = _setting("max_daily_loss", MAX_DAILY_LOSS)
+    tier counterpart (deliberately never account-overridable - it's the
+    one combined-across-every-account backstop)."""
+    limit = _account_setting(broker_account_id, "max_daily_loss", MAX_DAILY_LOSS)
     if limit <= 0:
         return
     midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -312,8 +373,9 @@ def check_daily_profit_target(broker_account_id=None):
 
     broker_account_id (2026-07-25 Execution Reliability directive: the
     per-broker-account safety hierarchy) scopes this to just that
-    account's own day, matching check_max_daily_loss."""
-    target = _setting("daily_profit_target", 0)
+    account's own day, matching check_max_daily_loss. Also resolves this
+    account's own limit OVERRIDE if one is set."""
+    target = _account_setting(broker_account_id, "daily_profit_target", 0)
     if target <= 0:
         return
     midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
@@ -471,3 +533,41 @@ def evaluate_all(asset, direction, expiry, amount, exclude_id=None, broker_accou
         "risk_manager: all checks passed for asset=%r direction=%r expiry=%r amount=%r",
         asset, direction, expiry, amount,
     )
+
+
+def get_account_safety_status(broker_account_id=None):
+    """Real, live status for every per-account safety control - calls
+    the exact same check functions real signals go through (never a
+    re-implementation), so a settings page can never show "not locked"
+    while the next real signal would actually be rejected, or vice
+    versa. broker_account_id=None reports the legacy global/unscoped
+    status, matching api/main.py's GET /api/settings."""
+    limits = get_effective_limits(broker_account_id)
+
+    def _active(check_fn):
+        try:
+            check_fn()
+            return False
+        except RiskViolation:
+            return True
+
+    since_hour = (datetime.now() - timedelta(hours=1)).isoformat()
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    last_loss = database.get_last_loss_time(broker_account_id=broker_account_id)
+    cooldown_remaining = None
+    if last_loss and limits["cooldown_after_loss_seconds"] > 0:
+        elapsed = (datetime.now() - datetime.fromisoformat(last_loss)).total_seconds()
+        remaining = limits["cooldown_after_loss_seconds"] - elapsed
+        if remaining > 0:
+            cooldown_remaining = remaining
+
+    return {
+        "effective_limits": limits,
+        "consecutive_loss_lock_active": _active(lambda: check_max_consecutive_losses(broker_account_id)),
+        "cooldown_remaining_seconds": cooldown_remaining,
+        "max_daily_loss_active": _active(lambda: check_max_daily_loss(broker_account_id)),
+        "daily_profit_target_reached": _active(lambda: check_daily_profit_target(broker_account_id)),
+        "trades_this_hour": database.count_trades_since(since_hour, broker_account_id=broker_account_id),
+        "trades_today": database.count_trades_since(midnight, broker_account_id=broker_account_id),
+        "daily_realized_pnl": database.get_realized_pnl_since(midnight, broker_account_id=broker_account_id),
+    }

@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 import database
 import fund_manager
+import risk_manager
 import session_manager
 from auth_routes import get_current_user, require_admin
 
@@ -43,6 +44,20 @@ class BrokerAccountUpdate(BaseModel):
     mode: Optional[str] = None
     live_enabled: Optional[bool] = None
     status: Optional[str] = None
+
+
+class BrokerAccountSafetySettings(BaseModel):
+    """Every field Optional[...] = None with exclude_unset=True read at
+    the call site (not exclude_none) - 2026-07-25 Execution Reliability
+    directive: an operator must be able to explicitly clear an override
+    back to "use the global default" by sending null, distinct from
+    simply not mentioning that field in the request at all."""
+    max_consecutive_losses_override: Optional[int] = None
+    cooldown_after_loss_seconds_override: Optional[int] = None
+    max_daily_loss_override: Optional[float] = None
+    daily_profit_target_override: Optional[float] = None
+    max_trades_per_hour_override: Optional[int] = None
+    max_trades_per_day_override: Optional[int] = None
 
 
 def _get_or_404(account_id):
@@ -196,3 +211,54 @@ def archive_broker_account(account_id: int, user=Depends(require_admin)):
         )
     database.update_broker_account(account_id, status="archived")
     return _with_funds(database.get_broker_account(account_id))
+
+
+@router.get("/{account_id}/safety-settings")
+def get_broker_account_safety_settings(account_id: int, user=Depends(get_current_user)):
+    """Per-account view of the permanent safety hierarchy (2026-07-25
+    Execution Reliability directive): this account's own limit
+    overrides (None where unset - "using the shared global default"),
+    the resolved effective values, and real live status (lock/cooldown/
+    counts/P&L) computed via the exact same risk_manager checks a real
+    signal on this account goes through - never a re-implementation
+    that could drift out of sync."""
+    account = _get_or_404(account_id)
+    overrides = {
+        key: account[key] for key in (
+            "max_consecutive_losses_override", "cooldown_after_loss_seconds_override",
+            "max_daily_loss_override", "daily_profit_target_override",
+            "max_trades_per_hour_override", "max_trades_per_day_override",
+        )
+    }
+    return {"overrides": overrides, **risk_manager.get_account_safety_status(account_id)}
+
+
+@router.put("/{account_id}/safety-settings")
+def set_broker_account_safety_settings(account_id: int, body: BrokerAccountSafetySettings,
+                                        user=Depends(require_admin)):
+    _get_or_404(account_id)
+    fields = body.model_dump(exclude_unset=True)
+    if fields:
+        database.update_broker_account(account_id, **fields)
+    account = database.get_broker_account(account_id)
+    overrides = {
+        key: account[key] for key in (
+            "max_consecutive_losses_override", "cooldown_after_loss_seconds_override",
+            "max_daily_loss_override", "daily_profit_target_override",
+            "max_trades_per_hour_override", "max_trades_per_day_override",
+        )
+    }
+    return {"overrides": overrides, **risk_manager.get_account_safety_status(account_id)}
+
+
+@router.post("/{account_id}/reset-consecutive-loss-lock")
+def reset_broker_account_consecutive_loss_lock(account_id: int, user=Depends(require_admin)):
+    """The per-account counterpart of POST /api/settings/reset-
+    consecutive-loss-lock (2026-07-25 Execution Reliability directive) -
+    same explicit, logged, reversible recovery action, scoped to just
+    this account's own lock. See core/risk_manager.reset_consecutive_
+    loss_lock's own docstring for why a lock that only clears via a
+    future winning trade needs one at all."""
+    _get_or_404(account_id)
+    reset_at = risk_manager.reset_consecutive_loss_lock(reset_by=user["email"], broker_account_id=account_id)
+    return {"reset_at": reset_at, "broker_account_id": account_id}

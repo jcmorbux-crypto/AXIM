@@ -664,6 +664,19 @@ def initialize_database():
         "emergency_stopped_by": "TEXT",
         "last_error": "TEXT",
         "last_error_at": "TEXT",
+        # Per-account safety-limit overrides (2026-07-25 Execution
+        # Reliability directive: "Independent limits for each broker
+        # account" - the permanent per-broker-account safety hierarchy).
+        # NULL means "use the global UI setting/static default" (see
+        # core/risk_manager.py's _account_setting) - an account only
+        # deviates from the shared default once an operator explicitly
+        # sets one of these, never silently.
+        "max_consecutive_losses_override": "INTEGER",
+        "cooldown_after_loss_seconds_override": "INTEGER",
+        "max_daily_loss_override": "REAL",
+        "daily_profit_target_override": "REAL",
+        "max_trades_per_hour_override": "INTEGER",
+        "max_trades_per_day_override": "INTEGER",
     }
     broker_account_columns = {row["name"] for row in conn.execute("PRAGMA table_info(broker_accounts)")}
     for column, sql_type in _NEW_BROKER_ACCOUNT_COLUMNS.items():
@@ -3400,6 +3413,9 @@ _BROKER_ACCOUNT_FIELDS = {
     "last_connected_at", "last_balance", "last_balance_checked_at", "status",
     "emergency_stopped", "emergency_stopped_at", "emergency_stopped_by",
     "last_error", "last_error_at",
+    "max_consecutive_losses_override", "cooldown_after_loss_seconds_override",
+    "max_daily_loss_override", "daily_profit_target_override",
+    "max_trades_per_hour_override", "max_trades_per_day_override",
 }
 _VALID_BROKER_ACCOUNT_MODES = {"demo", "live", "both"}
 _VALID_BROKER_ACCOUNT_STATUSES = {"active", "disabled", "archived"}
