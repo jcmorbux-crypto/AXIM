@@ -110,7 +110,7 @@
       "cancellations_handled": "code path exists, not exercised by real historical event",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation (parser already proven correct via full-corpus replay)",
       "last_validated_at": "2026-07-25",
-      "last_validated_commit": "PENDING_COMMIT_HASH",
+      "last_validated_commit": "315798e",
       "regression_fixtures": ["tests/fixtures/provider_corpus.py: daniel_analysis_commentary_mentioning_high_is_not_a_signal"],
       "parser_readiness": "VERIFIED",
       "operational_status": "DISABLED",
@@ -185,7 +185,7 @@
       "cancellations_handled": "code path exists, not exercised by real historical event",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation. Known unsupported: ~33 'BUY NOW/SELL NOW <crypto> (OTC)' messages (Bitcoin, TRON, Toncoin, Dogecoin, Cardano, BNB, Solana, Avalanche, Chainlink) - different asset class (crypto, not forex pairs), needs real Pocket Option naming-convention data before attempting, same category as NTrade's stock-name gap.",
       "last_validated_at": "2026-07-25",
-      "last_validated_commit": "PENDING_COMMIT_HASH (line-scoped direction fix; default_expiry data fix was a separate earlier commit)",
+      "last_validated_commit": "315798e (line-scoped direction fix; default_expiry data fix was a separate earlier commit)",
       "regression_fixtures": [
         "tests/fixtures/provider_corpus.py: tyler_educational_strategy_post_is_not_a_signal",
         "protection for the default_expiry fix is the replay script itself confirming zero 'Unknown' expiries remain for this channel"
@@ -444,7 +444,7 @@
       "cancellations_handled": "code path exists, not exercised by real historical event",
       "remaining_blocker": "disabled - needs to be enabled to start real live observation evidence toward demo_ready graduation.",
       "last_validated_at": "2026-07-25",
-      "last_validated_commit": "PENDING_COMMIT_HASH (line-scoped direction + same-line label fix); default_expiry data fix was a separate earlier commit",
+      "last_validated_commit": "315798e (line-scoped direction + same-line label fix); default_expiry data fix was a separate earlier commit",
       "regression_fixtures": [
         "tests/fixtures/provider_corpus.py: tyler_pro_club_strategy_tutorial_is_not_a_signal",
         "protection for the default_expiry fix is the replay script itself confirming zero 'Unknown' expiries remain for this channel"
@@ -591,7 +591,7 @@
       "cancellations_handled": "n/a - no cancellations observed in history",
       "remaining_blocker": "Real format: each session opens with a labeled block ('Pair: GBPUSD\\nExpiration: 2 minute\\nCandles: 30 seconds') followed by free-text market commentary; individual trades are bare direction-only posts ('\\ud83d\\udeab PUT (Low!)' / '\\ud83d\\udeab CALL (High!)'); the platform echoes each trade's outcome as 'GBPUSD \\u2705'/'\\u274c' (pair name + check/cross, NOT a new announcement); mid-session pair switches are announced only as free text ('We change the pair to EURCAD'); sessions close with a free-text wrap-up including balance figures. RESOLVED 2026-07-25: the FALSE POSITIVE on message [51781] (session-2 opening narrative parsed as a phantom AUD/CAD SELL signal purely from the incidental word 'sell' in prose) is fixed by the shared line-scoped direction-search change in parsers/signal_parser.py - confirmed via replay, this channel's signal_ready count dropped from 9 to 8 with the phantom signal correctly reclassified as no_signal, zero other change. STILL UNRESOLVED: (1) MISSED SIGNALS - because this channel's own asset/expiry announcement block is never recognized as an announcement (no adapter for it) and 'GBPUSD \\u2705'/'\\u274c' result-echoes are misread as fresh bare-asset announcements (harmless only by coincidence, since they happen to repeat the currently-correct pair name), the assembler's normal 300-second pending-signal timeout is repeatedly exceeded during this provider's real 7-12 minute gaps between trades, silently dropping at least 6 of the 15 real trade signals in this history (e.g. [50851], [51095], [51788], [51834], [51918], [51960], [52062]). (2) 'We change the pair to X' mid-session pair switches are never recognized at all, so the carried asset is never correctly updated by that message (only accidentally corrected later by the next result-echo, if the assembly window hasn't already expired). Fixing this provider properly requires real new adapter work - not a one-line patch: recognizing this provider's specific announcement/result-echo/pair-change vocabulary, and giving it a session-scoped carried-asset lifetime instead of the short per-signal assembly timeout (see docs/opt_signals_gap_queue.md item 4). Channel is disabled, never onboarded, no Fund/broker assignment - zero live risk today. Raw message IDs 50825-52092 preserved in channel_messages for future replay.",
       "last_validated_at": "2026-07-25",
-      "last_validated_commit": "PENDING_COMMIT_HASH",
+      "last_validated_commit": "315798e",
       "regression_fixtures": ["tests/fixtures/provider_corpus.py: narrative_announcement_with_incidental_direction_word_is_not_a_signal"],
       "parser_readiness": "BLOCKED",
       "operational_status": "NOT_ASSIGNED",
