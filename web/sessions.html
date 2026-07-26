@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Trading Sessions - AXIM Trader</title>
+<title>Bots - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <script>(function(){try{var t=localStorage.getItem("axim-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
@@ -14,24 +14,95 @@
   .progress-bar.loss > div { background: var(--red); }
   .session-active-item { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 14px 16px; margin-bottom: 12px; }
   .session-active-item:last-child { margin-bottom: 0; }
+
+  .bot-card { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); padding: 20px 22px; margin-bottom: 16px; }
+  .bot-card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 14px; }
+  .bot-card .bc-title { font-size: 16px; font-weight: 650; }
+  .bot-card .bc-command { font-size: 12.5px; color: var(--text-dim); font-family: monospace; margin-top: 2px; }
+  .bot-status-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; padding: 5px 12px; border-radius: 999px; background: var(--bg); border: 1px solid var(--border); }
+  .bot-status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+  .bot-status-pill.live .dot { background: var(--green); }
+  .bot-status-pill.idle .dot { background: var(--text-faint); }
+  .bc-attrs { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+  .bc-attrs .attr .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-faint); font-weight: 650; margin-bottom: 3px; }
+  .bc-attrs .attr .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .bc-idle-note { color: var(--text-dim); font-size: 13px; margin-bottom: 10px; }
+  .bc-actions { display: flex; gap: 10px; margin-bottom: 14px; }
+  .activity-log { max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+  .activity-row { display: flex; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .activity-row:last-child { border-bottom: none; }
+  .activity-row .a-time { color: var(--text-faint); width: 70px; flex-shrink: 0; }
+  .activity-row .a-body { flex: 1; min-width: 0; }
+  .activity-row .a-command { font-family: monospace; color: var(--text-dim); }
+  .activity-row .a-response { margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .activity-row .a-outcome { flex-shrink: 0; }
+
+  /* Global Emergency Stop (Bot Hero & Emergency Controls) - deliberately
+     the loudest, largest control on this page, per the Design Stack's
+     own rule ("Emergency Stop must remain visually distinct and require
+     confirmation") and the 2026-07-25 product directive that it must be
+     visually impossible to confuse with an ordinary per-session Stop
+     button. Full-width, oversized text, solid red fill (not just the
+     thin ".danger" outline used everywhere else) - nothing else on this
+     page looks like this. */
+  .global-estop-btn {
+    display: block; width: 100%; padding: 18px; margin-top: 14px;
+    background: var(--red); color: #fff; border: none; border-radius: var(--radius);
+    font-size: 16px; font-weight: 800; letter-spacing: .02em; cursor: pointer;
+    box-shadow: 0 4px 16px rgba(220, 38, 38, 0.35);
+  }
+  .global-estop-btn:hover { background: var(--red-hover, var(--red)); filter: brightness(1.08); }
+  .global-estop-scope { text-align: center; font-size: 11.5px; color: var(--text-dim); margin-top: 6px; }
+
+  /* Per-session shortcut to the SAME global action - kept (existing
+     capability, not removed) but visually and textually unmistakable
+     from "Stop This Session" beside it: outlined, not filled, always
+     carries "(Global)" in its own label rather than relying only on the
+     confirm dialog. */
+  .session-global-estop-btn { border: 2px solid var(--red); color: var(--red); background: transparent; font-weight: 700; }
+
+  .diag-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 14px; }
+  .diag-stat { background: var(--surface); border-radius: var(--radius-sm); padding: 12px; }
+  .diag-stat .label { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-faint); font-weight: 750; margin-bottom: 4px; }
+  .diag-stat .value { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
 
 <div id="app-shell">
   <main class="main">
+
+    <!-- ==================== Bot Hero & Emergency Controls ==================== -->
     <div class="page-header">
       <div>
-        <h1>Trading Sessions <a href="/guide#sec-trading-sessions" class="help-link" title="Help: Trading Sessions">?</a></h1>
-        <div class="subtitle">Start -&gt; Execute Signals -&gt; Track Results -&gt; Stop at Target or Stop at Risk Limit.</div>
+        <h1>Bots <a href="/guide#sec-trading-sessions" class="help-link" title="Help: Bots">?</a></h1>
+        <div class="subtitle">Connected bot channels, trading sessions, and the controls that stop them - Start -&gt; Execute Signals -&gt; Track Results -&gt; Stop at Target or Stop at Risk Limit.</div>
       </div>
       <div class="row">
         Listener process: <span id="process-badge" class="badge off">loading...</span>
         <button onclick="callControl('/api/process/start')">Start</button>
         <button onclick="callControl('/api/process/stop')">Stop</button>
+        Account mode: <span id="new-account-mode" class="badge off">loading...</span>
       </div>
     </div>
     <div class="muted" style="margin-bottom:16px; font-size:12.5px;">A session can only run while the listener process is running - start it here if it's stopped.</div>
+
+    <div class="card solid full-width" style="margin-bottom:24px; border: 1px solid var(--red-border);">
+      <h3 style="margin-top:0;">Emergency Controls</h3>
+      <div class="muted" style="font-size:12.5px;">For a single broker account, use that account's own Emergency Stop on the <a href="/broker" style="color:var(--blue);">Broker Accounts</a> page - it only affects that account. The button below is different:</div>
+      <button class="global-estop-btn" onclick="confirmGlobalEmergencyStop()">🛑 EMERGENCY STOP - HALT ALL TRADING</button>
+      <div class="global-estop-scope">Scope: <b>Global</b> - immediately stops every broker account, every Fund, every active session. Not reversible without an explicit Resume.</div>
+    </div>
+
+    <!-- ==================== Connected Bots ==================== -->
+    <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">Connected Bots</div>
+    <div class="muted" style="font-size:12.5px; margin-bottom:14px;">Interactive Telegram bot-command channels - request signals on demand, watch every round-trip in real time.</div>
+    <div id="bots-list" style="margin-bottom:28px;">
+      <div class="empty">Loading...</div>
+    </div>
+
+    <!-- ==================== Session Controls ==================== -->
+    <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">Session Controls</div>
 
     <div id="active-session-card" class="card full-width" style="margin-bottom:20px;">
       <h3>Active Sessions</h3>
@@ -72,9 +143,6 @@
           </label>
           <div class="muted" style="font-size:11.5px;">Only applies in Live mode. When on, every trade pauses and waits (up to 45s) for you to Confirm or Reject from a popup visible on any page - answering nothing rejects the trade automatically.</div>
         </div>
-        <div class="row" style="margin-bottom:10px;">
-          Account mode: <span id="new-account-mode" class="badge off">loading...</span>
-        </div>
         <div class="row">
           <button class="primary" onclick="confirmStartSession()">Start Session</button>
           <span id="start-session-status" class="muted"></span>
@@ -90,13 +158,25 @@
       </div>
     </div>
 
-    <div class="card solid full-width">
+    <div class="card solid full-width" style="margin-bottom:28px;">
       <h3>Session History</h3>
       <table>
         <thead><tr><th>Name</th><th>Status</th><th>Trades</th><th>P/L</th><th>Started</th><th>Ended</th></tr></thead>
         <tbody id="history-body"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
       </table>
     </div>
+
+    <!-- ==================== Logs & Diagnostics ==================== -->
+    <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">Logs &amp; Diagnostics</div>
+    <div class="card solid full-width" id="diagnostics-card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">Recovery &amp; Resilience</h3>
+      <div class="muted" style="font-size:11.5px; margin-bottom:10px;">Real counts from browser reconnects, worker-pool rebuilds, and listener restarts - not fabricated, and empty/zero if nothing has happened yet.</div>
+      <div id="diagnostics-body" class="muted">Loading...</div>
+    </div>
+    <div id="admin-logs-link" style="display:none;">
+      <a href="/logs" style="color:var(--blue); font-size:13px;">View full server logs (Owner/Admin) &rarr;</a>
+    </div>
+
   </main>
 </div>
 <script src="/web/shell.js"></script>
@@ -112,7 +192,7 @@ async function fetchJSON(url, opts) {
   }
   return res.json();
 }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "-"; }
 function fmtMoney(n) { return (n === null || n === undefined) ? "-" : `${n > 0 ? "+" : ""}$${Number(n).toFixed(2)}`; }
 function plClass(v) { return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral"); }
@@ -141,7 +221,7 @@ async function loadChannelPicker() {
         <span>${escapeHtml(c.title || c.username || c.id)}</span>
         <span class="muted" style="font-size:11px;">(${c.source_type})</span>
       </div>
-    `).join("") || '<div class="empty">No channels yet - add some on the Telegram Sources page.</div>';
+    `).join("") || '<div class="empty">No channels yet - add some on the Signals page.</div>';
   } catch (e) {
     document.getElementById("channel-picker").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
   }
@@ -173,10 +253,9 @@ async function loadFunds() {
       fetchJSON("/api/funds"),
     ]);
     select.innerHTML = '<option value="">Select a fund...</option>' +
-      allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("") +
-      (allFunds.length ? "" : "");
+      allFunds.map(f => `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join("");
     if (!allFunds.length) {
-      select.innerHTML += '<option value="" disabled>No funds yet - create one on the Funds page</option>';
+      select.innerHTML += '<option value="" disabled>No funds yet - create one on the Portfolio page</option>';
     }
   } catch (e) {
     select.innerHTML = '<option value="">Failed to load funds</option>';
@@ -328,6 +407,28 @@ async function callControl(path) {
   refreshProcessStatus();
 }
 
+// ---------------- Global Emergency Stop (Bot Hero & Emergency Controls) ----------------
+// The ONE true global kill switch (POST /api/control/emergency-stop) -
+// halts every broker account, every Fund, every session immediately.
+// Deliberately the loudest/largest control on the page (see
+// .global-estop-btn) so it can never be mistaken for "Stop This
+// Session" below, and the confirm dialog restates the exact same scope
+// promised by the button and its caption underneath it.
+async function confirmGlobalEmergencyStop() {
+  const ok = await AximShell.confirm(
+    "GLOBAL EMERGENCY STOP\n\nThis immediately halts ALL trading across every broker account, every Fund, and every active session - not just the one you're looking at. It does not place or close any trade by itself; it only stops NEW signals from executing. You'll need to explicitly resume afterward.",
+    { title: "Emergency Stop - Global Scope", danger: true, confirmLabel: "Stop Everything" }
+  );
+  if (!ok) return;
+  try {
+    await fetchJSON("/api/control/emergency-stop", { method: "POST" });
+    await refreshActiveSession();
+    await refreshHistory();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
 function fundNameFor(fundId) {
   const f = allFundsAnyStatus.find(x => x.id === fundId);
   return f ? f.name : (fundId ? `Fund #${fundId}` : "(no fund)");
@@ -350,8 +451,8 @@ function renderSessionCard(session) {
       </div>
       ${session.max_trades > 0 ? `<div class="progress-bar"><div style="width:${tradesPct}%;"></div></div>` : ""}
       <div class="row" style="margin-top:14px;">
-        <button onclick="stopSession(${session.id})">Stop This Session</button>
-        <button class="danger" onclick="emergencyStopSession(${session.id})">Emergency Stop (all Funds)</button>
+        <button onclick="stopSession(${session.id})" title="Scope: this session only">Stop This Session</button>
+        <button class="session-global-estop-btn" onclick="confirmGlobalEmergencyStop()" title="Scope: global - same action as the Emergency Controls button above">Emergency Stop (Global)</button>
       </div>
     </div>
   `;
@@ -372,20 +473,9 @@ async function refreshActiveSession() {
 }
 
 async function stopSession(id) {
-  if (!(await AximShell.confirm("Stop this session? No new signals will be requested/executed for it.", { title: "Stop Session", danger: true, confirmLabel: "Stop Session" }))) return;
+  if (!(await AximShell.confirm("Stop this session? Scope: this session only - no new signals will be requested/executed for it. Other Funds' sessions keep running.", { title: "Stop This Session", danger: true, confirmLabel: "Stop This Session" }))) return;
   try {
     await fetchJSON(`/api/sessions/${id}/stop`, { method: "POST" });
-    await refreshActiveSession();
-    await refreshHistory();
-  } catch (e) {
-    alert("Failed: " + e.message);
-  }
-}
-
-async function emergencyStopSession(id) {
-  if (!(await AximShell.confirm("EMERGENCY STOP: immediately halts ALL trading (not just this session). Continue?", { title: "Emergency Stop", danger: true, confirmLabel: "Emergency Stop" }))) return;
-  try {
-    await fetchJSON(`/api/sessions/${id}/emergency-stop`, { method: "POST" });
     await refreshActiveSession();
     await refreshHistory();
   } catch (e) {
@@ -484,9 +574,143 @@ async function saveCurrentAsProfile() {
   }
 }
 
+// ---------------- Connected Bots ----------------
+
+const OUTCOME_LABELS = { routed: "Routed", no_signal: "No signal", no_reply: "No reply" };
+const OUTCOME_BADGE = { routed: "on", no_signal: "warn", no_reply: "off" };
+
+async function loadBots() {
+  const list = document.getElementById("bots-list");
+  let bots;
+  try {
+    bots = await fetchJSON("/api/bots");
+  } catch (e) {
+    list.innerHTML = `<div class="empty-panel">Failed to load: ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  if (!bots.length) {
+    list.innerHTML = AximShell.emptyPanel('No Bot Command channels configured yet. Add one from Signals and set its Source Type to "Bot Command".');
+    return;
+  }
+  list.innerHTML = bots.map(bot => renderBotCard(bot)).join("");
+  bots.forEach(bot => {
+    if (bot.active_session) loadActivity(bot.channel_id, bot.active_session.id);
+  });
+}
+
+function renderBotCard(bot) {
+  const s = bot.active_session;
+  const statusPill = s
+    ? `<span class="bot-status-pill live"><span class="dot"></span>Live - ${escapeHtml(s.status)}</span>`
+    : `<span class="bot-status-pill idle"><span class="dot"></span>Idle</span>`;
+
+  const attrs = s ? `
+    <div class="bc-attrs">
+      <div class="attr"><div class="label">Fund</div><div class="value">${s.fund_name ? escapeHtml(s.fund_name) : "-"}</div></div>
+      <div class="attr"><div class="label">Broker Account</div><div class="value">${s.broker_account_name ? escapeHtml(s.broker_account_name) : "-"}</div></div>
+      <div class="attr"><div class="label">Strategy</div><div class="value">${s.risk_profile_name ? escapeHtml(s.risk_profile_name) : "-"}</div></div>
+      <div class="attr"><div class="label">Mode</div><div class="value">${escapeHtml(s.account_mode)}</div></div>
+      <div class="attr"><div class="label">Session target</div><div class="value">${s.profit_target ? fmtMoney(s.profit_target) : "None"}</div></div>
+      <div class="attr"><div class="label">Loss limit</div><div class="value">${s.loss_limit ? fmtMoney(s.loss_limit) : "None"}</div></div>
+      <div class="attr"><div class="label">Requests sent</div><div class="value">${s.requests_sent}</div></div>
+      <div class="attr"><div class="label">Session P/L</div><div class="value ${plClass(s.realized_pnl)}">${fmtMoney(s.realized_pnl)}</div></div>
+    </div>
+  ` : `<div class="bc-idle-note">Not currently running. Start a session covering this channel below to begin the interactive request loop.</div>`;
+
+  const actions = s
+    ? `<div class="bc-actions"><button class="danger" onclick="stopBotSession(${s.id}, ${bot.channel_id})" title="Scope: this session only">Stop</button></div>`
+    : `<div class="bc-actions"><button class="primary" onclick="document.getElementById('new-fund').scrollIntoView({behavior:'smooth'})">Start Session &darr;</button></div>`;
+
+  return `
+    <div class="bot-card" id="bot-card-${bot.channel_id}">
+      <div class="bot-card-top">
+        <div>
+          <div class="bc-title">${escapeHtml(bot.title)}</div>
+          <div class="bc-command">${bot.trigger_command ? escapeHtml(bot.trigger_command) : "(no trigger command configured)"}</div>
+        </div>
+        ${statusPill}
+      </div>
+      ${attrs}
+      ${actions}
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:8px;">Activity Log</div>
+      <div class="activity-log" id="activity-log-${bot.channel_id}">
+        <div class="empty" style="padding:12px;">${s ? "Loading..." : "No session running - nothing to show yet."}</div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadActivity(channelId, sessionId) {
+  const el = document.getElementById(`activity-log-${channelId}`);
+  try {
+    const activity = await fetchJSON(`/api/bots/${channelId}/activity?session_id=${sessionId}`);
+    if (!activity.length) {
+      el.innerHTML = '<div class="empty" style="padding:12px;">No requests sent yet.</div>';
+      return;
+    }
+    el.innerHTML = activity.map(a => `
+      <div class="activity-row">
+        <div class="a-time">${new Date(a.sent_at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}</div>
+        <div class="a-body">
+          <div class="a-command">&rarr; ${escapeHtml(a.command_text || "-")}</div>
+          ${a.response_text ? `<div class="a-response">&larr; ${escapeHtml(a.response_text)}</div>` : ""}
+        </div>
+        <div class="a-outcome"><span class="badge ${OUTCOME_BADGE[a.outcome] || "off"}">${OUTCOME_LABELS[a.outcome] || a.outcome}</span></div>
+      </div>
+    `).join("");
+  } catch (e) {
+    el.innerHTML = `<div class="empty" style="padding:12px;">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function stopBotSession(sessionId, channelId) {
+  if (!(await AximShell.confirm("Stop this session? Scope: this session only - the bot will stop requesting new signals immediately. Other sessions keep running.", { title: "Stop Session", danger: true, confirmLabel: "Stop Session" }))) return;
+  try {
+    await fetchJSON(`/api/sessions/${sessionId}/stop`, { method: "POST" });
+    await loadBots();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+// ---------------- Logs & Diagnostics ----------------
+
+async function loadDiagnostics() {
+  const el = document.getElementById("diagnostics-body");
+  try {
+    const data = await fetchJSON("/api/performance/execution-quality");
+    // core/database.py's get_recovery_event_stats() returns one row per
+    // (event_type, outcome) pair, e.g. {event_type:"browser_reconnect",
+    // outcome:"succeeded", n:57} - group those rows by event_type here.
+    const rows = data.recovery_events || [];
+    if (!rows.length) {
+      el.innerHTML = '<div class="empty">No recovery events recorded yet.</div>';
+      return;
+    }
+    const byType = {};
+    rows.forEach(r => {
+      byType[r.event_type] = byType[r.event_type] || { succeeded: 0, failed: 0 };
+      if (r.outcome === "succeeded") byType[r.event_type].succeeded += r.n;
+      else byType[r.event_type].failed += r.n;
+    });
+    el.innerHTML = `<div class="diag-stat-grid">${Object.entries(byType).map(([type, stat]) => `
+      <div class="diag-stat">
+        <div class="label">${escapeHtml(type.replace(/_/g, " "))}</div>
+        <div class="value">${stat.succeeded}<span class="muted" style="font-size:12px;"> / ${stat.succeeded + stat.failed}</span></div>
+        <div class="muted" style="font-size:10.5px;">succeeded / total</div>
+      </div>
+    `).join("")}</div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
 (async () => {
   const user = await AximShell.init({ active: "sessions" });
   if (!user) return;
+  if (user.role === "owner" || user.role === "admin") {
+    document.getElementById("admin-logs-link").style.display = "block";
+  }
   await loadChannelPicker();
   await loadRiskProfiles();
   await loadFunds();
@@ -495,8 +719,11 @@ async function saveCurrentAsProfile() {
   refreshActiveSession();
   refreshProfiles();
   refreshHistory();
+  loadBots();
+  loadDiagnostics();
   setInterval(refreshActiveSession, 5000);
   setInterval(refreshProcessStatus, 10000);
+  setInterval(loadBots, 8000);
   AximShell.subscribeEvents({
     "trade.closed": { onEvent: refreshActiveSession, onResync: refreshActiveSession },
   });

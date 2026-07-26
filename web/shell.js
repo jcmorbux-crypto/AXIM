@@ -141,17 +141,15 @@ const AximShell = (() => {
     { key: "settings", label: "Settings", href: "/settings", icon: ICONS.settings },
   ];
   // Not part of the approved 10-screen catalog at all (Logs/Users/Help),
-  // or not yet consolidated into their approved home (Broker Accounts ->
-  // Portfolio, Bot Control Center -> folds into Signals as a provider
-  // type) - see UI v2 compliance tasks for Broker/Bots. Signal Inspector
-  // and Live Signal Pipeline are REMOVED from nav entirely (2026-07-25):
-  // their content is now part of the Signals page itself (Execution
-  // Rules / Signal Feed Table + Selected Signal Details regions) - the
-  // old routes still work as redirects (see api/main.py) so nothing is
-  // stranded, they're just no longer separate destinations.
+  // or not yet consolidated into their approved home (Broker Accounts -
+  // pending its own Integration Review, see UI v2 compliance tasks).
+  // Signal Inspector, Live Signal Pipeline, and Bot Control Center are
+  // REMOVED from nav entirely (2026-07-25): their content now lives on
+  // the Signals and Bots pages themselves - the old routes still work
+  // as redirects (see api/main.py) so nothing is stranded, they're just
+  // no longer separate destinations.
   const MORE_NAV_ITEMS = [
     { key: "pocketoption", label: "Broker Accounts", href: "/broker", icon: ICONS.pocketoption },
-    { key: "bots", label: "Bot Control Center", href: "/bots", icon: ICONS.bots },
     { key: "logs", label: "Logs", href: "/logs", icon: ICONS.logs, adminOnly: true },
     { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
     { key: "guide", label: "Help", href: "/guide", icon: ICONS.guide },

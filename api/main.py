@@ -325,9 +325,14 @@ def signal_pipeline_page(channel: int | None = None, message: int | None = None)
     return RedirectResponse(url="/telegram", status_code=307)
 
 
+# UI v2 Design Stack: Bot Control Center is consolidated into the Bots
+# workspace (/sessions - "Connected Bots" region), alongside Trading
+# Sessions - per "do not leave two competing operational pages after the
+# rebuild." Redirects rather than serving the old standalone page so
+# existing bookmarks/deep-links keep working.
 @app.get("/bots")
 def bots_page():
-    return _serve("bots.html")
+    return RedirectResponse(url="/sessions", status_code=307)
 
 
 @app.get("/sessions")
