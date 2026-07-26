@@ -741,6 +741,7 @@ async function showBuilder(baseKey, existingProfileId) {
   document.getElementById("f-comp-mode").addEventListener("change", (e) => {
     document.getElementById("comp-milestone-fields").style.display = e.target.value === "milestone_based" ? "block" : "none";
     document.getElementById("comp-cycle-fields").style.display = e.target.value === "alternating_cycle" ? "block" : "none";
+    updateLivePreview();
   });
   const martSteps = document.getElementById("f-mart-steps");
   const updateWarning = () => { document.getElementById("mart-unlimited-warning").style.display = (parseInt(martSteps.value, 10) > 5) ? "block" : "none"; };
@@ -764,22 +765,50 @@ async function showBuilder(baseKey, existingProfileId) {
 // engine (core/risk_engine.py) and showing a number that's wrong at the
 // exact moment it matters most. Honest "not shown here" beats a
 // plausible-looking guess.
+//
+// Exactness checked directly against core/risk_engine.py's _base_amount
+// and _effective_risk_percent (2026-07-25):
+// - "percent" mode's base_amount = bankroll * (percent/100) is only
+//   this simple when Compounding is "disabled" - milestone_based reacts
+//   to the session's current realized P&L crossing thresholds, and
+//   alternating_cycle reacts to the session's completed trade count.
+//   Both are genuine runtime state this builder has no session to read,
+//   so when Compounding is active this returns the BASE percent's
+//   number labeled as a starting point, not a claimed-exact result.
+// - "dynamic" mode's real formula is (bankroll + session realized P&L)
+//   * percent, not bankroll * percent - the session P&L term is also
+//   runtime state. Labeled explicitly as assuming a fresh session (P&L
+//   = 0) rather than silently treating the entered bankroll as if it
+//   were the live current balance.
 function computeNextStakePreview() {
   const bankroll = parseFloat(document.getElementById("f-bankroll").value) || 0;
   const mode = document.getElementById("f-sizing-mode").value;
+  const compMode = document.getElementById("f-comp-mode").value;
+  const basis = [];
   if (mode === "fixed") {
     const fixed = parseFloat(document.getElementById("f-fixed").value) || 0;
-    return { amount: fixed, note: "Fixed amount every trade, regardless of bankroll." };
+    basis.push(["Base stake", fmtMoney(fixed)], ["Position sizing", "Fixed"]);
+    return { amount: fixed, basis, exact: true };
   }
   if (mode === "percent") {
     const pct = parseFloat(document.getElementById("f-percent").value) || 0;
-    return { amount: bankroll * pct / 100, note: `${pct}% of the ${fmtMoney(bankroll)} bankroll entered above.` };
+    const exact = compMode === "disabled";
+    basis.push(["Position sizing", "Percent of bankroll"], ["Bankroll", fmtMoney(bankroll)], ["Risk percent", `${pct}%`]);
+    if (!exact) basis.push(["Compounding", `${compMode === "milestone_based" ? "Milestone-based" : "Alternating cycle"} - adjusts this percent based on session progress, not shown here`]);
+    return { amount: bankroll * pct / 100, basis, exact };
   }
   if (mode === "dynamic") {
     const pct = parseFloat(document.getElementById("f-dynamic-percent").value) || 0;
-    return { amount: bankroll * pct / 100, note: `${pct}% of current balance - recalculates every trade as balance moves.` };
+    const exact = compMode === "disabled";
+    basis.push(["Position sizing", "Dynamic (% of current balance)"], ["Assumed balance", `${fmtMoney(bankroll)} (fresh session, $0 realized P/L so far)`], ["Risk percent", `${pct}%`]);
+    if (!exact) basis.push(["Compounding", `${compMode === "milestone_based" ? "Milestone-based" : "Alternating cycle"} - adjusts this percent based on session progress, not shown here`]);
+    return { amount: bankroll * pct / 100, basis, exact: false };
   }
   return null;
+}
+
+function renderBasisList(basis) {
+  return `<ul class="plain-list" style="font-size:11.5px;">${basis.map(([k, v]) => `<li>&#10003; ${escapeHtml(k)}: ${escapeHtml(v)}</li>`).join("")}</ul>`;
 }
 
 function updateLivePreview() {
@@ -790,11 +819,13 @@ function updateLivePreview() {
   let html = "";
   if (preview) {
     html += `
-      <div class="mm-tile on" style="margin-bottom:12px;">
+      <div class="mm-tile on" style="margin-bottom:8px;">
         <div class="mm-tile-label">Next trade stake</div>
         <div class="mm-tile-value">${fmtMoney(preview.amount)}</div>
       </div>
-      <div class="muted" style="font-size:11.5px; margin-bottom:14px;">${preview.note}</div>
+      <div class="muted" style="font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; margin-bottom:2px;">Based on</div>
+      ${renderBasisList(preview.basis)}
+      ${preview.exact ? "" : `<div class="banner info" style="font-size:11px; margin-bottom:10px;">This number assumes the session baseline above - AXIM recalculates the real figure from live session state at trade time.</div>`}
     `;
   } else {
     html += `<div class="muted" style="font-size:12px; margin-bottom:14px;">${mode === "kelly" ? "Kelly sizing" : "Daily Compounding"} is calculated by AXIM's real risk engine at trade/day-start time - not duplicated here to avoid ever showing a number that could drift from what actually executes.</div>`;
@@ -812,12 +843,22 @@ function updateLivePreview() {
     const baseAmount = preview ? preview.amount : 0;
     const steps = parseInt(document.getElementById("f-mart-steps").value, 10) || 1;
     const mult = parseFloat(document.getElementById("f-mart-mult").value) || 2;
+    const stepAmounts = [];
     let total = 0;
-    for (let s = 0; s < steps; s++) total += baseAmount * Math.pow(mult, s);
+    for (let s = 0; s < steps; s++) {
+      const amount = baseAmount * Math.pow(mult, s);
+      stepAmounts.push(amount);
+      total += amount;
+    }
     if (preview) {
       html += `
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:14px 0 6px;">Potential Exposure</div>
+        <div class="muted" style="font-size:11px; margin-bottom:6px;">If a losing streak starts at trade 1 and runs the full ladder:</div>
+        <table style="width:100%; font-size:12.5px; margin-bottom:8px;">
+          ${stepAmounts.map((amount, i) => `<tr><td style="padding:2px 0; color:var(--text-dim);">Trade ${i + 1}</td><td style="padding:2px 0; text-align:right; font-variant-numeric:tabular-nums;">${fmtMoney(amount)}</td></tr>`).join("")}
+        </table>
         <div class="banner warn" style="font-size:12px;">
-          Worst-case martingale exposure if every step in a row loses: <b>${fmtMoney(total)}</b>
+          Maximum Session Exposure: <b>${fmtMoney(total)}</b>
         </div>
       `;
     } else {
