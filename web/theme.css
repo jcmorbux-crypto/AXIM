@@ -113,6 +113,7 @@
   --shadow-lift: 0 8px 16px rgba(20, 24, 31, 0.07), 0 28px 64px rgba(20, 24, 31, 0.13);
   --card-sheen: linear-gradient(165deg, rgba(255,255,255,0.65) 0%, rgba(255,255,255,0) 40%);
   --sidebar-w: 264px;
+  --topbar-h: 60px;
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -213,9 +214,58 @@ html, body {
 
 a { color: inherit; }
 
-/* ---- App shell: fixed sidebar + scrollable content ---- */
-
+/* ---- App shell: fixed topbar + fixed sidebar + scrollable content ----
+   Visual Fidelity Pass Round 3 - the Design System Board shows a
+   persistent top status bar (live balance, account mode pill,
+   notifications, avatar) on every screen, which the app had no
+   equivalent of. Added as a shared shell element (like the sidebar)
+   rather than per-page markup - it surfaces data the app already
+   computes elsewhere (Dashboard's balance total, the real account
+   mode, the existing notification bell), not a new feature. */
 .app-shell { display: flex; min-height: 100vh; }
+
+.topbar {
+  position: fixed; top: 0; left: 0; right: 0; height: var(--topbar-h);
+  z-index: 220;
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: 18px;
+  padding: 0 28px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+[data-theme="dark"] .topbar {
+  background: rgba(13, 13, 22, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+.topbar-balance { font-size: 16px; font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.topbar-mode {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 999px; font-size: 11.5px; font-weight: 700; letter-spacing: 0.02em;
+}
+.topbar-mode .dot { width: 7px; height: 7px; border-radius: 50%; }
+.topbar-mode.live { background: var(--green-soft); color: var(--green); }
+.topbar-mode.live .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.topbar-mode.demo { background: var(--blue-soft); color: var(--blue); }
+.topbar-mode.demo .dot { background: var(--blue); }
+.topbar-avatar {
+  width: 32px; height: 32px; border-radius: 50%;
+  background: var(--brand-soft); color: var(--brand);
+  display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 12px; flex-shrink: 0;
+}
+.topbar .notif-bell-wrap { position: relative; }
+.topbar .notif-bell {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; padding: 0; border-radius: 50%;
+  background: transparent; border: none; color: var(--text-dim); cursor: pointer;
+}
+.topbar .notif-bell:hover { background: var(--surface); color: var(--text); }
+.topbar .notif-bell span:not(.notif-count) { display: none; }
+.topbar .notif-bell .notif-count { position: absolute; top: 2px; right: 2px; margin-left: 0; }
+.topbar .notif-dropdown { bottom: auto; top: calc(100% + 8px); left: auto; right: 0; }
+@media (max-width: 900px) { .topbar { display: none; } }
 
 .sidebar {
   width: var(--sidebar-w);
@@ -225,7 +275,7 @@ a { color: inherit; }
   display: flex;
   flex-direction: column;
   position: fixed;
-  top: 0; bottom: 0; left: 0;
+  top: var(--topbar-h); bottom: 0; left: 0;
   padding: 26px 16px;
 }
 [data-theme="dark"] .sidebar {
@@ -234,6 +284,7 @@ a { color: inherit; }
   -webkit-backdrop-filter: blur(20px);
   border-right-color: rgba(255, 255, 255, 0.06);
 }
+@media (max-width: 900px) { .sidebar { top: 0; } }
 
 .sidebar-logo {
   display: flex;
@@ -389,11 +440,13 @@ a { color: inherit; }
 
 .main {
   margin-left: var(--sidebar-w);
+  margin-top: var(--topbar-h);
   flex: 1;
   min-width: 0;
   padding: 28px 36px 60px 36px;
   max-width: 1400px;
 }
+@media (max-width: 900px) { .main { margin-top: 0; } }
 
 .page-header {
   display: flex;

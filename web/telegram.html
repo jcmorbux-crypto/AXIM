@@ -350,6 +350,14 @@ function stateBadge(state) {
   return `<span class="badge ${meta.cls}">${escapeHtml(meta.label)}</span>`;
 }
 
+// Visual Fidelity Pass Round 3 - the board's Signals Feed identifies
+// each row by provider name, not a raw internal channel id. allChannels
+// is already fetched by refreshChannels() before this table renders.
+function channelLabel(channelId) {
+  const ch = (allChannels || []).find(c => c.id === channelId);
+  return ch ? (ch.title || ch.chat_id || String(channelId)) : String(channelId ?? "-");
+}
+
 function populateStateFilter() {
   const select = document.getElementById("state-filter");
   for (const [state, meta] of Object.entries(STATE_META)) {
@@ -386,7 +394,7 @@ async function loadJourneys() {
     body.innerHTML = journeys.map(j => `
       <tr class="journey-row" onclick="selectJourney(${j.channel_id}, ${j.message_id}, this)">
         <td class="muted">${fmtTime(j.occurred_at)}</td>
-        <td>${j.channel_id ?? "-"}</td>
+        <td>${escapeHtml(channelLabel(j.channel_id))}</td>
         <td>${j.message_id ?? "-"}</td>
         <td>${stateBadge(j.state)}</td>
         <td class="muted" style="font-size:12px;">${escapeHtml(j.detail || "-")}</td>
@@ -404,7 +412,7 @@ async function selectJourney(channelId, messageId, rowEl) {
   selectedJourney = { channelId, messageId };
   const subtitle = document.getElementById("selected-signal-subtitle");
   const timeline = document.getElementById("selected-signal-timeline");
-  subtitle.textContent = `Channel ${channelId} - Message ${messageId}`;
+  subtitle.textContent = `${channelLabel(channelId)} - Message ${messageId}`;
   timeline.innerHTML = '<div class="muted">Loading...</div>';
   try {
     const events = await fetchJSON(`/api/signal-pipeline/journeys/${channelId}/${messageId}`);
@@ -432,7 +440,7 @@ async function selectJourney(channelId, messageId, rowEl) {
 async function openJourneyModalFromQuery(channelId, messageId) {
   const subtitle = document.getElementById("journey-modal-subtitle");
   const timeline = document.getElementById("journey-timeline");
-  subtitle.textContent = `Channel ${channelId} - Message ${messageId}`;
+  subtitle.textContent = `${channelLabel(channelId)} - Message ${messageId}`;
   timeline.innerHTML = '<div class="muted">Loading...</div>';
   openModal("journey-modal");
   try {

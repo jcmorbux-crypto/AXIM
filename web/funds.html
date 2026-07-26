@@ -67,8 +67,11 @@
 
     <div class="portfolio-row-1">
       <div class="card solid">
-        <h3>Portfolio Summary</h3>
-        <div class="ps-stats">
+        <div class="row" style="justify-content:space-between; align-items:flex-start;">
+          <h3 style="margin:0;">Portfolio Summary</h3>
+          <svg id="ps-win-ring" width="52" height="52" viewBox="0 0 52 52" style="flex-shrink:0;"></svg>
+        </div>
+        <div class="ps-stats" style="margin-top:14px;">
           <div class="stat"><span class="label">Total portfolio value</span><span class="value" id="ps-total-value">-</span></div>
           <div class="stat"><span class="label">Active funds</span><span class="value" id="ps-active-funds">-</span></div>
           <div class="stat"><span class="label">Total profit (lifetime)</span><span class="value" id="ps-total-profit">-</span></div>
@@ -376,6 +379,29 @@ function renderGrowthChart(points) {
   caption.textContent = `${netText} net across ${points.length} closed trade${points.length === 1 ? "" : "s"}, last 90 days`;
 }
 
+// Visual Fidelity Pass Round 3 - the board's Portfolio mini-card pairs
+// its equity/win-rate stats with a small ring accent; adds the same
+// treatment here using the real overall_win_rate already computed for
+// the text value beside it.
+function renderWinRing(pct) {
+  const svg = document.getElementById("ps-win-ring");
+  if (!svg) return;
+  const size = 52, stroke = 6, r = (size - stroke) / 2, c = size / 2;
+  const circumference = 2 * Math.PI * r;
+  const frac = Math.max(0, Math.min(1, pct || 0));
+  const dash = circumference * frac;
+  svg.innerHTML = `
+    <defs><linearGradient id="psRingGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="var(--brand)"></stop>
+      <stop offset="100%" stop-color="var(--green)"></stop>
+    </linearGradient></defs>
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--border)" stroke-width="${stroke}"></circle>
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="url(#psRingGrad)" stroke-width="${stroke}"
+      stroke-linecap="round" stroke-dasharray="${dash.toFixed(1)} ${circumference.toFixed(1)}"
+      transform="rotate(-90 ${c} ${c})"></circle>
+  `;
+}
+
 const ALLOCATION_COLORS = ["#9166ff", "#6d93ff", "#34d399", "#eab84f", "#f37070", "#0891b2", "#db2777", "#7c3aed"];
 
 function renderAllocationLegend() {
@@ -413,6 +439,7 @@ async function loadPortfolioSummary() {
     profitEl.textContent = fmtMoney(overview.total_profit_loss);
     profitEl.className = "value " + (overview.total_profit_loss > 0 ? "pos" : (overview.total_profit_loss < 0 ? "neg" : "neutral"));
     document.getElementById("ps-win-rate").textContent = overview.overall_win_rate != null ? (overview.overall_win_rate * 100).toFixed(1) + "%" : "-";
+    renderWinRing(overview.overall_win_rate);
     const todayEl = document.getElementById("ps-today-pl");
     todayEl.textContent = fmtMoney(overview.daily_pl);
     todayEl.className = "value " + (overview.daily_pl > 0 ? "pos" : (overview.daily_pl < 0 ? "neg" : "neutral"));

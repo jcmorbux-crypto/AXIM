@@ -182,6 +182,63 @@ const AximShell = (() => {
     return (email || "?").slice(0, 2).toUpperCase();
   }
 
+  // Visual Fidelity Pass Round 3 - the Design System Board's persistent
+  // top status bar (balance, account-mode pill, notifications, avatar),
+  // present on every screen in both boards but absent from the app.
+  // Surfaces data already computed elsewhere (Dashboard's own balance
+  // total, the real account mode, the existing notification bell) -
+  // relocated/duplicated presentation, not a new feature.
+  function renderTopbar(root, user) {
+    root.innerHTML = `
+      <span class="topbar-balance" id="topbar-balance">&nbsp;</span>
+      <span class="topbar-mode" id="topbar-mode" style="display:none;"><span class="dot"></span><span id="topbar-mode-label"></span></span>
+      <div class="notif-bell-wrap">
+        <button class="notif-bell" id="axim-notif-bell" onclick="AximShell._toggleNotifDropdown()" title="Notifications" aria-label="Notifications">
+          <svg width="17" height="17" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6.5a4 4 0 0 1 8 0c0 3.5 1.2 4.5 1.2 4.5H2.8S4 10 4 6.5Z"/><path d="M6.3 13a1.8 1.8 0 0 0 3.4 0"/></svg>
+          <span>Notifications</span>
+          <span class="notif-count" id="axim-notif-count" style="display:none;">0</span>
+        </button>
+        <div class="notif-dropdown" id="axim-notif-dropdown">
+          <div class="notif-dropdown-header">
+            <span>Notifications</span>
+            <button class="subtle" onclick="AximShell._markAllNotifsRead()">Mark all read</button>
+          </div>
+          <div id="axim-notif-list"><div class="notif-empty">Loading...</div></div>
+        </div>
+      </div>
+      <div class="topbar-avatar" title="${escapeHtml(user.email)}">${escapeHtml(initials(user.email))}</div>
+    `;
+    loadTopbarBalance();
+    loadTopbarMode();
+  }
+
+  async function loadTopbarBalance() {
+    const el = document.getElementById("topbar-balance");
+    if (!el) return;
+    try {
+      const funds = await fetchJSON("/api/funds?status=active");
+      const total = funds.reduce((sum, f) => sum + (f.balances?.total_account_value ?? 0), 0);
+      el.textContent = "$" + total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    } catch (e) {
+      el.textContent = "-";
+    }
+  }
+
+  async function loadTopbarMode() {
+    const el = document.getElementById("topbar-mode");
+    const label = document.getElementById("topbar-mode-label");
+    if (!el) return;
+    try {
+      const po = await fetchJSON("/api/pocket-option/status");
+      const isLive = po.account_mode === "LIVE";
+      el.className = "topbar-mode " + (isLive ? "live" : "demo");
+      label.textContent = po.account_mode || "DEMO";
+      el.style.display = "inline-flex";
+    } catch (e) {
+      el.style.display = "none";
+    }
+  }
+
   function renderSidebar(root, user, activeKey) {
     const isAdmin = user.role === "owner" || user.role === "admin";
     const primary = PRIMARY_NAV_ITEMS;
@@ -214,20 +271,6 @@ const AximShell = (() => {
           ${THEME_TOGGLE_ICON_SUN}<span id="axim-theme-toggle-label">Light Mode</span>
           <span class="theme-toggle-switch" id="axim-theme-toggle-switch"><span class="theme-toggle-knob"></span></span>
         </button>
-        <div class="notif-bell-wrap">
-          <button class="notif-bell" id="axim-notif-bell" onclick="AximShell._toggleNotifDropdown()">
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6.5a4 4 0 0 1 8 0c0 3.5 1.2 4.5 1.2 4.5H2.8S4 10 4 6.5Z"/><path d="M6.3 13a1.8 1.8 0 0 0 3.4 0"/></svg>
-            <span>Notifications</span>
-            <span class="notif-count" id="axim-notif-count" style="display:none;">0</span>
-          </button>
-          <div class="notif-dropdown" id="axim-notif-dropdown">
-            <div class="notif-dropdown-header">
-              <span>Notifications</span>
-              <button class="subtle" onclick="AximShell._markAllNotifsRead()">Mark all read</button>
-            </div>
-            <div id="axim-notif-list"><div class="notif-empty">Loading...</div></div>
-          </div>
-        </div>
         <div class="user-chip">
           <div class="avatar">${escapeHtml(initials(user.email))}</div>
           <div style="overflow:hidden;">
@@ -565,10 +608,15 @@ const AximShell = (() => {
     }
     const shellRoot = document.getElementById("app-shell");
     shellRoot.classList.add("app-shell");
+    const topbar = document.createElement("div");
+    topbar.className = "topbar";
+    topbar.id = "topbar";
+    shellRoot.insertBefore(topbar, shellRoot.firstChild);
+    renderTopbar(topbar, user);
     const sidebar = document.createElement("nav");
     sidebar.className = "sidebar";
     sidebar.id = "sidebar";
-    shellRoot.insertBefore(sidebar, shellRoot.firstChild);
+    shellRoot.insertBefore(sidebar, topbar.nextSibling);
     renderSidebar(sidebar, user, opts.active);
     startConfirmationPolling();
     startNotifPolling();
