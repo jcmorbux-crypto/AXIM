@@ -138,18 +138,26 @@ const AximShell = (() => {
     { key: "automation", label: "Strategies", href: "/automation", icon: ICONS.rules },
     { key: "stats", label: "Performance", href: "/performance", icon: ICONS.stats },
     { key: "sessions", label: "Bots", href: "/sessions", icon: ICONS.sessions },
+    // Broker Accounts (2026-07-25 Integration Review): deliberately kept
+    // as its own primary destination, not merged into Portfolio or made
+    // Fund-contextual - a broker account is a many-to-one shared
+    // resource (one account routinely serves several Funds at once) and
+    // carries substantial account-scoped safety controls (Emergency
+    // Stop, per-account Safety Settings, connection lifecycle) used
+    // independently of any single Fund. This is an intentional, reasoned
+    // departure from the original Design Stack's exact 10-screen count,
+    // not an oversight - see the Integration Review note for the full
+    // reasoning.
+    { key: "pocketoption", label: "Broker Accounts", href: "/broker", icon: ICONS.pocketoption },
     { key: "settings", label: "Settings", href: "/settings", icon: ICONS.settings },
   ];
-  // Not part of the approved 10-screen catalog at all (Logs/Users/Help),
-  // or not yet consolidated into their approved home (Broker Accounts -
-  // pending its own Integration Review, see UI v2 compliance tasks).
+  // Not part of the approved 10-screen catalog at all (Logs/Users/Help).
   // Signal Inspector, Live Signal Pipeline, and Bot Control Center are
   // REMOVED from nav entirely (2026-07-25): their content now lives on
   // the Signals and Bots pages themselves - the old routes still work
   // as redirects (see api/main.py) so nothing is stranded, they're just
   // no longer separate destinations.
   const MORE_NAV_ITEMS = [
-    { key: "pocketoption", label: "Broker Accounts", href: "/broker", icon: ICONS.pocketoption },
     { key: "logs", label: "Logs", href: "/logs", icon: ICONS.logs, adminOnly: true },
     { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
     { key: "guide", label: "Help", href: "/guide", icon: ICONS.guide },
