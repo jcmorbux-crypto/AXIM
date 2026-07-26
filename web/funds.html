@@ -23,8 +23,6 @@
   .ps-stats .stat .label { font-size: 12.5px; color: var(--text-dim); }
   .ps-stats .stat .value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
 
-  #pv-chart .pv-line { fill: none; stroke: var(--brand); stroke-width: 2; }
-  #pv-chart .pv-fill { fill: var(--brand-soft); stroke: none; }
   #pv-chart .pv-empty { fill: var(--text-faint); font-size: 11px; }
   .allocation-growth-wrap { display: grid; grid-template-columns: 1.3fr 1fr; gap: 20px; align-items: center; }
   .allocation-growth-wrap > div { min-width: 0; }
@@ -354,7 +352,26 @@ function renderGrowthChart(points) {
   });
   const linePath = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const fillPath = `${linePath} L${coords[coords.length - 1][0].toFixed(1)},${H} L${coords[0][0].toFixed(1)},${H} Z`;
-  svg.innerHTML = `<path class="pv-fill" d="${fillPath}"></path><path class="pv-line" d="${linePath}"></path>`;
+  const last = coords[coords.length - 1];
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="fpvLineGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="var(--brand)"></stop>
+        <stop offset="100%" stop-color="var(--green)"></stop>
+      </linearGradient>
+      <linearGradient id="fpvFillGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"></stop>
+        <stop offset="100%" stop-color="var(--brand)" stop-opacity="0"></stop>
+      </linearGradient>
+      <filter id="fpvGlow" x="-20%" y="-100%" width="140%" height="300%">
+        <feGaussianBlur stdDeviation="3" result="blur"></feGaussianBlur>
+        <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
+      </filter>
+    </defs>
+    <path d="${fillPath}" fill="url(#fpvFillGrad)" stroke="none"></path>
+    <path d="${linePath}" fill="none" stroke="url(#fpvLineGrad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#fpvGlow)"></path>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4" fill="var(--green)" filter="url(#fpvGlow)"></circle>
+  `;
   const netText = fmtMoney(cumulative);
   caption.textContent = `${netText} net across ${points.length} closed trade${points.length === 1 ? "" : "s"}, last 90 days`;
 }

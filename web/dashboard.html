@@ -80,8 +80,6 @@
   .po-capital-split .stat .label { font-size: 12px; color: var(--text-dim); }
   .po-capital-split .stat .value { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
   #pv-chart-wrap { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 4px; }
-  #pv-chart .pv-line { fill: none; stroke: var(--blue); stroke-width: 2; }
-  #pv-chart .pv-fill { fill: var(--blue-soft); stroke: none; }
   .po-stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 16px; border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
   .po-stats-grid .stat { display: flex; flex-direction: column; gap: 3px; }
   .po-stats-grid .stat .label { font-size: 11.5px; color: var(--text-dim); }
@@ -109,11 +107,23 @@
   /* ---- UI v2 metric card row: the hierarchy the design package
      mandates - equity, realized profit, win rate, trade count are the
      dashboard's headline, everything else supports it. ---- */
-  .metric-card-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 14px; }
-  .metric-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); padding: 18px 20px; }
-  .metric-card .mc-label { font-size: 12.5px; color: var(--text-dim); font-weight: 600; }
-  .metric-card .mc-value { font-size: 28px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; margin-top: 6px; line-height: 1.1; }
-  .metric-card .mc-delta { font-size: 12.5px; margin-top: 6px; font-weight: 600; }
+  .metric-card-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 16px; }
+  .metric-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); box-shadow: var(--shadow);
+    padding: 20px 22px 18px; transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+  }
+  .metric-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+  .metric-card .mc-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+  .metric-card .mc-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--text-faint); font-weight: 700; white-space: nowrap;
+  }
+  .metric-card .mc-value { font-size: 29px; font-weight: 750; letter-spacing: -0.015em; font-variant-numeric: tabular-nums; margin-top: 7px; line-height: 1.1; }
+  .metric-card .mc-delta { font-size: 12.5px; margin-top: 7px; font-weight: 650; }
+  .metric-card .mc-chart { margin-top: 10px; height: 38px; width: 100%; display: block; }
+  .metric-card.ring-card .mc-top { align-items: center; }
+  .metric-card .mc-ring { flex-shrink: 0; }
   .secondary-stats-strip { display: flex; gap: 28px; flex-wrap: wrap; padding: 12px 4px; margin-bottom: 20px; }
   .secondary-stats-strip .stat { display: flex; flex-direction: column; gap: 2px; }
   .secondary-stats-strip .stat .label { font-size: 11.5px; color: var(--text-faint); }
@@ -197,21 +207,29 @@
         <div class="mc-label">Total Balance</div>
         <div class="mc-value" id="mc-total-balance">-</div>
         <div class="mc-delta" id="mc-active-funds-delta">&nbsp;</div>
+        <svg class="mc-chart" id="mc-balance-spark" viewBox="0 0 200 38" preserveAspectRatio="none"></svg>
       </div>
       <div class="metric-card">
         <div class="mc-label">Total Profit</div>
         <div class="mc-value" id="mc-total-profit">-</div>
         <div class="mc-delta" id="mc-today-pl-delta">&nbsp;</div>
+        <svg class="mc-chart" id="mc-profit-spark" viewBox="0 0 200 38" preserveAspectRatio="none"></svg>
       </div>
-      <div class="metric-card">
-        <div class="mc-label">Win Rate</div>
-        <div class="mc-value" id="mc-win-rate">-</div>
-        <div class="mc-delta muted">Lifetime, all closed trades</div>
+      <div class="metric-card ring-card">
+        <div class="mc-top">
+          <div>
+            <div class="mc-label">Win Rate</div>
+            <div class="mc-value" id="mc-win-rate">-</div>
+            <div class="mc-delta muted">Lifetime, all closed trades</div>
+          </div>
+          <svg class="mc-ring" id="mc-win-ring" width="64" height="64" viewBox="0 0 64 64"></svg>
+        </div>
       </div>
       <div class="metric-card">
         <div class="mc-label">Total Trades</div>
         <div class="mc-value" id="mc-total-trades">-</div>
         <div class="mc-delta" id="mc-todays-trades-delta">&nbsp;</div>
+        <svg class="mc-chart" id="mc-trades-bars" viewBox="0 0 200 38" preserveAspectRatio="none"></svg>
       </div>
     </div>
     <div class="secondary-stats-strip">
@@ -783,6 +801,10 @@ async function refreshGlobal() {
 // portfolio/growth-curve for the chart. Independent of the fund
 // selector - always portfolio-wide, per the approved "Total Portfolio
 // Value" / "Active Funds" home-screen requirement.
+// Visual Fidelity Pass - gradient stroke + soft glow + endpoint marker,
+// matching the approved Design System Board's Equity Curve treatment.
+// Same underlying series/geometry as before (cumulative P/L, real
+// closed-trade data) - only the rendering changed, not the data.
 function renderGrowthChart(points) {
   const svg = document.getElementById("pv-chart");
   const caption = document.getElementById("pv-chart-caption");
@@ -804,9 +826,96 @@ function renderGrowthChart(points) {
   });
   const linePath = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const fillPath = `${linePath} L${coords[coords.length - 1][0].toFixed(1)},${H} L${coords[0][0].toFixed(1)},${H} Z`;
-  svg.innerHTML = `<path class="pv-fill" d="${fillPath}"></path><path class="pv-line" d="${linePath}"></path>`;
+  const last = coords[coords.length - 1];
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="pvLineGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="var(--brand)"></stop>
+        <stop offset="100%" stop-color="var(--green)"></stop>
+      </linearGradient>
+      <linearGradient id="pvFillGrad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"></stop>
+        <stop offset="100%" stop-color="var(--brand)" stop-opacity="0"></stop>
+      </linearGradient>
+      <filter id="pvGlow" x="-20%" y="-100%" width="140%" height="300%">
+        <feGaussianBlur stdDeviation="3" result="blur"></feGaussianBlur>
+        <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
+      </filter>
+    </defs>
+    <path d="${fillPath}" fill="url(#pvFillGrad)" stroke="none"></path>
+    <path d="${linePath}" fill="none" stroke="url(#pvLineGrad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#pvGlow)"></path>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4" fill="var(--green)" filter="url(#pvGlow)"></circle>
+  `;
   const netText = fmtMoney(cumulative);
   caption.textContent = `${netText} net across ${points.length} closed trade${points.length === 1 ? "" : "s"}, last 90 days`;
+}
+
+// KPI-card sparkline (Total Balance / Total Profit) - the same
+// already-fetched growth-curve series as the main Equity Curve, just
+// condensed into the card itself per the Design System Board's KPI
+// card treatment. No new data source.
+function renderMetricSparkline(svgId, points) {
+  const svg = document.getElementById(svgId);
+  if (!points.length) { svg.innerHTML = ""; return; }
+  const W = 200, H = 38, PAD = 2;
+  let cumulative = 0;
+  const series = points.map(p => { cumulative += p.profit_loss; return cumulative; });
+  const min = Math.min(0, ...series), max = Math.max(0, ...series);
+  const range = (max - min) || 1;
+  const xStep = points.length > 1 ? (W - PAD * 2) / (points.length - 1) : 0;
+  const coords = series.map((v, i) => [PAD + i * xStep, H - PAD - ((v - min) / range) * (H - PAD * 2)]);
+  const linePath = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
+  const fillPath = `${linePath} L${coords[coords.length - 1][0].toFixed(1)},${H} L${coords[0][0].toFixed(1)},${H} Z`;
+  const gid = svgId + "Grad";
+  svg.innerHTML = `
+    <defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="var(--green)" stop-opacity="0.28"></stop>
+      <stop offset="100%" stop-color="var(--green)" stop-opacity="0"></stop>
+    </linearGradient></defs>
+    <path d="${fillPath}" fill="url(#${gid})" stroke="none"></path>
+    <path d="${linePath}" fill="none" stroke="var(--green)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+  `;
+}
+
+// Win Rate ring - a plain donut track plus a brand-to-green gradient arc
+// sized to the real overall_win_rate fraction already fetched for the
+// text value beside it (never a separately-computed number).
+function renderWinRing(pct) {
+  const svg = document.getElementById("mc-win-ring");
+  const size = 64, stroke = 7, r = (size - stroke) / 2, c = size / 2;
+  const circumference = 2 * Math.PI * r;
+  const frac = Math.max(0, Math.min(1, pct || 0));
+  const dash = circumference * frac;
+  svg.innerHTML = `
+    <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="var(--brand)"></stop>
+      <stop offset="100%" stop-color="var(--green)"></stop>
+    </linearGradient></defs>
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--border)" stroke-width="${stroke}"></circle>
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="url(#ringGrad)" stroke-width="${stroke}"
+      stroke-linecap="round" stroke-dasharray="${dash.toFixed(1)} ${circumference.toFixed(1)}"
+      transform="rotate(-90 ${c} ${c})"></circle>
+  `;
+}
+
+// Trades bar chart - the last N points from the same growth-curve series,
+// one bar per closed trade, colored by win/loss - a different encoding
+// of already-fetched real trade outcomes, not a new metric.
+function renderTradeBars(svgId, points) {
+  const svg = document.getElementById(svgId);
+  const recent = points.slice(-16);
+  if (!recent.length) { svg.innerHTML = ""; return; }
+  const W = 200, H = 38, gap = 3;
+  const barW = (W - gap * (recent.length - 1)) / recent.length;
+  const maxAbs = Math.max(1, ...recent.map(p => Math.abs(p.profit_loss)));
+  const bars = recent.map((p, i) => {
+    const h = Math.max(3, (Math.abs(p.profit_loss) / maxAbs) * (H - 4));
+    const x = i * (barW + gap);
+    const y = H - h;
+    const color = p.profit_loss >= 0 ? "var(--green)" : "var(--red)";
+    return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1.5" fill="${color}" opacity="0.85"></rect>`;
+  }).join("");
+  svg.innerHTML = bars;
 }
 
 function fmtPercent(n) {
@@ -838,6 +947,10 @@ async function loadPortfolioOverview() {
     document.getElementById("mc-win-rate").textContent = overview.overall_win_rate != null ? (overview.overall_win_rate * 100).toFixed(1) + "%" : "-";
     document.getElementById("mc-total-trades").textContent = overview.total_trades ?? "-";
     document.getElementById("mc-todays-trades-delta").textContent = `${overview.todays_trades ?? 0} today`;
+    renderMetricSparkline("mc-balance-spark", growth.points);
+    renderMetricSparkline("mc-profit-spark", growth.points);
+    renderWinRing(overview.overall_win_rate);
+    renderTradeBars("mc-trades-bars", growth.points);
 
     document.getElementById("pv-active-capital").textContent = "$" + activeCapital.toLocaleString(undefined, { maximumFractionDigits: 2 });
     document.getElementById("pv-protected-capital").textContent = "$" + protectedCapital.toLocaleString(undefined, { maximumFractionDigits: 2 });
