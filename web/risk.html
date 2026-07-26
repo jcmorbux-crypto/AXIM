@@ -115,7 +115,7 @@
 
       <div id="rcc-panel" style="margin-bottom:28px;"></div>
 
-      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">Strategy Catalog</div>
+      <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">Strategy Library</div>
       <div class="ms-grid" id="strategy-grid" style="margin-bottom:28px;"></div>
 
       <div id="my-strategies-section" style="display:none;">
@@ -587,11 +587,17 @@ async function showBuilder(baseKey, existingProfileId) {
     ${baseName ? `<div class="banner info" style="margin-bottom:16px;">Starting from <b>${baseName}</b>'s rules as a template.</div>` : ""}
     <div class="row" style="align-items:flex-start; gap:16px;">
       <div style="flex:2; min-width:0;">
-        <div class="card">
+        <div class="card" id="strategy-header-card">
+          <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">Strategy Header &amp; Save State</div>
           <div class="field"><label>Strategy name</label><input type="text" id="f-name" value="${escapeHtml(preset.name)}"></div>
           <div class="field"><label>Bankroll ($)</label><input type="number" id="f-bankroll" step="1" min="1" value="${preset.bankroll}"></div>
+          <div class="row" style="align-items:center; gap:10px; margin-top:6px;">
+            <button class="primary" onclick="saveBuilder(${existingProfileId || "null"})">${existing ? "Save Changes" : "Save as New Strategy"}</button>
+            <span id="builder-save-status" class="muted"></span>
+          </div>
         </div>
         <div class="card">
+          <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">Risk &amp; Position Sizing</div>
           <h3 style="margin-top:0;">Position sizing</h3>
           <div class="field"><label>Method</label>
             <select id="f-sizing-mode">
@@ -642,6 +648,7 @@ async function showBuilder(baseKey, existingProfileId) {
           <div class="row" style="justify-content:space-between; margin-top:14px;"><h4 style="margin:0;">Vault on daily target</h4><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-daily-vault-enabled" style="width:auto;" ${preset.daily_vault_enabled ? "checked" : ""}> Enabled</label></div>
           <div class="field"><label>Vault % of the day's profit the moment the target is hit</label><input type="number" id="f-daily-vault-percent" step="1" min="0" max="100" value="${preset.daily_vault_percent_on_target || 0}"></div>
         </div>
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:20px 0 10px;">Loss Recovery Rules</div>
         <div class="card">
           <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Martingale</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-mart-enabled" style="width:auto;" ${preset.mart_enabled ? "checked" : ""}> Enabled</label></div>
           <div id="mart-fields" style="display:${preset.mart_enabled ? "block" : "none"}; margin-top:10px;">
@@ -686,6 +693,7 @@ async function showBuilder(baseKey, existingProfileId) {
             <div class="field"><label>Percent cycle (comma-separated, e.g. 2.5, 5, 2.5, 5)</label><input type="text" id="f-comp-cycle" value="${escapeHtml(compCycleText)}"></div>
           </div>
         </div>
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:20px 0 10px;">Profit / Vault Rules</div>
         <div class="card">
           <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Vault</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-vault-enabled" style="width:auto;" ${preset.vault_enabled ? "checked" : ""}> Enabled</label></div>
           <div id="vault-fields" style="display:${preset.vault_enabled ? "block" : "none"}; margin-top:10px;">
@@ -713,19 +721,19 @@ async function showBuilder(baseKey, existingProfileId) {
       </div>
       <div style="flex:1; position:sticky; top:20px;">
         <div class="card">
-          <h3 style="margin-top:0;">Save</h3>
+          <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">Live Preview &amp; Validation</div>
           <p style="font-size:12px; color:var(--text-dim); margin:0 0 10px;">${existing ? "Updates this strategy - your other strategies are untouched." : `Creates a new strategy.${baseName ? ` "${baseName}" itself is never modified.` : ""}`}</p>
-          <button class="primary" style="width:100%;" onclick="saveBuilder(${existingProfileId || "null"})">${existing ? "Save Changes" : "Save as New Strategy"}</button>
-          <span id="builder-save-status" class="muted" style="display:block; margin-top:8px;"></span>
+          <div id="builder-live-preview"></div>
         </div>
       </div>
     </div>
   `;
 
-  document.getElementById("f-sizing-mode").addEventListener("change", (e) => showSizingSub(e.target.value));
+  document.getElementById("f-sizing-mode").addEventListener("change", (e) => { showSizingSub(e.target.value); updateLivePreview(); });
   showSizingSub(preset.sizing_mode);
   document.getElementById("f-mart-enabled").addEventListener("change", (e) => {
     document.getElementById("mart-fields").style.display = e.target.checked ? "block" : "none";
+    updateLivePreview();
   });
   document.getElementById("f-vault-enabled").addEventListener("change", (e) => {
     document.getElementById("vault-fields").style.display = e.target.checked ? "block" : "none";
@@ -738,6 +746,85 @@ async function showBuilder(baseKey, existingProfileId) {
   const updateWarning = () => { document.getElementById("mart-unlimited-warning").style.display = (parseInt(martSteps.value, 10) > 5) ? "block" : "none"; };
   martSteps.addEventListener("input", updateWarning);
   updateWarning();
+
+  // ---- Live Preview & Validation wiring ----
+  ["f-bankroll", "f-fixed", "f-percent", "f-dynamic-percent", "f-mart-steps", "f-mart-mult"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", updateLivePreview);
+  });
+  updateLivePreview();
+}
+
+// Only the sizing modes with genuinely trivial, drift-free arithmetic
+// (fixed/percent/dynamic - all just bankroll * percent or a flat number)
+// get a live number here. Kelly and Daily Compounding have real
+// backend logic (win-rate/payout Kelly formula; per-day balance
+// recalculation) this deliberately does NOT reimplement client-side -
+// duplicating that math here risks silently drifting from the real
+// engine (core/risk_engine.py) and showing a number that's wrong at the
+// exact moment it matters most. Honest "not shown here" beats a
+// plausible-looking guess.
+function computeNextStakePreview() {
+  const bankroll = parseFloat(document.getElementById("f-bankroll").value) || 0;
+  const mode = document.getElementById("f-sizing-mode").value;
+  if (mode === "fixed") {
+    const fixed = parseFloat(document.getElementById("f-fixed").value) || 0;
+    return { amount: fixed, note: "Fixed amount every trade, regardless of bankroll." };
+  }
+  if (mode === "percent") {
+    const pct = parseFloat(document.getElementById("f-percent").value) || 0;
+    return { amount: bankroll * pct / 100, note: `${pct}% of the ${fmtMoney(bankroll)} bankroll entered above.` };
+  }
+  if (mode === "dynamic") {
+    const pct = parseFloat(document.getElementById("f-dynamic-percent").value) || 0;
+    return { amount: bankroll * pct / 100, note: `${pct}% of current balance - recalculates every trade as balance moves.` };
+  }
+  return null;
+}
+
+function updateLivePreview() {
+  const el = document.getElementById("builder-live-preview");
+  if (!el) return;
+  const preview = computeNextStakePreview();
+  const mode = document.getElementById("f-sizing-mode").value;
+  let html = "";
+  if (preview) {
+    html += `
+      <div class="mm-tile on" style="margin-bottom:12px;">
+        <div class="mm-tile-label">Next trade stake</div>
+        <div class="mm-tile-value">${fmtMoney(preview.amount)}</div>
+      </div>
+      <div class="muted" style="font-size:11.5px; margin-bottom:14px;">${preview.note}</div>
+    `;
+  } else {
+    html += `<div class="muted" style="font-size:12px; margin-bottom:14px;">${mode === "kelly" ? "Kelly sizing" : "Daily Compounding"} is calculated by AXIM's real risk engine at trade/day-start time - not duplicated here to avoid ever showing a number that could drift from what actually executes.</div>`;
+  }
+
+  const martEnabled = document.getElementById("f-mart-enabled").checked;
+  if (martEnabled) {
+    // Mirrors core/risk_engine.py's project_martingale_exposure exactly
+    // (amount = base * multiplier^step, summed) for the simple case this
+    // builder exposes (max_steps/multiplier - no custom ladder or max-
+    // total-exposure cap here). Computed against the CURRENT unsaved
+    // form values, not the last-saved profile - the real backend
+    // endpoint only knows the saved martingale config, which would show
+    // a stale/misleading number while editing before Save.
+    const baseAmount = preview ? preview.amount : 0;
+    const steps = parseInt(document.getElementById("f-mart-steps").value, 10) || 1;
+    const mult = parseFloat(document.getElementById("f-mart-mult").value) || 2;
+    let total = 0;
+    for (let s = 0; s < steps; s++) total += baseAmount * Math.pow(mult, s);
+    if (preview) {
+      html += `
+        <div class="banner warn" style="font-size:12px;">
+          Worst-case martingale exposure if every step in a row loses: <b>${fmtMoney(total)}</b>
+        </div>
+      `;
+    } else {
+      html += `<div class="muted" style="font-size:11.5px;">Martingale exposure depends on the next-trade stake, which ${document.getElementById("f-sizing-mode").value === "kelly" ? "Kelly sizing" : "Daily Compounding"} calculates at trade time - not shown here.</div>`;
+    }
+  }
+  el.innerHTML = html;
 }
 
 function showSizingSub(mode) {
