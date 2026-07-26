@@ -662,6 +662,7 @@ button.subtle:hover { background: var(--surface); color: var(--text); }
 .badge.info { background: var(--blue-soft); color: var(--blue); }
 .badge.gold { background: var(--gold-soft); color: var(--gold); }
 .badge.ai { background: var(--purple-soft); color: var(--purple); }
+.badge.brand { background: var(--brand-soft); color: var(--brand); }
 /* Dark theme: a faint glow on the "live/positive" badge so status reads
    as alive, not just a flat color chip - used sparingly (this class
    only), never on neutral/off badges. */

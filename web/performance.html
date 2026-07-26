@@ -92,10 +92,10 @@ function periodCard(title, stats) {
   return `
     <div class="card">
       <h3>${title}</h3>
+      <div class="stat-value-lg ${plClass(stats.profit_loss)}">${fmtMoney(stats.profit_loss)}</div>
+      <div class="stat-caption" style="margin-bottom:10px;">P/L &middot; ${fmtPct(stats.roi)} ROI</div>
       <div class="stat-row"><span class="stat-label">Closed trades</span><span class="stat-value">${stats.total_closed}</span></div>
       <div class="stat-row"><span class="stat-label">Win rate</span><span class="stat-value">${fmtPct(stats.win_rate)}</span></div>
-      <div class="stat-row"><span class="stat-label">P/L</span><span class="stat-value ${plClass(stats.profit_loss)}">${fmtMoney(stats.profit_loss)}</span></div>
-      <div class="stat-row"><span class="stat-label">ROI</span><span class="stat-value ${plClass(stats.roi)}">${fmtPct(stats.roi)}</span></div>
     </div>
   `;
 }

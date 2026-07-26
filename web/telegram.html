@@ -322,28 +322,32 @@ function openManageSourcesModal() { openModal("manage-sources-modal"); }
 // ---------------- Signal Feed (Live Signal Pipeline consolidation) ----------------
 
 const STATE_META = {
-  RECEIVED:        { label: "Received",          color: "var(--brand)" },
-  PARSED:          { label: "Parsed",             color: "var(--brand)" },
-  NORMALIZED:      { label: "Normalized",         color: "var(--brand)" },
-  VALIDATED:       { label: "Validated",          color: "var(--brand)" },
-  AUTHORIZED:      { label: "Authorized",         color: "var(--brand)" },
-  SIZED:           { label: "Sized",              color: "var(--brand)" },
-  QUEUED:          { label: "Queued",             color: "var(--brand)" },
-  SUBMITTING:      { label: "Submitting",         color: "var(--brand)" },
-  BROKER_ACCEPTED: { label: "Broker Accepted",    color: "var(--green)" },
-  BROKER_REJECTED: { label: "Broker Rejected",    color: "var(--red)" },
-  OPEN:            { label: "Open",               color: "var(--green)" },
-  WON:             { label: "Won",                color: "var(--green)" },
-  LOST:            { label: "Lost",               color: "var(--red)" },
-  DRAW:            { label: "Draw",               color: "var(--yellow)" },
-  SKIPPED:         { label: "Skipped",            color: "var(--text-faint)" },
-  FAILED:          { label: "Failed",             color: "var(--red)" },
-  UNKNOWN:         { label: "Unknown",            color: "var(--text-faint)" },
+  RECEIVED:        { label: "Received",          cls: "brand", color: "var(--brand)" },
+  PARSED:          { label: "Parsed",             cls: "brand", color: "var(--brand)" },
+  NORMALIZED:      { label: "Normalized",         cls: "brand", color: "var(--brand)" },
+  VALIDATED:       { label: "Validated",          cls: "brand", color: "var(--brand)" },
+  AUTHORIZED:      { label: "Authorized",         cls: "brand", color: "var(--brand)" },
+  SIZED:           { label: "Sized",              cls: "brand", color: "var(--brand)" },
+  QUEUED:          { label: "Queued",             cls: "brand", color: "var(--brand)" },
+  SUBMITTING:      { label: "Submitting",         cls: "brand", color: "var(--brand)" },
+  BROKER_ACCEPTED: { label: "Broker Accepted",    cls: "on", color: "var(--green)" },
+  BROKER_REJECTED: { label: "Broker Rejected",    cls: "danger", color: "var(--red)" },
+  OPEN:            { label: "Open",               cls: "on", color: "var(--green)" },
+  WON:             { label: "Won",                cls: "on", color: "var(--green)" },
+  LOST:            { label: "Lost",               cls: "danger", color: "var(--red)" },
+  DRAW:            { label: "Draw",               cls: "warn", color: "var(--yellow)" },
+  SKIPPED:         { label: "Skipped",            cls: "off", color: "var(--text-faint)" },
+  FAILED:          { label: "Failed",             cls: "danger", color: "var(--red)" },
+  UNKNOWN:         { label: "Unknown",            cls: "off", color: "var(--text-faint)" },
 };
 
+// Visual Fidelity Pass - real pill badges (matching COMPONENT_SPEC.md's
+// SignalRow states and the board's WIN/LOSS pill treatment) instead of
+// plain colored text, which read flat next to the board's badge-based
+// status language.
 function stateBadge(state) {
-  const meta = STATE_META[state] || { label: state, color: "var(--text-dim)" };
-  return `<span style="color:${meta.color}; font-weight:600; font-size:12.5px;">${escapeHtml(meta.label)}</span>`;
+  const meta = STATE_META[state] || { label: state, cls: "off" };
+  return `<span class="badge ${meta.cls}">${escapeHtml(meta.label)}</span>`;
 }
 
 function populateStateFilter() {

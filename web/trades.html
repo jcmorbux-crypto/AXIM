@@ -37,6 +37,7 @@
     </div>
 
     <div class="card solid full-width">
+      <div style="overflow-x:auto;">
       <table>
         <thead>
           <tr>
@@ -46,6 +47,7 @@
         </thead>
         <tbody id="trades-body"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
       </table>
+      </div>
     </div>
   </main>
 </div>
@@ -106,7 +108,7 @@ function resultBadge(status) {
   if (status === "result_win") return '<span class="badge on">WIN</span>';
   if (status === "result_loss") return '<span class="badge danger">LOSS</span>';
   if (status === "result_draw") return '<span class="badge warn">DRAW</span>';
-  if (status === "error") return '<span class="badge off">error</span>';
+  if (status === "error") return '<span class="badge warn">error</span>';
   return `<span class="badge info">${escapeHtml(status || "-")}</span>`;
 }
 
