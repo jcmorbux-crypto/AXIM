@@ -345,6 +345,7 @@ a { color: inherit; }
 .main {
   margin-left: var(--sidebar-w);
   flex: 1;
+  min-width: 0;
   padding: 28px 36px 60px 36px;
   max-width: 1400px;
 }
