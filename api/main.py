@@ -306,14 +306,23 @@ def telegram_page():
     return _serve("telegram.html")
 
 
+# UI v2 Design Stack: Signal Inspector and Live Signal Pipeline are
+# consolidated into the Signals screen (/telegram) - Execution Rules and
+# Signal Feed Table/Selected Signal Details regions respectively. These
+# redirect (rather than serving the old standalone pages) so existing
+# bookmarks/deep-links keep working per "preserve existing URLs where
+# practical" - a signal-pipeline deep-link's ?channel=&message= query
+# carries through so the same journey detail still opens.
 @app.get("/inspector")
 def inspector_page():
-    return _serve("inspector.html")
+    return RedirectResponse(url="/telegram", status_code=307)
 
 
 @app.get("/signal-pipeline")
-def signal_pipeline_page():
-    return _serve("signal_pipeline.html")
+def signal_pipeline_page(channel: int | None = None, message: int | None = None):
+    if channel is not None and message is not None:
+        return RedirectResponse(url=f"/telegram?channel={channel}&message={message}", status_code=307)
+    return RedirectResponse(url="/telegram", status_code=307)
 
 
 @app.get("/bots")

@@ -106,49 +106,61 @@ const AximShell = (() => {
     applyTheme(currentTheme() === "dark" ? "light" : "dark");
   }
 
-  // IA reorganized 2026-07-14 per the approved UI overhaul spec: primary
-  // nav trimmed to the 6 daily-use destinations, everything else moved
-  // under "More" (progressive disclosure - matches the same grouping
-  // already validated in the UI Vision branch). URLs deliberately
-  // unchanged from before this reorg (only labels/grouping moved) so
-  // existing bookmarks/deep-links keep working. Trade History and
-  // Billing aren't in the approved nav list at all (primary or "More") -
-  // reachable via a link from a related page instead (Performance links
-  // to /trades, Settings/Users link to /billing) per "do not remove
-  // existing working capabilities." (2026-07-16: the Performance ->
-  // Trade History link had never actually been added despite this
-  // comment's original intent - fixed. Capital Strategies is no longer
-  // part of this list at all: that whole page was a leftover ~20-strategy
-  // catalog from before the "4 official strategies" Money Management
-  // Studio redesign (2026-07-13 product-owner directive, commit 6e8866a)
-  // superseded and REPLACED it outright, not merely relocated it - so it
-  // was removed, along with its dead GET /capital-strategies route, not
-  // just unlinked.)
+  // IA reorganized 2026-07-25 per the AXIM Trader UI v2 Design Stack
+  // (SCREEN_INVENTORY.md's approved 10-screen catalog, flat, no "More"
+  // menu): Dashboard, Portfolio, Signals, Money Management, Backtesting,
+  // Strategies, Performance, Analytics, Bots, Settings. URLs deliberately
+  // unchanged (only labels/order moved) so existing bookmarks/deep-links
+  // keep working, per that same spec's own "preserve existing URLs where
+  // practical" note.
+  //
+  // Three approved items are TEMPORARY placeholders pending real content
+  // work already tracked as separate tasks - this is a transitional nav,
+  // not a finished one:
+  //   - "Signals" -> /telegram (still the old Sources/channel-manager
+  //     page; the approved Signal Feed Table/Filters/Provider Status/
+  //     Execution Rules workspace hasn't been built yet).
+  //   - "Bots" -> /sessions (Trading Sessions is the closer functional
+  //     match to the approved bot/session-health+controls+logs screen;
+  //     the current /bots route is a DIFFERENT feature - interactive
+  //     bot-command signal channels - kept below, not renamed, to avoid
+  //     conflating the two).
+  //   - "Analytics" is intentionally OMITTED, not stubbed: no real,
+  //     separately-justified content exists yet for it (this project's
+  //     own standing "no placeholder screens" rule) - added back once
+  //     real diagnostics/cohort content is scoped.
   const PRIMARY_NAV_ITEMS = [
-    { key: "dashboard", label: "Home", href: "/dashboard", icon: ICONS.dashboard },
-    { key: "sessions", label: "Sessions", href: "/sessions", icon: ICONS.sessions },
-    { key: "funds", label: "Funds", href: "/funds", icon: ICONS.funds },
-    { key: "telegram", label: "Sources", href: "/telegram", icon: ICONS.telegram },
-    { key: "lab", label: "Strategy Lab", href: "/strategy-lab", icon: ICONS.lab },
-    { key: "stats", label: "Performance", href: "/performance", icon: ICONS.stats },
-  ];
-  const MORE_NAV_ITEMS = [
+    { key: "dashboard", label: "Dashboard", href: "/dashboard", icon: ICONS.dashboard },
+    { key: "funds", label: "Portfolio", href: "/funds", icon: ICONS.funds },
+    { key: "telegram", label: "Signals", href: "/telegram", icon: ICONS.telegram },
     { key: "money", label: "Money Management", href: "/risk", icon: ICONS.money },
-    { key: "automation", label: "Automation Studio", href: "/automation", icon: ICONS.rules },
-    { key: "inspector", label: "Signal Inspector", href: "/inspector", icon: ICONS.inspector },
-    { key: "pipeline", label: "Live Signal Pipeline", href: "/signal-pipeline", icon: ICONS.pipeline },
+    { key: "lab", label: "Backtesting", href: "/strategy-lab", icon: ICONS.lab },
+    { key: "automation", label: "Strategies", href: "/automation", icon: ICONS.rules },
+    { key: "stats", label: "Performance", href: "/performance", icon: ICONS.stats },
+    { key: "sessions", label: "Bots", href: "/sessions", icon: ICONS.sessions },
+    { key: "settings", label: "Settings", href: "/settings", icon: ICONS.settings },
+  ];
+  // Not part of the approved 10-screen catalog at all (Logs/Users/Help),
+  // or not yet consolidated into their approved home (Broker Accounts ->
+  // Portfolio, Bot Control Center -> folds into Signals as a provider
+  // type) - see UI v2 compliance tasks for Broker/Bots. Signal Inspector
+  // and Live Signal Pipeline are REMOVED from nav entirely (2026-07-25):
+  // their content is now part of the Signals page itself (Execution
+  // Rules / Signal Feed Table + Selected Signal Details regions) - the
+  // old routes still work as redirects (see api/main.py) so nothing is
+  // stranded, they're just no longer separate destinations.
+  const MORE_NAV_ITEMS = [
     { key: "pocketoption", label: "Broker Accounts", href: "/broker", icon: ICONS.pocketoption },
     { key: "bots", label: "Bot Control Center", href: "/bots", icon: ICONS.bots },
     { key: "logs", label: "Logs", href: "/logs", icon: ICONS.logs, adminOnly: true },
     { key: "users", label: "Users", href: "/users", icon: ICONS.users, adminOnly: true },
     { key: "guide", label: "Help", href: "/guide", icon: ICONS.guide },
-    { key: "settings", label: "Settings", href: "/settings", icon: ICONS.settings },
   ];
   const NAV_ITEMS = [...PRIMARY_NAV_ITEMS, ...MORE_NAV_ITEMS];
-  // 4 primary + a "More" tab covering the rest - a 6-across mobile bar
+  // 4 primary + a "More" tab covering the rest - a 9-across mobile bar
   // doesn't fit comfortably, matching the same constraint already
   // resolved in the UI Vision branch's mobile nav.
-  const MOBILE_NAV_KEYS = ["dashboard", "sessions", "funds", "telegram"];
+  const MOBILE_NAV_KEYS = ["dashboard", "funds", "telegram", "money"];
 
   async function fetchJSON(url, opts) {
     const res = await fetch(url, { credentials: "same-origin", ...opts });

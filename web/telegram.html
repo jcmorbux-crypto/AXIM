@@ -2,11 +2,19 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Signal Sources - AXIM Trader</title>
+<title>Signals - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="stylesheet" href="/web/theme.css">
 <script>(function(){try{var t=localStorage.getItem("axim-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <style>
+  /* UI v2 Design Stack Signals blueprint (signals-desktop-1440x1024.svg):
+     a wide left column (Signal Filters over Signal Feed Table) and a
+     narrower right column (Provider Status, Selected Signal Details,
+     Execution Rules stacked). Ratio matches the blueprint's ~818:295. */
+  .signals-layout { display: grid; grid-template-columns: 2.75fr 1fr; gap: 16px; align-items: start; margin-bottom: 24px; }
+  .signals-layout > div { min-width: 0; }
+  @media (max-width: 1024px) { .signals-layout { grid-template-columns: 1fr; } }
+
   .type-select { width: auto; padding: 4px 8px; font-size: 12px; }
   .priority-input { width: 56px; padding: 4px 6px; }
   .bot-fields { background: var(--blue-soft); border-radius: var(--radius-sm); padding: 8px 10px; margin-top: 6px; }
@@ -15,14 +23,27 @@
   .message-item:last-child { border-bottom: none; }
   .message-time { color: var(--text-faint); font-size: 11px; }
 
-  /* ---- My Sources: simple, followed-only list - the everyday view.
-     Full configuration (source type, priority, bot command fields) is
-     one click away via "Configure", not always-visible columns. ---- */
-  .source-card {
-    display: flex; align-items: center; gap: 14px;
-    padding: 14px 16px; border-radius: var(--radius-sm); border: 1px solid var(--border);
-    background: var(--bg); margin-bottom: 8px;
-  }
+  .provider-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12.5px; cursor: pointer; }
+  .provider-row:last-child { border-bottom: none; }
+  .provider-row:hover { background: var(--surface-hover); }
+  .provider-row.selected { background: var(--brand-soft); }
+  .provider-row .name { font-weight: 600; }
+  .provider-row .last-signal { color: var(--text-faint); font-size: 11px; }
+
+  .journey-row { cursor: pointer; }
+  .journey-row:hover { background: var(--surface-hover); }
+  .journey-row.selected { background: var(--brand-soft); }
+  .timeline-step { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .timeline-step:last-child { border-bottom: none; }
+  .timeline-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 4px; flex-shrink: 0; }
+  .timeline-body { flex: 1; min-width: 0; }
+  .timeline-state { font-weight: 650; font-size: 12.5px; }
+  .timeline-detail { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+  .timeline-time { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; }
+
+  .rule-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .rule-row:last-child { border-bottom: none; }
+  .source-card { display: flex; align-items: center; gap: 14px; padding: 14px 16px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg); margin-bottom: 8px; }
   .source-card .info { flex: 1; min-width: 0; }
   .source-card .name { font-weight: 600; font-size: 14px; }
   .source-card .meta { color: var(--text-dim); font-size: 12px; margin-top: 2px; }
@@ -32,7 +53,6 @@
   .source-card .stats .stat .value { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .source-config { background: var(--surface); border-radius: var(--radius-sm); padding: 12px 14px; margin-top: 10px; display: none; }
   .source-config.open { display: block; }
-
 </style>
 </head>
 <body>
@@ -41,24 +61,123 @@
   <main class="main">
     <div class="page-header">
       <div>
-        <h1>Signal Sources</h1>
-        <div class="subtitle">Connect your Telegram account and choose which channels AXIM follows.</div>
+        <h1>Signals</h1>
+        <div class="subtitle">Every signal's real journey - provider intake, parsing, execution rules, and result history. Nothing here is fabricated.</div>
       </div>
+      <button class="subtle" onclick="openManageSourcesModal()">Manage Sources &amp; Connection</button>
     </div>
 
-    <div class="grid">
-      <div class="card full-width">
-        <h3>Connection</h3>
-        <div class="row" style="margin-bottom:10px;">
-          Status: <span id="conn-badge" class="badge off">loading...</span>
-          <span id="conn-detail" class="muted"></span>
+    <div class="signals-layout">
+      <div>
+        <!-- ---- Signal Filters ---- -->
+        <div class="card solid" style="margin-bottom:16px;">
+          <h3 style="margin-top:0;">Signal Filters</h3>
+          <div class="row" style="gap:10px; align-items:flex-end;">
+            <div class="field" style="max-width:240px; margin:0;">
+              <label>State</label>
+              <select id="state-filter" onchange="loadJourneys()">
+                <option value="">All states</option>
+              </select>
+            </div>
+            <div class="field" style="max-width:240px; margin:0;">
+              <label>Provider</label>
+              <select id="provider-filter" onchange="loadJourneys()">
+                <option value="">All providers</option>
+              </select>
+            </div>
+            <button class="subtle" onclick="loadJourneys()">Refresh</button>
+            <span id="journeys-status" class="muted"></span>
+          </div>
         </div>
-        <div class="row">
-          <button class="primary" onclick="openConnectModal()">Connect / Reconnect Telegram</button>
-          <button onclick="syncChannels()">Refresh Channel List</button>
-          <span id="sync-status" class="muted"></span>
-          <button class="danger" onclick="confirmDisconnect()">Disconnect</button>
+
+        <!-- ---- Signal Feed Table ---- -->
+        <div class="card full-width">
+          <h3>Signal Feed</h3>
+          <div class="signal-table-wrap" style="overflow-x:auto;">
+            <table>
+              <thead><tr><th>When</th><th>Channel</th><th>Message</th><th>Current State</th><th>Detail</th></tr></thead>
+              <tbody id="journeys-body"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+            </table>
+          </div>
         </div>
+      </div>
+
+      <div>
+        <!-- ---- Provider Status ---- -->
+        <div class="card solid" style="margin-bottom:16px;">
+          <h3 style="margin-top:0;">Provider Status</h3>
+          <div id="provider-status-list" class="muted">Loading...</div>
+        </div>
+
+        <!-- ---- Selected Signal Details ---- -->
+        <div class="card solid" style="margin-bottom:16px;">
+          <h3 style="margin-top:0;">Selected Signal Details</h3>
+          <div id="selected-signal-subtitle" class="muted" style="font-size:11.5px; margin-bottom:8px;"></div>
+          <div id="selected-signal-timeline" class="muted" style="font-size:12.5px;">Select a signal from the feed to see its full journey.</div>
+        </div>
+
+        <!-- ---- Execution Rules ---- -->
+        <div class="card solid">
+          <h3 style="margin-top:0;">Execution Rules</h3>
+          <div class="muted" style="font-size:11.5px; margin-bottom:10px;">Find/replace applied to a channel's raw messages before the parser sees them - useful for channels with unusual label spelling. Also test any message against the real parser directly.</div>
+
+          <div class="field" style="margin-bottom:8px;"><label>Channel</label>
+            <div id="rule-channel-search"></div>
+          </div>
+          <div id="rules-list" class="muted" style="margin-bottom:14px;">Select a channel above to see its saved rules.</div>
+          <div class="row" style="gap:6px; margin-bottom:14px;">
+            <input type="text" id="rule-find" placeholder="Find (regex)" autocomplete="off" style="flex:1; min-width:0;">
+            <input type="text" id="rule-replace" placeholder="Replace with" autocomplete="off" style="flex:1; min-width:0;">
+          </div>
+          <button class="subtle" onclick="createRule()" style="margin-bottom:16px;">Save Rule</button>
+
+          <div style="border-top:1px solid var(--border); padding-top:12px;">
+            <label style="font-size:12px; font-weight:650;">Test Parse</label>
+            <textarea id="test-input" placeholder="Paste a sample message..." autocomplete="off" style="min-height:60px; font-size:12px;"></textarea>
+            <div class="row" style="margin-top:6px;">
+              <button class="subtle" onclick="runParseTest()">Test</button>
+              <span id="parse-status-text" class="muted" style="font-size:11.5px;"></span>
+            </div>
+            <div id="parse-test-result" style="margin-top:8px; font-size:12px;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Signal journey detail modal (deep-link target for old bookmarks) -->
+<div class="modal-backdrop" id="journey-modal">
+  <div class="modal" style="width:520px;">
+    <h2 style="margin-top:0;">Signal Journey</h2>
+    <div class="muted" id="journey-modal-subtitle" style="font-size:12px; margin-bottom:14px;"></div>
+    <div id="journey-timeline"></div>
+    <div class="row" style="justify-content:flex-end; margin-top:16px;">
+      <button class="subtle" onclick="closeModal('journey-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- Manage Sources & Connection modal - everything from the old Sources
+     page that isn't feed/rules/filters: Telegram connection, followed
+     sources list, add-a-source search, onboarding wizard, provider
+     profile/graduation. Kept as-is (relocated, not duplicated) so
+     nothing is stranded by the Signals rebuild. -->
+<div class="modal-backdrop" id="manage-sources-modal">
+  <div class="modal" style="width:820px; max-width:95vw; max-height:88vh; overflow-y:auto;">
+    <h2 style="margin-top:0;">Manage Sources &amp; Connection</h2>
+
+    <div class="card full-width" style="margin-bottom:16px;">
+      <h3>Connection</h3>
+      <div class="row" style="margin-bottom:10px;">
+        Status: <span id="conn-badge" class="badge off">loading...</span>
+        <span id="conn-detail" class="muted"></span>
+      </div>
+      <div class="row">
+        <button class="primary" onclick="openConnectModal()">Connect / Reconnect Telegram</button>
+        <button onclick="syncChannels()">Refresh Channel List</button>
+        <span id="sync-status" class="muted"></span>
+        <button class="danger" onclick="confirmDisconnect()">Disconnect</button>
       </div>
     </div>
 
@@ -72,7 +191,11 @@
       <div class="subtitle" style="margin-bottom:10px;">Searches your OPT SIGNALS Telegram folder by default - use "Search all your Telegram chats" below to widen.</div>
       <div id="add-source-search"></div>
     </div>
-  </main>
+
+    <div class="row" style="justify-content:flex-end; margin-top:16px;">
+      <button class="subtle" onclick="closeModal('manage-sources-modal')">Close</button>
+    </div>
+  </div>
 </div>
 
 <!-- Connect modal -->
@@ -177,6 +300,7 @@ let allChannels = [];
 let currentMessagesChannelId = null;
 let allProfilesByChannelId = {};
 let currentProfile = null;
+let selectedJourney = null;
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, { credentials: "same-origin", ...opts });
@@ -190,8 +314,236 @@ async function fetchJSON(url, opts) {
 
 function openModal(id) { document.getElementById(id).style.display = "flex"; }
 function closeModal(id) { document.getElementById(id).style.display = "none"; }
-function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s ?? ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
 function fmtTime(iso) { return iso ? new Date(iso).toLocaleString() : "never"; }
+
+function openManageSourcesModal() { openModal("manage-sources-modal"); }
+
+// ---------------- Signal Feed (Live Signal Pipeline consolidation) ----------------
+
+const STATE_META = {
+  RECEIVED:        { label: "Received",          color: "var(--brand)" },
+  PARSED:          { label: "Parsed",             color: "var(--brand)" },
+  NORMALIZED:      { label: "Normalized",         color: "var(--brand)" },
+  VALIDATED:       { label: "Validated",          color: "var(--brand)" },
+  AUTHORIZED:      { label: "Authorized",         color: "var(--brand)" },
+  SIZED:           { label: "Sized",              color: "var(--brand)" },
+  QUEUED:          { label: "Queued",             color: "var(--brand)" },
+  SUBMITTING:      { label: "Submitting",         color: "var(--brand)" },
+  BROKER_ACCEPTED: { label: "Broker Accepted",    color: "var(--green)" },
+  BROKER_REJECTED: { label: "Broker Rejected",    color: "var(--red)" },
+  OPEN:            { label: "Open",               color: "var(--green)" },
+  WON:             { label: "Won",                color: "var(--green)" },
+  LOST:            { label: "Lost",               color: "var(--red)" },
+  DRAW:            { label: "Draw",               color: "var(--yellow)" },
+  SKIPPED:         { label: "Skipped",            color: "var(--text-faint)" },
+  FAILED:          { label: "Failed",             color: "var(--red)" },
+  UNKNOWN:         { label: "Unknown",            color: "var(--text-faint)" },
+};
+
+function stateBadge(state) {
+  const meta = STATE_META[state] || { label: state, color: "var(--text-dim)" };
+  return `<span style="color:${meta.color}; font-weight:600; font-size:12.5px;">${escapeHtml(meta.label)}</span>`;
+}
+
+function populateStateFilter() {
+  const select = document.getElementById("state-filter");
+  for (const [state, meta] of Object.entries(STATE_META)) {
+    const opt = document.createElement("option");
+    opt.value = state;
+    opt.textContent = meta.label;
+    select.appendChild(opt);
+  }
+}
+
+function populateProviderFilter() {
+  const select = document.getElementById("provider-filter");
+  select.innerHTML = '<option value="">All providers</option>' +
+    allChannels.map(c => `<option value="${c.id}">${escapeHtml(c.title || c.chat_id)}</option>`).join("");
+}
+
+async function loadJourneys() {
+  const statusEl = document.getElementById("journeys-status");
+  const body = document.getElementById("journeys-body");
+  const state = document.getElementById("state-filter").value;
+  const provider = document.getElementById("provider-filter").value;
+  statusEl.textContent = "Loading...";
+  try {
+    const params = new URLSearchParams();
+    if (state) params.set("state", state);
+    const url = "/api/signal-pipeline/journeys" + (params.toString() ? `?${params}` : "");
+    let journeys = await fetchJSON(url);
+    if (provider) journeys = journeys.filter(j => String(j.channel_id) === provider);
+    statusEl.textContent = "";
+    if (!journeys.length) {
+      body.innerHTML = '<tr><td colspan="5" class="empty">No signals recorded yet - real Telegram traffic will populate this as it arrives.</td></tr>';
+      return;
+    }
+    body.innerHTML = journeys.map(j => `
+      <tr class="journey-row" onclick="selectJourney(${j.channel_id}, ${j.message_id}, this)">
+        <td class="muted">${fmtTime(j.occurred_at)}</td>
+        <td>${j.channel_id ?? "-"}</td>
+        <td>${j.message_id ?? "-"}</td>
+        <td>${stateBadge(j.state)}</td>
+        <td class="muted" style="font-size:12px;">${escapeHtml(j.detail || "-")}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    statusEl.textContent = "";
+    body.innerHTML = `<tr><td colspan="5" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+async function selectJourney(channelId, messageId, rowEl) {
+  document.querySelectorAll(".journey-row.selected").forEach(r => r.classList.remove("selected"));
+  if (rowEl) rowEl.classList.add("selected");
+  selectedJourney = { channelId, messageId };
+  const subtitle = document.getElementById("selected-signal-subtitle");
+  const timeline = document.getElementById("selected-signal-timeline");
+  subtitle.textContent = `Channel ${channelId} - Message ${messageId}`;
+  timeline.innerHTML = '<div class="muted">Loading...</div>';
+  try {
+    const events = await fetchJSON(`/api/signal-pipeline/journeys/${channelId}/${messageId}`);
+    timeline.innerHTML = events.map(e => {
+      const meta = STATE_META[e.state] || { label: e.state, color: "var(--text-dim)" };
+      return `
+        <div class="timeline-step">
+          <div class="timeline-dot" style="background:${meta.color};"></div>
+          <div class="timeline-body">
+            <div class="timeline-state" style="color:${meta.color};">${escapeHtml(meta.label)}</div>
+            ${e.detail ? `<div class="timeline-detail">${escapeHtml(e.detail)}</div>` : ""}
+            <div class="timeline-time">${fmtTime(e.occurred_at)}${e.signal_id ? ` &middot; signal #${e.signal_id}` : ""}</div>
+          </div>
+        </div>
+      `;
+    }).join("");
+  } catch (e) {
+    timeline.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// Old /signal-pipeline deep-links to a specific journey land here via
+// ?channel=&message= query params (see the redirect at that old route) -
+// open the same detail as a modal so a bookmarked link still works.
+async function openJourneyModalFromQuery(channelId, messageId) {
+  const subtitle = document.getElementById("journey-modal-subtitle");
+  const timeline = document.getElementById("journey-timeline");
+  subtitle.textContent = `Channel ${channelId} - Message ${messageId}`;
+  timeline.innerHTML = '<div class="muted">Loading...</div>';
+  openModal("journey-modal");
+  try {
+    const events = await fetchJSON(`/api/signal-pipeline/journeys/${channelId}/${messageId}`);
+    timeline.innerHTML = events.map(e => {
+      const meta = STATE_META[e.state] || { label: e.state, color: "var(--text-dim)" };
+      return `
+        <div class="timeline-step">
+          <div class="timeline-dot" style="background:${meta.color};"></div>
+          <div class="timeline-body">
+            <div class="timeline-state" style="color:${meta.color};">${escapeHtml(meta.label)}</div>
+            ${e.detail ? `<div class="timeline-detail">${escapeHtml(e.detail)}</div>` : ""}
+            <div class="timeline-time">${fmtTime(e.occurred_at)}${e.signal_id ? ` &middot; signal #${e.signal_id}` : ""}</div>
+          </div>
+        </div>
+      `;
+    }).join("");
+  } catch (e) {
+    timeline.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+// ---------------- Provider Status ----------------
+
+const TRADING_MODE_LABELS = {
+  observation: "Observation", demo_ready: "Demo-Ready", demo: "Demo", live: "Live",
+};
+const TRADING_MODE_BADGE_CLASS = {
+  observation: "off", demo_ready: "warn", demo: "on", live: "danger",
+};
+
+function tradingModeBadge(channelId) {
+  const profile = allProfilesByChannelId[channelId];
+  if (!profile) return "";
+  const label = TRADING_MODE_LABELS[profile.trading_mode] || profile.trading_mode;
+  const cls = TRADING_MODE_BADGE_CLASS[profile.trading_mode] || "off";
+  return `<span class="badge ${cls}" title="Universal Signal Intelligence Engine trading mode">${label}</span>`;
+}
+
+function renderProviderStatus() {
+  const listEl = document.getElementById("provider-status-list");
+  const followed = allChannels.filter(c => c.enabled);
+  if (!followed.length) {
+    listEl.innerHTML = '<div class="empty">No sources followed yet.</div>';
+    return;
+  }
+  listEl.innerHTML = followed.map(c => `
+    <div class="provider-row" onclick="openProfileModal(${c.id}, '${escapeHtml(c.title || "")}')">
+      <div>
+        <div class="name">${escapeHtml(c.title || "(no title)")}</div>
+        <div class="last-signal">Last signal: ${fmtTime(c.last_signal_at)}</div>
+      </div>
+      ${tradingModeBadge(c.id)}
+    </div>
+  `).join("");
+}
+
+// Coverage Analysis (2026-07-19 graduation-and-coverage policy) - every
+// observed message is attributable to one concrete reason, not folded
+// into a single opaque percentage. Rows marked "not a signal" are
+// expected/correct classifications, not failures - shown in a muted
+// tone so they read as context, not problems to fix.
+const COVERAGE_CATEGORY_LABELS = {
+  successfully_normalized: "Successfully normalized",
+  not_a_signal_asset_announcement: "Asset announcement (not a signal)",
+  not_a_signal_terminal_result: "Result/summary message (not a signal)",
+  not_a_signal_chatter: "Other chatter (not a signal)",
+  unknown_direction_keyword: "Unknown direction keyword",
+  unknown_expiration_format: "Unknown expiration format",
+  unknown_asset_format: "Unknown asset format",
+  multi_message_sequence_incomplete: "Multi-message sequence incomplete",
+  reply_chain_dependency: "Reply-chain dependency",
+  edited_message_dependency: "Edited-message dependency",
+  cancellation_dependency: "Cancellation dependency",
+  duplicate_detection: "Duplicate detected",
+  ambiguous: "Ambiguous",
+  unsupported_format: "Unsupported format",
+  other: "Other (unclassified)",
+};
+const COVERAGE_NOT_A_SIGNAL_KEYS = new Set([
+  "not_a_signal_asset_announcement", "not_a_signal_terminal_result", "not_a_signal_chatter",
+]);
+
+function renderCoverageAnalysis(breakdown) {
+  if (!breakdown || !breakdown.total_messages) {
+    return `<div class="card solid" style="margin-bottom:12px;">
+      <h3 style="margin-top:0; font-size:13px;">Coverage Analysis</h3>
+      <div class="muted" style="font-size:12.5px;">Run Analyze to see why coverage is what it is, broken down by concrete reason - not just a percentage.</div>
+    </div>`;
+  }
+  const rows = Object.entries(breakdown.breakdown)
+    .filter(([, count]) => count > 0)
+    .sort(([, a], [, b]) => b - a)
+    .map(([key, count]) => {
+      const pct = ((count / breakdown.total_messages) * 100).toFixed(1);
+      const isNotASignal = COVERAGE_NOT_A_SIGNAL_KEYS.has(key);
+      const isSuccess = key === "successfully_normalized";
+      const color = isSuccess ? "var(--green)" : (isNotASignal ? "var(--text-faint)" : "var(--red)");
+      return `
+        <div class="stat-row">
+          <span class="stat-label" style="${isNotASignal ? "color:var(--text-faint);" : ""}">${COVERAGE_CATEGORY_LABELS[key] || key}</span>
+          <span class="stat-value" style="color:${color};">${count} <span class="muted" style="font-size:11px;">(${pct}%)</span></span>
+        </div>
+      `;
+    }).join("");
+  return `
+    <div class="card solid" style="margin-bottom:12px;">
+      <h3 style="margin-top:0; font-size:13px;">Coverage Analysis</h3>
+      <div class="muted" style="font-size:11.5px; margin-bottom:8px;">Every one of ${breakdown.total_messages} observed messages, attributed to a concrete reason - "not a signal" rows are correct classifications, not problems.</div>
+      ${rows}
+    </div>
+  `;
+}
+
+// ---------------- Manage Sources modal content ----------------
 
 async function refreshConnectionStatus() {
   const badge = document.getElementById("conn-badge");
@@ -303,81 +655,11 @@ async function refreshChannels() {
       profiles.forEach(p => { allProfilesByChannelId[p.channel_id] = p; });
     } catch (e) { allProfilesByChannelId = {}; }
     renderMySources();
+    renderProviderStatus();
+    populateProviderFilter();
   } catch (e) {
     document.getElementById("my-sources-list").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
   }
-}
-
-const TRADING_MODE_LABELS = {
-  observation: "Observation", demo_ready: "Demo-Ready", demo: "Demo", live: "Live",
-};
-const TRADING_MODE_BADGE_CLASS = {
-  observation: "off", demo_ready: "warn", demo: "on", live: "danger",
-};
-
-function tradingModeBadge(channelId) {
-  const profile = allProfilesByChannelId[channelId];
-  if (!profile) return "";
-  const label = TRADING_MODE_LABELS[profile.trading_mode] || profile.trading_mode;
-  const cls = TRADING_MODE_BADGE_CLASS[profile.trading_mode] || "off";
-  return `<span class="badge ${cls}" title="Universal Signal Intelligence Engine trading mode">${label}</span>`;
-}
-
-// Coverage Analysis (2026-07-19 graduation-and-coverage policy) - every
-// observed message is attributable to one concrete reason, not folded
-// into a single opaque percentage. Rows marked "not a signal" are
-// expected/correct classifications, not failures - shown in a muted
-// tone so they read as context, not problems to fix.
-const COVERAGE_CATEGORY_LABELS = {
-  successfully_normalized: "Successfully normalized",
-  not_a_signal_asset_announcement: "Asset announcement (not a signal)",
-  not_a_signal_terminal_result: "Result/summary message (not a signal)",
-  not_a_signal_chatter: "Other chatter (not a signal)",
-  unknown_direction_keyword: "Unknown direction keyword",
-  unknown_expiration_format: "Unknown expiration format",
-  unknown_asset_format: "Unknown asset format",
-  multi_message_sequence_incomplete: "Multi-message sequence incomplete",
-  reply_chain_dependency: "Reply-chain dependency",
-  edited_message_dependency: "Edited-message dependency",
-  cancellation_dependency: "Cancellation dependency",
-  duplicate_detection: "Duplicate detected",
-  ambiguous: "Ambiguous",
-  unsupported_format: "Unsupported format",
-  other: "Other (unclassified)",
-};
-const COVERAGE_NOT_A_SIGNAL_KEYS = new Set([
-  "not_a_signal_asset_announcement", "not_a_signal_terminal_result", "not_a_signal_chatter",
-]);
-
-function renderCoverageAnalysis(breakdown) {
-  if (!breakdown || !breakdown.total_messages) {
-    return `<div class="card solid" style="margin-bottom:12px;">
-      <h3 style="margin-top:0; font-size:13px;">Coverage Analysis</h3>
-      <div class="muted" style="font-size:12.5px;">Run Analyze to see why coverage is what it is, broken down by concrete reason - not just a percentage.</div>
-    </div>`;
-  }
-  const rows = Object.entries(breakdown.breakdown)
-    .filter(([, count]) => count > 0)
-    .sort(([, a], [, b]) => b - a)
-    .map(([key, count]) => {
-      const pct = ((count / breakdown.total_messages) * 100).toFixed(1);
-      const isNotASignal = COVERAGE_NOT_A_SIGNAL_KEYS.has(key);
-      const isSuccess = key === "successfully_normalized";
-      const color = isSuccess ? "var(--green)" : (isNotASignal ? "var(--text-faint)" : "var(--red)");
-      return `
-        <div class="stat-row">
-          <span class="stat-label" style="${isNotASignal ? "color:var(--text-faint);" : ""}">${COVERAGE_CATEGORY_LABELS[key] || key}</span>
-          <span class="stat-value" style="color:${color};">${count} <span class="muted" style="font-size:11px;">(${pct}%)</span></span>
-        </div>
-      `;
-    }).join("");
-  return `
-    <div class="card solid" style="margin-bottom:12px;">
-      <h3 style="margin-top:0; font-size:13px;">Coverage Analysis</h3>
-      <div class="muted" style="font-size:11.5px; margin-bottom:8px;">Every one of ${breakdown.total_messages} observed messages, attributed to a concrete reason - "not a signal" rows are correct classifications, not problems.</div>
-      ${rows}
-    </div>
-  `;
 }
 
 function renderMySources() {
@@ -448,8 +730,6 @@ function initAddSourceSearch() {
         await toggleChannel(channel.id, true);
         await refreshChannels();
       }
-      // Reset immediately so adding several sources in a row doesn't
-      // require re-navigating away from a "selected" single result.
       if (addSourceSearch) addSourceSearch.clear();
     },
   });
@@ -647,7 +927,7 @@ async function wizardCommit() {
       body: JSON.stringify({ chat_id: wizardChatId, source_label: wizardSourceLabel, days, excluded_message_ids: excluded }),
     });
     const note = wizardStatusNote(result);
-    statusEl.textContent = note || `Done: ${result.imported_trades} trades imported and backtested. See Strategy Lab's Provider Recommendations tab to compare strategies and create a Fund.`;
+    statusEl.textContent = note || `Done: ${result.imported_trades} trades imported and backtested. See Backtesting's Provider Recommendations tab to compare strategies and create a Fund.`;
   } catch (e) {
     statusEl.textContent = "Failed: " + e.message;
   } finally {
@@ -840,13 +1120,119 @@ async function profileRevert() {
   }
 }
 
+// ---------------- Execution Rules + Test Parse (Signal Inspector consolidation) ----------------
+
+let currentRuleChannelId = null;
+
+function initRuleChannelSearch() {
+  SmartChannelSearch.mount("rule-channel-search", {
+    placeholder: "Search for a signal provider...",
+    recentKey: "signals-rules",
+    onSelect: (channel) => loadRules(channel.id),
+  });
+}
+
+async function loadRules(id) {
+  if (id !== undefined) currentRuleChannelId = id;
+  id = currentRuleChannelId;
+  const listEl = document.getElementById("rules-list");
+  if (!id) { listEl.innerHTML = "Select a channel to see its saved rules."; return; }
+  listEl.innerHTML = "Loading...";
+  try {
+    const rules = await fetchJSON(`/api/channels/${id}/rules`);
+    if (!rules.length) { listEl.innerHTML = '<div class="empty">No rules saved for this channel yet.</div>'; return; }
+    listEl.innerHTML = rules.map(r => `
+      <div class="rule-row">
+        <div style="min-width:0;">
+          <div>${escapeHtml(r.rule_name || "(unnamed rule)")} ${r.enabled ? '<span class="badge on">on</span>' : '<span class="badge off">off</span>'}</div>
+          <div class="muted" style="font-size:10.5px; overflow-wrap:anywhere;"><code>${escapeHtml(r.find_pattern)}</code> &rarr; <code>${escapeHtml(r.replace_with)}</code></div>
+        </div>
+        <div class="row" style="flex-shrink:0;">
+          <button class="subtle" onclick="toggleRule(${r.id}, ${!r.enabled})">${r.enabled ? "Off" : "On"}</button>
+          <button class="danger" onclick="deleteRule(${r.id})">Del</button>
+        </div>
+      </div>
+    `).join("");
+  } catch (e) {
+    listEl.innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
+async function createRule() {
+  const id = currentRuleChannelId;
+  if (!id) { alert("Search for and select a channel first."); return; }
+  const find = document.getElementById("rule-find").value;
+  const replace = document.getElementById("rule-replace").value;
+  if (!find) { alert("Enter a find pattern."); return; }
+  try {
+    await fetchJSON(`/api/channels/${id}/rules`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ find_pattern: find, replace_with: replace, rule_name: null }),
+    });
+    document.getElementById("rule-find").value = "";
+    document.getElementById("rule-replace").value = "";
+    await loadRules();
+  } catch (e) {
+    alert("Failed to save rule: " + e.message);
+  }
+}
+
+async function toggleRule(ruleId, enabled) {
+  try {
+    await fetchJSON(`/api/signal-rules/${ruleId}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }),
+    });
+    await loadRules();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function deleteRule(ruleId) {
+  if (!(await AximShell.confirm("Delete this rule?", { title: "Delete Rule", danger: true, confirmLabel: "Delete" }))) return;
+  try {
+    await fetchJSON(`/api/signal-rules/${ruleId}`, { method: "DELETE" });
+    await loadRules();
+  } catch (e) {
+    alert("Failed: " + e.message);
+  }
+}
+
+async function runParseTest() {
+  const input = document.getElementById("test-input").value;
+  const statusEl = document.getElementById("parse-status-text");
+  const resultEl = document.getElementById("parse-test-result");
+  if (!input.trim()) { statusEl.textContent = "Enter a message first."; return; }
+  statusEl.textContent = "parsing...";
+  try {
+    const data = await fetchJSON("/api/parse-test", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: input }),
+    });
+    const p = data.parsed;
+    statusEl.textContent = "";
+    resultEl.innerHTML = p
+      ? `<span class="badge on">Parsed</span> ${escapeHtml(p.asset)} ${escapeHtml(p.direction)} ${escapeHtml(p.expiry)}`
+      : `<span class="badge danger">Rejected</span>`;
+  } catch (e) {
+    statusEl.textContent = "failed: " + e.message;
+  }
+}
+
 (async () => {
   const user = await AximShell.init({ active: "telegram" });
   if (!user) return;
+  populateStateFilter();
   refreshConnectionStatus();
-  refreshChannels();
+  await refreshChannels();
+  await loadJourneys();
   initAddSourceSearch();
-  setInterval(refreshConnectionStatus, 15000);
+  initRuleChannelSearch();
+
+  // Old /signal-pipeline?channel=&message= deep-links land here.
+  const params = new URLSearchParams(window.location.search);
+  const qChannel = params.get("channel");
+  const qMessage = params.get("message");
+  if (qChannel && qMessage) openJourneyModalFromQuery(qChannel, qMessage);
 })();
 </script>
 </body>
