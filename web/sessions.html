@@ -488,7 +488,7 @@ async function refreshHistory() {
   try {
     const sessions = await fetchJSON("/api/sessions?limit=50");
     if (!sessions.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty">No sessions yet.</td></tr>';
+      tbody.innerHTML = AximShell.tableEmptyRow(6, "No sessions yet.");
       return;
     }
     tbody.innerHTML = sessions.map(s => `
@@ -502,7 +502,7 @@ async function refreshHistory() {
       </tr>
     `).join("");
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="6" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = AximShell.tableErrorRow(6, e.message);
   }
 }
 

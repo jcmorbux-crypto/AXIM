@@ -376,7 +376,7 @@ async function loadJourneys() {
     if (provider) journeys = journeys.filter(j => String(j.channel_id) === provider);
     statusEl.textContent = "";
     if (!journeys.length) {
-      body.innerHTML = '<tr><td colspan="5" class="empty">No signals recorded yet - real Telegram traffic will populate this as it arrives.</td></tr>';
+      body.innerHTML = AximShell.tableEmptyRow(5, "No signals recorded yet - real Telegram traffic will populate this as it arrives.");
       return;
     }
     body.innerHTML = journeys.map(j => `
@@ -390,7 +390,7 @@ async function loadJourneys() {
     `).join("");
   } catch (e) {
     statusEl.textContent = "";
-    body.innerHTML = `<tr><td colspan="5" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    body.innerHTML = AximShell.tableErrorRow(5, e.message);
   }
 }
 

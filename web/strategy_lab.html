@@ -853,9 +853,9 @@ async function toggleAuditHistory() {
         <td>${escapeHtml(entry.changed_by || "-")}</td>
         <td>${escapeHtml(entry.reason || "-")}</td>
       </tr>
-    `).join("") : `<tr><td colspan="4" class="empty">No audit entries yet.</td></tr>`;
+    `).join("") : AximShell.tableEmptyRow(4, "No audit entries yet.");
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = AximShell.tableErrorRow(4, e.message);
   }
 }
 
@@ -1082,10 +1082,10 @@ async function loadSessions() {
   try {
     sessions = await fetchJSON(`/api/backtest/runs/${currentRunId}/strategies/${strategyId}/sessions`);
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="6" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    body.innerHTML = AximShell.tableErrorRow(6, e.message);
     return;
   }
-  if (!sessions.length) { body.innerHTML = '<tr><td colspan="6" class="empty">No sessions.</td></tr>'; return; }
+  if (!sessions.length) { body.innerHTML = AximShell.tableEmptyRow(6, "No sessions."); return; }
   body.innerHTML = sessions.map(s => `
     <tr>
       <td>${s.session_index + 1}</td>
@@ -1252,10 +1252,10 @@ async function loadImportedSignals() {
   try {
     signals = await fetchJSON("/api/backtest/signals/imported");
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="7" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    body.innerHTML = AximShell.tableErrorRow(7, e.message);
     return;
   }
-  if (!signals.length) { body.innerHTML = '<tr><td colspan="7" class="empty">No imported signals yet.</td></tr>'; return; }
+  if (!signals.length) { body.innerHTML = AximShell.tableEmptyRow(7, "No imported signals yet."); return; }
   body.innerHTML = signals.map(s => `
     <tr>
       <td>${escapeHtml(s.source_label)}</td>
@@ -1379,10 +1379,10 @@ async function loadRunsHistory() {
   try {
     runs = await fetchJSON("/api/backtest/runs");
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="5" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    body.innerHTML = AximShell.tableErrorRow(5, e.message);
     return;
   }
-  if (!runs.length) { body.innerHTML = '<tr><td colspan="5" class="empty">No backtests yet.</td></tr>'; return; }
+  if (!runs.length) { body.innerHTML = AximShell.tableEmptyRow(5, "No backtests yet."); return; }
   body.innerHTML = runs.map(r => `
     <tr>
       <td>${escapeHtml(r.name)}</td>

@@ -305,13 +305,13 @@ async function refreshAll() {
     allBrokerAccounts = brokerAccounts;
     renderFundsList();
   } catch (e) {
-    document.getElementById("funds-list").innerHTML = `<tr><td colspan="4" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    document.getElementById("funds-list").innerHTML = AximShell.tableErrorRow(4, e.message);
   }
 }
 
 function renderFundsList() {
   const list = document.getElementById("funds-list");
-  if (!allFunds.length) { list.innerHTML = '<tr><td colspan="4" class="empty">No funds yet - create one to get started.</td></tr>'; return; }
+  if (!allFunds.length) { list.innerHTML = AximShell.tableEmptyRow(4, "No funds yet - create one to get started."); return; }
   list.innerHTML = allFunds.map(f => {
     const account = f.broker_account;
     const brokerCell = account
@@ -433,7 +433,7 @@ async function selectFund(fundId) {
     const transfers = await fetchJSON(`/api/funds/${fundId}/transfers`);
     renderTransfers(transfers);
   } catch (e) {
-    document.getElementById("transfers-body").innerHTML = `<tr><td colspan="4" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    document.getElementById("transfers-body").innerHTML = AximShell.tableErrorRow(4, e.message);
   }
   try {
     const diagnostics = await fetchJSON(`/api/funds/${fundId}/diagnostics`);
@@ -498,15 +498,15 @@ async function toggleFundActivity() {
         <td>${escapeHtml(entry.changed_by || "-")}</td>
         <td class="muted" style="font-size:11.5px;">${escapeHtml(detail)}</td>
       </tr>`;
-    }).join("") : '<tr><td colspan="4" class="empty">No activity yet.</td></tr>';
+    }).join("") : AximShell.tableEmptyRow(4, "No activity yet.");
   } catch (e) {
-    tbody.innerHTML = `<tr><td colspan="4" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    tbody.innerHTML = AximShell.tableErrorRow(4, e.message);
   }
 }
 
 function renderTransfers(transfers) {
   const body = document.getElementById("transfers-body");
-  if (!transfers.length) { body.innerHTML = '<tr><td colspan="4" class="empty">No transfers yet.</td></tr>'; return; }
+  if (!transfers.length) { body.innerHTML = AximShell.tableEmptyRow(4, "No transfers yet."); return; }
   body.innerHTML = transfers.map(t => {
     const fromLabel = t.from_fund_id === null ? "Reserve" : (t.from_fund_id === currentFundId ? "This Fund" : (allFunds.find(f => f.id === t.from_fund_id)?.name || `Fund #${t.from_fund_id}`));
     const toLabel = t.to_fund_id === null ? "Reserve" : (t.to_fund_id === currentFundId ? "This Fund" : (allFunds.find(f => f.id === t.to_fund_id)?.name || `Fund #${t.to_fund_id}`));
@@ -599,14 +599,14 @@ function renderDetail(report) {
         <td class="${s.realized_pnl >= 0 ? "pos" : "neg"}">${fmtMoney(s.realized_pnl)}</td>
         <td class="muted">${(s.started_at || "").replace("T", " ").slice(0, 16)}</td></tr>
       `).join("")
-    : '<tr><td colspan="4" class="empty">No sessions yet.</td></tr>';
+    : AximShell.tableEmptyRow(4, "No sessions yet.");
 
   document.getElementById("backtests-body").innerHTML = report.recent_backtests.length
     ? report.recent_backtests.map(b => `
         <tr><td>${escapeHtml(b.name)}</td><td><span class="badge off">${b.status}</span></td>
         <td class="muted">${(b.created_at || "").replace("T", " ").slice(0, 16)}</td></tr>
       `).join("")
-    : '<tr><td colspan="3" class="empty">No backtests yet.</td></tr>';
+    : AximShell.tableEmptyRow(3, "No backtests yet.");
 }
 
 async function saveFund() {

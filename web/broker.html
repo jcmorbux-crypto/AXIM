@@ -313,12 +313,12 @@ async function refreshAccounts() {
   try {
     accounts = await fetchJSON("/api/broker-accounts");
   } catch (e) {
-    body.innerHTML = `<tr><td colspan="9" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+    body.innerHTML = AximShell.tableErrorRow(9, e.message);
     return;
   }
   lastLoadedAccounts = accounts;
   if (!accounts.length) {
-    body.innerHTML = '<tr><td colspan="9" class="empty">No broker accounts yet - add one to attach it to a Fund.</td></tr>';
+    body.innerHTML = AximShell.tableEmptyRow(9, "No broker accounts yet - add one to attach it to a Fund.");
     return;
   }
   body.innerHTML = accounts.map(a => `

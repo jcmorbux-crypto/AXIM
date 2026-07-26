@@ -642,9 +642,111 @@ const AximShell = (() => {
   // Settings > Developer.
   function isDeveloperMode() { return developerMode; }
 
+  // ==================== Shared Component Layer (UI v2, 2026-07-25) ====================
+  // Per COMPONENT_SPEC.md - vanilla JS/CSS, no build step, matching this
+  // stack's existing pattern (see docs/ui-v2-audit.md's own "Real stack"
+  // note). Every function returns an HTML string for `.innerHTML =`,
+  // the same convention every page already uses. These consolidate
+  // patterns that were being reimplemented ad hoc per-page (state
+  // badges, empty/loading/error table rows, metric tiles) - purely
+  // presentational, no functional change to any page that adopts them.
+
+  function _shellEscapeHtml(s) { return escapeHtml(s); }
+
+  // ---- StatusBadge: live, win, loss, pending, upcoming, inactive ----
+  // "Never rely on color alone" (COMPONENT_SPEC.md) - every state also
+  // gets its own glyph, not just a color, so it still reads correctly
+  // for a color-blind user or in a screenshot converted to grayscale.
+  const STATUS_BADGE_META = {
+    live:     { cls: "on",     glyph: "●", label: "Live" },
+    win:      { cls: "on",     glyph: "✓", label: "Win" },
+    loss:     { cls: "danger", glyph: "✕", label: "Loss" },
+    pending:  { cls: "warn",   glyph: "⏳", label: "Pending" },
+    upcoming: { cls: "info",   glyph: "○", label: "Upcoming" },
+    inactive: { cls: "off",    glyph: "–", label: "Inactive" },
+  };
+  function statusBadge(status, label) {
+    const meta = STATUS_BADGE_META[status] || { cls: "off", glyph: "?", label: status };
+    return `<span class="badge ${meta.cls}"><span aria-hidden="true">${meta.glyph}</span> ${escapeHtml(label || meta.label)}</span>`;
+  }
+
+  // ---- SignalRow state badge: received, parsed, rejected, queued,
+  // executed, won, lost - always pairs the state with its exact detail/
+  // reason text (never a bare state with no explanation), matching the
+  // Signals page's Signal Feed Table. ----
+  const SIGNAL_ROW_STATE_META = {
+    received: { color: "var(--brand)" }, parsed: { color: "var(--brand)" },
+    queued: { color: "var(--brand)" }, executed: { color: "var(--brand)" },
+    won: { color: "var(--green)" }, lost: { color: "var(--red)" },
+    rejected: { color: "var(--red)" }, skipped: { color: "var(--text-faint)" },
+    failed: { color: "var(--red)" },
+  };
+  function signalRowState(state, detail) {
+    const key = (state || "").toLowerCase();
+    const meta = SIGNAL_ROW_STATE_META[key] || { color: "var(--text-dim)" };
+    const label = state ? state.charAt(0).toUpperCase() + state.slice(1) : "Unknown";
+    return `<span style="color:${meta.color}; font-weight:600; font-size:12.5px;">${escapeHtml(label)}</span>` +
+      (detail ? `<div class="muted" style="font-size:11px; margin-top:1px;">${escapeHtml(detail)}</div>` : "");
+  }
+
+  // ---- MetricCard: default, loading, error, positive, negative ----
+  // label/value plus an optional delta ({value, positive}). `state`
+  // overrides value rendering for loading/error so a page never has to
+  // hand-roll "Loading..." text inside a value slot. Matches the
+  // existing .mm-tile convention exactly (a grid cell meant to sit
+  // inside an already-wrapping .mm-grid container, e.g. Money
+  // Management's Risk Control Center) - deliberately NOT its own
+  // outer card, so it's a true drop-in for the pattern already used
+  // throughout this codebase rather than a new, differently-nested one.
+  // `value` is trusted, already-safe HTML (matching every existing
+  // *.html call site's own convention of escaping raw text at the point
+  // it's read, before it ever reaches a template slot) - metricCard()
+  // does NOT re-escape it, since callers that already ran it through
+  // escapeHtml() would otherwise get visibly double-escaped output
+  // (e.g. an apostrophe rendering as the literal text "&#39;").
+  function metricCard(label, value, opts) {
+    opts = opts || {};
+    let valueHtml;
+    if (opts.state === "loading") valueHtml = `<span class="muted">Loading&hellip;</span>`;
+    else if (opts.state === "error") valueHtml = `<span class="muted" style="color:var(--red);">&mdash;</span>`;
+    else valueHtml = value;
+    const deltaHtml = opts.delta
+      ? `<div style="font-size:12px; margin-top:2px; color:${opts.delta.positive ? "var(--green)" : "var(--red)"};">${opts.delta.positive ? "+" : ""}${escapeHtml(opts.delta.value)}</div>`
+      : "";
+    const onClass = opts.on !== undefined ? (opts.on ? "on" : "") : (opts.state === "loading" || opts.state === "error" ? "" : "on");
+    return `
+      <div class="mm-tile ${onClass}">
+        <div class="mm-tile-label">${escapeHtml(label)}</div>
+        <div class="mm-tile-value">${valueHtml}</div>
+        ${deltaHtml}
+      </div>
+    `;
+  }
+
+  // ---- Shared table states: loading, empty, error, populated ----
+  // Replaces the near-identical <tr><td colspan="N" class="empty">...
+  // pattern that was hand-written slightly differently on every page's
+  // own table (sessions history, funds list, journeys, etc.).
+  function tableLoadingRow(colspan) { return `<tr><td colspan="${colspan}" class="empty">Loading&hellip;</td></tr>`; }
+  function tableEmptyRow(colspan, message) { return `<tr><td colspan="${colspan}" class="empty">${escapeHtml(message || "Nothing here yet.")}</td></tr>`; }
+  function tableErrorRow(colspan, message) { return `<tr><td colspan="${colspan}" class="empty">Failed to load: ${escapeHtml(message)}</td></tr>`; }
+
+  // ---- ToggleRow: on/off, disabled, inherited, overridden ----
+  // `inherited` shows the source value it would use if left blank/off
+  // (e.g. a per-account override falling back to a global default) -
+  // COMPONENT_SPEC.md's explicit requirement to "show source of
+  // inherited value" rather than just displaying a blank field.
+  function toggleRowInheritedNote(inheritedFrom, inheritedValue) {
+    if (inheritedFrom === undefined) return "";
+    return `<span class="muted" style="font-size:11px;">inherits ${escapeHtml(String(inheritedValue))} from ${escapeHtml(inheritedFrom)}</span>`;
+  }
+
   return {
     init, logout, fetchJSON, isDeveloperMode, _confirmPendingTrade, _rejectPendingTrade,
     _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents, toggleTheme, confirm: confirmDialog,
     emptyPanel,
+    statusBadge, signalRowState, metricCard,
+    tableLoadingRow, tableEmptyRow, tableErrorRow,
+    toggleRowInheritedNote,
   };
 })();

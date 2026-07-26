@@ -269,10 +269,10 @@ function renderRiskControlCenter(rcc) {
     <div class="card solid">
       ${banner}
       <div class="mm-grid">
-        <div class="mm-tile ${rcc.active_profile ? "on" : ""}"><div class="mm-tile-label">Active Strategy</div><div class="mm-tile-value">${strategyValue}</div></div>
-        <div class="mm-tile on"><div class="mm-tile-label">Current Bankroll</div><div class="mm-tile-value">${fmtMoney(rcc.current_bankroll)}</div></div>
-        <div class="mm-tile ${nt.amount !== null ? "on" : ""}"><div class="mm-tile-label">Next Trade</div><div class="mm-tile-value">${nextTradeValue}</div></div>
-        <div class="mm-tile"><div class="mm-tile-label">Exposure Today</div><div class="mm-tile-value">${exposureValue}</div></div>
+        ${AximShell.metricCard("Active Strategy", strategyValue, { on: !!rcc.active_profile })}
+        ${AximShell.metricCard("Current Bankroll", fmtMoney(rcc.current_bankroll), { on: true })}
+        ${AximShell.metricCard("Next Trade", nextTradeValue, { on: nt.amount !== null })}
+        ${AximShell.metricCard("Exposure Today", exposureValue, { on: false })}
       </div>
       <div class="muted" style="font-size:12px; margin-top:12px;">${escapeHtml(nt.reason)}</div>
       ${outcomes}

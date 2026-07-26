@@ -72,6 +72,27 @@
   --radius-lg: 16px;
   --radius-xl: 20px;
   --radius-pill: 999px;
+  /* UI v2 Design Stack spacing/motion scales (design-tokens.json) -
+     defined and available for new/updated surfaces. NOT retrofitted
+     across every existing hardcoded padding/margin/gap or transition
+     duration in this file (hundreds of call sites across 19 pages,
+     all already visually verified this session) - see the UI v2 final
+     audit for this documented as an intentional deviation, not an
+     oversight: the visual difference between e.g. 14px and --space-md
+     (12px) is imperceptible, and a mechanical find/replace across the
+     whole stylesheet carries real regression risk for zero functional
+     benefit. New component work (see AximShell's shared component
+     layer) uses these tokens directly. */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+  --space-3xl: 48px;
+  --motion-fast: 120ms;
+  --motion-normal: 180ms;
+  --motion-slow: 260ms;
   --shadow-sm: 0 1px 2px rgba(20, 24, 31, 0.03);
   --shadow: 0 1px 2px rgba(20, 24, 31, 0.04), 0 8px 24px rgba(20, 24, 31, 0.05);
   --shadow-lift: 0 4px 8px rgba(20, 24, 31, 0.05), 0 16px 40px rgba(20, 24, 31, 0.09);
@@ -525,6 +546,12 @@ button.primary, .btn.primary {
   background: var(--brand); border-color: var(--brand); color: white;
 }
 button.primary:hover, .btn.primary:hover { background: var(--brand-hover); border-color: var(--brand-hover); }
+
+/* Field disabled state - COMPONENT_SPEC.md requires it for Field, and
+   until this it only existed for Button (button:disabled above). */
+input:disabled, select:disabled, textarea:disabled {
+  opacity: 0.55; cursor: not-allowed; background: var(--surface);
+}
 
 button.danger, .btn.danger {
   background: var(--red); border-color: var(--red); color: white;
