@@ -1929,7 +1929,9 @@ def record_outcome_latency(trade_id, detection_overhead_ms):
 @timed("database")
 def create_trade_series(channel_id, asset, direction, expiry, stake, entry_times,
                          source_message_id=None, raw_message=None, fund_id=None,
-                         broker_account_id=None, session_id=None, max_entries=4):
+                         broker_account_id=None, session_id=None, max_entries=4,
+                         published_entry_time=None, provider_timezone=None, entry_times_utc=None,
+                         telegram_message_date_utc=None, schedule_resolution_method=None):
     """One row per published Martin Trader-style signal (core/
     trade_series_engine.py) - `entry_times` is the full ordered list of
     every scheduled clock time (Entry #1's own published time first,
@@ -1938,20 +1940,38 @@ def create_trade_series(channel_id, asset, direction, expiry, stake, entry_times
     this just persists whatever list it's handed). `expiry` is the plain
     text label (e.g. "5 Minute") every other signal already uses, not
     raw seconds - kept in the same shape as signals.timeframe rather
-    than a lossy round trip through pocket_dom.expiry_to_seconds and back."""
+    than a lossy round trip through pocket_dom.expiry_to_seconds and back.
+
+    entry_times_utc/published_entry_time/provider_timezone/
+    telegram_message_date_utc/schedule_resolution_method (2026-07-27
+    Martin Trader timezone incident) are the real, authoritative,
+    already-resolved-and-tz-aware schedule and its audit trail -
+    entry_times_utc is a list of ISO datetime strings, one per entry_times
+    slot, computed by trade_series_engine._resolve_entry_schedule_utc
+    BEFORE this function is ever called. Deliberately optional at the
+    database layer (some callers - e.g. test setup for the state-machine
+    itself, not the scheduling logic - have no real Telegram message to
+    anchor against), but core/trade_series_engine.py's own
+    create_series_from_signal always supplies them for a real signal."""
     conn = get_connection()
     now = datetime.now().isoformat()
     cursor = conn.execute("""
         INSERT INTO trade_series (
             channel_id, fund_id, broker_account_id, session_id, asset, direction,
             expiry, stake, entry_times_json, max_entries, current_entry_number,
-            status, source_message_id, raw_message, created_at
+            status, source_message_id, raw_message, created_at,
+            published_entry_time, provider_timezone, entry_times_utc_json,
+            scheduled_at_utc, telegram_message_date_utc, schedule_resolution_method
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         channel_id, fund_id, broker_account_id, session_id, asset, direction,
         expiry, stake, json.dumps(entry_times), max_entries,
         source_message_id, raw_message, now,
+        published_entry_time, provider_timezone,
+        json.dumps(entry_times_utc) if entry_times_utc is not None else None,
+        entry_times_utc[0] if entry_times_utc else None,
+        telegram_message_date_utc, schedule_resolution_method,
     ))
     conn.commit()
     series_id = cursor.lastrowid
@@ -1968,6 +1988,7 @@ def get_trade_series(series_id):
         return None
     d = dict(row)
     d["entry_times"] = json.loads(d["entry_times_json"]) if d["entry_times_json"] else []
+    d["entry_times_utc"] = json.loads(d["entry_times_utc_json"]) if d["entry_times_utc_json"] else []
     return d
 
 
@@ -2032,6 +2053,7 @@ def list_pending_trade_series(channel_id=None):
     for row in rows:
         d = dict(row)
         d["entry_times"] = json.loads(d["entry_times_json"]) if d["entry_times_json"] else []
+        d["entry_times_utc"] = json.loads(d["entry_times_utc_json"]) if d["entry_times_utc_json"] else []
         out.append(d)
     return out
 

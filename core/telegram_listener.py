@@ -554,8 +554,11 @@ async def handler(event):
         # `if` block) guarantees this never falls through into the normal
         # route_signal call below, success or failure alike.
         try:
+            provider_profile = database.get_or_create_provider_profile(channel_row["id"])
             series_id = await trade_series_engine.create_series_from_signal(
                 signal, channel_id=channel_row["id"], stake=MARTIN_TRADER_STAKE,
+                provider_timezone=provider_profile["timezone"],
+                telegram_message_date_utc=event.date,
                 fund_id=None, broker_account_id=None, session_id=None,
                 source_message_id=event.id,
             )

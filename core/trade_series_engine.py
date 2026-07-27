@@ -46,8 +46,9 @@ existing path and WHETHER to call it again after an outcome.
 """
 import asyncio
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 CORE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(CORE_DIR))
@@ -63,13 +64,12 @@ logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 DUE_ENTRY_POLL_INTERVAL_SECONDS = 3
 MAX_ENTRIES = 4
 
-# A published clock time (e.g. "09:00") is resolved relative to when the
-# signal itself arrived, not to "today" blindly - a signal published just
-# before midnight with entries just after it would otherwise resolve to
-# nearly 24h in the past. If the naive same-day interpretation would land
-# more than this many hours before the signal's own arrival, it's rolled
-# forward to the next day instead.
-_ROLLOVER_THRESHOLD_HOURS = 6
+# The evidence-based resolution method name persisted on every series
+# (trade_series.schedule_resolution_method) - 2026-07-27 Martin Trader
+# timezone incident. Exists so a FUTURE change to this algorithm is
+# distinguishable from historical rows on disk, rather than silently
+# reinterpreting old data under new rules.
+SCHEDULE_RESOLUTION_METHOD = "provider_timezone_v1"
 
 # A scheduled entry that's still this old past its own published time is
 # treated as stale and rejected rather than fired - a Martin Trader entry
@@ -94,12 +94,87 @@ _RESOLVED_STATUS_TO_RESULT = {
 }
 
 
-def _resolve_scheduled_datetime(hhmm, reference_dt):
+class ScheduleResolutionError(Exception):
+    """Raised when a provider's published entry time cannot be safely
+    resolved to a real, unambiguous UTC datetime. 2026-07-27 Martin
+    Trader timezone incident: the previous resolver silently combined
+    the published HH:MM with AXIM's own local system clock (Pacific),
+    with no timezone conversion at all, despite the channel explicitly
+    declaring UTC+3 - verified live to schedule Entry 1 roughly 9 hours
+    after the channel had already reported the same signal's outcome.
+    The corrected resolver below never guesses when it lacks what it
+    needs (a real provider timezone, a real tz-aware reference
+    timestamp) - it raises instead, and the caller (core/
+    telegram_listener.py's existing exception boundary) logs and tracks
+    it as a real FAILED pipeline event rather than falling through to
+    any default."""
+
+
+def _resolve_scheduled_datetime_utc(hhmm, provider_timezone_name, telegram_message_date_utc):
+    """The verified, evidence-based replacement for the old naive
+    same-day/AXIM-local-clock resolver. The 2026-07-27 investigation
+    cross-validated, across three independent signal/result pairs and
+    four consecutive real signal-to-signal deltas (all exact to the
+    second), that Martin Trader's published entry times only resolve
+    correctly against the SIGNAL MESSAGE'S OWN real Telegram send time,
+    converted into the provider's declared timezone - never AXIM's own
+    local system clock.
+
+    Rollover rule (evidence-based, not a blind "roll every past time
+    forward" guess): every verified real example showed the signal sent
+    a few minutes BEFORE its own published Entry 1 time, in the
+    provider's timezone. If combining the published HH:MM with the
+    message's own calendar date (in that timezone) would put the entry
+    BEFORE the message's own send time, the only pattern actually
+    observed that explains this is a midnight boundary - the entry is
+    for the next calendar day. There is no observed case of a Martin
+    Trader signal arriving after its own Entry 1 time, so this is
+    applied unconditionally when it's needed, not selectively guessed."""
+    if not provider_timezone_name:
+        raise ScheduleResolutionError(
+            "provider_timezone is required to resolve a scheduled entry - refusing to guess without one"
+        )
+    try:
+        tz = ZoneInfo(provider_timezone_name)
+    except (ZoneInfoNotFoundError, ValueError) as e:
+        raise ScheduleResolutionError(f"invalid provider_timezone {provider_timezone_name!r}: {e}") from e
+
+    if telegram_message_date_utc is None or telegram_message_date_utc.tzinfo is None:
+        raise ScheduleResolutionError(
+            "telegram_message_date_utc must be a timezone-aware datetime - refusing to schedule from a naive one"
+        )
+
+    message_local = telegram_message_date_utc.astimezone(tz)
     hour, minute = (int(part) for part in hhmm.split(":"))
-    candidate = reference_dt.replace(hour=hour, minute=minute, second=0, microsecond=0)
-    if candidate < reference_dt - timedelta(hours=_ROLLOVER_THRESHOLD_HOURS):
-        candidate += timedelta(days=1)
-    return candidate
+    candidate_local = message_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate_local < message_local:
+        candidate_local += timedelta(days=1)
+    return candidate_local.astimezone(timezone.utc)
+
+
+def _resolve_entry_schedule_utc(entry_times, provider_timezone_name, telegram_message_date_utc):
+    """Resolves Entry 1 against the message's own send time (the only
+    entry that genuinely needs timezone conversion/rollover), then
+    derives every later Martingale re-entry as a fixed offset from
+    Entry 1's own resolved UTC moment - each later published clock time
+    is always Entry 1's own time plus some number of minutes (verified
+    identical, real spacing in every example examined), so this never
+    re-runs rollover logic per entry; a later entry is never
+    independently ambiguous about which calendar day it falls on once
+    Entry 1 itself is correctly anchored."""
+    if not entry_times:
+        return []
+    first_utc = _resolve_scheduled_datetime_utc(entry_times[0], provider_timezone_name, telegram_message_date_utc)
+    hour0, minute0 = (int(part) for part in entry_times[0].split(":"))
+    base_minutes = hour0 * 60 + minute0
+    resolved = [first_utc]
+    for t in entry_times[1:]:
+        hour, minute = (int(part) for part in t.split(":"))
+        delta_minutes = (hour * 60 + minute) - base_minutes
+        if delta_minutes < 0:
+            delta_minutes += 24 * 60
+        resolved.append(first_utc + timedelta(minutes=delta_minutes))
+    return resolved
 
 
 def build_entry_schedule(signal):
@@ -121,8 +196,8 @@ def build_entry_schedule(signal):
     return times[:MAX_ENTRIES]
 
 
-async def create_series_from_signal(signal, channel_id, stake, fund_id=None,
-                                     broker_account_id=None, session_id=None,
+async def create_series_from_signal(signal, channel_id, stake, provider_timezone, telegram_message_date_utc,
+                                     fund_id=None, broker_account_id=None, session_id=None,
                                      source_message_id=None):
     """Entry point for a channel gated into scheduled-entry mode (today,
     only channel 163). Persists the series and returns its id - does NOT
@@ -137,7 +212,16 @@ async def create_series_from_signal(signal, channel_id, stake, fund_id=None,
     event (Telethon reconnect, at-least-once delivery) for a message this
     channel already turned into a series returns that SAME series_id
     rather than starting a second, independent one for what is really one
-    published signal."""
+    published signal.
+
+    provider_timezone/telegram_message_date_utc are required, not
+    optional (2026-07-27 Martin Trader timezone incident) - the whole
+    point of the fix is that a schedule is never computed without a
+    real provider timezone and a real tz-aware reference timestamp;
+    _resolve_entry_schedule_utc raises ScheduleResolutionError rather
+    than falling back to a guess, and this function deliberately lets
+    that propagate to the caller's own existing exception boundary
+    (core/telegram_listener.py) instead of swallowing it here."""
     existing = await asyncio.to_thread(database.get_trade_series_by_message, channel_id, source_message_id)
     if existing is not None:
         logger.info(
@@ -154,6 +238,8 @@ async def create_series_from_signal(signal, channel_id, stake, fund_id=None,
         )
         return None
 
+    entry_times_utc = _resolve_entry_schedule_utc(entry_times, provider_timezone, telegram_message_date_utc)
+
     series_id = await asyncio.to_thread(
         database.create_trade_series,
         channel_id=channel_id, asset=signal["asset"], direction=signal["direction"],
@@ -161,11 +247,17 @@ async def create_series_from_signal(signal, channel_id, stake, fund_id=None,
         source_message_id=source_message_id, raw_message=signal.get("raw_message"),
         fund_id=fund_id, broker_account_id=broker_account_id, session_id=session_id,
         max_entries=len(entry_times),
+        published_entry_time=entry_times[0],
+        provider_timezone=provider_timezone,
+        entry_times_utc=[dt.isoformat() for dt in entry_times_utc],
+        telegram_message_date_utc=telegram_message_date_utc.isoformat(),
+        schedule_resolution_method=SCHEDULE_RESOLUTION_METHOD,
     )
     logger.info(
-        "trade_series_engine: series_id=%s created for %s %s, %d scheduled entr%s (%s)",
+        "trade_series_engine: series_id=%s created for %s %s, %d scheduled entr%s (%s) resolved_utc=(%s)",
         series_id, signal["asset"], signal["direction"], len(entry_times),
         "y" if len(entry_times) == 1 else "ies", ", ".join(entry_times),
+        ", ".join(dt.isoformat() for dt in entry_times_utc),
     )
     return series_id
 
@@ -393,8 +485,21 @@ async def run_due_entries_loop(default_coordinator, channel_id=None):
 
 
 async def _fire_due_entries(default_coordinator, channel_id):
+    """Restart-safe by construction: every comparison here uses the
+    series' own stored, already-resolved entry_times_utc (computed once,
+    at creation time, from the real Telegram message timestamp and the
+    provider's declared timezone - see create_series_from_signal) rather
+    than recomputing anything from AXIM's local clock or created_at.
+    2026-07-27 Martin Trader timezone incident: the previous version of
+    this function re-derived each entry's scheduled moment at FIRE time
+    via a naive same-day/AXIM-local-clock calculation - restart-safe in
+    the sense that it always recomputed the same (wrong) answer, but the
+    answer itself was never correct. A series with no resolved UTC
+    schedule at all (only possible for pre-fix legacy data, since every
+    real series now always gets one) is skipped and logged rather than
+    guessed at."""
     pending = await asyncio.to_thread(database.list_pending_trade_series, channel_id)
-    now = datetime.now()
+    now_utc = datetime.now(timezone.utc)
     for series in pending:
         if series["status"] != "pending":
             continue  # 'active' - an entry is already in flight, waiting on its outcome
@@ -411,12 +516,20 @@ async def _fire_due_entries(default_coordinator, channel_id):
         next_entry_number = series["current_entry_number"] + 1
         if next_entry_number > series["max_entries"]:
             continue  # defensive - _on_trade_closed should already have marked this exhausted
-        entry_time_str = series["entry_times"][next_entry_number - 1]
-        scheduled_dt = _resolve_scheduled_datetime(entry_time_str, datetime.fromisoformat(series["created_at"]))
-        if now < scheduled_dt:
+
+        if not series.get("entry_times_utc") or len(series["entry_times_utc"]) < next_entry_number:
+            logger.error(
+                "trade_series_engine: series_id=%s has no resolved entry_times_utc for entry #%d - "
+                "refusing to guess a schedule; skipping until this is investigated",
+                series["id"], next_entry_number,
+            )
+            continue
+
+        scheduled_dt = datetime.fromisoformat(series["entry_times_utc"][next_entry_number - 1])
+        if now_utc < scheduled_dt:
             continue  # not due yet
 
-        age_seconds = (now - scheduled_dt).total_seconds()
+        age_seconds = (now_utc - scheduled_dt).total_seconds()
         if age_seconds > STALE_ENTRY_THRESHOLD_SECONDS:
             logger.error(
                 "trade_series_engine: series_id=%s entry #%d was due at %s, now %.0fs stale (likely a real "

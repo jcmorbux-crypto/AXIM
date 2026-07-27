@@ -3,7 +3,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -115,7 +115,7 @@ class _FakeEvent:
         self.chat_id = chat_id
         self.raw_text = raw_text
         self.message = _FakeMessage(raw_text)
-        self.date = datetime.now()
+        self.date = datetime.now(timezone.utc)
 
     async def get_chat(self):
         return _FakeChat()
