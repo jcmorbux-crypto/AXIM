@@ -329,6 +329,14 @@ async def handler(event):
             chat_id=event.chat_id, username=chat_username, title=chat_title, message_text=event.raw_text,
             telegram_message_id=event.id, reply_to_message_id=reply_to_message_id,
             buttons_json=_serialize_buttons(event.message),
+            # Telethon's own event.date is already tz-aware UTC (2026-07-27
+            # Martin Trader timezone incident - received_at above is only
+            # ever AXIM's own processing-time clock and must never stand
+            # in for the channel's real send time when resolving a
+            # provider's published clock-time entries). isoformat() on a
+            # tz-aware datetime always includes the explicit UTC offset,
+            # so this can never be silently reinterpreted as naive later.
+            telegram_message_date_utc=event.date.isoformat() if event.date else None,
         )
     except Exception as e:
         logger.error("telegram_listener: record_channel_message failed: %s", e)
@@ -517,6 +525,22 @@ async def handler(event):
     # environment for unrelated reasons and was never a safe proxy for
     # this one series' own fixed stake.
     if channel_row is not None and _is_martin_trader_channel(channel_row, event.chat_id):
+        # Per-provider execution safety hold (2026-07-27 timezone-
+        # interpretation incident - see core/database.py's
+        # is_provider_execution_paused docstring). Checked first, before
+        # the exception boundary below: while paused, parsing/RECEIVED/
+        # PARSED tracking above this point still runs normally (so the
+        # signal remains visible, not silently dropped), but no new
+        # series is created and nothing falls through into route_signal
+        # either - the bare `return` matches every other path out of
+        # this `if` block.
+        if database.is_provider_execution_paused(channel_row["id"]):
+            print(f"[MARTIN TRADER] execution paused for {_debug_safe(chat_title)!r} - signal for "
+                  f"{signal['asset']!r} parsed but not scheduled")
+            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                                   detail="execution_paused")
+            return
+
         # Targeted exception boundary - this branch, and only this branch,
         # gets one (verified live production defect: 9 of 9 real signals
         # since deployment stopped silently right after PARSED, with
@@ -615,6 +639,7 @@ async def edit_handler(event):
             chat_id=event.chat_id, username=chat_username, title=chat_title, message_text=event.raw_text,
             telegram_message_id=event.id, reply_to_message_id=reply_to_message_id,
             buttons_json=_serialize_buttons(event.message),
+            telegram_message_date_utc=event.date.isoformat() if event.date else None,
         )
     except Exception as e:
         logger.error("telegram_listener: record_channel_message (edit) failed: %s", e)

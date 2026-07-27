@@ -398,6 +398,16 @@ async def _fire_due_entries(default_coordinator, channel_id):
     for series in pending:
         if series["status"] != "pending":
             continue  # 'active' - an entry is already in flight, waiting on its outcome
+        if series["channel_id"] is not None and await asyncio.to_thread(
+            database.is_provider_execution_paused, series["channel_id"]
+        ):
+            # Per-provider safety hold (2026-07-27 Martin Trader timezone
+            # incident) - defense in depth alongside the listener's own
+            # check before create_series_from_signal: a series created
+            # just before the hold was set must not fire either. Left
+            # exactly as 'pending', not blocked/cancelled - this is a
+            # temporary hold, not a verdict on the series itself.
+            continue
         next_entry_number = series["current_entry_number"] + 1
         if next_entry_number > series["max_entries"]:
             continue  # defensive - _on_trade_closed should already have marked this exhausted

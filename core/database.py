@@ -239,6 +239,16 @@ _NEW_CHANNEL_MESSAGE_COLUMNS = {
     # driven from here; this only makes existing button structure
     # inspectable without a live manual interaction.
     "buttons_json": "TEXT",
+    # The authoritative Telegram server send timestamp (Telethon's own
+    # event.date/message.date, already tz-aware UTC) - 2026-07-27 Martin
+    # Trader timezone-interpretation incident: `received_at` below is only
+    # ever AXIM's own datetime.now().isoformat() at processing time, which
+    # is NOT the same moment the channel actually sent the message and
+    # must never be treated as a substitute for it when resolving a
+    # provider's published clock-time entries. Stored as an ISO 8601
+    # string with explicit UTC offset (e.g. "2026-07-27T18:45:27+00:00"),
+    # never reinterpreted as naive local time.
+    "telegram_message_date_utc": "TEXT",
 }
 
 
@@ -317,6 +327,37 @@ def _migrate_schema(conn):
         trade_series_columns = {row["name"] for row in conn.execute("PRAGMA table_info(trade_series)")}
         if "expiry" not in trade_series_columns:
             conn.execute("ALTER TABLE trade_series ADD COLUMN expiry TEXT")
+
+        # Timezone-aware scheduling (2026-07-27 Martin Trader incident -
+        # entry times were being interpreted as AXIM's own local system
+        # time with zero conversion, despite the provider publishing
+        # times in its own declared timezone). published_entry_time/
+        # provider_timezone/schedule_resolution_method are audit fields:
+        # what was actually used to compute this series' schedule, frozen
+        # at creation time, so a later change to a provider's configured
+        # timezone never silently reinterprets historical rows.
+        # entry_times_utc_json is the real, authoritative, tz-aware
+        # schedule (parallel to entry_times_json's raw published
+        # strings) - scheduled_at_utc is a denormalized copy of its first
+        # entry for quick display/queries. telegram_message_date_utc is
+        # the signal message's own authoritative send time (never
+        # received_at - see channel_messages' own column of the same
+        # name). cancelled_at/cancellation_reason/cancellation_audit_json
+        # support Section B's explicit cancel-without-executing path.
+        _NEW_TRADE_SERIES_COLUMNS = {
+            "published_entry_time": "TEXT",
+            "provider_timezone": "TEXT",
+            "entry_times_utc_json": "TEXT",
+            "scheduled_at_utc": "TEXT",
+            "telegram_message_date_utc": "TEXT",
+            "schedule_resolution_method": "TEXT",
+            "cancelled_at": "TEXT",
+            "cancellation_reason": "TEXT",
+            "cancellation_audit_json": "TEXT",
+        }
+        for column, sql_type in _NEW_TRADE_SERIES_COLUMNS.items():
+            if column not in trade_series_columns:
+                conn.execute(f"ALTER TABLE trade_series ADD COLUMN {column} {sql_type}")
 
 
 def initialize_database():
@@ -485,7 +526,20 @@ def initialize_database():
     # this SHORT-TERM rate against the lifetime parse_success_count/
     # observed_signal_count rate, since a provider that was always somewhat
     # imperfect wouldn't show drift in a slow-moving cumulative average.
-    _NEW_PROVIDER_PROFILE_COLUMNS = {"recent_outcomes_json": "TEXT", "coverage_breakdown_json": "TEXT"}
+    # Per-provider execution safety hold (2026-07-27, Martin Trader
+    # timezone-interpretation incident) - deliberately separate from
+    # ui_control_state.paused (global, affects every provider) and from
+    # ui_channels.enabled (which would also stop RECEIVED/PARSED pipeline
+    # tracking and signal_assembler observation - this must NOT happen
+    # while paused, only actual series/entry creation must stop). See
+    # core/telegram_listener.py's Martin Trader branch and core/
+    # trade_series_engine.py's _fire_due_entries for the two places this
+    # is actually enforced.
+    _NEW_PROVIDER_PROFILE_COLUMNS = {
+        "recent_outcomes_json": "TEXT", "coverage_breakdown_json": "TEXT",
+        "execution_paused": "INTEGER DEFAULT 0", "execution_paused_at": "TEXT",
+        "execution_paused_reason": "TEXT",
+    }
     provider_profile_columns = {row["name"] for row in conn.execute("PRAGMA table_info(provider_profiles)")}
     for column, sql_type in _NEW_PROVIDER_PROFILE_COLUMNS.items():
         if column not in provider_profile_columns:
@@ -2023,6 +2077,43 @@ def advance_trade_series(series_id, current_entry_number, status, result=None, n
 
 
 @timed("database")
+def cancel_trade_series(series_id, reason, cancellation_audit=None, changed_by=None):
+    """An explicit, non-financial terminal state - deliberately NOT
+    'lost_exhausted'/'error' and deliberately never touches result or
+    net_profit_loss (stays None), so risk_manager's consecutive-loss
+    tracking (which reads signals.execution_status/result, never
+    trade_series.status directly) is completely unaffected: a
+    cancelled-for-a-data-error series is not a trading outcome of any
+    kind. `cancellation_audit` is an arbitrary JSON-serializable dict -
+    2026-07-27 Martin Trader timezone incident's own requirement to
+    retain the original published schedule, the incorrectly-resolved
+    schedule, the channel's own result text where available, and the
+    deployed commit, all in one place, for the specific series being
+    cancelled. Refuses to cancel a series that isn't pending/active,
+    since only those have anything live left to cancel."""
+    conn = get_connection()
+    row = conn.execute("SELECT status FROM trade_series WHERE id = ?", (series_id,)).fetchone()
+    if row is None:
+        conn.close()
+        raise ValueError(f"no trade_series row with id={series_id}")
+    if row["status"] not in ("pending", "active"):
+        conn.close()
+        raise ValueError(f"series {series_id} is already terminal (status={row['status']!r}) - refusing to cancel")
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE trade_series SET status = 'CANCELLED_TIMEZONE_INTERPRETATION_ERROR', cancelled_at = ?, "
+        "cancellation_reason = ?, cancellation_audit_json = ?, resolved_at = ? WHERE id = ?",
+        (now, reason, json.dumps(cancellation_audit) if cancellation_audit is not None else None, now, series_id),
+    )
+    conn.commit()
+    conn.close()
+    logger.info(
+        "trade_series_engine: series_id=%s CANCELLED_TIMEZONE_INTERPRETATION_ERROR by=%s reason=%s",
+        series_id, changed_by, reason,
+    )
+
+
+@timed("database")
 def resume_blocked_trade_series(series_id):
     """An explicit, attributable operator action - the same "never
     auto-clear a policy block, only a human decides" discipline
@@ -2974,7 +3065,7 @@ _PROVIDER_PROFILE_FIELDS = {
     "graduation_min_signals", "graduation_min_success_rate", "graduation_min_confidence",
     "demo_approved_at", "demo_approved_by", "live_approved_at", "live_approved_by",
     "last_analyzed_at", "last_drift_check_at", "drift_detected_at", "drift_reason", "recent_outcomes_json",
-    "coverage_breakdown_json",
+    "coverage_breakdown_json", "execution_paused", "execution_paused_at", "execution_paused_reason",
 }
 
 _VALID_TRADING_MODES = {"observation", "demo_ready", "demo", "live"}
@@ -3011,6 +3102,17 @@ def get_provider_profile_by_channel_id(channel_id):
     row = conn.execute("SELECT * FROM provider_profiles WHERE channel_id = ?", (channel_id,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def is_provider_execution_paused(channel_id):
+    """The per-provider execution safety hold (2026-07-27 Martin Trader
+    timezone incident) - deliberately distinct from ui_control_state's
+    global paused flag and from ui_channels.enabled. Fails open to False
+    (not paused) only in the sense that a provider with no profile row
+    at all was never executing anything to begin with; an existing
+    profile's execution_paused flag is always honored."""
+    profile = get_provider_profile_by_channel_id(channel_id)
+    return bool(profile and profile.get("execution_paused"))
 
 
 @timed("database")
@@ -3235,14 +3337,16 @@ def set_channel_config(channel_id, **fields):
 
 @timed("database")
 def record_channel_message(chat_id=None, username=None, title=None, message_text="",
-                            telegram_message_id=None, reply_to_message_id=None, buttons_json=None):
+                            telegram_message_id=None, reply_to_message_id=None, buttons_json=None,
+                            telegram_message_date_utc=None):
     conn = get_connection()
     conn.execute(
         """INSERT INTO channel_messages
-           (chat_id, username, title, message_text, received_at, telegram_message_id, reply_to_message_id, buttons_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           (chat_id, username, title, message_text, received_at, telegram_message_id, reply_to_message_id,
+            buttons_json, telegram_message_date_utc)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (str(chat_id) if chat_id is not None else None, username, title, message_text, datetime.now().isoformat(),
-         telegram_message_id, reply_to_message_id, buttons_json),
+         telegram_message_id, reply_to_message_id, buttons_json, telegram_message_date_utc),
     )
     conn.commit()
     conn.close()
