@@ -552,8 +552,8 @@ def _build_backtest_pdf(report):
         ])
     table = Table(rows, repeatRows=1, hAlign="LEFT")
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2452eb")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eaeefb")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#4a64c7")),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e3e6ea")),

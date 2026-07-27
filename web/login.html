@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" type="image/svg+xml" href="/web/favicon.svg">
+<link rel="icon" type="image/png" href="/web/assets/brand/axim-icon-white-on-blue.png">
 <link rel="stylesheet" href="/web/theme.css">
 <style>
   body {
@@ -25,11 +25,10 @@
     margin-bottom: 26px;
   }
   .auth-logo .mark {
-    width: 54px; height: 54px; background: var(--brand); border-radius: 15px;
-    display: flex; align-items: center; justify-content: center;
-    color: white; font-weight: 700; font-size: 15px;
-    box-shadow: 0 3px 10px var(--brand-glow);
+    width: 54px; height: 54px; border-radius: 15px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   }
+  .auth-logo .mark img { display: block; width: 100%; height: 100%; object-fit: cover; }
   .auth-logo .wordmark { display: flex; flex-direction: column; line-height: 1.05; }
   .auth-logo .wordmark-primary { font-weight: 800; font-size: 32px; letter-spacing: -0.02em; color: var(--text); }
   .auth-logo .wordmark-secondary { font-weight: 650; font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); }
@@ -46,7 +45,7 @@
 <body>
 
 <div class="auth-card">
-  <div class="auth-logo"><span class="mark"><svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 50 12 L 84 46 L 50 80 L 16 46 Z M 66 30 L 82 46 L 66 62 L 50 46 Z"/></svg></span><span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">Trader</span></span></div>
+  <div class="auth-logo"><span class="mark"><img src="/web/assets/brand/axim-icon-white-on-blue.png" alt="AXIM"></span><span class="wordmark"><span class="wordmark-primary">AXIM</span><span class="wordmark-secondary">Trader</span></span></div>
 
   <div id="bootstrap-view" style="display:none;">
     <h1>Create your Owner account</h1>

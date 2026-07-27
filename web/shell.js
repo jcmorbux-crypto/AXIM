@@ -45,18 +45,20 @@ const AximShell = (() => {
   const THEME_TOGGLE_ICON_SUN = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.6M8 12.9v1.6M14.5 8h-1.6M3.1 8H1.5M12.6 3.4l-1.1 1.1M4.5 11.5l-1.1 1.1M12.6 12.6l-1.1-1.1M4.5 4.5L3.4 3.4"/></svg>';
   const THEME_TOGGLE_ICON_MOON = '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.5 9.8A6 6 0 1 1 6.2 2.5a5 5 0 0 0 7.3 7.3Z"/></svg>';
 
-  // "The AXIS" brand mark (brand/axis-mark.svg is the source of truth -
-  // this is the glyph only, no background rect, since .sidebar-logo
-  // .mark/.auth-logo .mark already paint the rounded-blue-square badge
-  // via CSS). Same 0-100 coordinate space as the master SVG.
-  const LOGO_MARK = '<svg width="100%" height="100%" viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 50 12 L 84 46 L 50 80 L 16 46 Z M 66 30 L 82 46 L 66 62 L 50 46 Z"/></svg>';
+  // AXIM V2 brand lock (2026-07-26 final build directive): the approved
+  // mark is the provided image asset, used directly - not redrawn,
+  // vectorized, recolored, or reinterpreted. The custom X's upper-right
+  // segment intentionally stops short of the center crossing; that
+  // detail only exists correctly in the source PNG, which is why this is
+  // an <img>, not an inline SVG approximation of it.
+  const LOGO_MARK = '<img src="/web/assets/brand/axim-icon-white-on-blue.png" alt="AXIM" width="100%" height="100%" style="display:block; width:100%; height:100%; object-fit:cover;">';
 
   // Shared "empty state" panel (icon + message) - was copy-pasted as a
   // ~200-char inline SVG verbatim across dashboard.html/bots.html/
   // sessions.html (2026-07-19 design consolidation). `message` should
   // already be escaped/trusted HTML, same convention as every other
   // *.innerHTML = `...` call site in this codebase.
-  const EMPTY_PANEL_MARK = '<svg viewBox="0 0 100 100"><path fill-rule="evenodd" fill="#FFFFFF" d="M 54 14 L 84 70 L 63 83 L 51 66 L 39 83 L 18 70 Z M 50 34 L 65 54 L 58 54 L 50 43 L 42 54 L 35 54 Z"/></svg>';
+  const EMPTY_PANEL_MARK = '<img src="/web/assets/brand/axim-icon-white-on-blue.png" alt="">';
   function emptyPanel(message) {
     return `<div class="empty-panel"><span class="empty-panel-mark">${EMPTY_PANEL_MARK}</span>${message}</div>`;
   }

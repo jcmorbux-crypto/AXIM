@@ -1,43 +1,43 @@
-/* AXIM design system v2 (2026-07-18 UI v2 migration) - "premium wealth
-   management platform," now with a real brand identity: --brand
-   (purple) is the primary action/selection color app-wide, distinct
-   from --blue (kept as its own "info/trust" semantic - links, info
-   badges) - matches the v2 design package's own color rule ("Purple is
-   action/selection, not profit. Green is success/profit/live. Red is
-   loss/danger. Amber is pending/warning."). Dark and light are equal
-   first-class themes, switched via [data-theme] on <html> (see
-   web/shell.js's theme toggle) - every page sets this attribute before
-   first paint via a tiny inline script in <head>, reading a saved
-   preference or the OS preference on first visit.
-   Technical/operational detail (process state, PIDs, heartbeats) is
-   deliberately de-emphasized or tucked behind a .diagnostics disclosure -
-   see dashboard.html/broker.html - never a primary-screen citizen. */
+/* AXIM V2 brand system (2026-07-26 final build directive) - institutional
+   identity, replacing the previous purple/neon "premium trading terminal"
+   palette entirely per the approved AXIM_brand_assets package. --brand is
+   Institutional Blue (#4A64C7), the single primary action/identity color -
+   --blue (info/trust) is now the same hue family rather than a separate
+   cyan, since the approved palette has one blue, not two. Functional
+   colors: Green = profit/success, Red = loss/risk, Orange = live
+   execution/urgent attention only (never decorative, never in the logo).
+   Dark and light are equal first-class themes, switched via [data-theme]
+   on <html> (see web/shell.js's theme toggle) - every page sets this
+   attribute before first paint via a tiny inline script in <head>,
+   reading a saved preference or the OS preference on first visit. */
 
 :root {
   --bg: #ffffff;
-  --surface: #f8f8f7;
-  --surface-hover: #f0f0ee;
-  --border: #e8e7e3;
-  --text: #14181f;
-  --text-dim: #6b7078;
-  --text-faint: #9a9da3;
-  /* Visual Fidelity Pass (2026-07-25) - status/accent colors brightened
-     to match the approved AXIM Design System Board's own palette swatches
-     exactly (Success #10B981, Danger #EF4444, Warning #F59E0B,
-     Info #0EA5E9) - the previous values were legible but visibly "washed
-     out" next to the board, which was the user's specific complaint. */
-  --blue: #0ea5e9;
-  --blue-hover: #0284c7;
-  --blue-soft: #e0f4fe;
-  --blue-border: #bae6fd;
-  --green: #10b981;
-  --green-soft: #d1fae5;
-  --green-border: #a7f3d0;
+  --surface: #f4f6f8;
+  --surface-hover: #e9edf1;
+  --border: #e1e5ea;
+  --text: #0e1116;
+  --text-dim: #4b5563;
+  --text-faint: #8a93a0;
+  /* AXIM V2 brand assets, AXIM-brand-notes.txt: Institutional Blue
+     #4A64C7 (sampled from the approved board). One blue token family
+     covers both "primary action/identity" and "info/trust" - the
+     approved palette has no separate cyan. */
+  --blue: #4a64c7;
+  --blue-hover: #37509e;
+  --blue-soft: #eaeefb;
+  --blue-border: #c7d2ed;
+  --green: #22c55e;
+  --green-soft: #dcfce7;
+  --green-border: #86efac;
   --red: #ef4444;
   --red-hover: #dc2626;
   --red-soft: #fee2e2;
   --red-border: #fecaca;
-  --yellow: #d97706;
+  /* Signal Orange (brand-notes.txt) - functional only: live execution,
+     urgent attention, active opportunity, or high-priority alert. Not a
+     primary branding color and never used in the logo. */
+  --yellow: #f59e0b;
   --yellow-soft: #fef3c7;
   --yellow-border: #fde68a;
   /* Text-search highlight (web/guide.html's <mark>) - deliberately a
@@ -47,34 +47,31 @@
   --highlight: #fff3b0;
   /* Full-screen dimming overlay behind modals/the mobile nav drawer -
      one shared token instead of each use picking its own "black". */
-  --overlay: rgba(15, 23, 42, 0.4);
-  /* Distinct from --yellow (warning) even though the hue family is
+  --overlay: rgba(14, 17, 22, 0.4);
+  /* Distinct from --yellow/orange (urgent) even though the hue family is
      related - gold is a deliberate, separate semantic: vault/protected
      balance and premium status, never a caution state. See .badge.gold
-     and .box.gold below - docs/AXIM_APP_PLAN.md's color-treatment spec. */
+     and .box.gold below - docs/AXIM_APP_PLAN.md's color-treatment spec.
+     Not part of the brand-lock palette; left unchanged since it isn't a
+     brand color, just an internal semantic. */
   --gold: #8a6a17;
   --gold-soft: #faf1d6;
   --gold-border: #eddfa8;
   /* AI - Strategy Lab, recommendations, anything the AI is speaking.
-     Its own hue so it reads as a distinct "voice" in the product, never
-     confused with profit(green)/protected(gold)/trust(blue). */
-  --purple: #6d3fc4;
-  --purple-soft: #f3edfc;
-  --purple-border: #e2d3f7;
-  /* Primary brand/action color (UI v2, 2026-07-18) - buttons, active
-     nav, the logo mark, focus rings. A distinct hue from --purple
-     (Strategy Lab/AI's own "voice") even though both are violet-family,
-     so a brand-colored primary button is never confused with an
-     AI-generated recommendation card. */
-  /* Brand purple pinned to the Design System Board's own literal swatch
-     value (#7C3AED) - the app's previous #6C3AED was already close, but
-     "pixel fidelity" means matching the board's number exactly, not an
-     approximation of it. */
-  --brand: #7c3aed;
-  --brand-dark: #5b21b6;
-  --brand-hover: #6d28d9;
-  --brand-soft: #f3ecff;
-  --brand-glow: rgba(124, 58, 237, 0.35);
+     The approved palette has no purple/violet at all, so this is now a
+     graphite tone rather than its own hue - still visually distinct from
+     profit(green)/protected(gold)/action(blue) via weight and icon, not
+     a competing accent color. */
+  --purple: #2b313a;
+  --purple-soft: #eef0f2;
+  --purple-border: #d7dbe0;
+  /* Primary brand/action color - buttons, active nav, the logo mark,
+     focus rings. Institutional Blue, locked per AXIM-brand-notes.txt. */
+  --brand: #4a64c7;
+  --brand-dark: #33468c;
+  --brand-hover: #5a74d7;
+  --brand-soft: #eaeefb;
+  --brand-glow: rgba(74, 100, 199, 0.18);
   /* UI v2 Design Stack radii scale (design-tokens.json): sm/md/lg only -
      no separate xl/pill token existed before this, added for parity. */
   --radius: 12px;
@@ -117,37 +114,30 @@
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Dark theme (2026-07-18 UI v2 migration - did not exist before this).
-   Every semantic token gets a real dark-mode value; positive/negative/
-   warning meanings stay identical between themes (design package's own
-   theme rule), only the surface/text/soft-tint values change. */
+/* Dark theme - AXIM V2 brand system. Institutional, not neon: AXIM Black
+   (#0E1116) background, Graphite (#2B313A) as the elevated-surface tone,
+   the same Institutional Blue as light mode (brightened slightly for
+   contrast on black), and no colored glow effects - the approved
+   direction explicitly rules out neon/crypto-style dark themes.
+   Positive/negative/urgent meanings stay identical between themes, only
+   the surface/text/soft-tint values change. */
 [data-theme="dark"] {
-  /* Visual Fidelity Pass (2026-07-25) - re-tuned to the approved
-     dark-ui-board's own literal palette: bg #0D0D16, surface #1E1E2E,
-     and a neon accent set (purple #7C3AED, green #00F0A8, cyan #00D4FF,
-     red #FF4D4D) for a "premium trading-terminal" feel instead of the
-     previous slate-blue admin-panel dark mode. Text-role accents keep a
-     touch more luminance than the raw swatches for AA-legible body text;
-     the raw neon values live on as --*-glow for chart strokes/rings. */
-  --bg: #0d0d16;
-  --surface: #1e1e2e;
-  --surface-hover: #262638;
-  --border: #2c2c40;
-  --text: #f3f3f8;
-  --text-dim: #a8a8ba;
-  --text-faint: #6f6f85;
-  --blue: #22d3ee;
-  --blue-glow: #00d4ff;
-  --blue-hover: #67e3f5;
-  --blue-soft: #0f2a36;
-  --blue-border: #164a5c;
-  --green: #1fe0a3;
-  --green-glow: #00f0a8;
-  --green-soft: #0e2a20;
-  --green-border: #185c41;
-  --red: #ff5c5c;
-  --red-glow: #ff4d4d;
-  --red-hover: #ff7a7a;
+  --bg: #0e1116;
+  --surface: #171b21;
+  --surface-hover: #2b313a;
+  --border: #262b33;
+  --text: #f4f6f8;
+  --text-dim: #a7aeb8;
+  --text-faint: #6b7280;
+  --blue: #7089e0;
+  --blue-hover: #8ba0e8;
+  --blue-soft: #1c2540;
+  --blue-border: #33427a;
+  --green: #34d399;
+  --green-soft: #10281f;
+  --green-border: #1e5a41;
+  --red: #f37070;
+  --red-hover: #f68f8f;
   --red-soft: #341a1a;
   --red-border: #5c2b2b;
   --yellow: #f2b23d;
@@ -158,15 +148,15 @@
   --gold: #e0be6c;
   --gold-soft: #332a10;
   --gold-border: #4d3f18;
-  --purple: #b28cf0;
-  --purple-soft: #241a3d;
-  --purple-border: #3a2b5c;
-  --brand: #8b5cf6;
-  --brand-dark: #7c3aed;
-  --brand-hover: #9d7bf7;
-  --brand-soft: #241a3d;
-  --brand-glow: rgba(139, 92, 246, 0.45);
-  --card-sheen: linear-gradient(165deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0) 45%);
+  --purple: #a8b0bc;
+  --purple-soft: #262b33;
+  --purple-border: #3a4049;
+  --brand: #7089e0;
+  --brand-dark: #4a64c7;
+  --brand-hover: #8ba0e8;
+  --brand-soft: #1c2540;
+  --brand-glow: rgba(112, 137, 224, 0.22);
+  --card-sheen: linear-gradient(165deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0) 45%);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 6px rgba(0, 0, 0, 0.24);
   --shadow: 0 2px 6px rgba(0, 0, 0, 0.36), 0 16px 44px rgba(0, 0, 0, 0.5);
   --shadow-lift: 0 8px 20px rgba(0, 0, 0, 0.4), 0 28px 72px rgba(0, 0, 0, 0.6);
@@ -296,13 +286,15 @@ a { color: inherit; }
   letter-spacing: -0.01em;
 }
 
+/* AXIM V2 brand lock: the mark is the approved image asset (self-contained
+   rounded-square icon, own background baked in) - no CSS-painted fill or
+   glow behind it, just sizing and corner clipping. */
 .sidebar-logo .mark {
   width: 42px; height: 42px;
-  background: var(--brand);
   border-radius: 12px;
+  overflow: hidden;
   display: flex; align-items: center; justify-content: center;
-  color: white; font-size: 13px; font-weight: 700;
-  box-shadow: 0 2px 6px rgba(108, 58, 237, 0.28);
+  flex-shrink: 0;
 }
 
 .sidebar-logo .wordmark {
@@ -347,13 +339,12 @@ a { color: inherit; }
 .nav-item svg { flex-shrink: 0; opacity: 0.85; width: 18px; height: 18px; }
 .nav-item.active svg { opacity: 1; }
 
-/* Dark theme: a solid brand-gradient pill for the active item (the dark
-   board's own sidebar treatment - bold and filled, not a soft tint)
-   instead of light theme's quieter lavender tint. */
+/* Dark theme: a solid institutional-blue pill for the active item - flat
+   fill, not a gradient, per the AXIM V2 brand direction (institutional,
+   quiet; no decorative gradients). */
 [data-theme="dark"] .nav-item.active {
-  background: linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%);
+  background: var(--brand);
   color: #ffffff;
-  box-shadow: 0 4px 14px var(--brand-glow);
 }
 [data-theme="dark"] .nav-item:hover { background: var(--surface-hover); }
 
@@ -522,17 +513,16 @@ a { color: inherit; }
 }
 .card.full-width { grid-column: 1 / -1; }
 
-/* Dark theme only: true glass elevation on the prominent "solid" cards
-   (hero panels, KPI cards, chart panels) per the dark board's own
-   "glassmorphism / elevation / lighting" language - translucent surface
-   over a blurred backdrop, with a brand-tinted glow instead of a plain
-   black drop shadow. */
+/* Dark theme only: a quiet glass elevation on the prominent "solid" cards
+   (hero panels, KPI cards, chart panels) - translucent surface over a
+   blurred backdrop with a plain shadow, no colored glow. Institutional,
+   not neon, per the AXIM V2 brand direction. */
 [data-theme="dark"] .card.solid {
-  background: rgba(30, 30, 46, 0.72);
+  background: rgba(23, 27, 33, 0.78);
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
-  border-color: rgba(255, 255, 255, 0.08);
-  box-shadow: var(--shadow), 0 0 0 1px rgba(139, 92, 246, 0.06);
+  border-color: rgba(255, 255, 255, 0.07);
+  box-shadow: var(--shadow);
 }
 
 .card h2, .card h3 {
@@ -673,17 +663,17 @@ button:focus-visible, .btn:focus-visible, a:focus-visible, .nav-item:focus-visib
   outline-offset: 2px;
 }
 
+/* AXIM V2: solid fill, not a gradient - institutional/precise rather
+   than decorative. */
 button.primary, .btn.primary {
-  background: linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%);
+  background: var(--brand);
   border-color: var(--brand); color: white;
-  box-shadow: 0 2px 10px var(--brand-glow);
   font-weight: 650;
 }
 button.primary:hover, .btn.primary:hover {
-  background: linear-gradient(135deg, var(--brand-hover) 0%, var(--brand) 100%);
+  background: var(--brand-hover);
   border-color: var(--brand-hover);
-  box-shadow: 0 4px 16px var(--brand-glow);
-  transform: translateY(-1px);
+  box-shadow: 0 2px 8px var(--brand-glow);
 }
 
 /* Field disabled state - COMPONENT_SPEC.md requires it for Field, and
@@ -716,10 +706,9 @@ button.subtle:hover { background: var(--surface); color: var(--text); }
 .badge.gold { background: var(--gold-soft); color: var(--gold); }
 .badge.ai { background: var(--purple-soft); color: var(--purple); }
 .badge.brand { background: var(--brand-soft); color: var(--brand); }
-/* Dark theme: a faint glow on the "live/positive" badge so status reads
-   as alive, not just a flat color chip - used sparingly (this class
-   only), never on neutral/off badges. */
-[data-theme="dark"] .badge.on { box-shadow: 0 0 0 1px var(--green-border), 0 0 12px rgba(31, 224, 163, 0.25); }
+/* AXIM V2: no glow effects (institutional, not neon) - a clean 1px ring
+   is enough to lift the "live/positive" badge off a dark surface. */
+[data-theme="dark"] .badge.on { box-shadow: 0 0 0 1px var(--green-border); }
 
 /* ---- Smart Channel Search (web/smart_channel_search.js) - the one
    reusable channel/provider picker shared across Signal Inspection,
@@ -882,18 +871,21 @@ td.title-cell { white-space: normal; max-width: 320px; }
   font-size: 13px;
 }
 
+/* AXIM V2 brand lock: the empty-state mark is the approved icon asset,
+   faded via opacity (a presentational fade, not a recolor of the
+   artwork) rather than a CSS-painted muted glyph. */
 .empty-panel .empty-panel-mark {
   width: 32px;
   height: 32px;
   border-radius: 9px;
-  background: var(--text-faint);
-  opacity: 0.5;
+  overflow: hidden;
+  opacity: 0.45;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.empty-panel .empty-panel-mark svg { width: 60%; height: 60%; }
+.empty-panel .empty-panel-mark img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .banner {
   border-radius: var(--radius);
@@ -962,8 +954,8 @@ td.title-cell { white-space: normal; max-width: 320px; }
     padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0));
   }
   .mobile-header .mark {
-    width: 28px; height: 28px; background: var(--brand); border-radius: 8px;
-    display: flex; align-items: center; justify-content: center; color: white; flex-shrink: 0;
+    width: 28px; height: 28px; border-radius: 8px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   }
   .mobile-header .wordmark { display: flex; align-items: baseline; gap: 5px; line-height: 1; }
   .mobile-header .wordmark-primary { font-weight: 800; font-size: 17px; letter-spacing: -0.01em; color: var(--text); }
@@ -1053,18 +1045,18 @@ td.title-cell { white-space: normal; max-width: 320px; }
 .nav-more.open .nav-more-list { display: block; }
 .nav-more-list .nav-item { font-size: 13px; padding: 8px 12px; }
 
-/* Shared "AXIS" brand loading mark (brand/axis-mark.svg's glyph) - a
-   pulsing badge for full-panel/full-page loading moments. Not used for
-   small inline "Loading..." text labels (a status pill, a one-line
-   stat) - retrofitting an icon into a few words of inline text adds
-   decoration without adding clarity. Reserved for moments substantial
-   enough to warrant a visual anchor, e.g. Mission Control's Recent
-   Activity panel while the initial fetch is in flight. */
+/* Shared AXIM brand loading mark (approved icon asset) - a pulsing badge
+   for full-panel/full-page loading moments. Not used for small inline
+   "Loading..." text labels (a status pill, a one-line stat) -
+   retrofitting an icon into a few words of inline text adds decoration
+   without adding clarity. Reserved for moments substantial enough to
+   warrant a visual anchor, e.g. Mission Control's Recent Activity panel
+   while the initial fetch is in flight. */
 .axim-loading-mark {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: var(--blue);
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1072,7 +1064,7 @@ td.title-cell { white-space: normal; max-width: 320px; }
   animation: axim-loading-pulse 1.6s ease-in-out infinite;
 }
 
-.axim-loading-mark svg { width: 62%; height: 62%; }
+.axim-loading-mark img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 @keyframes axim-loading-pulse {
   0%, 100% { transform: scale(1); opacity: 1; }

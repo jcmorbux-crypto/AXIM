@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>Backtesting - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/web/assets/brand/axim-icon-white-on-blue.png">
 <link rel="stylesheet" href="/web/theme.css">
 <script>(function(){try{var t=localStorage.getItem("axim-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <style>
@@ -398,7 +399,8 @@ let allProfiles = [];
 let allMoneyStrategies = [];
 let currentRunId = null;
 let currentReport = null;
-const STRATEGY_COLORS = ["#2452eb", "#14804a", "#b3261e", "#92610a", "#7c3aed", "#0891b2", "#db2777"];
+// AXIM V2 brand lock: no purple/violet in the categorical palette either.
+const STRATEGY_COLORS = ["#4a64c7", "#22c55e", "#ef4444", "#f59e0b", "#0891b2", "#db2777", "#64748b"];
 
 async function fetchJSON(url, opts) {
   const res = await fetch(url, { credentials: "same-origin", ...opts });

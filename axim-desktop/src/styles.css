@@ -1,17 +1,21 @@
+/* AXIM V2 brand lock: the mark is the approved image asset (own
+   background baked in), not a CSS-painted fill behind a glyph. */
 .splash-mark {
   width: 56px;
   height: 56px;
   margin: 0 auto 16px;
   border-radius: 13px;
-  background: #2452eb;
+  overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 
-.splash-mark svg {
-  width: 62%;
-  height: 62%;
+.splash-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 /* Only animates while the launcher is actually trying to connect
@@ -121,7 +125,7 @@
 
 button.primary {
   align-self: flex-start;
-  background-color: #2452eb;
+  background-color: #4a64c7;
   color: #ffffff;
 }
 
@@ -158,10 +162,10 @@ button {
 }
 
 button:hover {
-  border-color: #2452eb;
+  border-color: #4a64c7;
 }
 button:active {
-  border-color: #2452eb;
+  border-color: #4a64c7;
   background-color: #e8e8e8;
 }
 

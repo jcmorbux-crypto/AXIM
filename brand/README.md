@@ -1,90 +1,75 @@
-# AXIM Brand Identity — The Facet Mark
+# AXIM Brand Identity — V2 (locked)
 
 ## The mark
 
-`axis-mark.svg` is the single source of truth - every other icon asset
-in this project is generated from it, never hand-edited separately.
-(Filename kept from an earlier design iteration - see "Revision
-history" below - not worth the churn of renaming every derived asset
-and reference for a cosmetic mismatch.)
+The approved AXIM V2 identity is the image assets in this directory,
+supplied directly by the brand owner. **These are the source of truth.
+Do not redraw, vectorize, recolor, or resize the artwork itself** - the
+custom X's upper-right segment intentionally stops short of the center
+crossing, and that detail only exists correctly in the provided files.
 
-**Construction**: a rounded-square badge (brand blue, `#2452EB` - the
-same blue already used throughout the web app's buttons/active-states/
-focus-rings, kept for continuity rather than introducing a second
-color) containing one solid white diamond (a square rotated 45°),
-asymmetric: a smaller diamond is cut from its upper-right region as
-negative space, exposing the badge's own blue through the cut. The
-result reads as a single precision-cut facet - not a gem outline, not
-a letter, not an arrow - just one bold geometric event happening inside
-the badge. Deliberately asymmetric (the cut is off-center, not a
-mirrored notch) so it doesn't settle into a symmetric "badge/seal"
-cliché or read as a compass rose.
-
-**Why this construction, not the earlier one**: an earlier revision
-(described below) used a wing/dart shape with a chevron cut that, on
-review of the actual rendered result rather than the design rationale
-alone, reads unmistakably as a capital letter A - directly violating
-the brief's "do not use a simple 'A' or generic lettermark." A diamond
-has no letterform reading in any orientation, connotes precision and
-value (faceted-gem framing) without literally drawing a gem, and the
-asymmetric cut gives it a distinctive, non-generic silhouette that
-still holds up at 32px and 48px (verified via rendered screenshots at
-each size before adopting it, same discipline as before - not assumed
-correct from the code alone).
-
-**Flat, no gradient**: a single fill color plus white, no gradient
-requirement - reads correctly with color reduced to two flat tones,
-per the brief's "no gradients required for recognizability."
+Every other icon asset in this project (desktop app icons, web favicon,
+sidebar/login/wizard marks) is generated or copied directly from these
+files, never hand-approximated elsewhere.
 
 ## Files
 
-- `axis-mark.svg` - the master mark, 100x100 viewBox, rounded-square
-  container baked in. This is what gets fed into platform icon
-  generators (see `axim-desktop/src-tauri/icons/` for the generated
-  Tauri set) and is also used directly as the web favicon and sidebar
-  mark (SVG scales cleanly, no raster generation needed for the web
-  surface).
+- `axim-icon-white-on-blue.png` - primary app icon (Institutional Blue
+  background, white mark). Used for: web favicon, sidebar/login/wizard/
+  splash marks, desktop app icon source.
+- `axim-icon-white-on-black.png` - dark-surface variant.
+- `axim-icon-black-on-white.png` - light-surface variant.
+- `axim-wordmark-black-transparent.png` / `axim-wordmark-white-transparent.png`
+  - the "AXIM" wordmark (custom artwork, not a typeset font).
+- `AXIM-brand-notes.txt` - the approved color palette and locked-X rule,
+  verbatim from the brand owner.
+
+## Colors (AXIM-brand-notes.txt)
+
+- Institutional Blue: `#4A64C7`
+- AXIM Black: `#0E1116`
+- White: `#FFFFFF`
+- Light Neutral: `#F4F6F8`
+- Graphite: `#2B313A`
+- Signal Orange (functional only - live execution/urgent alert, never
+  decorative, never in the logo): `#F59E0B`
+- Success Green (semantic only): `#22C55E`
+- Risk Red (semantic only): `#EF4444`
+
+These are wired into `web/theme.css` as `--brand`/`--blue` (Institutional
+Blue), `--bg`/`--text` (Black/White/Light Neutral), `--green`, `--red`,
+`--yellow` (Signal Orange). No purple/violet remains anywhere in the
+palette.
 
 ## Where it's used
 
-- AXIM Trader: app icon, installer icon (MSI/NSIS), window icon,
-  taskbar icon - generated via `axim-desktop/src-tauri/icons/`.
-- Web app: favicon, sidebar logo mark (replacing the old plain "A"
-  lettermark), login/bootstrap/password-reset screen branding.
-- Loading/connecting state: the desktop launcher (`axim-desktop/src/
-  index.html`/`main.js`) shows the mark pulsing specifically while
-  actually trying to connect, static otherwise. The web app has the
-  same pulse as a reusable component (`web/theme.css`'s
-  `.axim-loading-mark`) for full-panel/full-page loading moments -
-  deliberately not retrofitted into the app's existing small inline
-  "Loading..." text labels, which are too small/transient to warrant a
-  visual anchor without adding noise instead of clarity.
-- Empty states: a muted version of the mark (`.empty-panel` in
-  `web/theme.css`) on genuine "nothing here yet" panels - Mission
-  Control's Recent Activity/Recent Sessions, Trading Sessions' "No
-  active sessions." Deliberately a separate class from the existing
-  `.empty` (reused ~80 places across this app for loading-row
-  placeholders and error messages too, not just true empty states, in
-  both full panels and single table cells - a blanket change there
-  would look broken in a table cell and wrong in tone on an error
-  message). Apply `.empty-panel` the same way elsewhere as more genuine
-  empty states are found, rather than sweeping every `.empty` instance
-  at once.
+- Web app: favicon (`web/assets/brand/`, referenced from every page's
+  `<head>`), sidebar logo mark, login/bootstrap/password-reset screen
+  branding, empty-panel mark (`.empty-panel-mark`, faded via opacity),
+  loading mark (`.axim-loading-mark`).
+- Desktop app (`axim-desktop/`): splash screen mark, and the full
+  platform icon set in `axim-desktop/src-tauri/icons/` (Windows/macOS/
+  iOS/Android + Windows Store tiles) - regenerated from
+  `axim-icon-white-on-blue.png` via `tauri icon` (upscaled to 1024x1024
+  first since the source is 130x130; a real 1024px+ master export from
+  the brand owner would sharpen the largest generated sizes).
 
 ## Extending this later
 
-If a second color, a wordmark lockup treatment, or export sizes beyond
-what's already generated are needed, start from `axis-mark.svg` as the
-single source of truth rather than approximating it freehand elsewhere
-- every derived asset should trace back to this one file so the mark
-never quietly drifts into multiple inconsistent versions.
+If a second color variant, additional export sizes, or a true vector
+version becomes available, it must come from the brand owner - do not
+approximate the artwork freehand. Regenerate the desktop icon set with
+`npx tauri icon <source>` from inside `axim-desktop/` whenever the
+source image changes, rather than hand-editing individual generated
+files.
 
 ## Revision history
 
-- **v1, "The AXIS"**: a faceted wing/dart shape with a chevron cut,
-  intended to read as an abstract upward arrow. Superseded - the
-  rendered result reads as a capital letter A, which the brief
-  explicitly rules out. Kept only in git history, not in this
-  directory.
-- **v2, "The Facet"** (current): the asymmetric diamond-with-a-cut
-  described above. No letterform reading in any orientation.
+- **v1, "The Facet"**: an in-house diamond-with-a-cut mark
+  (`axis-mark.svg`), designed internally. Retired 2026-07-26 per the
+  AXIM V2 final build directive - the approved brand assets are now the
+  only source of truth. The old mark's files are no longer in this
+  directory; see git history if needed.
+- **v2, "The Locked X"** (current): the provided custom X mark, upper-
+  right segment intentionally unconnected. Supplied as raster assets by
+  the brand owner, used directly per the brand-lock rule.

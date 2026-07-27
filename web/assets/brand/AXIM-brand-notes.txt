@@ -1,0 +1,26 @@
+AXIM BRAND ASSET NOTES
+
+FILES
+- axim-wordmark-black-transparent.png
+- axim-wordmark-white-transparent.png
+- axim-icon-white-on-black.png
+- axim-icon-black-on-white.png
+- axim-icon-white-on-blue.png
+
+COLORS
+- Institutional Blue (sampled from approved board): #4A64C7
+- AXIM Black: #0E1116
+- White: #FFFFFF
+- Light Neutral: #F4F6F8
+- Graphite: #2B313A
+- Signal Orange (functional only): #F59E0B
+- Success Green (semantic only): #22C55E
+- Risk Red (semantic only): #EF4444
+
+FONT
+The exact AXIM wordmark is custom artwork and should be used as an image/vector asset, not recreated by typing a font.
+Closest practical UI/body font: Inter.
+Closest practical wordmark starting points for future vector redrawing: Montserrat ExtraBold, Gotham Bold, or Avenir Next Heavy, followed by custom modification of the X.
+
+LOCKED X RULE
+The upper-right segment stops before the center crossing. Do not reconnect it or replace it with a conventional X.

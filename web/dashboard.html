@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>Home - AXIM Trader</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/web/assets/brand/axim-icon-white-on-blue.png">
 <link rel="stylesheet" href="/web/theme.css">
 <script>(function(){try{var t=localStorage.getItem("axim-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
 <style>
@@ -827,24 +828,20 @@ function renderGrowthChart(points) {
   const linePath = coords.map(([x, y], i) => `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`).join(" ");
   const fillPath = `${linePath} L${coords[coords.length - 1][0].toFixed(1)},${H} L${coords[0][0].toFixed(1)},${H} Z`;
   const last = coords[coords.length - 1];
+  // AXIM V2: solid institutional-blue line with a plain fade-to-transparent
+  // fill - a standard, non-decorative area-chart convention. No glow
+  // filter, no two-color gradient (brand direction: institutional, not
+  // neon; avoid excessive gradients).
   svg.innerHTML = `
     <defs>
-      <linearGradient id="pvLineGrad" x1="0" y1="0" x2="1" y2="0">
-        <stop offset="0%" stop-color="var(--brand)"></stop>
-        <stop offset="100%" stop-color="var(--green)"></stop>
-      </linearGradient>
       <linearGradient id="pvFillGrad" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"></stop>
+        <stop offset="0%" stop-color="var(--brand)" stop-opacity="0.16"></stop>
         <stop offset="100%" stop-color="var(--brand)" stop-opacity="0"></stop>
       </linearGradient>
-      <filter id="pvGlow" x="-20%" y="-100%" width="140%" height="300%">
-        <feGaussianBlur stdDeviation="3" result="blur"></feGaussianBlur>
-        <feMerge><feMergeNode in="blur"></feMergeNode><feMergeNode in="SourceGraphic"></feMergeNode></feMerge>
-      </filter>
     </defs>
     <path d="${fillPath}" fill="url(#pvFillGrad)" stroke="none"></path>
-    <path d="${linePath}" fill="none" stroke="url(#pvLineGrad)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#pvGlow)"></path>
-    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4" fill="var(--green)" filter="url(#pvGlow)"></circle>
+    <path d="${linePath}" fill="none" stroke="var(--brand)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"></path>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="4" fill="var(--brand)"></circle>
   `;
   const netText = fmtMoney(cumulative);
   caption.textContent = `${netText} net across ${points.length} closed trade${points.length === 1 ? "" : "s"}, last 90 days`;
@@ -877,9 +874,11 @@ function renderMetricSparkline(svgId, points) {
   `;
 }
 
-// Win Rate ring - a plain donut track plus a brand-to-green gradient arc
+// Win Rate ring - a plain donut track plus a solid institutional-blue arc
 // sized to the real overall_win_rate fraction already fetched for the
-// text value beside it (never a separately-computed number).
+// text value beside it (never a separately-computed number). Solid color,
+// not a gradient - functional colors (green/red/orange) are reserved for
+// profit/loss/urgent semantics, not decoration.
 function renderWinRing(pct) {
   const svg = document.getElementById("mc-win-ring");
   const size = 64, stroke = 7, r = (size - stroke) / 2, c = size / 2;
@@ -887,12 +886,8 @@ function renderWinRing(pct) {
   const frac = Math.max(0, Math.min(1, pct || 0));
   const dash = circumference * frac;
   svg.innerHTML = `
-    <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%" stop-color="var(--brand)"></stop>
-      <stop offset="100%" stop-color="var(--green)"></stop>
-    </linearGradient></defs>
     <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--border)" stroke-width="${stroke}"></circle>
-    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="url(#ringGrad)" stroke-width="${stroke}"
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="var(--brand)" stroke-width="${stroke}"
       stroke-linecap="round" stroke-dasharray="${dash.toFixed(1)} ${circumference.toFixed(1)}"
       transform="rotate(-90 ${c} ${c})"></circle>
   `;
