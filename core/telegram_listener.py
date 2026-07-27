@@ -517,18 +517,45 @@ async def handler(event):
     # environment for unrelated reasons and was never a safe proxy for
     # this one series' own fixed stake.
     if channel_row is not None and _is_martin_trader_channel(channel_row, event.chat_id):
-        series_id = await trade_series_engine.create_series_from_signal(
-            signal, channel_id=channel_row["id"], stake=MARTIN_TRADER_STAKE,
-            fund_id=None, broker_account_id=None, session_id=None,
-            source_message_id=event.id,
-        )
-        if series_id is None:
-            print(f"[MARTIN TRADER] {_debug_safe(chat_title)!r} signal for {signal['asset']!r} has no "
-                  f"Entry: time - cannot be scheduled as a series, skipping")
-            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
-                                   detail="no_entry_time")
-        else:
-            print(f"[MARTIN TRADER] series_id={series_id} scheduled for {signal['asset']} {signal['direction']}")
+        # Targeted exception boundary - this branch, and only this branch,
+        # gets one (verified live production defect: 9 of 9 real signals
+        # since deployment stopped silently right after PARSED, with
+        # nothing in axim.log/lifecycle.log and no capturable stdout/
+        # stderr - see docs/AXIM_RELEASE_CHECKLIST.md's Martin Trader
+        # forensic investigation). Never swallowed - always logged in
+        # full via logger.exception (real traceback) under a unique,
+        # greppable event name, always tracked as a real FAILED pipeline
+        # event so the signal is visible instead of vanishing, and the
+        # bare `return` right after (same as every other path out of this
+        # `if` block) guarantees this never falls through into the normal
+        # route_signal call below, success or failure alike.
+        try:
+            series_id = await trade_series_engine.create_series_from_signal(
+                signal, channel_id=channel_row["id"], stake=MARTIN_TRADER_STAKE,
+                fund_id=None, broker_account_id=None, session_id=None,
+                source_message_id=event.id,
+            )
+            if series_id is None:
+                print(f"[MARTIN TRADER] {_debug_safe(chat_title)!r} signal for {signal['asset']!r} has no "
+                      f"Entry: time - cannot be scheduled as a series, skipping")
+                _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                                       detail="no_entry_time")
+            else:
+                print(f"[MARTIN TRADER] series_id={series_id} scheduled for {signal['asset']} {signal['direction']}")
+        except Exception as e:
+            logger.exception(
+                "martin_trader_branch_exception: message_id=%s chat_id=%s channel_row_id=%s "
+                "chat_title=%r signal=%r entry_time=%r scheduled_entries=%r db_file=%s pid=%s "
+                "deployed_commit=%s account=%s provider_profile=%r",
+                event.id, event.chat_id, channel_row["id"], chat_title, signal,
+                signal.get("entry_time"), signal.get("scheduled_entries"), database.DB_FILE, os.getpid(),
+                database.get_setting("listener_running_commit"), ACCOUNT,
+                database.get_provider_profile_by_channel_id(channel_row["id"]),
+            )
+            _track_pipeline_event(
+                event.chat_id, event.id, channel_row["id"], SignalLifecycleState.FAILED,
+                detail=f"martin_trader_branch_exception:{type(e).__name__}: {e}",
+            )
         return
 
     # route_signal resolves which broker account's coordinator should

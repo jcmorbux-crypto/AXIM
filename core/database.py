@@ -297,6 +297,27 @@ def _migrate_schema(conn):
         if column not in channel_message_columns:
             conn.execute(f"ALTER TABLE channel_messages ADD COLUMN {column} {sql_type}")
 
+    # Verified production defect (Martin Trader forensic investigation,
+    # 2026-07-27): trade_series's own CREATE TABLE IF NOT EXISTS below was
+    # edited from `expiry_seconds INTEGER` to `expiry TEXT` mid-development,
+    # but "IF NOT EXISTS" is a no-op against a table a prior
+    # initialize_database() call had already created with the OLD column
+    # name - production was silently stuck on that stale schema ever
+    # since, and every real Martin Trader signal's create_trade_series
+    # call failed with "table trade_series has no column named expiry"
+    # (sqlite3.OperationalError), invisible in any log because it happened
+    # inside a Telethon event handler with no application-level try/except
+    # around it at the time. The table has never held a real row (a brand
+    # new series is the ONLY way one gets created), so adding the correct
+    # column is a pure, safe correction, not a data migration - the stale
+    # expiry_seconds column is simply left in place, unused, matching this
+    # codebase's own "ADD COLUMN, never rename or drop" convention.
+    existing_tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "trade_series" in existing_tables:
+        trade_series_columns = {row["name"] for row in conn.execute("PRAGMA table_info(trade_series)")}
+        if "expiry" not in trade_series_columns:
+            conn.execute("ALTER TABLE trade_series ADD COLUMN expiry TEXT")
+
 
 def initialize_database():
     conn = get_connection()
