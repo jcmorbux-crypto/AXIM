@@ -195,6 +195,51 @@ class MartinTraderProductionPathIntegrationTests(unittest.TestCase):
             "(that would create a `signals` row) - it is handled exclusively via trade_series"
         )
 
+    def test_an_exception_inside_the_martin_trader_branch_is_caught_logged_and_never_falls_through(self):
+        # Directly exercises the exception boundary added in
+        # core/telegram_listener.py's handler() (Section A) - forces the
+        # exact failure mode this whole task was created to fix (an
+        # uncaught exception inside create_series_from_signal) and proves
+        # it is now: caught (never propagates), recorded as a FAILED
+        # pipeline event (never silently vanishes), and never falls
+        # through into the normal route_signal path.
+        e1, e2, e3, e4 = self._entry_times_in_the_near_future()
+        message_text = _REAL_MARTIN_TRADER_MESSAGE_TEXT.format(entry=e1, e2=e2, e3=e3, e4=e4)
+        event = _FakeEvent(message_id=26622, raw_text=message_text)
+
+        original = telegram_listener.trade_series_engine.create_series_from_signal
+
+        async def _boom(*args, **kwargs):
+            raise sqlite3.OperationalError("table trade_series has no column named expiry")
+
+        telegram_listener.trade_series_engine.create_series_from_signal = _boom
+        try:
+            asyncio.run(telegram_listener.handler(event))
+        finally:
+            telegram_listener.trade_series_engine.create_series_from_signal = original
+
+        pipeline_events = database.list_pipeline_events_for_message(MARTIN_TRADER_CHANNEL_ID, 26622)
+        states = [e["state"] for e in pipeline_events]
+        self.assertIn("RECEIVED", states)
+        self.assertIn("PARSED", states)
+        self.assertIn("FAILED", states, "the exception must be tracked as a real FAILED pipeline event, not silently dropped")
+        failed_event = next(e for e in pipeline_events if e["state"] == "FAILED")
+        self.assertIn("martin_trader_branch_exception", failed_event["detail"])
+        self.assertIn("OperationalError", failed_event["detail"])
+
+        series = database.get_trade_series_by_message(MARTIN_TRADER_CHANNEL_ID, 26622)
+        self.assertIsNone(series, "a failed creation attempt must not leave a partial series row")
+
+        conn = sqlite3.connect(database.DB_FILE)
+        try:
+            signals_count = conn.execute("SELECT COUNT(*) FROM signals").fetchone()[0]
+        finally:
+            conn.close()
+        self.assertEqual(
+            signals_count, 0,
+            "an exception in the Martin Trader branch must never fall through into route_signal either"
+        )
+
     def test_a_non_martin_trader_channel_is_completely_unaffected(self):
         # Same handler, a DIFFERENT channel id/chat_id entirely - must take
         # the normal route_signal path, never trade_series, proving the
