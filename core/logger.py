@@ -22,6 +22,7 @@ Safe to call repeatedly - handlers are only attached once per logger name.
 """
 import logging
 import os
+import sys
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -29,7 +30,26 @@ from pathlib import Path
 from timeline import get_current_timeline
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-LOG_DIR = PROJECT_ROOT / "logs"
+# Under pytest, every test file that merely imports a module owning a
+# get_logger(...) call (browser_warmup.py, broker_account_manager.py, etc.)
+# was writing straight into the SAME logs/lifecycle.log and logs/axim.log
+# the live listener process uses - confirmed live: tests/test_browser_warmup.py,
+# tests/test_recovery.py, and tests/test_trade_coordinator.py inject canned
+# failures (e.g. the literal exception message "boom") through this exact
+# logging path, and with no per-test LOG_DIR override (test_logger.py is the
+# only file that patches it manually), those synthetic "browser crash" /
+# "reconnecting" / "flagged needs_reauth" lines landed in production's log
+# files indistinguishable from real ones. That is what made the browser
+# crash/reconnect pattern look far more frequent than it actually is - the
+# generation counter and reconnect-log counts pulled from those files during
+# this investigation were contaminated by every pytest run that happened to
+# overlap the observation window. "pytest" in sys.modules (not
+# PYTEST_CURRENT_TEST, which pytest only sets once a specific test starts
+# running - too late, since get_logger() attaches its handler at import
+# time, during collection) is set for the whole process from the moment
+# pytest itself starts, before any test file is even imported.
+_UNDER_PYTEST = "pytest" in sys.modules
+LOG_DIR = PROJECT_ROOT / "logs" / "test" if _UNDER_PYTEST else PROJECT_ROOT / "logs"
 
 _TIMED_LOG_METHODS = ("debug", "info", "warning", "error", "critical", "exception")
 

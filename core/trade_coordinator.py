@@ -381,10 +381,31 @@ class TradeCoordinator:
                 stage_t0 = time.monotonic()
                 await asyncio.to_thread(database.record_pipeline_event, None, None, SignalLifecycleState.SUBMITTING,
                                          signal_id=trade_id)
-                result = await pocket_executor.prepare_trade(
-                    trade_id, asset, direction, expiry, amount,
-                    worker, self.worker_pool, self.warmup_service, timeline=timeline,
-                )
+                try:
+                    result = await pocket_executor.prepare_trade(
+                        trade_id, asset, direction, expiry, amount,
+                        worker, self.worker_pool, self.warmup_service, timeline=timeline,
+                    )
+                except pocket_executor.RetryableBrowserError as e:
+                    # Exactly one retry, only for the narrow transient-
+                    # browser-closed case prepare_trade already confirmed
+                    # happened strictly before click_direction (see that
+                    # module) - a fresh worker from the pool's own
+                    # acquire_worker() (which re-verifies pool health up
+                    # front) clears the vast majority of these. A second
+                    # failure of any kind falls through to the generic
+                    # handler below instead of retrying again.
+                    logger.warning(
+                        "trade_coordinator: trade_id=%s transient pre-click browser error (%s) - "
+                        "retrying once with a fresh worker", trade_id, e,
+                    )
+                    worker = await self.worker_pool.acquire_worker(timeout=WORKER_ACQUIRE_TIMEOUT_SECONDS)
+                    if worker is None:
+                        raise
+                    result = await pocket_executor.prepare_trade(
+                        trade_id, asset, direction, expiry, amount,
+                        worker, self.worker_pool, self.warmup_service, timeline=timeline,
+                    )
                 self._log_stage(trade_id, "pocket_executor", result.get("status"), time.monotonic() - stage_t0)
                 await self.event_bus.publish("trade.prepared", {"trade_id": trade_id, "result": result})
 

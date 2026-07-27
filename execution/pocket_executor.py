@@ -29,6 +29,32 @@ SCREENSHOT_DIR = PROJECT_ROOT / "logs" / "trades"
 
 lifecycle_logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
+# Substrings of the real Playwright error messages observed in production
+# (logs/lifecycle.log) when the underlying browser/page is torn down mid-
+# selection - "Target page, context or browser has been closed" (various
+# Locator/Page ops) and "net::ERR_ABORTED; maybe frame was detached?"
+# (Page.goto during a worker respawn). Matched on message content, not
+# exception type, since Playwright raises its own generic Error/TimeoutError
+# for all of these - narrow substrings rather than "retry on any Exception"
+# so an unrelated bug (a real selector regression, a risk-manager error)
+# never gets silently masked by a retry.
+_TRANSIENT_BROWSER_ERROR_MARKERS = (
+    "context or browser has been closed",
+    "frame was detached",
+)
+
+
+def _is_transient_browser_error(e):
+    return any(marker in str(e) for marker in _TRANSIENT_BROWSER_ERROR_MARKERS)
+
+
+class RetryableBrowserError(Exception):
+    """Raised by prepare_trade instead of the original exception when a
+    transient browser/context-closed error (see
+    _TRANSIENT_BROWSER_ERROR_MARKERS) hits strictly before click_direction -
+    see the docstring at that except block for why. trade_coordinator.
+    handle_signal is the only intended catcher."""
+
 
 def _capture_screenshot_background(page, trade_id, label):
     """Fire-and-forget screenshot capture - previously `await
@@ -99,6 +125,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
     timeline = timeline or TradeTimeline(trade_id=trade_id)
     timeline.trade_id = trade_id
     page = worker.page
+    clicked = False
     try:
         # Validated first, before touching the DOM at all: a signal whose
         # expiry never matched a recognizable pattern (parsers/signal_parser.py
@@ -199,6 +226,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
             }
 
         await pocket_dom.click_direction(page, direction)
+        clicked = True
 
         opened_at = datetime.now().isoformat()
         _capture_screenshot_background(page, trade_id, "clicked")
@@ -251,6 +279,28 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
         timeline.persist(database)
         return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable", "reason": str(e)}
     except Exception as e:
+        if not clicked and _is_transient_browser_error(e):
+            # Confirmed live (see docs/AXIM_RELEASE_CHECKLIST.md's browser
+            # crash investigation): a long-lived, headed Chrome session
+            # occasionally has its context/page torn down mid-selection
+            # (asset/expiry/amount, or a stray-modal/health-check probe) -
+            # BEFORE click_direction, the one action that actually commits
+            # real risk. Deliberately skips the usual
+            # update_trade_status/record_pipeline_event/raise below - this
+            # trade_id isn't done failing yet, and writing FAILED here
+            # only to overwrite it with SIZED/OPEN a moment later on a
+            # successful retry would leave a confusing, false-alarm audit
+            # trail. trade_coordinator.handle_signal catches this
+            # specific exception and retries exactly once with a fresh
+            # worker; if that also fails (for any reason), its own
+            # generic exception handler does this same
+            # status/pipeline-event bookkeeping instead, exactly once.
+            lifecycle_logger.warning(
+                "trade_id=%s worker_id=%s transient browser error before click (%s) - "
+                "deferring to caller's single retry with a fresh worker",
+                trade_id, worker.worker_id, e,
+            )
+            raise RetryableBrowserError(str(e)) from e
         lifecycle_logger.error("trade_id=%s worker_id=%s status=%s error=%s", trade_id, worker.worker_id, TradeStatus.ERROR.value, e)
         database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
         database.record_pipeline_event(None, None, SignalLifecycleState.FAILED, signal_id=trade_id, detail=str(e))
