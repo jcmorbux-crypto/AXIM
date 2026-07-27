@@ -117,6 +117,17 @@ _NEW_COLUMNS = {
     "cancellation_status": "TEXT",
     "execution_eligibility": "TEXT",
     "rejection_reason": "TEXT",
+    # Martin Trader scheduled-entry execution (see core/trade_series_engine.py) -
+    # NULL for every signal outside a trade series (i.e. every existing
+    # row, and every other provider). series_id groups every entry
+    # belonging to the same published signal; entry_number is this row's
+    # position (1-4) within that series. Deliberately reuses this table
+    # rather than a parallel execution record - one entry IS a normal
+    # trade in every other respect (same worker pool, Browser Health
+    # Manager, risk checks, audit trail); only the series-level
+    # "which entry, and what happens after" bookkeeping is new.
+    "series_id": "INTEGER",
+    "entry_number": "INTEGER",
 }
 
 # source_type: "passive" (default - existing behavior) | "bot_command"
@@ -326,6 +337,40 @@ def initialize_database():
         outcome TEXT,
         detail TEXT,
         created_at TEXT
+    );
+    """)
+
+    # Martin Trader scheduled-entry execution (core/trade_series_engine.py) -
+    # one row per published signal that carries its own future re-entry
+    # schedule (currently only channel 163, "Martin Trader" - see
+    # docs/opt_signals_gap_queue.md item 2). Each entry_times_json slot
+    # becomes its own real `signals` row (series_id/entry_number columns)
+    # once actually executed - this table only tracks the SERIES-level
+    # state machine (how many entries published, which one is next, has
+    # a win already ended it) so trade placement itself stays on the
+    # exact same path (worker pool, Browser Health Manager, risk checks,
+    # audit trail) every other signal already uses.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS trade_series (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER,
+        fund_id INTEGER,
+        broker_account_id INTEGER,
+        session_id INTEGER,
+        asset TEXT,
+        direction TEXT,
+        expiry TEXT,
+        stake REAL,
+        entry_times_json TEXT NOT NULL,
+        max_entries INTEGER NOT NULL DEFAULT 4,
+        current_entry_number INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        result TEXT,
+        net_profit_loss REAL,
+        source_message_id INTEGER,
+        raw_message TEXT,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
     );
     """)
 
@@ -1721,7 +1766,8 @@ def initialize_database():
 
 @timed("database")
 def record_signal_received(signal, source=None, sender=None, message_id=None, session_id=None,
-                            fund_id=None, broker_account_id=None, channel_id=None):
+                            fund_id=None, broker_account_id=None, channel_id=None,
+                            series_id=None, entry_number=None):
     from trade_lifecycle import TradeStatus
 
     conn = get_connection()
@@ -1729,9 +1775,9 @@ def record_signal_received(signal, source=None, sender=None, message_id=None, se
     INSERT INTO signals (
         message_id, channel, sender, asset, direction, timeframe,
         trade_amount, message, received_at, executed, execution_status, session_id,
-        fund_id, broker_account_id, channel_id
+        fund_id, broker_account_id, channel_id, series_id, entry_number
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
     """, (
         message_id,
         source,
@@ -1747,6 +1793,8 @@ def record_signal_received(signal, source=None, sender=None, message_id=None, se
         fund_id,
         broker_account_id,
         channel_id,
+        series_id,
+        entry_number,
     ))
     conn.commit()
     trade_id = cursor.lastrowid
@@ -1801,6 +1849,242 @@ def record_outcome_latency(trade_id, detection_overhead_ms):
     )
     conn.commit()
     conn.close()
+
+
+@timed("database")
+def create_trade_series(channel_id, asset, direction, expiry, stake, entry_times,
+                         source_message_id=None, raw_message=None, fund_id=None,
+                         broker_account_id=None, session_id=None, max_entries=4):
+    """One row per published Martin Trader-style signal (core/
+    trade_series_engine.py) - `entry_times` is the full ordered list of
+    every scheduled clock time (Entry #1's own published time first,
+    then each "Martingale:" re-entry time), capped at `max_entries`
+    before this is ever called (the engine's job, not this function's -
+    this just persists whatever list it's handed). `expiry` is the plain
+    text label (e.g. "5 Minute") every other signal already uses, not
+    raw seconds - kept in the same shape as signals.timeframe rather
+    than a lossy round trip through pocket_dom.expiry_to_seconds and back."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    cursor = conn.execute("""
+        INSERT INTO trade_series (
+            channel_id, fund_id, broker_account_id, session_id, asset, direction,
+            expiry, stake, entry_times_json, max_entries, current_entry_number,
+            status, source_message_id, raw_message, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?)
+    """, (
+        channel_id, fund_id, broker_account_id, session_id, asset, direction,
+        expiry, stake, json.dumps(entry_times), max_entries,
+        source_message_id, raw_message, now,
+    ))
+    conn.commit()
+    series_id = cursor.lastrowid
+    conn.close()
+    return series_id
+
+
+@timed("database")
+def get_trade_series(series_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM trade_series WHERE id = ?", (series_id,)).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    d = dict(row)
+    d["entry_times"] = json.loads(d["entry_times_json"]) if d["entry_times_json"] else []
+    return d
+
+
+@timed("database")
+def get_trade_series_by_message(channel_id, source_message_id):
+    """Duplicate-series guard - core/trade_series_engine.py checks this
+    before ever calling create_trade_series, so the same Telegram message
+    (a network retry, an at-least-once delivery, Telethon redelivering an
+    event) can never spawn two independent series for what is really one
+    published signal. None (no source_message_id at all, or no existing
+    row) means "safe to create"."""
+    if source_message_id is None:
+        return None
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM trade_series WHERE channel_id = ? AND source_message_id = ?",
+        (channel_id, source_message_id),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    d = dict(row)
+    d["entry_times"] = json.loads(d["entry_times_json"]) if d["entry_times_json"] else []
+    return d
+
+
+@timed("database")
+def get_series_entry(series_id, entry_number):
+    """The real `signals` row for one specific entry of a series - used
+    by core/trade_series_engine.py's startup reconciliation to check
+    whether an entry left 'active' by a crash already has a resolved
+    outcome recorded (by recovery.py, before this process's own event
+    subscriber was even running) that its series never got to react to."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM signals WHERE series_id = ? AND entry_number = ? ORDER BY id DESC LIMIT 1",
+        (series_id, entry_number),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row is not None else None
+
+
+@timed("database")
+def list_pending_trade_series(channel_id=None):
+    """Every series not yet resolved (status in pending/active) - what
+    core/trade_series_engine.py's due-entry poll loop scans each tick,
+    and what a restart needs to rebuild in-memory schedule state from
+    (this table, not memory, is the source of truth - see that
+    module's docstring)."""
+    conn = get_connection()
+    if channel_id is not None:
+        rows = conn.execute(
+            "SELECT * FROM trade_series WHERE status IN ('pending', 'active') AND channel_id = ? "
+            "ORDER BY id", (channel_id,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM trade_series WHERE status IN ('pending', 'active') ORDER BY id",
+        ).fetchall()
+    conn.close()
+    out = []
+    for row in rows:
+        d = dict(row)
+        d["entry_times"] = json.loads(d["entry_times_json"]) if d["entry_times_json"] else []
+        out.append(d)
+    return out
+
+
+@timed("database")
+def advance_trade_series(series_id, current_entry_number, status, result=None, net_profit_loss=None):
+    """Moves a series to its next state - `status` is one of 'pending'
+    (not yet started, or waiting for its next scheduled entry), 'active'
+    (an entry has fired, outcome not known yet), 'blocked' (an entry was
+    rejected for a policy reason - e.g. the consecutive-loss lock - that
+    won't resolve on its own; not auto-retried, but not terminal either,
+    since an operator can act and this series can resume), 'won' (stop -
+    a winning entry closed the series), 'lost_exhausted' (all published
+    entries lost), or 'error' (a real execution failure ended the series
+    early, not a scheduled outcome). resolved_at is only ever set once,
+    on a genuinely terminal status - 'blocked' deliberately excluded, so
+    a resumed series still shows its original creation-to-resolution
+    span honestly. `result`/`net_profit_loss` are persisted whenever
+    given (blocked included, so the reason is visible in the summary),
+    not only on terminal statuses."""
+    terminal = status in ("won", "lost_exhausted", "error")
+    conn = get_connection()
+    if result is not None or net_profit_loss is not None:
+        if terminal:
+            conn.execute(
+                "UPDATE trade_series SET current_entry_number = ?, status = ?, result = ?, "
+                "net_profit_loss = ?, resolved_at = ? WHERE id = ?",
+                (current_entry_number, status, result, net_profit_loss, datetime.now().isoformat(), series_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE trade_series SET current_entry_number = ?, status = ?, result = ?, "
+                "net_profit_loss = ? WHERE id = ?",
+                (current_entry_number, status, result, net_profit_loss, series_id),
+            )
+    else:
+        conn.execute(
+            "UPDATE trade_series SET current_entry_number = ?, status = ? WHERE id = ?",
+            (current_entry_number, status, series_id),
+        )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def resume_blocked_trade_series(series_id):
+    """An explicit, attributable operator action - the same "never
+    auto-clear a policy block, only a human decides" discipline
+    risk_manager.reset_consecutive_loss_lock already uses. Resets a
+    'blocked' series back to 'pending' so the next poll tick retries its
+    current entry number normally; a no-op (returns False) for any series
+    not actually in 'blocked' status, so this can never accidentally
+    resume a series that's still legitimately active or already
+    finished."""
+    conn = get_connection()
+    row = conn.execute("SELECT status FROM trade_series WHERE id = ?", (series_id,)).fetchone()
+    if row is None or row["status"] != "blocked":
+        conn.close()
+        return False
+    conn.execute("UPDATE trade_series SET status = 'pending' WHERE id = ?", (series_id,))
+    conn.commit()
+    conn.close()
+    return True
+
+
+@timed("database")
+def get_trade_series_summary(channel_id=None, since=None):
+    """The 'live session summary' (signals received, series completed,
+    wins, losses, win% by signal, total entries executed, net P/L) - see
+    core/trade_series_engine.py's docstring for why series-level and
+    entry-level bookkeeping are deliberately separate tables."""
+    conn = get_connection()
+    where = []
+    params = []
+    if channel_id is not None:
+        where.append("channel_id = ?")
+        params.append(channel_id)
+    if since is not None:
+        where.append("created_at >= ?")
+        params.append(since)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    series_rows = conn.execute(f"SELECT * FROM trade_series {clause} ORDER BY id", params).fetchall()
+
+    signal_ids = [row["id"] for row in series_rows]
+    entries_by_series = {}
+    if signal_ids:
+        placeholders = ", ".join("?" for _ in signal_ids)
+        entry_rows = conn.execute(
+            f"SELECT * FROM signals WHERE series_id IN ({placeholders}) ORDER BY series_id, entry_number",
+            signal_ids,
+        ).fetchall()
+        for row in entry_rows:
+            entries_by_series.setdefault(row["series_id"], []).append(dict(row))
+    conn.close()
+
+    per_signal = []
+    wins = losses = completed = 0
+    total_entries_executed = 0
+    net_pl = 0.0
+    for row in series_rows:
+        d = dict(row)
+        entries = entries_by_series.get(d["id"], [])
+        total_entries_executed += len(entries)
+        if d["status"] in ("won", "lost_exhausted"):
+            completed += 1
+            if d["status"] == "won":
+                wins += 1
+            else:
+                losses += 1
+        if d["net_profit_loss"]:
+            net_pl += d["net_profit_loss"]
+        per_signal.append({
+            "series_id": d["id"], "asset": d["asset"], "direction": d["direction"],
+            "status": d["status"], "entries_executed": len(entries),
+            "max_entries": d["max_entries"], "net_profit_loss": d["net_profit_loss"],
+            "created_at": d["created_at"], "resolved_at": d["resolved_at"],
+        })
+
+    return {
+        "signals_received": len(series_rows),
+        "series_completed": completed,
+        "wins": wins,
+        "losses": losses,
+        "win_rate_by_signal": round(wins / completed * 100, 1) if completed else None,
+        "total_entries_executed": total_entries_executed,
+        "net_profit_loss": round(net_pl, 2),
+        "per_signal": per_signal,
+    }
 
 
 @timed("database")

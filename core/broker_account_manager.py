@@ -275,7 +275,8 @@ async def resolve_coordinator_for_session(session_id):
 
 
 async def route_signal(signal, default_coordinator, source=None, sender=None, message_id=None,
-                        sent_at=None, timeline=None, session_id=None, channel_id=None):
+                        sent_at=None, timeline=None, session_id=None, channel_id=None,
+                        series_id=None, entry_number=None):
     """The single entry point core/telegram_listener.py calls instead of
     a bare coordinator.handle_signal() - resolves which broker account's
     coordinator should actually handle this signal and delegates to it.
@@ -293,11 +294,18 @@ async def route_signal(signal, default_coordinator, source=None, sender=None, me
     for audit - same "always record, even rejected" principle
     TradeCoordinator.handle_signal already follows for every other
     rejection reason - and rejected cleanly, never silently executed
-    against the wrong (or the legacy shared) connection."""
+    against the wrong (or the legacy shared) connection.
+
+    series_id/entry_number (Martin Trader scheduled-entry execution, see
+    core/trade_series_engine.py) are optional pass-throughs recorded onto
+    this signal's own `signals` row - None for every other caller, same
+    "only used by one real consumer today" shape as channel_id when it
+    was first added."""
     if session_id is None:
         return await default_coordinator.handle_signal(
             signal, source=source, sender=sender, message_id=message_id,
             sent_at=sent_at, timeline=timeline, session_id=None, channel_id=channel_id,
+            series_id=series_id, entry_number=entry_number,
         )
 
     try:
@@ -305,7 +313,7 @@ async def route_signal(signal, default_coordinator, source=None, sender=None, me
     except AccountUnavailable as e:
         trade_id = database.record_signal_received(
             signal, source=source, sender=sender, message_id=message_id, session_id=session_id,
-            channel_id=channel_id,
+            channel_id=channel_id, series_id=series_id, entry_number=entry_number,
         )
         if channel_id is not None:
             database.link_pipeline_events_to_signal(channel_id, message_id, trade_id)
@@ -322,6 +330,7 @@ async def route_signal(signal, default_coordinator, source=None, sender=None, me
         signal, source=source, sender=sender, message_id=message_id,
         sent_at=sent_at, timeline=timeline, session_id=session_id,
         fund_id=fund_id, broker_account_id=broker_account_id, channel_id=channel_id,
+        series_id=series_id, entry_number=entry_number,
     )
 
 

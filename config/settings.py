@@ -38,6 +38,16 @@ TRADE_AMOUNT = float(os.getenv("TRADE_AMOUNT", os.getenv("DEFAULT_TRADE_AMOUNT",
 MINIMUM_PAYOUT = int(os.getenv("MINIMUM_PAYOUT", 90))
 MAX_SIGNAL_AGE = int(os.getenv("MAX_SIGNAL_AGE", 10))
 
+# Martin Trader scheduled-entry execution (core/trade_series_engine.py,
+# docs/opt_signals_gap_queue.md item 2) - the ONLY channel gated into
+# treating its own signal as a multi-entry series instead of one
+# immediate trade. ui_channels.id 163 is the real, confirmed "Martin
+# Trader" channel (see docs/opt_signals_audit_ledger.json) - kept as a
+# single overridable setting, never a hardcoded literal scattered through
+# telegram_listener.py/trade_series_engine.py, so a real channel_id change
+# (a re-sync, a different environment) is a one-line config edit.
+MARTIN_TRADER_CHANNEL_ID = int(os.getenv("MARTIN_TRADER_CHANNEL_ID", 163))
+
 # Database
 DATABASE_FILE = "data/axim.db"
 

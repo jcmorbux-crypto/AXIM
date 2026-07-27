@@ -29,7 +29,7 @@ from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
 from timeline import TradeTimeline
 import pocket_dom
-from settings import WATCH_CHANNELS, MAX_CONCURRENT_WORKERS, ACCOUNT
+from settings import WATCH_CHANNELS, MAX_CONCURRENT_WORKERS, ACCOUNT, TRADE_AMOUNT, MARTIN_TRADER_CHANNEL_ID
 from logger import get_logger
 from event_bus import get_event_bus
 import recovery
@@ -41,6 +41,7 @@ import telegram_bot_trigger
 import signal_assembler
 import provider_profile
 import build_info
+import trade_series_engine
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -200,6 +201,25 @@ def _get_carried_asset(chat_id):
 # signal_assembler tracks one pending sequence PER ASSET, plus
 # Telegram-reply correlation and a configurable per-provider timeout.
 _shadow_assembler = signal_assembler.SignalAssembler()
+
+
+def _is_martin_trader_channel(channel_row, event_chat_id):
+    """Section B's own explicit requirement: identify Martin Trader ONLY
+    by its configured, immutable channel id - never display name, folder
+    position, pinned status, or username text, any of which can change.
+    channel_row["id"] alone is not quite enough on its own: database.
+    find_channel()'s match precedence is chat_id, then username, then a
+    title SUBSTRING match (shared logic used by every provider, not
+    something this one channel's routing should change) - a message from
+    some OTHER, unrelated chat could in principle resolve to this exact
+    row via that fallback if chat_id didn't match anything but its
+    username/title text happened to overlap. Comparing the real incoming
+    event_chat_id directly against this row's own stored chat_id closes
+    that gap without touching find_channel's shared behavior at all: if
+    channel_row was resolved via its real chat_id (the normal case), this
+    is trivially true; if it was resolved via the fallback path instead,
+    this correctly evaluates false."""
+    return channel_row["id"] == MARTIN_TRADER_CHANNEL_ID and str(event_chat_id) == str(channel_row["chat_id"])
 
 
 def _observe_message(channel_row, message_text, message_id, reply_to_message_id=None):
@@ -442,6 +462,14 @@ async def handler(event):
             "asset": assembly_result["asset"], "direction": assembly_result["direction"],
             "expiry": assembly_result.get("expiry") or "Unknown", "raw_message": assembly_result["raw_message"],
         }
+        # Martin Trader scheduled-entry execution (core/trade_series_engine.py) -
+        # carried through only when present (every other provider's
+        # assembly_result never has these keys - see signal_assembler.py's
+        # own pass-through comment).
+        if "entry_time" in assembly_result:
+            signal["entry_time"] = assembly_result["entry_time"]
+        if "scheduled_entries" in assembly_result:
+            signal["scheduled_entries"] = assembly_result["scheduled_entries"]
         _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.PARSED)
     else:
         # Legacy fallback for a chat with no ui_channels record at all -
@@ -462,6 +490,44 @@ async def handler(event):
         print(f"[EXPIRY FALLBACK] {_debug_safe(chat_title)!r} sent no expiry - using its configured "
               f"default_expiry={channel_row['default_expiry']!r} instead of rejecting.")
         signal = apply_expiry_fallback(signal, channel_row["default_expiry"])
+
+    # Martin Trader scheduled-entry execution (core/trade_series_engine.py) -
+    # the ONLY channel whose signal is treated as a multi-entry series
+    # (Entry #1 now, up to 3 more re-entries at their own published
+    # times, stop on first win) rather than one immediate trade. Gated
+    # entirely by MARTIN_TRADER_CHANNEL_ID (config, not a hardcoded name
+    # or title match) - every other channel, including every other OPT
+    # SIGNALS provider, is completely unaffected and falls through to the
+    # normal immediate route_signal call below exactly as before.
+    #
+    # Deliberately NOT attached to a Trading Session/Fund, even if one is
+    # active elsewhere: the only connected broker account can run exactly
+    # one active trading_sessions row at a time (confirmed live - session
+    # 12, Fund 25, already occupies it), and that session's own
+    # risk_profile_id would size these entries by ITS rules, not the flat
+    # $10 this task requires. session_id=None routes through
+    # broker_account_manager's legacy shared-connection path instead -
+    # the SAME real, physical demo account (it's the one every
+    # broker_account_id with user_data_dir="sessions/pocket_browser"
+    # adopts, see _startup()'s adopt_existing_connection) - and
+    # risk_engine.compute_position_size(None, TRADE_AMOUNT) always
+    # returns the flat TRADE_AMOUNT unchanged for session_id=None,
+    # guaranteeing the fixed stake without touching or pausing the
+    # already-active, unrelated session.
+    if channel_row is not None and _is_martin_trader_channel(channel_row, event.chat_id):
+        series_id = await trade_series_engine.create_series_from_signal(
+            signal, channel_id=channel_row["id"], stake=TRADE_AMOUNT,
+            fund_id=None, broker_account_id=None, session_id=None,
+            source_message_id=event.id,
+        )
+        if series_id is None:
+            print(f"[MARTIN TRADER] {_debug_safe(chat_title)!r} signal for {signal['asset']!r} has no "
+                  f"Entry: time - cannot be scheduled as a series, skipping")
+            _track_pipeline_event(event.chat_id, event.id, channel_row["id"], SignalLifecycleState.SKIPPED,
+                                   detail="no_entry_time")
+        else:
+            print(f"[MARTIN TRADER] series_id={series_id} scheduled for {signal['asset']} {signal['direction']}")
+        return
 
     # route_signal resolves which broker account's coordinator should
     # actually handle this (via the session's Fund -> attached Pocket
@@ -773,8 +839,25 @@ async def _startup():
     worker_pool = BrowserWorkerPool(warmup_service, num_workers=MAX_CONCURRENT_WORKERS)
     await worker_pool.start()
     coordinator = TradeCoordinator(worker_pool, warmup_service, asset_cache=warmup_service.asset_cache)
+
+    # Registered BEFORE recovery runs, not after - recovery.run_recovery
+    # (just below) can re-attach real track_outcome tracking to a trade
+    # that was actually clicked before a prior crash, which then
+    # publishes a genuine trade.closed once it resolves. That could in
+    # principle happen quickly (the trade's remaining expiry could be
+    # seconds), so this module's own trade.closed subscriber must already
+    # be listening before recovery starts, not moments after - never a
+    # real gap in practice (registration is synchronous and immediate),
+    # but correct regardless of timing.
+    trade_series_engine.register(get_event_bus())
     print("AXIM: worker pool ready, running startup recovery...")
     await recovery.run_recovery(warmup_service)
+    # A series left 'active' by a crash that hit the OTHER recovery case
+    # (an entry stuck at trade_prepared, never actually clicked - no real
+    # position, so recovery.py above marks it ERROR without ever
+    # publishing trade.closed) would otherwise wait forever for an event
+    # that will never come - see reconcile_stuck_series's own docstring.
+    await trade_series_engine.reconcile_stuck_series()
 
     # A broker account whose user_data_dir is this same legacy default
     # profile (sessions/pocket_browser) is adopted onto the connection
@@ -798,6 +881,7 @@ async def _startup():
     asyncio.create_task(_test_trade_poll_loop())
     asyncio.create_task(_connection_test_poll_loop())
     asyncio.create_task(_bot_trigger_supervisor_loop())
+    asyncio.create_task(trade_series_engine.run_due_entries_loop(coordinator, channel_id=MARTIN_TRADER_CHANNEL_ID))
 
 
 async def _shutdown():

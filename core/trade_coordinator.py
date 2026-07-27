@@ -156,7 +156,8 @@ class TradeCoordinator:
 
     async def handle_signal(self, signal, source=None, sender=None, message_id=None,
                              sent_at=None, timeline=None, session_id=None,
-                             fund_id=None, broker_account_id=None, channel_id=None):
+                             fund_id=None, broker_account_id=None, channel_id=None,
+                             series_id=None, entry_number=None):
         timeline = timeline or TradeTimeline()
         token = timeline.activate()
         try:
@@ -179,6 +180,7 @@ class TradeCoordinator:
                 database.record_signal_received, signal,
                 source=source, sender=sender, message_id=message_id, session_id=session_id,
                 fund_id=fund_id, broker_account_id=broker_account_id, channel_id=channel_id,
+                series_id=series_id, entry_number=entry_number,
             )
             timeline.trade_id = trade_id
             self._log_stage(trade_id, TradeStatus.SIGNAL_RECEIVED.value, "recorded", time.monotonic() - stage_t0)

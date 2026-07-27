@@ -225,11 +225,23 @@ class SignalAssembler:
         # unrelated pending one for a different asset.
         standalone = parse_signal(text)
         if standalone:
-            return {
+            result = {
                 "action": "signal_ready", "asset": standalone["asset"], "direction": standalone["direction"],
                 "expiry": standalone.get("expiry"), "message_ids": [message_id], "is_multi_message": False,
                 "raw_message": text, "expired_assets": expired,
             }
+            # Martin Trader scheduled-entry execution (core/
+            # trade_series_engine.py) - entry_time/scheduled_entries are
+            # parsing-only fields (see parse_signal's own docstring) that
+            # would otherwise be silently dropped here, since this dict's
+            # shape predates that feature. Only ever present for the one
+            # provider that publishes them; every other channel's result
+            # is byte-for-byte unchanged.
+            if "entry_time" in standalone:
+                result["entry_time"] = standalone["entry_time"]
+            if "scheduled_entries" in standalone:
+                result["scheduled_entries"] = standalone["scheduled_entries"]
+            return result
 
         # Step 3: does this message complete a currently-pending
         # announcement (direction, optionally expiry, no asset of its

@@ -297,6 +297,29 @@ def parse_signal(message, carried_asset=None):
     if entry_time_match:
         signal["entry_time"] = entry_time_match.group(1)
 
+    # Scheduled re-entry times (gap queue item 2's own "product decision" -
+    # now scoped and consumed by core/trade_series_engine.py). Martin
+    # Trader's "Martingale:" block lists this signal's own published
+    # re-entry schedule if Entry #1 loses - "1 09:05" / "2 09:10" /
+    # "3 09:15" means entry #2 at 09:05, entry #3 at 09:10, entry #4 at
+    # 09:15 (the block's own leading number is which re-entry, not which
+    # overall entry - Entry #1 is the separate "Entry:" field above).
+    # Despite the provider's own label, AXIM never scales the stake
+    # between these entries - see trade_series_engine.py's docstring for
+    # why "same fixed stake, different clock time" is not Martingale in
+    # the sense AXIM's own martingale_settings table means it. Parsing
+    # only, same discipline as entry_time above.
+    martingale_block_match = re.search(
+        r"\bMartingale\s*:\s*\n((?:\s*\d+\s+\d{1,2}:\d{2}\s*\n?)+)", message, re.IGNORECASE,
+    )
+    if martingale_block_match:
+        scheduled_entries = [
+            {"entry_number": int(m.group(1)) + 1, "time": m.group(2)}
+            for m in re.finditer(r"(\d+)\s+(\d{1,2}:\d{2})", martingale_block_match.group(1))
+        ]
+        if scheduled_entries:
+            signal["scheduled_entries"] = scheduled_entries
+
     signal["raw_message"] = message
 
     return signal
