@@ -157,7 +157,7 @@ class TradeCoordinator:
     async def handle_signal(self, signal, source=None, sender=None, message_id=None,
                              sent_at=None, timeline=None, session_id=None,
                              fund_id=None, broker_account_id=None, channel_id=None,
-                             series_id=None, entry_number=None):
+                             series_id=None, entry_number=None, fixed_stake=None):
         timeline = timeline or TradeTimeline()
         token = timeline.activate()
         try:
@@ -223,6 +223,25 @@ class TradeCoordinator:
                     return {"status": "ignored", "trade_id": trade_id, "reason": "observation_mode"}
 
             asset, direction, expiry = signal["asset"], signal["direction"], signal["expiry"]
+            # fixed_stake (Martin Trader scheduled-entry execution - see
+            # core/trade_series_engine.py) bypasses the Risk Engine's own
+            # sizing entirely, rather than relying on session_id=None's
+            # existing fallback to the GLOBAL TRADE_AMOUNT setting - that
+            # global default is a shared, independently-configured value
+            # (confirmed live: set to $1 in this environment, for reasons
+            # unrelated to this one provider) and was never a safe proxy
+            # for "this specific series' own fixed stake." Only ever
+            # non-None for that one caller; every other signal's sizing is
+            # completely unchanged. Safe to skip the Capital Strategies
+            # exceptions below too - those only ever trigger when a real
+            # risk_profile_id/money_plan_key is attached, which a
+            # fixed_stake call (always session_id=None) never has, so
+            # compute_position_size would have taken its own identical
+            # session_id=None fast path anyway (see that function's own
+            # docstring). check_max_trade_amount below still runs
+            # normally either way - a real safety ceiling, not a sizing
+            # policy, and never bypassed.
+            #
             # risk_engine.compute_position_size falls through to the
             # exact same risk_manager.compute_trade_amount (fixed amount
             # or percent-of-bankroll from the UI) when this session has no
@@ -235,7 +254,10 @@ class TradeCoordinator:
             # rejection this stage already handles via _reject().
             stage_t0 = time.monotonic()
             try:
-                amount = await asyncio.to_thread(risk_engine.compute_position_size, session_id, TRADE_AMOUNT)
+                if fixed_stake is not None:
+                    amount = fixed_stake
+                else:
+                    amount = await asyncio.to_thread(risk_engine.compute_position_size, session_id, TRADE_AMOUNT)
             except (
                 risk_engine.CashflowTargetReached, risk_engine.SentinelSuspended,
                 risk_engine.FortressPrincipalProtected, risk_engine.EmpireChallengeOver,

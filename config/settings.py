@@ -48,6 +48,15 @@ MAX_SIGNAL_AGE = int(os.getenv("MAX_SIGNAL_AGE", 10))
 # (a re-sync, a different environment) is a one-line config edit.
 MARTIN_TRADER_CHANNEL_ID = int(os.getenv("MARTIN_TRADER_CHANNEL_ID", 163))
 
+# This series' own flat, non-scaling stake for every entry - deliberately
+# NOT the shared TRADE_AMOUNT above (confirmed live: that global default is
+# independently configured to $1 in this environment for reasons unrelated
+# to Martin Trader specifically) - see TradeCoordinator.handle_signal's own
+# docstring for why relying on the global fallback would silently use the
+# wrong figure. Passed explicitly as fixed_stake on every entry, bypassing
+# the Risk Engine's own sizing entirely.
+MARTIN_TRADER_STAKE = float(os.getenv("MARTIN_TRADER_STAKE", 10))
+
 # Database
 DATABASE_FILE = "data/axim.db"
 

@@ -316,6 +316,51 @@ class TradeCoordinatorTests(unittest.TestCase):
         call_args = mock_prepare_trade.call_args
         self.assertIn("fake-warmup", call_args.args)
 
+    def test_fixed_stake_bypasses_risk_engine_sizing_entirely(self):
+        """Martin Trader scheduled-entry execution (core/trade_series_engine.py) -
+        fixed_stake must be used AS GIVEN, never recomputed by
+        risk_engine.compute_position_size (which would otherwise fall back
+        to the shared, independently-configured TRADE_AMOUNT global for a
+        session_id=None call - confirmed live to be $1 in production, not
+        this series' own $10)."""
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        mock_prepare_trade = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
+        pocket_executor.prepare_trade = mock_prepare_trade
+        try:
+            result = _run(coordinator.handle_signal(self._signal(), fixed_stake=10.0))
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+
+        self.assertEqual(result["status"], "clicked")
+        # prepare_trade(trade_id, asset, direction, expiry, amount, ...) - amount is positional arg index 4.
+        self.assertEqual(mock_prepare_trade.call_args.args[4], 10.0)
+
+    def test_no_fixed_stake_still_uses_normal_risk_engine_sizing(self):
+        """Every other caller (fixed_stake=None, the default) must be
+        completely unaffected by this feature - confirms the bypass is
+        opt-in, not a behavior change for the other 99% of signals."""
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        mock_prepare_trade = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
+        pocket_executor.prepare_trade = mock_prepare_trade
+        try:
+            _run(coordinator.handle_signal(self._signal()))
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+
+        # Normal sizing (TRADE_AMOUNT, imported at module load) is used,
+        # not any Martin Trader-specific figure.
+        self.assertEqual(mock_prepare_trade.call_args.args[4], trade_coordinator.TRADE_AMOUNT)
+
 
 class TradeConfirmationGateIntegrationTests(unittest.TestCase):
     """Confirms the gate is actually wired into the real pipeline, not

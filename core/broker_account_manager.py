@@ -276,7 +276,7 @@ async def resolve_coordinator_for_session(session_id):
 
 async def route_signal(signal, default_coordinator, source=None, sender=None, message_id=None,
                         sent_at=None, timeline=None, session_id=None, channel_id=None,
-                        series_id=None, entry_number=None):
+                        series_id=None, entry_number=None, fixed_stake=None):
     """The single entry point core/telegram_listener.py calls instead of
     a bare coordinator.handle_signal() - resolves which broker account's
     coordinator should actually handle this signal and delegates to it.
@@ -300,12 +300,16 @@ async def route_signal(signal, default_coordinator, source=None, sender=None, me
     core/trade_series_engine.py) are optional pass-throughs recorded onto
     this signal's own `signals` row - None for every other caller, same
     "only used by one real consumer today" shape as channel_id when it
-    was first added."""
+    was first added. fixed_stake, same caller, bypasses the Risk Engine's
+    own sizing entirely - see TradeCoordinator.handle_signal's own
+    docstring for why the GLOBAL TRADE_AMOUNT fallback session_id=None
+    would otherwise use is not a safe proxy for one series' own fixed
+    stake."""
     if session_id is None:
         return await default_coordinator.handle_signal(
             signal, source=source, sender=sender, message_id=message_id,
             sent_at=sent_at, timeline=timeline, session_id=None, channel_id=channel_id,
-            series_id=series_id, entry_number=entry_number,
+            series_id=series_id, entry_number=entry_number, fixed_stake=fixed_stake,
         )
 
     try:
@@ -330,7 +334,7 @@ async def route_signal(signal, default_coordinator, source=None, sender=None, me
         signal, source=source, sender=sender, message_id=message_id,
         sent_at=sent_at, timeline=timeline, session_id=session_id,
         fund_id=fund_id, broker_account_id=broker_account_id, channel_id=channel_id,
-        series_id=series_id, entry_number=entry_number,
+        series_id=series_id, entry_number=entry_number, fixed_stake=fixed_stake,
     )
 
 

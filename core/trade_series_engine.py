@@ -206,6 +206,12 @@ async def _execute_entry(default_coordinator, series, entry_number):
             signal, default_coordinator, source="martin_trader_series",
             session_id=series["session_id"], channel_id=series["channel_id"],
             series_id=series["id"], entry_number=entry_number,
+            # This series' own fixed stake, set once at creation - see
+            # TradeCoordinator.handle_signal's docstring for why this
+            # must be explicit rather than relying on the Risk Engine's
+            # session_id=None fallback (the GLOBAL TRADE_AMOUNT setting,
+            # independently configured for unrelated purposes).
+            fixed_stake=series["stake"],
         )
     except Exception as e:
         logger.error("trade_series_engine: series_id=%s entry #%d failed to route: %s", series["id"], entry_number, e)

@@ -29,7 +29,7 @@ from browser_warmup import BrowserWarmupService
 from browser_worker_pool import BrowserWorkerPool
 from timeline import TradeTimeline
 import pocket_dom
-from settings import WATCH_CHANNELS, MAX_CONCURRENT_WORKERS, ACCOUNT, TRADE_AMOUNT, MARTIN_TRADER_CHANNEL_ID
+from settings import WATCH_CHANNELS, MAX_CONCURRENT_WORKERS, ACCOUNT, MARTIN_TRADER_CHANNEL_ID, MARTIN_TRADER_STAKE
 from logger import get_logger
 from event_bus import get_event_bus
 import recovery
@@ -506,17 +506,19 @@ async def handler(event):
     # 12, Fund 25, already occupies it), and that session's own
     # risk_profile_id would size these entries by ITS rules, not the flat
     # $10 this task requires. session_id=None routes through
-    # broker_account_manager's legacy shared-connection path instead -
-    # the SAME real, physical demo account (it's the one every
+    # broker_account_manager's legacy shared-connection path instead - the
+    # SAME real, physical demo account (it's the one every
     # broker_account_id with user_data_dir="sessions/pocket_browser"
-    # adopts, see _startup()'s adopt_existing_connection) - and
-    # risk_engine.compute_position_size(None, TRADE_AMOUNT) always
-    # returns the flat TRADE_AMOUNT unchanged for session_id=None,
-    # guaranteeing the fixed stake without touching or pausing the
-    # already-active, unrelated session.
+    # adopts, see _startup()'s adopt_existing_connection). The stake
+    # itself is MARTIN_TRADER_STAKE, passed explicitly as fixed_stake at
+    # execution time (see trade_series_engine._execute_entry) - NOT the
+    # shared TRADE_AMOUNT setting session_id=None would otherwise fall
+    # back to, which is independently configured to $1 in this
+    # environment for unrelated reasons and was never a safe proxy for
+    # this one series' own fixed stake.
     if channel_row is not None and _is_martin_trader_channel(channel_row, event.chat_id):
         series_id = await trade_series_engine.create_series_from_signal(
-            signal, channel_id=channel_row["id"], stake=TRADE_AMOUNT,
+            signal, channel_id=channel_row["id"], stake=MARTIN_TRADER_STAKE,
             fund_id=None, broker_account_id=None, session_id=None,
             source_message_id=event.id,
         )
