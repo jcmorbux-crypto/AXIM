@@ -12,6 +12,7 @@ sys.path.insert(0, str(EXECUTION_DIR))
 sys.path.insert(0, str(CORE_DIR))
 
 from browser_session import DEMO_URL, get_trading_page
+from browser_health import BrowserHealthManager, RetryableBrowserError
 import pocket_dom
 from logger import get_logger
 import database
@@ -82,6 +83,7 @@ class BrowserWorkerPool:
         self._pool_generation = 0
         self._health_lock = asyncio.Lock()
         self._last_pool_health_check = 0.0
+        self._health_manager = BrowserHealthManager()
 
     async def start(self):
         self._warmup_generation = await self.warmup_service.ensure_alive()
@@ -196,32 +198,70 @@ class BrowserWorkerPool:
             worker.lock.release()
         self._available.put_nowait(worker)
 
+    async def _respawn_worker_page(self, worker):
+        context = self.warmup_service.get_context()
+        new_page = await get_trading_page(context, DEMO_URL)
+        await pocket_dom.dismiss_blocking_modals(new_page)
+        worker.page = new_page
+        # last_health_check is deliberately left as-is (not reset to "now") -
+        # the forced re-check right after this call (force_deep=True) always
+        # runs the real responsiveness probe regardless of that timestamp,
+        # and BrowserHealthManager itself updates it the moment that probe
+        # actually passes. A fresh page also has no deep-check track record
+        # yet - note_page_replaced clears that separately, so the very next
+        # check_worker() call for this worker_id runs the full deep check
+        # regardless of DEEP_HEALTH_CHECK_TTL_SECONDS too.
+        self._health_manager.note_page_replaced(worker.worker_id)
+
     async def _ensure_worker_healthy(self, worker):
-        """Handles a single tab dying while the rest of the browser is
-        fine - the whole-browser-crash case is caught earlier, in
+        """Handles a single worker's page acting up while the rest of the
+        browser is fine - the whole-browser-crash case is caught earlier, in
         _ensure_pool_healthy(), before a worker is even pulled from the
-        queue. page.is_closed() is always checked (free, local, no IPC);
-        the live page.evaluate() probe is skipped if this worker was
-        already verified within HEALTH_CHECK_TTL_SECONDS."""
-        try:
-            if worker.page.is_closed():
-                raise RuntimeError("page closed")
-            if time.monotonic() - worker.last_health_check < HEALTH_CHECK_TTL_SECONDS:
-                return worker
-            await asyncio.wait_for(worker.page.evaluate("() => 1"), timeout=3)
-            worker.last_health_check = time.monotonic()
+        queue. Delegates the actual checks (page responsive, DOM ready,
+        session authenticated, live data flowing) to BrowserHealthManager -
+        see that module's docstring for the full layered design and why
+        each check exists.
+
+        Escalation, cheapest fix first: a failure first gets one respawn of
+        JUST this worker's page (transparent to every OTHER worker - each
+        has its own lock and its own page, so this never interrupts a
+        healthy worker mid-trade). The respawned page is re-verified with
+        the full deep check before being trusted. Only if it STILL fails -
+        meaning the problem is at the context/session level, not this one
+        stale page - does this escalate to warmup_service.force_reconnect()
+        and raise RetryableBrowserError, which trade_coordinator.
+        handle_signal already retries once with a freshly acquired worker;
+        that retry's own acquire_worker() call goes through
+        _ensure_pool_healthy() first, which will see the bumped generation
+        and rebuild every worker from the new context. The full browser is
+        therefore only ever recreated as a last resort, never as the first
+        response to one worker's page."""
+        result = await self._health_manager.check_worker(worker, self.warmup_service.verification_class)
+        if result.healthy:
             return worker
-        except Exception as e:
-            logger.warning(
-                "browser_worker_pool: worker_id=%s unhealthy (%s) - respawning its page",
-                worker.worker_id, e,
-            )
-            context = self.warmup_service.get_context()
-            new_page = await get_trading_page(context, DEMO_URL)
-            await pocket_dom.dismiss_blocking_modals(new_page)
-            worker.page = new_page
-            worker.last_health_check = time.monotonic()
+
+        logger.warning(
+            "browser_worker_pool: worker_id=%s unhealthy (%s: %s) - respawning its page",
+            worker.worker_id, result.failed_check, result.detail,
+        )
+        await self._respawn_worker_page(worker)
+
+        recheck = await self._health_manager.check_worker(worker, self.warmup_service.verification_class, force_deep=True)
+        if recheck.healthy:
             return worker
+
+        logger.error(
+            "browser_worker_pool: worker_id=%s still unhealthy after respawn (%s: %s) - "
+            "escalating to a full browser reconnect",
+            worker.worker_id, recheck.failed_check, recheck.detail,
+        )
+        await self.warmup_service.force_reconnect(
+            f"worker_id={worker.worker_id} failed {recheck.failed_check} even after a fresh page: {recheck.detail}",
+        )
+        raise RetryableBrowserError(
+            f"worker_id={worker.worker_id} unrecoverable at the page level ({recheck.failed_check}: "
+            f"{recheck.detail}) - browser reconnect triggered, retry with a fresh worker",
+        )
 
     async def stop(self):
         for worker in self.workers:

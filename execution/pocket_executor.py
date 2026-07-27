@@ -17,6 +17,7 @@ sys.path.insert(0, str(CONFIG_DIR))
 import pocket_dom
 import database
 import risk_manager
+from browser_health import RetryableBrowserError
 from trade_lifecycle import TradeStatus
 from signal_lifecycle import SignalLifecycleState
 from timeline import TradeTimeline, get_current_timeline, clear_current
@@ -46,14 +47,6 @@ _TRANSIENT_BROWSER_ERROR_MARKERS = (
 
 def _is_transient_browser_error(e):
     return any(marker in str(e) for marker in _TRANSIENT_BROWSER_ERROR_MARKERS)
-
-
-class RetryableBrowserError(Exception):
-    """Raised by prepare_trade instead of the original exception when a
-    transient browser/context-closed error (see
-    _TRANSIENT_BROWSER_ERROR_MARKERS) hits strictly before click_direction -
-    see the docstring at that except block for why. trade_coordinator.
-    handle_signal is the only intended catcher."""
 
 
 def _capture_screenshot_background(page, trade_id, label):

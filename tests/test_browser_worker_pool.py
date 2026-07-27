@@ -12,12 +12,31 @@ sys.path.insert(0, str(PROJECT_ROOT / "core"))
 
 import database
 import browser_worker_pool
+import browser_health
 from browser_worker_pool import BrowserWorker, BrowserWorkerPool
+from browser_health import RetryableBrowserError
+
+
+class FakeLocator:
+    """Stands in for a Playwright Locator - only what
+    browser_health.BrowserHealthManager's own DOM-ready check calls
+    directly (.first, .is_visible()), never passed through Playwright's
+    real expect() (which requires a genuine Locator and can't be faked this
+    way - see read_balance's own mocking below for why that check is
+    patched at the function level instead)."""
+
+    def __init__(self, visible=True):
+        self.first = self
+        self._visible = visible
+
+    async def is_visible(self, timeout=None):
+        return self._visible
 
 
 class FakePage:
-    def __init__(self, closed=False):
+    def __init__(self, closed=False, dom_visible=True):
         self._closed = closed
+        self._dom_visible = dom_visible
 
     def is_closed(self):
         return self._closed
@@ -25,16 +44,24 @@ class FakePage:
     async def evaluate(self, *args, **kwargs):
         return 1
 
+    def locator(self, selector):
+        return FakeLocator(visible=self._dom_visible)
+
 
 class FakeWarmupService:
     def __init__(self, generation=1):
         self.generation = generation
+        self.force_reconnect = AsyncMock()
 
     async def ensure_alive(self):
         return self.generation
 
     def get_context(self):
         return MagicMock()
+
+    @property
+    def verification_class(self):
+        return "is-chart-demo"
 
 
 def _run(coro):
@@ -50,9 +77,25 @@ class BrowserWorkerPoolTests(unittest.TestCase):
             browser_worker_pool.pocket_dom, "_close_active_dropdown_modal", new=AsyncMock(),
         )
         self._patcher.start()
+        # BrowserHealthManager's deep check (DOM ready, session, live data)
+        # is "due" the very first time any worker is checked - there's no
+        # prior timestamp yet, by design (see check_worker's docstring: a
+        # worker must prove itself in full before its first trade, not just
+        # once some TTL has elapsed since a startup that never checked it).
+        # That means acquire_worker() on a freshly built pool always
+        # exercises the deep path in this suite too, including
+        # pocket_dom.read_balance - which uses Playwright's own expect() and
+        # can't be satisfied by FakeLocator's duck typing. Patched globally
+        # here (not per-test) since it's a property of every worker's very
+        # first check, not a scenario specific to any one test.
+        self._balance_patcher = patch.object(
+            browser_health.pocket_dom, "read_balance", new=AsyncMock(return_value=1000.0),
+        )
+        self._balance_patcher.start()
 
     def tearDown(self):
         self._patcher.stop()
+        self._balance_patcher.stop()
 
     def _pool_with_workers(self, n=2, warmup_generation=1):
         """Builds a pool's internal state directly (bypassing start()/
@@ -107,7 +150,7 @@ class BrowserWorkerPoolTests(unittest.TestCase):
         pool, _ = self._pool_with_workers(n=1)
         worker = pool.workers[0]
         worker.page = FakePage(closed=True)
-        new_page = FakePage(closed=False)
+        new_page = FakePage(closed=False)  # passes every deep check by default
 
         async def fake_get_trading_page(context, url):
             return new_page
@@ -116,6 +159,28 @@ class BrowserWorkerPoolTests(unittest.TestCase):
              patch.object(browser_worker_pool.pocket_dom, "dismiss_blocking_modals", new=AsyncMock()):
             healed = _run(pool._ensure_worker_healthy(worker))
         self.assertIs(healed.page, new_page)
+
+    def test_ensure_worker_healthy_escalates_to_full_reconnect_when_respawn_does_not_help(self):
+        """A respawned page that STILL fails a deep check (here: DOM never
+        becomes ready - simulating a page stuck on some interstitial/wrong
+        state even after a fresh navigation) means the problem is at the
+        context/session level, not this one stale page - BrowserHealthManager
+        must escalate via warmup_service.force_reconnect() and signal the
+        caller with RetryableBrowserError, never silently hand back a worker
+        it just proved is still broken."""
+        pool, warmup = self._pool_with_workers(n=1)
+        worker = pool.workers[0]
+        worker.page = FakePage(closed=True)
+        new_page = FakePage(closed=False, dom_visible=False)  # still broken after respawn
+
+        async def fake_get_trading_page(context, url):
+            return new_page
+
+        with patch.object(browser_worker_pool, "get_trading_page", new=AsyncMock(side_effect=fake_get_trading_page)), \
+             patch.object(browser_worker_pool.pocket_dom, "dismiss_blocking_modals", new=AsyncMock()):
+            with self.assertRaises(RetryableBrowserError):
+                _run(pool._ensure_worker_healthy(worker))
+        warmup.force_reconnect.assert_awaited_once()
 
     def test_acquire_clears_a_stray_dropdown_modal(self):
         pool, _ = self._pool_with_workers(n=1)

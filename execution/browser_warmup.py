@@ -154,6 +154,18 @@ class BrowserWarmupService:
             )
         logger.info("browser_warmup: %s mode verified (%r present)", mode_label, verification_class)
 
+    @property
+    def verification_class(self):
+        """The <body> CSS class that must stay present for this account's
+        session to still count as authenticated - "is-chart-demo" for demo,
+        or the operator-confirmed LIVE_MODE_VERIFICATION_CLASS for live
+        (guaranteed non-None here: mode="live" only ever reaches a running
+        instance via start()'s own LiveModeNotConfiguredError guard above).
+        Used by execution/browser_health.py's BrowserHealthManager for its
+        per-trade session-authenticated check, so that check never
+        hardcodes or re-derives this mapping itself."""
+        return LIVE_MODE_VERIFICATION_CLASS if self._mode == "live" else "is-chart-demo"
+
     async def health_check(self):
         try:
             if self._page is None or self._page.is_closed():
@@ -182,11 +194,26 @@ class BrowserWarmupService:
             await self._reconnect()
         return self.generation
 
-    async def _reconnect(self):
+    async def force_reconnect(self, reason):
+        """Public escalation entry point for a caller (BrowserHealthManager,
+        via BrowserWorkerPool) that has its OWN evidence something is wrong
+        even though THIS service's own dedicated page still passes its
+        shallow health_check() - that check only tests page responsiveness
+        on a DIFFERENT page than the worker's, and never looks at session/
+        DOM state at all, so it can (and in practice does) stay green while
+        a specific worker's page has gone stale in a way only a deeper
+        check would catch. Skips _reconnect()'s "already healthy, do
+        nothing" short-circuit for exactly that reason - bypassing it here
+        would silently ignore the deeper problem this exists to catch."""
+        logger.warning("browser_warmup: forced reconnect requested (%s)", reason)
+        await self._reconnect(force=True)
+
+    async def _reconnect(self, force=False):
         async with self._reconnect_lock:
             # Re-check after acquiring the lock - a concurrent caller may
             # have already completed a reconnect while this one waited.
-            if await self.health_check():
+            # Skipped entirely when force=True (see force_reconnect above).
+            if not force and await self.health_check():
                 return
             logger.warning("browser_warmup: reconnecting after crashed/closed browser")
             try:
