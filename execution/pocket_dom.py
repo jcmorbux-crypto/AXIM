@@ -505,6 +505,81 @@ def _ms_between(a_iso, b_iso):
     return (datetime.fromisoformat(b_iso) - datetime.fromisoformat(a_iso)).total_seconds() * 1000
 
 
+async def _poll_button_readiness(button, timeout_ms, diag):
+    """2026-07-27 precision-bottleneck investigation (user-requested
+    follow-up after execution #1 showed the 3.8s delay landing inside
+    the combined "wait for enabled" span): expect(button).to_be_enabled()
+    is an opaque black-box wait - it internally polls present/visible/
+    stable/enabled but exposes none of the individual transitions, only
+    pass/fail after the fact. This polls the SAME underlying conditions
+    itself, one at a time, recording the first moment each becomes true,
+    so a caller can tell whether the button was slow to even ATTACH/
+    render, or attached+visible almost immediately but slow to become
+    ENABLED (an application-state question), or ready well before the
+    click ever happened (pointing at Playwright/browser interaction
+    instead).
+
+    "Stable" is approximated as the bounding box being unchanged across
+    two consecutive polls ~50ms apart - NOT the same check Playwright's
+    real actionability logic uses internally (which tracks animation
+    frames), just an honest, documented approximation of the same idea.
+
+    Bounded by timeout_ms, same as the real actionability wait it
+    precedes - never blocks longer than that. Purely additive: the real
+    expect(button).to_be_enabled(timeout=...) call still runs
+    immediately after this, unconditionally, as the actual gate - this
+    function never substitutes for it, only observes the same wait with
+    finer granularity. Any exception here is swallowed (diag-only) so a
+    polling hiccup can never affect the real click."""
+    deadline = time.monotonic() + (timeout_ms / 1000)
+    last_box = None
+    stable_streak = 0
+    try:
+        while time.monotonic() < deadline:
+            now_iso = _iso_now().isoformat()
+            try:
+                present = (await button.count()) > 0
+            except Exception:
+                present = False
+            if present and "button_present_at" not in diag:
+                diag["button_present_at"] = now_iso
+            if not present:
+                await asyncio.sleep(0.05)
+                continue
+
+            try:
+                visible = await button.is_visible()
+            except Exception:
+                visible = False
+            if visible and "button_visible_at" not in diag:
+                diag["button_visible_at"] = now_iso
+
+            try:
+                enabled = await button.is_enabled()
+            except Exception:
+                enabled = False
+            if enabled and "button_enabled_at" not in diag:
+                diag["button_enabled_at"] = now_iso
+
+            try:
+                box = await button.bounding_box()
+            except Exception:
+                box = None
+            if box is not None and box == last_box:
+                stable_streak += 1
+                if stable_streak >= 2 and "button_stable_at" not in diag:
+                    diag["button_stable_at"] = now_iso
+            else:
+                stable_streak = 0
+            last_box = box
+
+            if visible and enabled and "button_stable_at" in diag:
+                return
+            await asyncio.sleep(0.05)
+    except Exception:
+        pass
+
+
 async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=None, worker_id=None):
     """
     Splits into two separately-timed, separately-marked phases (closing a
@@ -532,19 +607,41 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
     3-7s delay entirely inside this function with no way to attribute it
     to a specific sub-operation): when latency is given, also records
     fine-grained sub-timestamps/durations for tab-activation, the
-    enabled-state actionability wait, and the click itself, plus
-    page/button state snapshots, under
-    latency.timestamps["diagnostics"] - deliberately NOT part of
-    ExecutionLatency.FIELDS/metrics_ms (which stay a small, stable,
-    permanent set for every future trade); this is one-time investigative
-    detail for this specific bottleneck.
+    enabled-state actionability wait (including _poll_button_readiness's
+    own independent present/visible/enabled/stable transition timestamps,
+    not just the combined wait's total duration), and the click itself,
+    plus page/button state snapshots, under latency.timestamps["diagnostics"]
+    - deliberately NOT part of ExecutionLatency.FIELDS/metrics_ms (which
+    stay a small, stable, permanent set for every future trade); this is
+    one-time investigative detail for this specific bottleneck.
 
     VERIFIED LIMITATION: Playwright's Python API does not expose WHICH
     internal actionability sub-check (visibility/stability/receives-
     events/enabled-state/scrolling) consumed time inside
     expect().to_be_enabled() or button.click() - only each call's total
-    duration. playwright_retry_count is recorded as None for the same
-    reason: not introspectable via the public API, never guessed.
+    duration. _poll_button_readiness's own present/visible/enabled/stable
+    timestamps are an independent, honestly-approximated observation of
+    the same underlying conditions (see its own docstring), not identical
+    to Playwright's internal checks. playwright_retry_count is recorded
+    as None: Playwright's actionability retry count specifically is not
+    introspectable via the public API at all, never guessed.
+
+    button_*_offset_ms fields express each button_*_at timestamp relative
+    to scheduled_boundary_at, so runs across different boundaries/days are
+    directly comparable without doing the arithmetic by hand.
+    button_*_final/overlay_detected_final/active_tab_final are a second
+    snapshot taken immediately before the real button.click() call (not
+    just once, earlier, before the enabled-wait) - showing whether the
+    button was already fully ready by the time Playwright's own click
+    actionability check began. poll_started_at/completed_at/duration_ms
+    measure _poll_button_readiness's own overhead, so it's possible to
+    confirm this diagnostic pass isn't itself adding meaningful delay.
+
+    TEMPORARY: this diagnostic block (_poll_button_readiness plus the
+    final-snapshot reads above - several extra DOM queries per click) is
+    for this specific investigation, not a permanent addition to the
+    production execution path - remove or guard behind a debug flag once
+    the bottleneck is identified and addressed.
     """
     direction = direction.upper()
     if direction == "BUY":
@@ -604,11 +701,51 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
                 except Exception:
                     diag["overlay_detected"] = None
                 diag["enabled_check_started_at"] = _iso_now().isoformat()
+                diag["poll_started_at"] = _iso_now().isoformat()
+                await _poll_button_readiness(button, timeout, diag)
+                diag["poll_completed_at"] = _iso_now().isoformat()
+                diag["poll_duration_ms"] = _ms_between(diag["poll_started_at"], diag["poll_completed_at"])
+                # First-seen offsets from the scheduled boundary (2026-07-27,
+                # user-requested follow-up) - makes the button_*_at absolute
+                # timestamps comparable across different runs/boundaries
+                # without doing the arithmetic by hand each time.
+                boundary_iso = latency.timestamps.get("scheduled_boundary_at")
+                if boundary_iso is not None:
+                    for field in ("button_present_at", "button_visible_at", "button_enabled_at", "button_stable_at"):
+                        if field in diag:
+                            diag[f"{field.rsplit('_at', 1)[0]}_offset_ms"] = _ms_between(boundary_iso, diag[field])
             await expect(button).to_be_enabled(timeout=timeout)
             if diag is not None:
                 diag["enabled_check_completed_at"] = _iso_now().isoformat()
                 diag["enabled_check_duration_ms"] = _ms_between(
                     diag["enabled_check_started_at"], diag["enabled_check_completed_at"])
+
+                # Final snapshot immediately before the real click - was the
+                # button already fully ready by the time Playwright's own
+                # click actionability check began, or still settling?
+                found, visible, enabled = await _probe_state(button)
+                diag["button_present_final"] = found
+                diag["button_visible_final"] = visible
+                diag["button_enabled_final"] = enabled
+                try:
+                    box_a = await button.bounding_box()
+                    await asyncio.sleep(0.02)
+                    box_b = await button.bounding_box()
+                    diag["button_stable_final"] = box_a is not None and box_a == box_b
+                except Exception:
+                    diag["button_stable_final"] = None
+                try:
+                    diag["overlay_detected_final"] = (await page.locator(SEL_ASSET_INACTIVE_OVERLAY).count()) > 0
+                except Exception:
+                    diag["overlay_detected_final"] = None
+                try:
+                    opened_tab = page.locator(SEL_TRADES_PANEL).get_by_text("Opened", exact=True).first
+                    diag["active_tab_final"] = "Opened" if await opened_tab.evaluate(
+                        "(el) => { const li = el.closest('li'); return li ? li.classList.contains('active') : false; }"
+                    ) else "Closed"
+                except Exception:
+                    diag["active_tab_final"] = None
+
                 diag["button_click_started_at"] = _iso_now().isoformat()
             await button.click(timeout=timeout)
             if diag is not None:
