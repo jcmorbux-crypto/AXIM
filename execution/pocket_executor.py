@@ -163,6 +163,9 @@ async def pre_stage_trade(trade_id, asset, direction, expiry, amount, worker, po
                                             signal_id=trade_id, detail="unparseable_expiry")
             timeline.persist(database)
             pool.release_worker(worker)
+            if latency:
+                latency.mark("rejected_at")
+                database.record_execution_latency(trade_id, latency.timestamps)
             return {
                 "status": "rejected", "trade_id": trade_id,
                 "rule": "unparseable_expiry", "reason": str(e),
@@ -204,6 +207,9 @@ async def pre_stage_trade(trade_id, asset, direction, expiry, amount, worker, po
             print(f"Status    : REJECTED ({violation.rule}: {violation.reason})")
             timeline.persist(database)
             pool.release_worker(worker)
+            if latency:
+                latency.mark("rejected_at")
+                database.record_execution_latency(trade_id, latency.timestamps)
             return {
                 "status": "rejected", "trade_id": trade_id,
                 "rule": violation.rule, "reason": violation.reason,
@@ -242,6 +248,9 @@ async def pre_stage_trade(trade_id, asset, direction, expiry, amount, worker, po
                                         signal_id=trade_id, detail="asset_untradeable")
         timeline.persist(database)
         pool.release_worker(worker)
+        if latency:
+            latency.mark("rejected_at")
+            database.record_execution_latency(trade_id, latency.timestamps)
         return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable", "reason": str(e)}
     except Exception as e:
         if _is_transient_browser_error(e):
@@ -293,6 +302,9 @@ async def submit_staged_trade(staged, latency=None):
             database.record_pipeline_event(None, None, SignalLifecycleState.SKIPPED,
                                             signal_id=trade_id, detail="armed_false")
             timeline.persist(database)
+            if latency:
+                latency.mark("rejected_at")
+                database.record_execution_latency(trade_id, latency.timestamps)
             return {
                 "status": "prepared_not_armed",
                 "trade_id": trade_id,

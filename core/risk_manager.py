@@ -227,7 +227,7 @@ def check_max_consecutive_losses(broker_account_id=None):
         )
 
 
-def reset_consecutive_loss_lock(reset_by, broker_account_id=None):
+def reset_consecutive_loss_lock(reset_by, reason, broker_account_id=None):
     """The explicit, logged, reversible recovery action a hard
     consecutive-loss lock needs (2026-07-19 product-design directive): a
     lock that can ONLY clear via a future winning trade is unrecoverable
@@ -242,15 +242,37 @@ def reset_consecutive_loss_lock(reset_by, broker_account_id=None):
     broker_account_id (2026-07-25 Execution Reliability directive: the
     per-broker-account safety hierarchy) scopes the reset to just that
     account's own lock - recovering one account never touches a
-    different account's real streak."""
+    different account's real streak.
+
+    reason (2026-07-27 audit-hardening directive, prompted by using this
+    exact action to unblock a controlled Demo latency-validation
+    campaign): this overrides a live safety mechanism, not a routine
+    settings tweak - reset_by alone answers "who" but not "why", so a
+    non-empty reason is required on every call, same as
+    provider_profile.revert_to_observation's own reason requirement.
+    Every invocation is logged with both, plus the streak length being
+    cleared, for a complete audit trail."""
     if not reset_by:
         raise ValueError("reset_consecutive_loss_lock requires reset_by - this is a real, attributable decision")
+    if not reason or not reason.strip():
+        raise ValueError("reset_consecutive_loss_lock requires a non-empty reason - this is a real, attributable decision")
+    previous_streak_count = 0
+    for result in database.get_recent_results(50, broker_account_id=broker_account_id):
+        if result != "loss":
+            break
+        previous_streak_count += 1
     reset_at = datetime.now().isoformat()
     database.set_setting(_consecutive_loss_reset_key(broker_account_id), reset_at,
-                          changed_by=reset_by, source="consecutive_loss_lock_reset")
-    logger.warning("risk_manager: consecutive-loss lock reset by %s at %s (broker_account_id=%s)",
-                    reset_by, reset_at, broker_account_id)
-    return reset_at
+                          changed_by=reset_by, reason=reason, source="consecutive_loss_lock_reset")
+    logger.warning(
+        "risk_manager: consecutive-loss lock reset by %s at %s (broker_account_id=%s, reason=%s, "
+        "previous_streak_count=%d, new_streak_count=0)",
+        reset_by, reset_at, broker_account_id, reason, previous_streak_count,
+    )
+    return {
+        "reset_at": reset_at, "reset_by": reset_by, "reason": reason, "broker_account_id": broker_account_id,
+        "previous_streak_count": previous_streak_count, "new_streak_count": 0,
+    }
 
 
 def check_cooldown_after_loss(broker_account_id=None, series_id=None):

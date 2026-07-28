@@ -390,9 +390,13 @@ async function restoreSetting(entryId) {
 }
 
 async function resetConsecutiveLossLock() {
+  const reason = prompt("Why are you resetting the consecutive-loss lock? This is logged.");
+  if (!reason || !reason.trim()) return;
   if (!(await AximShell.confirm("Reset the consecutive-loss lock? This does not erase the real loss streak or change the configured limit - trades before this moment just stop counting toward a new streak going forward. This action is logged.", { title: "Reset Loss-Streak Lock", danger: true, confirmLabel: "Reset Lock" }))) return;
   try {
-    await fetchJSON("/api/settings/reset-consecutive-loss-lock", { method: "POST" });
+    await fetchJSON("/api/settings/reset-consecutive-loss-lock", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }),
+    });
     loadTradingSettings();
   } catch (e) {
     alert("Failed: " + e.message);

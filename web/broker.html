@@ -450,9 +450,13 @@ async function saveSafetySettings() {
 }
 
 async function resetAccountConsecutiveLossLock(id) {
+  const reason = prompt("Why are you resetting this account's consecutive-loss lock? This is logged.");
+  if (!reason || !reason.trim()) return;
   if (!confirm("Reset this account's consecutive-loss lock? Past trades are never erased - only the streak boundary moves forward from now.")) return;
   try {
-    await fetchJSON(`/api/broker-accounts/${id}/reset-consecutive-loss-lock`, { method: "POST" });
+    await fetchJSON(`/api/broker-accounts/${id}/reset-consecutive-loss-lock`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }),
+    });
     await openSafetySettingsModal(id);
   } catch (e) {
     document.getElementById("safety-settings-status").textContent = "Failed: " + e.message;

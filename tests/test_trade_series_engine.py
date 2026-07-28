@@ -1,4 +1,5 @@
 import asyncio
+import json
 import sys
 import tempfile
 import unittest
@@ -495,6 +496,15 @@ class PrecisionEntryOrchestrationTests(unittest.TestCase):
         series = database.get_trade_series(series_id)
         self.assertEqual(series["status"], "blocked")
         self.assertIn("emergency_stop", series["result"])
+
+        conn = database.get_connection()
+        row = conn.execute("SELECT id, latency_checkpoints_json FROM signals WHERE series_id = ?", (series_id,)).fetchone()
+        conn.close()
+        checkpoints = json.loads(row["latency_checkpoints_json"])
+        self.assertIn(
+            "rejected_at", checkpoints,
+            "an early risk-check rejection must record rejected_at for boundary_to_rejection_ms classification",
+        )
 
     def test_worker_never_available_falls_back_to_standard_execution(self):
         series_id = _make_series()

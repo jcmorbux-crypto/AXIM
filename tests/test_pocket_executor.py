@@ -10,6 +10,7 @@ import asyncio
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -360,6 +361,65 @@ class ExecutionLatencyMarkingTests(PocketExecutorTestCase):
         ))
         result = _run(pocket_executor.submit_staged_trade(staged))  # no latency=... at all
         self.assertEqual(result["status"], "clicked")
+
+    def test_minimum_payout_rejection_marks_rejected_at(self):
+        """2026-07-27 campaign-classification addition: a live minimum-
+        payout rejection (the exact real outcome campaign series #22
+        hit) must record rejected_at so boundary_to_rejection_ms can
+        separate a fast, correct rejection from a slow one caused by a
+        real execution delay eating into the pre-stage window first."""
+        pocket_dom.read_payout_and_check_tradeable = AsyncMock(return_value=(5, True))
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        latency = ExecutionLatency(series_id=1, entry_number=1)
+        latency.set_scheduled_boundary(datetime.now(timezone.utc))
+        result = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool,
+            warmup_service=None, timeline=timeline, latency=latency,
+        ))
+        self.assertEqual(result["rule"], "minimum_payout")
+        self.assertIn("rejected_at", latency.timestamps)
+        self.assertIsNotNone(latency.metrics_ms()["boundary_to_rejection_ms"])
+
+    def test_asset_untradeable_rejection_marks_rejected_at(self):
+        pocket_dom.read_payout_and_check_tradeable = AsyncMock(return_value=(None, False))
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        latency = ExecutionLatency(series_id=1, entry_number=1)
+        result = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool,
+            warmup_service=None, timeline=timeline, latency=latency,
+        ))
+        self.assertEqual(result["rule"], "asset_untradeable")
+        self.assertIn("rejected_at", latency.timestamps)
+
+    def test_unparseable_expiry_rejection_marks_rejected_at(self):
+        trade_id = self._new_trade(expiry="not a real expiry")
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        latency = ExecutionLatency(series_id=1, entry_number=1)
+        result = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "not a real expiry", 10, worker, pool,
+            warmup_service=None, timeline=timeline, latency=latency,
+        ))
+        self.assertEqual(result["rule"], "unparseable_expiry")
+        self.assertIn("rejected_at", latency.timestamps)
+
+    def test_armed_false_marks_rejected_at(self):
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        latency = ExecutionLatency(series_id=1, entry_number=1)
+        staged = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool,
+            warmup_service=None, timeline=timeline, latency=latency,
+        ))
+        pocket_executor.ARMED = False
+        result = _run(pocket_executor.submit_staged_trade(staged, latency=latency))
+        self.assertEqual(result["status"], "prepared_not_armed")
+        self.assertIn("rejected_at", latency.timestamps)
 
 
 if __name__ == "__main__":

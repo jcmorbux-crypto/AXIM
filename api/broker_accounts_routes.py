@@ -251,14 +251,23 @@ def set_broker_account_safety_settings(account_id: int, body: BrokerAccountSafet
     return {"overrides": overrides, **risk_manager.get_account_safety_status(account_id)}
 
 
+class ResetConsecutiveLossLockRequest(BaseModel):
+    reason: str
+
+
 @router.post("/{account_id}/reset-consecutive-loss-lock")
-def reset_broker_account_consecutive_loss_lock(account_id: int, user=Depends(require_admin)):
+def reset_broker_account_consecutive_loss_lock(account_id: int, body: ResetConsecutiveLossLockRequest,
+                                                user=Depends(require_admin)):
     """The per-account counterpart of POST /api/settings/reset-
     consecutive-loss-lock (2026-07-25 Execution Reliability directive) -
     same explicit, logged, reversible recovery action, scoped to just
     this account's own lock. See core/risk_manager.reset_consecutive_
     loss_lock's own docstring for why a lock that only clears via a
-    future winning trade needs one at all."""
+    future winning trade needs one at all. reason is required (2026-07-27
+    audit-hardening directive) - this overrides a live safety mechanism,
+    so "who" alone isn't enough."""
     _get_or_404(account_id)
-    reset_at = risk_manager.reset_consecutive_loss_lock(reset_by=user["email"], broker_account_id=account_id)
-    return {"reset_at": reset_at, "broker_account_id": account_id}
+    result = risk_manager.reset_consecutive_loss_lock(
+        reset_by=user["email"], reason=body.reason, broker_account_id=account_id,
+    )
+    return result

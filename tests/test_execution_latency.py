@@ -39,11 +39,11 @@ class ExecutionLatencyRecordTests(unittest.TestCase):
         latency.set_scheduled_boundary(future)
         self.assertEqual(latency.timestamps["scheduled_boundary_at"], future.isoformat())
 
-    def test_all_fourteen_fields_are_recognized(self):
+    def test_all_fields_are_recognized(self):
         latency = ExecutionLatency()
         for field in FIELDS:
             latency.mark(field)
-        self.assertEqual(len(latency.timestamps), 14)
+        self.assertEqual(len(latency.timestamps), len(FIELDS))
 
     def test_metrics_ms_computes_all_six_when_fully_populated(self):
         latency = ExecutionLatency()
@@ -80,6 +80,19 @@ class ExecutionLatencyRecordTests(unittest.TestCase):
         self.assertIsNone(metrics["broker_close_to_result_detection_ms"])
         # scheduled_boundary_at is set, but scheduler_awakened_at is not.
         self.assertIsNone(metrics["scheduler_lateness_ms"])
+        self.assertIsNone(metrics["boundary_to_rejection_ms"])
+
+    def test_boundary_to_rejection_ms_distinguishes_fast_from_slow_rejections(self):
+        base = datetime(2026, 7, 27, 12, 5, 0, tzinfo=timezone.utc)
+        fast = ExecutionLatency()
+        fast.set_scheduled_boundary(base)
+        fast.mark("rejected_at", at=base + timedelta(milliseconds=150))
+        self.assertAlmostEqual(fast.metrics_ms()["boundary_to_rejection_ms"], 150, delta=1)
+
+        slow = ExecutionLatency()
+        slow.set_scheduled_boundary(base)
+        slow.mark("rejected_at", at=base + timedelta(seconds=37))
+        self.assertAlmostEqual(slow.metrics_ms()["boundary_to_rejection_ms"], 37000, delta=1)
 
     def test_to_dict_always_flags_broker_timestamps_as_not_authoritative(self):
         """Verified limitation (core/execution_latency.py's own module

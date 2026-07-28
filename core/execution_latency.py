@@ -43,6 +43,7 @@ FIELDS = [
     "broker_trade_closed_at",
     "result_detected_at",
     "result_persisted_at",
+    "rejected_at",
 ]
 
 
@@ -84,9 +85,18 @@ class ExecutionLatency:
         return (b - a).total_seconds() * 1000
 
     def metrics_ms(self):
-        """The six requested latency measurements. None for any pair
-        whose two endpoints aren't both recorded yet (e.g. before the
-        trade resolves) - never a guessed/interpolated value."""
+        """The six original requested latency measurements, plus
+        boundary_to_rejection_ms (2026-07-27 campaign-classification
+        addition): for an entry that never reached broker submission
+        (an early risk-check block, a live minimum-payout/asset-
+        untradeable rejection, or ARMED=false), this is what actually
+        matters - it separates a FAST, correct rejection (the intended
+        safety behavior) from a SLOW one caused by a real execution
+        delay (e.g. worker-pool contention) eating the pre-stage window
+        before the rejection was ever reached. None for any pair whose
+        two endpoints aren't both recorded yet (e.g. before the trade
+        resolves, or for an entry that was never rejected at all) -
+        never a guessed/interpolated value."""
         return {
             "scheduler_lateness_ms": self._delta_ms("scheduled_boundary_at", "scheduler_awakened_at"),
             "worker_acquisition_ms": self._delta_ms("worker_requested_at", "worker_acquired_at"),
@@ -94,6 +104,7 @@ class ExecutionLatency:
             "broker_acknowledgement_ms": self._delta_ms("order_payload_sent_at", "broker_acknowledged_at"),
             "total_boundary_to_broker_acceptance_ms": self._delta_ms("scheduled_boundary_at", "broker_acknowledged_at"),
             "broker_close_to_result_detection_ms": self._delta_ms("broker_trade_closed_at", "result_detected_at"),
+            "boundary_to_rejection_ms": self._delta_ms("scheduled_boundary_at", "rejected_at"),
         }
 
     def to_dict(self):

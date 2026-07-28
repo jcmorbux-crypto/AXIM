@@ -589,6 +589,8 @@ async def _run_precision_entry(default_coordinator, series, entry_number, schedu
                 "risk checks - %s",
                 series["id"], entry_number, payload,
             )
+            latency.mark("rejected_at")
+            await asyncio.to_thread(database.record_execution_latency, trade_id, latency.timestamps)
             await _handle_route_result(series, entry_number, payload)
             return
 

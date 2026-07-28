@@ -248,20 +248,20 @@ class RiskManagerTests(unittest.TestCase):
         with self.assertRaises(risk_manager.RiskViolation):
             risk_manager.check_max_consecutive_losses()
 
-        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local")
+        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local", reason="test recovery")
         risk_manager.check_max_consecutive_losses()  # must not raise anymore
 
     def test_reset_does_not_touch_the_configured_limit(self):
         for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
             self._insert_signal(result="loss")
-        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local")
+        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local", reason="test recovery")
         self.assertEqual(database.get_setting("max_consecutive_losses", default=risk_manager.MAX_CONSECUTIVE_LOSSES),
                           risk_manager.MAX_CONSECUTIVE_LOSSES)
 
     def test_reset_does_not_erase_the_real_losses_a_new_streak_after_it_still_locks(self):
         for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
             self._insert_signal(result="loss")
-        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local")
+        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local", reason="test recovery")
         for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
             self._insert_signal(result="loss")
         with self.assertRaises(risk_manager.RiskViolation):
@@ -269,7 +269,36 @@ class RiskManagerTests(unittest.TestCase):
 
     def test_reset_requires_an_attributable_actor(self):
         with self.assertRaises(ValueError):
-            risk_manager.reset_consecutive_loss_lock(reset_by=None)
+            risk_manager.reset_consecutive_loss_lock(reset_by=None, reason="test recovery")
+
+    def test_reset_requires_a_non_empty_reason(self):
+        with self.assertRaises(ValueError):
+            risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local", reason="")
+        with self.assertRaises(ValueError):
+            risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local", reason="   ")
+        with self.assertRaises(ValueError):
+            risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local", reason=None)
+
+    def test_reset_returns_a_full_audit_trail(self):
+        # A small fixed count, deliberately decoupled from
+        # risk_manager.MAX_CONSECUTIVE_LOSSES itself - real deployments
+        # override that via .env for dev/test convenience (it's 1000
+        # here, not the DB-stored production override of 3), and this
+        # test only cares that previous_streak_count reflects the real
+        # recent-losses count accurately, not any particular limit.
+        streak_length = 3
+        for _ in range(streak_length):
+            self._insert_signal(result="loss")
+        result = risk_manager.reset_consecutive_loss_lock(
+            reset_by="owner@axim.local", reason="Demo execution latency validation (Task #164)",
+        )
+        self.assertEqual(result["reset_by"], "owner@axim.local")
+        self.assertEqual(result["reason"], "Demo execution latency validation (Task #164)")
+        self.assertEqual(result["previous_streak_count"], streak_length)
+        self.assertEqual(result["new_streak_count"], 0)
+        self.assertIsNotNone(result["reset_at"])
+        # The real history survives verbatim - only the window boundary moved.
+        self.assertEqual(database.get_recent_results(streak_length).count("loss"), streak_length)
 
     # -- Per-broker-account safety hierarchy (2026-07-25 Execution
     # Reliability directive) - a losing streak, cooldown, or bad day on
@@ -292,7 +321,7 @@ class RiskManagerTests(unittest.TestCase):
         for _ in range(risk_manager.MAX_CONSECUTIVE_LOSSES):
             self._insert_signal(result="loss", broker_account_id=account_a)
             self._insert_signal(result="loss", broker_account_id=account_b)
-        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local", broker_account_id=account_a)
+        risk_manager.reset_consecutive_loss_lock(reset_by="owner@axim.local", reason="test recovery", broker_account_id=account_a)
         risk_manager.check_max_consecutive_losses(account_a)  # must not raise - reset
         with self.assertRaises(risk_manager.RiskViolation):
             risk_manager.check_max_consecutive_losses(account_b)  # untouched - still locked
