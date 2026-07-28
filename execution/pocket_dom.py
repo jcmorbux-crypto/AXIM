@@ -2,7 +2,7 @@ import asyncio
 import re
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from playwright.async_api import expect
@@ -240,7 +240,14 @@ async def _ensure_opened_tab_active(page, timeout=DEFAULT_TIMEOUT_MS):
     Closed active meant .no-deals - which only has meaning on the Opened
     tab - never appeared, breaking both click_direction's confirmation and
     wait_for_trade_result's initial wait). Always confirm Opened is active
-    before relying on either."""
+    before relying on either.
+
+    Returns True if a real tab switch was needed (Closed was active - a
+    genuine click + wait-for-class-change UI operation), False if Opened
+    was already active (a fast no-op check) - 2026-07-27 precision-
+    bottleneck investigation, series 25/26/34's multi-second click_direction
+    delays: this distinguishes which case actually occurred rather than
+    just reporting how long the combined check+switch took."""
     opened_tab = page.locator(SEL_TRADES_PANEL).get_by_text("Opened", exact=True).first
     try:
         is_active = await opened_tab.evaluate(
@@ -252,6 +259,8 @@ async def _ensure_opened_tab_active(page, timeout=DEFAULT_TIMEOUT_MS):
     if not is_active:
         await opened_tab.click(timeout=timeout)
         await expect(opened_tab.locator("xpath=..")).to_have_class(re.compile(r"\bactive\b"), timeout=timeout)
+        return True
+    return False
 
 
 async def _read_current_asset(page):
@@ -488,7 +497,15 @@ async def verify_direction_controls_ready(page, timeout=DEFAULT_TIMEOUT_MS):
     )
 
 
-async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=None):
+def _iso_now():
+    return datetime.now(timezone.utc)
+
+
+def _ms_between(a_iso, b_iso):
+    return (datetime.fromisoformat(b_iso) - datetime.fromisoformat(a_iso)).total_seconds() * 1000
+
+
+async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=None, worker_id=None):
     """
     Splits into two separately-timed, separately-marked phases (closing a
     documented instrumentation gap: previously "clicked" and "confirmation
@@ -510,6 +527,24 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
     called timeline.activate(), which the precision-execution path
     previously never did), while latency is an explicit object passed
     straight through, so it works regardless of that context being set.
+
+    diagnostics (2026-07-27, prompted by series 25/26/34 each measuring a
+    3-7s delay entirely inside this function with no way to attribute it
+    to a specific sub-operation): when latency is given, also records
+    fine-grained sub-timestamps/durations for tab-activation, the
+    enabled-state actionability wait, and the click itself, plus
+    page/button state snapshots, under
+    latency.timestamps["diagnostics"] - deliberately NOT part of
+    ExecutionLatency.FIELDS/metrics_ms (which stay a small, stable,
+    permanent set for every future trade); this is one-time investigative
+    detail for this specific bottleneck.
+
+    VERIFIED LIMITATION: Playwright's Python API does not expose WHICH
+    internal actionability sub-check (visibility/stability/receives-
+    events/enabled-state/scrolling) consumed time inside
+    expect().to_be_enabled() or button.click() - only each call's total
+    duration. playwright_retry_count is recorded as None for the same
+    reason: not introspectable via the public API, never guessed.
     """
     direction = direction.upper()
     if direction == "BUY":
@@ -519,16 +554,67 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
     else:
         raise ValueError(f"Unknown direction: {direction!r}")
 
-    try:
-        async with time_category("browser"):
-            await _ensure_opened_tab_active(page, timeout=timeout)
+    diag = {} if latency is not None else None
 
-            # No _probe_state()/_log_selector_event() here - same reasoning
-            # as the other pocket_dom functions: purely diagnostic, the
-            # real correctness check is the expect() call below.
+    try:
+        if diag is not None:
+            diag["worker_id"] = worker_id
+            diag["playwright_timeout_value_ms"] = timeout
+            diag["playwright_retry_count"] = None  # not exposed by Playwright's public API - see docstring
+            diag["click_direction_entered_at"] = _iso_now().isoformat()
+            try:
+                diag["page_url"] = page.url
+            except Exception:
+                diag["page_url"] = None
+            try:
+                diag["page_visibility_state"] = await page.evaluate("document.visibilityState")
+            except Exception:
+                diag["page_visibility_state"] = None
+            try:
+                diag["page_has_focus"] = await page.evaluate("document.hasFocus()")
+            except Exception:
+                diag["page_has_focus"] = None
+
+        async with time_category("browser"):
+            if diag is not None:
+                diag["ensure_active_started_at"] = _iso_now().isoformat()
+            switched = await _ensure_opened_tab_active(page, timeout=timeout)
+            if diag is not None:
+                diag["ensure_active_completed_at"] = _iso_now().isoformat()
+                diag["ensure_active_duration_ms"] = _ms_between(
+                    diag["ensure_active_started_at"], diag["ensure_active_completed_at"])
+                diag["active_tab_before"] = "Closed" if switched else "Opened"
+                diag["active_tab_after"] = "Opened"
+
+            # No _probe_state()/_log_selector_event() here for the real
+            # correctness check (the expect() call below is still what
+            # actually gates the click) - only for diag's own snapshot.
             button = page.locator(button_selector).first
+            if diag is not None:
+                found, visible, enabled = await _probe_state(button)
+                diag["button_attached"] = found
+                diag["button_visible"] = visible
+                diag["button_enabled_before_wait"] = enabled
+                try:
+                    diag["button_bounding_box_present"] = (await button.bounding_box()) is not None
+                except Exception:
+                    diag["button_bounding_box_present"] = None
+                try:
+                    diag["overlay_detected"] = (await page.locator(SEL_ASSET_INACTIVE_OVERLAY).count()) > 0
+                except Exception:
+                    diag["overlay_detected"] = None
+                diag["enabled_check_started_at"] = _iso_now().isoformat()
             await expect(button).to_be_enabled(timeout=timeout)
+            if diag is not None:
+                diag["enabled_check_completed_at"] = _iso_now().isoformat()
+                diag["enabled_check_duration_ms"] = _ms_between(
+                    diag["enabled_check_started_at"], diag["enabled_check_completed_at"])
+                diag["button_click_started_at"] = _iso_now().isoformat()
             await button.click(timeout=timeout)
+            if diag is not None:
+                diag["button_click_completed_at"] = _iso_now().isoformat()
+                diag["button_click_duration_ms"] = _ms_between(
+                    diag["button_click_started_at"], diag["button_click_completed_at"])
 
         timeline = get_current_timeline()
         if timeline is not None:
@@ -542,8 +628,13 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
 
         if timeline is not None:
             timeline.mark("confirmation_detected")
+        if diag is not None:
+            diag["click_direction_completed_at"] = _iso_now().isoformat()
     except _RETRYABLE_ERRORS as e:
         await _capture_failure(page, "click_direction", button_selector, str(e))
+    finally:
+        if diag is not None:
+            latency.timestamps["diagnostics"] = diag
 
 
 @timed("browser")

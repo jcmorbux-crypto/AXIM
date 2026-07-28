@@ -328,7 +328,8 @@ class PreStageAndSubmitSplitTests(PocketExecutorTestCase):
         ))
         pocket_executor.ARMED = True
         _run(pocket_executor.submit_staged_trade(staged, latency=latency))
-        pocket_dom.click_direction.assert_awaited_once_with(worker.page, "BUY", latency=latency)
+        pocket_dom.click_direction.assert_awaited_once_with(
+            worker.page, "BUY", latency=latency, worker_id=worker.worker_id)
 
     def test_submit_staged_trade_armed_false_releases_the_worker_without_clicking(self):
         trade_id = self._new_trade()

@@ -318,7 +318,7 @@ async def submit_staged_trade(staged, latency=None):
 
         if latency:
             latency.mark("order_payload_sent_at")
-        await pocket_dom.click_direction(page, direction, latency=latency)
+        await pocket_dom.click_direction(page, direction, latency=latency, worker_id=worker.worker_id)
         clicked = True
         if latency:
             # VERIFIED LIMITATION (core/execution_latency.py's own module
