@@ -268,6 +268,24 @@ class PreStageAndSubmitSplitTests(PocketExecutorTestCase):
         self.assertEqual(pool.released, [], "worker must still be held after a successful pre-stage")
         pocket_dom.click_direction.assert_not_awaited()  # the whole point - no click yet
 
+    def test_pre_stage_trade_marks_prestage_ready_on_the_latency_object(self):
+        """prestage_ready_at lives in ExecutionLatency, not the shared
+        TradeTimeline STAGES list - adding it there would have landed
+        right before Martin Trader's ~20s pre-stage gap, corrupting
+        core/timeline_report.py's cross-provider stage_deltas() ordering
+        assumption for every OTHER provider's stage_deltas output too."""
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        latency = ExecutionLatency(series_id=1, entry_number=1)
+        staged = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool, warmup_service=None,
+            timeline=timeline, latency=latency,
+        ))
+        self.assertIsInstance(staged, pocket_executor.StagedTrade)
+        self.assertIn("prestage_ready_at", latency.timestamps)
+        self.assertNotIn("prestage_ready", timeline.stage_timestamps)
+
     def test_pre_stage_trade_rejection_releases_the_worker(self):
         trade_id = self._new_trade(expiry="not a real expiry")
         timeline = TradeTimeline(trade_id=trade_id)
@@ -291,6 +309,26 @@ class PreStageAndSubmitSplitTests(PocketExecutorTestCase):
         self.assertEqual(result["status"], "clicked")
         pocket_dom.click_direction.assert_awaited_once()
         self.assertEqual(pool.released, [worker])
+
+    def test_submit_staged_trade_passes_latency_through_to_click_direction(self):
+        """2026-07-27 precision-bottleneck investigation: click_direction
+        needs the explicit latency object (not just the ambient
+        get_current_timeline()) to mark click_completed_at, since
+        _run_precision_entry's own timeline.activate() wiring was only
+        just fixed - this is the wiring half of that fix, verified
+        independent of the real DOM internals (click_direction is mocked
+        here, same as every other test in this class)."""
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        latency = ExecutionLatency(series_id=1, entry_number=1)
+        staged = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool, warmup_service=None,
+            timeline=timeline, latency=latency,
+        ))
+        pocket_executor.ARMED = True
+        _run(pocket_executor.submit_staged_trade(staged, latency=latency))
+        pocket_dom.click_direction.assert_awaited_once_with(worker.page, "BUY", latency=latency)
 
     def test_submit_staged_trade_armed_false_releases_the_worker_without_clicking(self):
         trade_id = self._new_trade()

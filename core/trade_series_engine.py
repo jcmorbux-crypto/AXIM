@@ -569,6 +569,7 @@ async def _run_precision_entry(default_coordinator, series, entry_number, schedu
             f"{series['raw_message'] or ''}"
         ),
     }
+    timeline_token = None
     try:
         trade_id = await asyncio.to_thread(
             database.record_signal_received, signal,
@@ -577,6 +578,18 @@ async def _run_precision_entry(default_coordinator, series, entry_number, schedu
         )
         await asyncio.to_thread(database.record_execution_latency, trade_id, latency.timestamps)
         timeline = TradeTimeline(trade_id=trade_id)
+        # 2026-07-27 precision-bottleneck investigation: this task never
+        # called timeline.activate() before pre_stage_trade/
+        # submit_staged_trade, so pocket_dom.click_direction's own
+        # timeline.mark("clicked")/"confirmation_detected" calls (which
+        # read the ambient get_current_timeline(), not an explicit
+        # reference) were silently landing on no timeline at all - the
+        # "clicked" vs "confirmation_detected" split has existed in
+        # pocket_dom.py since before this feature, but was never actually
+        # captured for a single Martin Trader execution. Scoped to this
+        # task's own asyncio context (contextvars copy-on-task-creation),
+        # so concurrent entries on other workers are unaffected.
+        timeline_token = timeline.activate()
 
         outcome, payload = await asyncio.to_thread(
             default_coordinator._run_preflight_checks, trade_id, series["stake"], series["session_id"],
@@ -640,6 +653,7 @@ async def _run_precision_entry(default_coordinator, series, entry_number, schedu
 
         # Precision final wait - monotonic clock, short ticks, never one
         # long blocking sleep and never a tight busy-spin.
+        latency.mark("precision_wait_started_at")
         remaining = (scheduled_dt - datetime.now(timezone.utc)).total_seconds()
         if remaining > 0:
             deadline_monotonic = time.monotonic() + remaining
@@ -671,6 +685,8 @@ async def _run_precision_entry(default_coordinator, series, entry_number, schedu
             database.advance_trade_series, series["id"], entry_number, "error", result="error",
         )
     finally:
+        if timeline_token is not None:
+            TradeTimeline.deactivate(timeline_token)
         _precision_tasks_in_flight.discard(key)
 
 

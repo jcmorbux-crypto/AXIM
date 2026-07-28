@@ -71,6 +71,38 @@ class ExecutionLatencyRecordTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["total_boundary_to_broker_acceptance_ms"], 260, delta=1)
         self.assertAlmostEqual(metrics["broker_close_to_result_detection_ms"], 200, delta=1)
 
+    def test_click_metrics_split_the_click_from_the_confirmation_wait(self):
+        """2026-07-27 precision-bottleneck investigation: series 25/26's
+        measured 7.2s/3.4s delays fell entirely between order_payload_sent_at
+        and broker_acknowledged_at, with no way to tell whether the click
+        itself or Pocket Option's own confirmation wait was responsible.
+        click_completed_at splits that span - this fixture models a case
+        where the click is instant (12ms) and the confirmation wait is
+        the real cost (7.15s), matching what series 25's shape implies."""
+        latency = ExecutionLatency()
+        base = datetime(2026, 7, 27, 12, 5, 0, tzinfo=timezone.utc)
+        latency.mark("order_payload_sent_at", at=base)
+        latency.mark("click_completed_at", at=base + timedelta(milliseconds=12))
+        latency.mark("broker_acknowledged_at", at=base + timedelta(milliseconds=12, seconds=7, microseconds=153000))
+
+        metrics = latency.metrics_ms()
+        self.assertAlmostEqual(metrics["click_command_duration_ms"], 12, delta=1)
+        self.assertAlmostEqual(metrics["click_to_broker_ack_ms"], 7153, delta=1)
+
+    def test_prestage_duration_ms_measures_the_pre_stage_dom_work_itself(self):
+        latency = ExecutionLatency()
+        base = datetime(2026, 7, 27, 12, 4, 40, tzinfo=timezone.utc)
+        latency.mark("browser_command_started_at", at=base)
+        latency.mark("prestage_ready_at", at=base + timedelta(milliseconds=340))
+        self.assertAlmostEqual(latency.metrics_ms()["prestage_duration_ms"], 340, delta=1)
+
+    def test_precision_wait_duration_ms_is_the_final_monotonic_wait_span(self):
+        latency = ExecutionLatency()
+        base = datetime(2026, 7, 27, 12, 5, 0, tzinfo=timezone.utc)
+        latency.mark("precision_wait_started_at", at=base - timedelta(seconds=17))
+        latency.mark("order_payload_sent_at", at=base)
+        self.assertAlmostEqual(latency.metrics_ms()["precision_wait_duration_ms"], 17000, delta=1)
+
     def test_metrics_ms_is_none_for_any_pair_not_yet_recorded(self):
         latency = ExecutionLatency()
         latency.set_scheduled_boundary(datetime.now(timezone.utc))
@@ -81,6 +113,10 @@ class ExecutionLatencyRecordTests(unittest.TestCase):
         # scheduled_boundary_at is set, but scheduler_awakened_at is not.
         self.assertIsNone(metrics["scheduler_lateness_ms"])
         self.assertIsNone(metrics["boundary_to_rejection_ms"])
+        self.assertIsNone(metrics["click_command_duration_ms"])
+        self.assertIsNone(metrics["click_to_broker_ack_ms"])
+        self.assertIsNone(metrics["precision_wait_duration_ms"])
+        self.assertIsNone(metrics["prestage_duration_ms"])
 
     def test_boundary_to_rejection_ms_distinguishes_fast_from_slow_rejections(self):
         base = datetime(2026, 7, 27, 12, 5, 0, tzinfo=timezone.utc)

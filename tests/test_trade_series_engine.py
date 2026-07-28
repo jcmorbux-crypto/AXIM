@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "core"))
 
 import database
 import trade_series_engine as engine
+from timeline import get_current_timeline
 
 
 def _run(coro):
@@ -468,6 +469,64 @@ class PrecisionEntryOrchestrationTests(unittest.TestCase):
         key = (series_id, entry_number)
         _run(engine._run_precision_entry(coordinator, series, entry_number, scheduled_dt, key))
         return coordinator
+
+    def test_timeline_is_activated_across_pre_stage_and_submit_then_deactivated(self):
+        """2026-07-27 precision-bottleneck investigation: pocket_dom.
+        click_direction's own timeline.mark("clicked")/"confirmation_detected"
+        calls read the AMBIENT get_current_timeline(), not an explicit
+        reference - before this fix, _run_precision_entry never called
+        timeline.activate(), so those marks silently landed on nothing for
+        every Martin Trader execution. Verifies activation is in effect
+        during both pre_stage_trade and submit_staged_trade (each entry
+        getting its OWN timeline object), and that it's deactivated again
+        before the next entry runs - proven by running two entries within
+        ONE continuous async context (asyncio.run's own Task-context-copy
+        isolation would make an outside-the-task assertion trivially pass
+        either way, so this checks it from where it's actually
+        observable: a second entry sharing the same task-level context)."""
+        seen = []
+
+        async def spy_pre_stage(trade_id, asset, direction, expiry, amount, worker, pool, warmup_service,
+                                 timeline=None, latency=None):
+            seen.append(("pre_stage", get_current_timeline()))
+            return _fake_staged_trade(trade_id, worker, pool, warmup_service, timeline)
+
+        async def spy_submit(staged, latency=None):
+            seen.append(("submit", get_current_timeline()))
+            return {"status": "clicked", "trade_id": 1}
+
+        self._pre_stage_mock.side_effect = spy_pre_stage
+        self._submit_mock.side_effect = spy_submit
+
+        series_a = _make_series()
+        # Deliberately later than series_a's default (now + 3s): running
+        # series_a's own full precision path first consumes real wall-
+        # clock time, and series_b needs its own scheduled_dt still ahead
+        # of "now" by the time its turn comes (same reasoning as
+        # _make_series' own default margin).
+        series_b = _make_series(entry_1_utc=datetime.now(timezone.utc) + timedelta(seconds=8))
+
+        async def _two_entries():
+            self.assertIsNone(get_current_timeline(), "clean before either entry runs")
+            await self._run_precision_async(series_a)
+            self.assertIsNone(get_current_timeline(), "deactivated after the first entry, before the second")
+            await self._run_precision_async(series_b)
+            self.assertIsNone(get_current_timeline(), "deactivated after the second entry too")
+
+        _run(_two_entries())
+
+        self.assertEqual(len(seen), 4)
+        self.assertIsNotNone(seen[0][1], "timeline must be active during pre_stage_trade")
+        self.assertIs(seen[0][1], seen[1][1], "same timeline object for pre_stage and submit, same entry")
+        self.assertIsNotNone(seen[2][1])
+        self.assertIsNot(seen[2][1], seen[0][1], "the second entry gets its OWN timeline, not a leaked one")
+
+    async def _run_precision_async(self, series_id, entry_number=1, coordinator=None):
+        series = database.get_trade_series(series_id)
+        scheduled_dt = datetime.fromisoformat(series["entry_times_utc"][entry_number - 1])
+        coordinator = coordinator or FakeCoordinator()
+        key = (series_id, entry_number)
+        await engine._run_precision_entry(coordinator, series, entry_number, scheduled_dt, key)
 
     def test_successful_flow_reserves_a_worker_pre_stages_and_submits(self):
         series_id = _make_series()

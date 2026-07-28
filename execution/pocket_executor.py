@@ -215,6 +215,8 @@ async def pre_stage_trade(trade_id, asset, direction, expiry, amount, worker, po
                 "rule": violation.rule, "reason": violation.reason,
             }
 
+        if latency:
+            latency.mark("prestage_ready_at")
         _capture_screenshot_background(page, trade_id, "prepared")
         database.update_trade_status(
             trade_id, TradeStatus.TRADE_PREPARED,
@@ -316,7 +318,7 @@ async def submit_staged_trade(staged, latency=None):
 
         if latency:
             latency.mark("order_payload_sent_at")
-        await pocket_dom.click_direction(page, direction)
+        await pocket_dom.click_direction(page, direction, latency=latency)
         clicked = True
         if latency:
             # VERIFIED LIMITATION (core/execution_latency.py's own module

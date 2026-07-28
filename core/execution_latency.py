@@ -37,7 +37,10 @@ FIELDS = [
     "worker_requested_at",
     "worker_acquired_at",
     "browser_command_started_at",
+    "prestage_ready_at",
+    "precision_wait_started_at",
     "order_payload_sent_at",
+    "click_completed_at",
     "broker_acknowledged_at",
     "broker_trade_opened_at",
     "broker_trade_closed_at",
@@ -85,7 +88,9 @@ class ExecutionLatency:
         return (b - a).total_seconds() * 1000
 
     def metrics_ms(self):
-        """The six original requested latency measurements, plus
+        """The six original requested latency measurements, plus two
+        later additions:
+
         boundary_to_rejection_ms (2026-07-27 campaign-classification
         addition): for an entry that never reached broker submission
         (an early risk-check block, a live minimum-payout/asset-
@@ -93,10 +98,25 @@ class ExecutionLatency:
         matters - it separates a FAST, correct rejection (the intended
         safety behavior) from a SLOW one caused by a real execution
         delay (e.g. worker-pool contention) eating the pre-stage window
-        before the rejection was ever reached. None for any pair whose
-        two endpoints aren't both recorded yet (e.g. before the trade
-        resolves, or for an entry that was never rejected at all) -
-        never a guessed/interpolated value."""
+        before the rejection was ever reached.
+
+        click_command_duration_ms/click_to_broker_ack_ms (2026-07-27
+        precision-bottleneck investigation): the original
+        broker_acknowledgement_ms treated "click and wait for Pocket
+        Option's own UI to confirm the trade opened" as one opaque span
+        - the first two campaign executions (series 25: 7.2s, series
+        26: 3.4s) landed entirely inside that span with no way to tell
+        whether the CLICK itself was slow or the CONFIRMATION WAIT was.
+        click_completed_at splits it: click_command_duration_ms is the
+        button-click action alone (client-side, should be near-
+        instant); click_to_broker_ack_ms is Pocket Option's own DOM
+        confirming the position opened (network/server-bound,
+        exec/pocket_dom.py's click_direction docstring - "not something
+        client-side optimization can shrink").
+
+        None for any pair whose two endpoints aren't both recorded yet
+        (e.g. before the trade resolves, or for an entry that was never
+        rejected at all) - never a guessed/interpolated value."""
         return {
             "scheduler_lateness_ms": self._delta_ms("scheduled_boundary_at", "scheduler_awakened_at"),
             "worker_acquisition_ms": self._delta_ms("worker_requested_at", "worker_acquired_at"),
@@ -105,6 +125,10 @@ class ExecutionLatency:
             "total_boundary_to_broker_acceptance_ms": self._delta_ms("scheduled_boundary_at", "broker_acknowledged_at"),
             "broker_close_to_result_detection_ms": self._delta_ms("broker_trade_closed_at", "result_detected_at"),
             "boundary_to_rejection_ms": self._delta_ms("scheduled_boundary_at", "rejected_at"),
+            "click_command_duration_ms": self._delta_ms("order_payload_sent_at", "click_completed_at"),
+            "click_to_broker_ack_ms": self._delta_ms("click_completed_at", "broker_acknowledged_at"),
+            "precision_wait_duration_ms": self._delta_ms("precision_wait_started_at", "order_payload_sent_at"),
+            "prestage_duration_ms": self._delta_ms("browser_command_started_at", "prestage_ready_at"),
         }
 
     def to_dict(self):

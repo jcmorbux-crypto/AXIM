@@ -488,7 +488,7 @@ async def verify_direction_controls_ready(page, timeout=DEFAULT_TIMEOUT_MS):
     )
 
 
-async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS):
+async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=None):
     """
     Splits into two separately-timed, separately-marked phases (closing a
     documented instrumentation gap: previously "clicked" and "confirmation
@@ -501,6 +501,15 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS):
        resolves. This part is network/server-bound, not something client-
        side optimization can shrink - measuring it separately is what lets
        that be shown precisely instead of assumed.
+
+    latency (2026-07-27 precision-bottleneck investigation, core/
+    execution_latency.py's click_completed_at) is Martin Trader's own
+    independent cross-check of the same split, recorded alongside (not
+    instead of) the timeline marks above - the timeline marks depend on
+    get_current_timeline()'s ambient context (only set when a caller has
+    called timeline.activate(), which the precision-execution path
+    previously never did), while latency is an explicit object passed
+    straight through, so it works regardless of that context being set.
     """
     direction = direction.upper()
     if direction == "BUY":
@@ -524,6 +533,8 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS):
         timeline = get_current_timeline()
         if timeline is not None:
             timeline.mark("clicked")
+        if latency is not None:
+            latency.mark("click_completed_at")
 
         async with time_category("browser"):
             no_deals = page.locator(SEL_DEALS_LIST).locator(SEL_NO_DEALS)
