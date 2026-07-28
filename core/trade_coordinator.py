@@ -68,7 +68,8 @@ class TradeCoordinator:
             trade_id, stage, status, elapsed, reason,
         )
 
-    def _run_preflight_checks(self, trade_id, amount, session_id, asset, direction, expiry, sent_at, timeline, broker_account_id=None, channel_id=None):
+    def _run_preflight_checks(self, trade_id, amount, session_id, asset, direction, expiry, sent_at, timeline,
+                               broker_account_id=None, channel_id=None, series_id=None):
         """The Validation/Risk Manager/Session limits/Duplicate Detection
         stages, extracted verbatim from handle_signal so they can run via
         asyncio.to_thread instead of directly on the event loop thread -
@@ -123,7 +124,7 @@ class TradeCoordinator:
             risk_manager.check_max_trades_per_hour(broker_account_id)
             risk_manager.check_max_trades_per_day(broker_account_id)
             risk_manager.check_max_consecutive_losses(broker_account_id)
-            risk_manager.check_cooldown_after_loss(broker_account_id)
+            risk_manager.check_cooldown_after_loss(broker_account_id, series_id=series_id)
             risk_manager.check_max_daily_loss(broker_account_id)
             risk_manager.check_daily_profit_target(broker_account_id)
         except risk_manager.RiskViolation as violation:
@@ -146,7 +147,9 @@ class TradeCoordinator:
         # Stage: Duplicate Detection
         stage_t0 = time.monotonic()
         try:
-            risk_manager.check_duplicate_signal(asset, direction, expiry, exclude_id=trade_id, channel_id=channel_id)
+            risk_manager.check_duplicate_signal(
+                asset, direction, expiry, exclude_id=trade_id, channel_id=channel_id, series_id=series_id,
+            )
         except risk_manager.RiskViolation as violation:
             timeline.persist(database)
             return "rejected", self._reject(trade_id, violation, time.monotonic() - stage_t0)
@@ -269,7 +272,7 @@ class TradeCoordinator:
             try:
                 outcome, payload = await asyncio.to_thread(
                     self._run_preflight_checks, trade_id, amount, session_id, asset, direction, expiry,
-                    sent_at, timeline, broker_account_id, channel_id,
+                    sent_at, timeline, broker_account_id, channel_id, series_id,
                 )
                 if outcome == "stale":
                     await self.event_bus.publish("signal.ignored", {"trade_id": trade_id, "reason": "stale_signal"})

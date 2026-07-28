@@ -1942,17 +1942,21 @@ def create_trade_series(channel_id, asset, direction, expiry, stake, entry_times
     raw seconds - kept in the same shape as signals.timeframe rather
     than a lossy round trip through pocket_dom.expiry_to_seconds and back.
 
-    entry_times_utc/published_entry_time/provider_timezone/
-    telegram_message_date_utc/schedule_resolution_method (2026-07-27
-    Martin Trader timezone incident) are the real, authoritative,
-    already-resolved-and-tz-aware schedule and its audit trail -
-    entry_times_utc is a list of ISO datetime strings, one per entry_times
-    slot, computed by trade_series_engine._resolve_entry_schedule_utc
-    BEFORE this function is ever called. Deliberately optional at the
-    database layer (some callers - e.g. test setup for the state-machine
-    itself, not the scheduling logic - have no real Telegram message to
-    anchor against), but core/trade_series_engine.py's own
-    create_series_from_signal always supplies them for a real signal."""
+    entry_times_utc/published_entry_time/telegram_message_date_utc/
+    schedule_resolution_method (2026-07-27 product decision: next-
+    five-minute-boundary scheduling) are the real, authoritative,
+    already-computed UTC schedule and its audit trail. entry_times_utc
+    is a list of ISO datetime strings - unlike entry_times, it usually
+    has FEWER elements than max_entries: only Entry #1 is computed at
+    creation time (core/trade_series_engine.py's
+    create_series_from_signal), with each later entry appended one at a
+    time via schedule_next_entry, only once the previous entry's loss
+    becomes known. provider_timezone is a legacy column (unused by the
+    current resolver, kept only so historical pre-redesign rows remain
+    readable) - never populated for new series. Deliberately optional at
+    the database layer (some callers - e.g. test setup for the state-
+    machine itself, not the scheduling logic - have no real Telegram
+    message to anchor against)."""
     conn = get_connection()
     now = datetime.now().isoformat()
     cursor = conn.execute("""
@@ -2012,6 +2016,7 @@ def get_trade_series_by_message(channel_id, source_message_id):
         return None
     d = dict(row)
     d["entry_times"] = json.loads(d["entry_times_json"]) if d["entry_times_json"] else []
+    d["entry_times_utc"] = json.loads(d["entry_times_utc_json"]) if d["entry_times_utc_json"] else []
     return d
 
 
@@ -2094,6 +2099,30 @@ def advance_trade_series(series_id, current_entry_number, status, result=None, n
             "UPDATE trade_series SET current_entry_number = ?, status = ? WHERE id = ?",
             (current_entry_number, status, series_id),
         )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def schedule_next_entry(series_id, entry_number, next_entry_time_utc):
+    """2026-07-27 next-five-minute-boundary redesign: unlike the old
+    fixed, all-upfront schedule, entries #2-4 are only ever computed one
+    at a time, right when the PREVIOUS entry's loss becomes known (see
+    core/trade_series_engine.py._apply_entry_outcome) - there is no
+    schedule to look ahead to until that moment. This appends the newly-
+    computed UTC time to entry_times_utc_json and marks the series
+    'pending' again in one atomic write, so a restart immediately after
+    this call still sees the correct, already-persisted next entry time
+    (never recomputes it, per the explicit "restart recovery preserves
+    the calculated five-minute schedule" requirement)."""
+    conn = get_connection()
+    row = conn.execute("SELECT entry_times_utc_json FROM trade_series WHERE id = ?", (series_id,)).fetchone()
+    existing = json.loads(row["entry_times_utc_json"]) if row and row["entry_times_utc_json"] else []
+    existing.append(next_entry_time_utc)
+    conn.execute(
+        "UPDATE trade_series SET current_entry_number = ?, status = 'pending', entry_times_utc_json = ? WHERE id = ?",
+        (entry_number, json.dumps(existing), series_id),
+    )
     conn.commit()
     conn.close()
 

@@ -85,6 +85,24 @@ class RiskManagerTests(unittest.TestCase):
         with self.assertRaises(risk_manager.RiskViolation):
             risk_manager.check_duplicate_signal("EUR/USD OTC", "BUY", "1 Minute", channel_id=None)
 
+    def test_duplicate_signal_series_id_bypasses_the_check(self):
+        # 2026-07-27 Martin Trader next-five-minute-boundary redesign,
+        # explicit product requirement: "The normal duplicate detector
+        # must recognize that Entry #1, #2, #3, and #4 are separate
+        # authorized entries inside the same series." Same asset/
+        # direction/expiry, same channel, well within the window -
+        # would normally be flagged, but a series_id makes it a no-op.
+        self._insert_signal(channel_id=163)
+        risk_manager.check_duplicate_signal("EUR/USD OTC", "BUY", "1 Minute", channel_id=163, series_id=7)
+
+    def test_duplicate_signal_without_series_id_is_unaffected(self):
+        # The bypass must be opt-in per call, not a global change - every
+        # other (non-Martin-Trader) caller never passes series_id, so
+        # its own duplicate protection is completely unchanged.
+        self._insert_signal(channel_id=163)
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_duplicate_signal("EUR/USD OTC", "BUY", "1 Minute", channel_id=163)
+
     def test_max_trade_amount_over_limit(self):
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_max_trade_amount(1000)
@@ -296,6 +314,26 @@ class RiskManagerTests(unittest.TestCase):
         with self.assertRaises(risk_manager.RiskViolation) as ctx:
             risk_manager.check_cooldown_after_loss()
         self.assertEqual(ctx.exception.rule, "cooldown_after_loss")
+
+    def test_cooldown_after_loss_series_id_bypasses_the_check(self):
+        # 2026-07-27 Martin Trader next-five-minute-boundary redesign,
+        # explicit product requirement: "The ordinary cooldown-after-loss
+        # rule must not delay the next authorized Martin Trader series
+        # entry." A loss just now would normally block for the full
+        # cooldown window - series_id makes it a no-op.
+        if risk_manager.COOLDOWN_AFTER_LOSS_SECONDS <= 0:
+            self.skipTest("COOLDOWN_AFTER_LOSS_SECONDS is 0 - cooldown intentionally disabled")
+        self._insert_signal(result="loss", closed_at=datetime.now().isoformat())
+        risk_manager.check_cooldown_after_loss(series_id=7)
+
+    def test_cooldown_after_loss_without_series_id_is_unaffected(self):
+        # The bypass is opt-in per call - every other signal (no
+        # series_id) keeps the exact same cooldown behavior as before.
+        if risk_manager.COOLDOWN_AFTER_LOSS_SECONDS <= 0:
+            self.skipTest("COOLDOWN_AFTER_LOSS_SECONDS is 0 - cooldown intentionally disabled")
+        self._insert_signal(result="loss", closed_at=datetime.now().isoformat())
+        with self.assertRaises(risk_manager.RiskViolation):
+            risk_manager.check_cooldown_after_loss()
 
     def test_cooldown_after_loss_expired(self):
         old_time = (datetime.now() - timedelta(

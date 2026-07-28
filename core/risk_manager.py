@@ -253,12 +253,25 @@ def reset_consecutive_loss_lock(reset_by, broker_account_id=None):
     return reset_at
 
 
-def check_cooldown_after_loss(broker_account_id=None):
+def check_cooldown_after_loss(broker_account_id=None, series_id=None):
     """broker_account_id (2026-07-25 Execution Reliability directive: the
     per-broker-account safety hierarchy) scopes the cooldown to just that
     account - a loss on a different account must never trigger a
     cooldown here. Also resolves this account's own limit OVERRIDE if
-    one is set. None keeps the legacy global/unscoped behavior."""
+    one is set. None keeps the legacy global/unscoped behavior.
+
+    series_id (2026-07-27 Martin Trader next-five-minute-boundary
+    redesign, explicit product requirement: "The ordinary cooldown-after-
+    loss rule must not delay the next authorized Martin Trader series
+    entry") - a retry within an ACTIVE Martin Trader series is already a
+    pre-authorized, deliberate re-entry (core/trade_series_engine.py's
+    own state machine is what decided to fire it, immediately after
+    seeing this exact account's own prior loss), not a fresh, independent
+    signal the cooldown is meant to guard against. Only ever non-None for
+    that one caller (core/trade_series_engine.py._execute_entry) - every
+    other signal's cooldown behavior is completely unchanged."""
+    if series_id is not None:
+        return
     limit = _account_setting(broker_account_id, "cooldown_after_loss_seconds", COOLDOWN_AFTER_LOSS_SECONDS)
     last_loss = database.get_last_loss_time(broker_account_id=broker_account_id)
     if not last_loss:
@@ -387,7 +400,22 @@ def check_daily_profit_target(broker_account_id=None):
         )
 
 
-def check_duplicate_signal(asset, direction, expiry, exclude_id=None, channel_id=None):
+def check_duplicate_signal(asset, direction, expiry, exclude_id=None, channel_id=None, series_id=None):
+    """series_id (2026-07-27 Martin Trader next-five-minute-boundary
+    redesign, explicit product requirement: "The normal duplicate
+    detector must recognize that Entry #1, #2, #3, and #4 are separate
+    authorized entries inside the same series") - every retry within one
+    Martin Trader series deliberately shares the same asset/direction/
+    expiry (the whole point of a retry), so the ordinary same-signal
+    dedup window would otherwise misclassify entry #2/#3/#4 as a
+    duplicate of #1. core/trade_series_engine.py's own idempotency check
+    (one series per real Telegram message, via get_trade_series_by_message)
+    is what actually guards against a genuine duplicate delivery here -
+    this check is redundant, and wrong, for an already-authorized
+    same-series retry. Only ever non-None for that one caller; every
+    other signal's duplicate protection is completely unchanged."""
+    if series_id is not None:
+        return
     window = _setting("duplicate_signal_window_seconds", DUPLICATE_SIGNAL_WINDOW_SECONDS)
     duplicate_id = database.find_recent_duplicate(
         asset, direction, expiry, window, exclude_id=exclude_id, channel_id=channel_id,

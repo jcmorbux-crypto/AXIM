@@ -181,6 +181,45 @@ class TradeCoordinatorTests(unittest.TestCase):
         self.assertEqual(result["rule"], "account_emergency_stop")
         self.assertEqual(pool.released, [])
 
+    def test_emergency_stop_still_rejects_a_martin_trader_series_entry(self):
+        """2026-07-27 next-five-minute-boundary redesign added a
+        series_id-scoped bypass to check_duplicate_signal and
+        check_cooldown_after_loss ONLY - Emergency Stop is a completely
+        different check (check_not_stopped, first in the preflight
+        sequence) that never received series_id at all, so it remains
+        fully active for a Martin Trader retry exactly as for any other
+        signal."""
+        trade_coordinator.PREVIEW_ONLY = True
+        database.set_control_state(emergency_stop=True)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal(), series_id=7, entry_number=2))
+        self.assertEqual(result["status"], "rejected")
+        self.assertEqual(result["rule"], "emergency_stop")
+
+    def test_max_daily_loss_still_rejects_a_martin_trader_series_entry(self):
+        """Same principle as Emergency Stop above - check_max_daily_loss
+        never received series_id either, so a Martin Trader retry that
+        would breach the daily loss limit is rejected exactly like any
+        other signal would be."""
+        from trade_lifecycle import TradeStatus
+        trade_coordinator.PREVIEW_ONLY = True
+        original_max_daily_loss = risk_manager.MAX_DAILY_LOSS
+        risk_manager.MAX_DAILY_LOSS = 5.0
+        try:
+            trade_id = database.record_signal_received(self._signal())
+            database.update_trade_status(
+                trade_id, TradeStatus.TRADE_CLOSED,
+                result="loss", closed_at=datetime.now().isoformat(), profit_loss=-10.0,
+            )
+            pool = FakeWorkerPool()
+            coordinator = TradeCoordinator(pool, warmup_service=None)
+            result = _run(coordinator.handle_signal(self._signal(), series_id=7, entry_number=2))
+            self.assertEqual(result["status"], "rejected")
+            self.assertEqual(result["rule"], "max_daily_loss")
+        finally:
+            risk_manager.MAX_DAILY_LOSS = original_max_daily_loss
+
     def test_a_different_accounts_signal_is_unaffected_by_another_accounts_stop(self):
         trade_coordinator.PREVIEW_ONLY = True
         stopped_id = database.create_broker_account("Stopped Account")
