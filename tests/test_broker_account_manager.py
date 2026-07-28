@@ -1,4 +1,5 @@
 import asyncio
+import re
 import sys
 import tempfile
 import unittest
@@ -507,6 +508,33 @@ class AdoptExistingConnectionTests(unittest.TestCase):
 
         _run(_scenario())
         warmup.start.assert_not_called()  # never built a second context
+
+
+class RouteSignalSignatureCompatibilityTests(unittest.TestCase):
+    """FakeCoordinator.handle_signal above accepts **kwargs, so it can
+    never catch route_signal forwarding a keyword the REAL
+    TradeCoordinator.handle_signal doesn't accept - exactly how a
+    latency=latency pass-through slipped in during the 2026-07-27
+    precision-latency audit and would have raised TypeError on every
+    single live signal, for every provider, the first time route_signal
+    actually reached handle_signal. This checks route_signal's own
+    forwarded keywords against the real signature directly, independent
+    of any test double."""
+
+    def test_every_keyword_route_signal_forwards_is_accepted_by_the_real_handle_signal(self):
+        import inspect
+        import trade_coordinator
+
+        real_params = set(inspect.signature(trade_coordinator.TradeCoordinator.handle_signal).parameters)
+        source = inspect.getsource(broker_account_manager.route_signal)
+        forwarded = set(re.findall(r"(\w+)=\1(?:,|\s*\))", source))
+        forwarded.discard("signal")
+        unsupported = forwarded - real_params
+        self.assertEqual(
+            unsupported, set(),
+            f"route_signal forwards {unsupported} to handle_signal, which TradeCoordinator.handle_signal "
+            "does not accept - this breaks every live signal for every provider",
+        )
 
 
 if __name__ == "__main__":

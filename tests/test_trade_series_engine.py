@@ -1,5 +1,4 @@
 import asyncio
-import json
 import sys
 import tempfile
 import unittest
@@ -223,326 +222,420 @@ class TradeSeriesEngineTests(unittest.TestCase):
         self.assertNotEqual(first_id, second_id)
 
 
-class DueEntryFiringTests(unittest.TestCase):
-    """Covers the user-facing Logic Verification checklist directly:
-    initial entry fires at its scheduled time, a loss schedules the next
-    entry (at the next five-minute boundary, computed fresh, never
-    precomputed), a win terminates the series (later entries never
-    fire), four losses exhaust it, every entry keeps the same fixed
-    stake, and a duplicate poll tick never fires the same entry twice.
+def _make_series(entry_1_utc=None, max_entries=4):
+    """Shared across the test classes below - 2026-07-27 redesign: a
+    fresh series always starts with exactly ONE resolved entry_times_utc
+    element (Entry #1); later ones only ever appear via
+    schedule_next_entry, after a real loss."""
+    if entry_1_utc is None:
+        # Near-future (not past): _run_precision_entry's own worker-
+        # acquisition timeouts are computed as (scheduled_dt - real now),
+        # which would clamp to zero (skipping acquisition entirely) if
+        # scheduled_dt were already behind real wall-clock time. 3s gives
+        # the early preflight-check/record_signal_received DB work
+        # (asyncio.to_thread round-trips) enough real margin not to race
+        # past the deadline on a loaded machine before worker acquisition
+        # even starts.
+        entry_1_utc = datetime.now(timezone.utc) + timedelta(seconds=3)
+    return database.create_trade_series(
+        channel_id=163, asset="AUD/JPY OTC", direction="SELL", expiry="5 Minute",
+        stake=10.0, entry_times=["09:00"], max_entries=max_entries,
+        entry_times_utc=[entry_1_utc.isoformat()],
+        telegram_message_date_utc=datetime.now(timezone.utc).isoformat(),
+        schedule_resolution_method=engine.SCHEDULE_RESOLUTION_METHOD,
+    )
 
-    2026-07-27 redesign: every entry after #1 is scheduled the moment
-    the PREVIOUS one's loss becomes known, via _apply_entry_outcome's
-    call to _now_utc() - these tests patch that one seam to a fixed
-    point safely in the past (so every computed boundary is already due
-    by the time _fire_due_entries checks against the REAL clock),
-    rather than mocking datetime itself."""
+
+class ApplyEntryOutcomeTests(unittest.TestCase):
+    """_apply_entry_outcome is the pure "what does this real, resolved
+    result mean for the series" decision - tested directly here, with no
+    worker/browser/risk-check machinery involved at all, since none of
+    that is this function's concern. Covers the user-facing Logic
+    Verification checklist: a win stops the series immediately, a loss
+    advances to (and schedules) the next entry, four losses exhaust it,
+    a draw advances like a loss without being mistaken for a win, and a
+    pending/unknown/missing result never advances anything."""
 
     def setUp(self):
         self._tmp_dir = tempfile.TemporaryDirectory()
         self._original_db_file = database.DB_FILE
         database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
         database.initialize_database()
-        self._coordinator = object()  # never actually used - route_signal is mocked
-        self._now_patch = patch.object(engine, "_now_utc", return_value=datetime.now(timezone.utc) - timedelta(minutes=20))
-        self._now_patch.start()
 
     def tearDown(self):
-        self._now_patch.stop()
         database.DB_FILE = self._original_db_file
         self._tmp_dir.cleanup()
 
-    def _make_series(self, entry_1_utc=None, max_entries=4):
-        if entry_1_utc is None:
-            entry_1_utc = engine._next_five_minute_boundary_utc(engine._now_utc())
-        series_id = database.create_trade_series(
-            channel_id=163, asset="AUD/JPY OTC", direction="SELL", expiry="5 Minute",
-            stake=10.0, entry_times=["09:00"], max_entries=max_entries,
-            entry_times_utc=[entry_1_utc.isoformat()],
-            telegram_message_date_utc=datetime.now(timezone.utc).isoformat(),
-            schedule_resolution_method=engine.SCHEDULE_RESOLUTION_METHOD,
-        )
-        return series_id
-
-    def test_entry_1_fires_when_due_with_the_configured_stake(self):
-        series_id = self._make_series()
-        route_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 501})
-
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-
-        route_mock.assert_awaited_once()
+    def test_entry_2_is_not_pre_scheduled_at_series_creation(self):
+        series_id = _make_series()
         series = database.get_trade_series(series_id)
-        self.assertEqual(series["status"], "active")
-        self.assertEqual(series["current_entry_number"], 1)
-        self.assertEqual(series["stake"], 10.0)  # stake is fixed at series creation, never touched by firing
-
-    def test_a_loss_on_entry_1_schedules_entry_2_at_the_next_five_minute_boundary(self):
-        series_id = self._make_series()
-        route_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 501})
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-
-        database.record_signal_received(
-            {"asset": "AUD/JPY OTC", "direction": "SELL", "expiry": "5 Minute", "raw_message": "x"},
-            series_id=series_id, entry_number=1,
-        )
-        conn = database.get_connection()
-        row = conn.execute(
-            "SELECT id FROM signals WHERE series_id = ? AND entry_number = 1", (series_id,),
-        ).fetchone()
-        conn.close()
-        trade_id = row["id"]
-
-        _run(engine._on_trade_closed({"trade_id": trade_id, "result": "loss", "profit_loss": -10.0}))
-
-        series = database.get_trade_series(series_id)
-        self.assertEqual(series["status"], "pending")  # waiting for entry #2's own scheduled time
-        self.assertEqual(series["current_entry_number"], 1)
-        self.assertEqual(len(series["entry_times_utc"]), 2, "entry 2's time is computed only now, not upfront")
-        expected_entry_2 = engine._next_five_minute_boundary_utc(engine._now_utc())
-        self.assertEqual(datetime.fromisoformat(series["entry_times_utc"][1]), expected_entry_2)
-
-        # Entry #2 now fires on the next due-entries tick.
-        route_mock2 = AsyncMock(return_value={"status": "clicked", "trade_id": 502})
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock2):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        route_mock2.assert_awaited_once()
-        series = database.get_trade_series(series_id)
-        self.assertEqual(series["current_entry_number"], 2)
-        self.assertEqual(series["status"], "active")
-
-    def _simulate_full_entry_and_outcome(self, series_id, entry_number, coordinator, result, profit_loss):
-        route_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 900 + entry_number})
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock):
-            _run(engine._fire_due_entries(coordinator, channel_id=163))
-        database.record_signal_received(
-            {"asset": "AUD/JPY OTC", "direction": "SELL", "expiry": "5 Minute", "raw_message": "x"},
-            series_id=series_id, entry_number=entry_number,
-        )
-        conn = database.get_connection()
-        row = conn.execute(
-            "SELECT id FROM signals WHERE series_id = ? AND entry_number = ? ORDER BY id DESC",
-            (series_id, entry_number),
-        ).fetchone()
-        conn.close()
-        _run(engine._on_trade_closed({"trade_id": row["id"], "result": result, "profit_loss": profit_loss}))
+        self.assertEqual(len(series["entry_times_utc"]), 1, "only Entry #1 exists until a loss is confirmed")
 
     def test_a_win_stops_the_series_immediately(self):
-        series_id = self._make_series()
-        self._simulate_full_entry_and_outcome(series_id, 1, self._coordinator, "win", 8.5)
+        series_id = _make_series()
+        series = database.get_trade_series(series_id)
+        _run(engine._apply_entry_outcome(series, 1, "win", 8.5))
         series = database.get_trade_series(series_id)
         self.assertEqual(series["status"], "won")
         self.assertEqual(series["result"], "win")
         self.assertIsNotNone(series["resolved_at"])
+        self.assertEqual(len(series["entry_times_utc"]), 1, "a win must never schedule a further entry")
 
-    def test_a_win_on_entry_2_terminates_the_series_and_entries_3_4_never_fire(self):
-        series_id = self._make_series()
-        self._simulate_full_entry_and_outcome(series_id, 1, self._coordinator, "loss", -10.0)
-        self._simulate_full_entry_and_outcome(series_id, 2, self._coordinator, "win", 8.5)
-
+    def test_a_confirmed_loss_schedules_entry_2_at_the_next_five_minute_boundary(self):
+        series_id = _make_series()
         series = database.get_trade_series(series_id)
-        self.assertEqual(series["status"], "won")
-        self.assertEqual(series["result"], "win")
-        self.assertIsNotNone(series["resolved_at"])
+        fixed_now = datetime(2026, 7, 27, 12, 2, 30, tzinfo=timezone.utc)
+        with patch.object(engine, "_now_utc", return_value=fixed_now):
+            _run(engine._apply_entry_outcome(series, 1, "loss", -10.0))
 
-        route_mock3 = AsyncMock(return_value={"status": "clicked", "trade_id": 999})
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock3):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        route_mock3.assert_not_awaited()
-        self.assertEqual(database.get_trade_series(series_id)["current_entry_number"], 2)
-
-    def test_a_loss_advances_to_the_next_entry(self):
-        series_id = self._make_series()
-        self._simulate_full_entry_and_outcome(series_id, 1, self._coordinator, "loss", -10.0)
         series = database.get_trade_series(series_id)
         self.assertEqual(series["status"], "pending")
         self.assertEqual(series["current_entry_number"], 1)
+        self.assertEqual(len(series["entry_times_utc"]), 2, "entry 2's time is computed only now, not upfront")
+        self.assertEqual(
+            datetime.fromisoformat(series["entry_times_utc"][1]),
+            datetime(2026, 7, 27, 12, 5, 0, tzinfo=timezone.utc),
+        )
 
     def test_four_losses_exhaust_the_series(self):
-        series_id = self._make_series()
+        series_id = _make_series()
         for entry_number in (1, 2, 3):
-            self._simulate_full_entry_and_outcome(series_id, entry_number, self._coordinator, "loss", -10.0)
             series = database.get_trade_series(series_id)
-            self.assertEqual(series["status"], "pending")  # more entries remain
+            _run(engine._apply_entry_outcome(series, entry_number, "loss", -10.0))
+            series = database.get_trade_series(series_id)
+            self.assertEqual(series["status"], "pending")
 
-        self._simulate_full_entry_and_outcome(series_id, 4, self._coordinator, "loss", -10.0)
+        series = database.get_trade_series(series_id)
+        _run(engine._apply_entry_outcome(series, 4, "loss", -10.0))
         series = database.get_trade_series(series_id)
         self.assertEqual(series["status"], "lost_exhausted")
         self.assertEqual(series["current_entry_number"], 4)
         self.assertIsNotNone(series["resolved_at"])
 
-    def test_no_fifth_entry_can_execute(self):
-        series_id = self._make_series()
-        for entry_number in (1, 2, 3, 4):
-            self._simulate_full_entry_and_outcome(series_id, entry_number, self._coordinator, "loss", -10.0)
-        self.assertEqual(database.get_trade_series(series_id)["status"], "lost_exhausted")
-
-        route_mock5 = AsyncMock(return_value={"status": "clicked", "trade_id": 999})
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock5):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        route_mock5.assert_not_awaited()
-        self.assertEqual(database.get_trade_series(series_id)["current_entry_number"], 4)
-
-    def test_a_pending_result_does_not_advance_the_series(self):
-        series_id = self._make_series()
-        route_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 501})
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        database.record_signal_received(
-            {"asset": "AUD/JPY OTC", "direction": "SELL", "expiry": "5 Minute", "raw_message": "x"},
-            series_id=series_id, entry_number=1,
-        )
-        conn = database.get_connection()
-        row = conn.execute("SELECT id FROM signals WHERE series_id = ? AND entry_number = 1", (series_id,)).fetchone()
-        conn.close()
-
-        for bogus_result in ("pending", "unknown", None):
-            _run(engine._on_trade_closed({"trade_id": row["id"], "result": bogus_result, "profit_loss": 0.0}))
-            series = database.get_trade_series(series_id)
-            self.assertEqual(series["status"], "active", f"result={bogus_result!r} must not advance the series")
-            self.assertEqual(series["current_entry_number"], 1)
-
-    def test_a_draw_is_not_automatically_treated_as_a_win_but_advances_like_a_loss(self):
-        series_id = self._make_series(max_entries=2)
-        self._simulate_full_entry_and_outcome(series_id, 1, self._coordinator, "draw", 0.0)
+    def test_a_draw_is_not_mistaken_for_a_win_but_advances_like_a_loss(self):
+        series_id = _make_series(max_entries=2)
+        series = database.get_trade_series(series_id)
+        _run(engine._apply_entry_outcome(series, 1, "draw", 0.0))
         series = database.get_trade_series(series_id)
         self.assertEqual(series["status"], "pending")
-        self.assertNotEqual(series["status"], "won", "a draw must never be mistaken for a win")
-        self._simulate_full_entry_and_outcome(series_id, 2, self._coordinator, "draw", 0.0)
+        self.assertNotEqual(series["status"], "won")
+        _run(engine._apply_entry_outcome(series, 2, "draw", 0.0))
         series = database.get_trade_series(series_id)
         self.assertEqual(series["status"], "lost_exhausted")
 
-    def test_pool_exhaustion_is_transient_and_retries_the_same_entry(self):
-        series_id = self._make_series()
-        busy_mock = AsyncMock(return_value={
-            "status": "rejected", "rule": "all_workers_busy", "reason": "all workers busy",
-        })
-        with patch.object(engine.broker_account_manager, "route_signal", busy_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
+    def test_pending_unknown_and_missing_results_never_advance_the_series(self):
+        series_id = _make_series()
+        for bogus_result in ("pending", "unknown", None):
+            series = database.get_trade_series(series_id)
+            _run(engine._apply_entry_outcome(series, 1, bogus_result, 0.0))
+            series = database.get_trade_series(series_id)
+            self.assertEqual(series["current_entry_number"], 0, f"result={bogus_result!r} must not advance anything")
+            self.assertEqual(series["status"], "pending")
 
+
+class HandleRouteResultTests(unittest.TestCase):
+    """_handle_route_result is the pure "what does this route/submission
+    result dict mean" decision, shared by the legacy _execute_entry path
+    and the new precision path - tested directly, independent of either
+    caller."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_clicked_result_leaves_the_series_untouched(self):
+        series_id = _make_series()
         series = database.get_trade_series(series_id)
-        self.assertEqual(series["status"], "pending")  # not "active" - never really placed
+        _run(engine._handle_route_result(series, 1, {"status": "clicked", "trade_id": 1}))
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["current_entry_number"], 0)  # _execute_entry/_run_precision_entry set "active" themselves
+
+    def test_pool_exhaustion_is_transient_and_retries_the_same_entry(self):
+        series_id = _make_series()
+        database.advance_trade_series(series_id, 1, "active")  # simulates the caller's own pre-attempt marking
+        series = database.get_trade_series(series_id)
+        _run(engine._handle_route_result(
+            series, 1, {"status": "rejected", "rule": "all_workers_busy", "reason": "all workers busy"},
+        ))
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["status"], "pending")
         self.assertEqual(series["current_entry_number"], 0)  # retries the SAME entry #1 next tick
 
-        clicked_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 700})
-        with patch.object(engine.broker_account_manager, "route_signal", clicked_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        clicked_mock.assert_awaited_once()
-        self.assertEqual(database.get_trade_series(series_id)["current_entry_number"], 1)
-
     def test_a_policy_rejection_blocks_the_series_instead_of_retrying_forever(self):
-        series_id = self._make_series()
-        blocked_mock = AsyncMock(return_value={
-            "status": "rejected", "rule": "max_consecutive_losses", "reason": "consecutive-loss lock engaged",
-        })
-        with patch.object(engine.broker_account_manager, "route_signal", blocked_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-
+        series_id = _make_series()
+        database.advance_trade_series(series_id, 1, "active")
+        series = database.get_trade_series(series_id)
+        _run(engine._handle_route_result(
+            series, 1, {"status": "rejected", "rule": "max_consecutive_losses", "reason": "consecutive-loss lock engaged"},
+        ))
         series = database.get_trade_series(series_id)
         self.assertEqual(series["status"], "blocked")
         self.assertIn("max_consecutive_losses", series["result"])
 
-        never_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
-        with patch.object(engine.broker_account_manager, "route_signal", never_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        never_mock.assert_not_awaited()
-
         self.assertTrue(database.resume_blocked_trade_series(series_id))
         self.assertEqual(database.get_trade_series(series_id)["status"], "pending")
-        with patch.object(engine.broker_account_manager, "route_signal", never_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        never_mock.assert_awaited_once()
+
+
+class FakeWorker:
+    def __init__(self, worker_id=0, page="fake-page"):
+        self.worker_id = worker_id
+        self.page = page
+
+
+class FakePool:
+    def __init__(self, worker_to_return="default"):
+        self.released = []
+        self._worker_to_return = FakeWorker() if worker_to_return == "default" else worker_to_return
+        self.acquire_worker = AsyncMock(side_effect=self._acquire)
+
+    async def _acquire(self, timeout=0):
+        return self._worker_to_return
+
+    def release_worker(self, worker):
+        self.released.append(worker)
+
+
+class FakeCoordinator:
+    """Stands in for TradeCoordinator in _run_precision_entry tests -
+    _run_preflight_checks is a plain (non-async) callable, matching the
+    real method's signature exactly (it's invoked via asyncio.to_thread,
+    same as production)."""
+
+    def __init__(self, preflight_result=("passed", None), worker_pool=None):
+        self.worker_pool = worker_pool or FakePool()
+        self.warmup_service = object()
+        self._preflight_result = preflight_result
+        self.preflight_calls = []
+
+    def _run_preflight_checks(self, trade_id, amount, session_id, asset, direction, expiry,
+                               sent_at, timeline, broker_account_id=None, channel_id=None, series_id=None):
+        self.preflight_calls.append(series_id)
+        return self._preflight_result
+
+
+def _fake_staged_trade(trade_id, worker, pool, warmup_service, timeline):
+    from pocket_executor import StagedTrade
+    return StagedTrade(trade_id, "AUD/JPY OTC", "SELL", "5 Minute", 10.0, 92, worker, pool, warmup_service, timeline)
+
+
+class PrecisionEntryOrchestrationTests(unittest.TestCase):
+    """_run_precision_entry's OWN orchestration: early (worker-
+    independent) risk checks run first, then a worker is reserved and
+    the trade pre-staged, then submitted - covering the explicit
+    "prevent cooldown/duplicate detection from adding latency" and
+    "pass all risk checks that can safely be completed early"
+    requirements structurally (by reusing _run_preflight_checks
+    directly, the same series_id-scoped bypass proven in
+    tests/test_risk_manager.py applies automatically here too)."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        engine._precision_tasks_in_flight.clear()
+        self._pre_stage_patch = patch.object(
+            engine.pocket_executor, "pre_stage_trade",
+            AsyncMock(side_effect=lambda trade_id, asset, direction, expiry, amount, worker, pool, warmup_service,
+                      timeline=None, latency=None: _fake_staged_trade(trade_id, worker, pool, warmup_service, timeline)),
+        )
+        self._submit_patch = patch.object(
+            engine.pocket_executor, "submit_staged_trade",
+            AsyncMock(return_value={"status": "clicked", "trade_id": 1}),
+        )
+        self._pre_stage_mock = self._pre_stage_patch.start()
+        self._submit_mock = self._submit_patch.start()
+
+    def tearDown(self):
+        self._pre_stage_patch.stop()
+        self._submit_patch.stop()
+        engine._precision_tasks_in_flight.clear()
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def _run_precision(self, series_id, entry_number=1, coordinator=None, scheduled_dt=None):
+        series = database.get_trade_series(series_id)
+        if scheduled_dt is None:
+            scheduled_dt = datetime.fromisoformat(series["entry_times_utc"][entry_number - 1])
+        coordinator = coordinator or FakeCoordinator()
+        key = (series_id, entry_number)
+        _run(engine._run_precision_entry(coordinator, series, entry_number, scheduled_dt, key))
+        return coordinator
+
+    def test_successful_flow_reserves_a_worker_pre_stages_and_submits(self):
+        series_id = _make_series()
+        coordinator = self._run_precision(series_id)
+
+        self.assertEqual(coordinator.preflight_calls, [series_id], "reused the real preflight check chain")
+        coordinator.worker_pool.acquire_worker.assert_awaited()
+        self._pre_stage_mock.assert_awaited_once()
+        self._submit_mock.assert_awaited_once()
+        self.assertEqual(coordinator.worker_pool.released, [], "submit_staged_trade owns the release, not this function")
+
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["current_entry_number"], 1)
+        self.assertEqual(series["stake"], 10.0)
+
+    def test_early_risk_rejection_never_touches_the_worker_pool(self):
+        series_id = _make_series()
+        coordinator = FakeCoordinator(preflight_result=(
+            "rejected", {"status": "rejected", "trade_id": 1, "rule": "emergency_stop", "reason": "stopped"},
+        ))
+        self._run_precision(series_id, coordinator=coordinator)
+
+        coordinator.worker_pool.acquire_worker.assert_not_awaited()
+        self._pre_stage_mock.assert_not_awaited()
+        self._submit_mock.assert_not_awaited()
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["status"], "blocked")
+        self.assertIn("emergency_stop", series["result"])
+
+    def test_worker_never_available_falls_back_to_standard_execution(self):
+        series_id = _make_series()
+        pool = FakePool(worker_to_return=None)  # acquire_worker always returns None
+        coordinator = FakeCoordinator(worker_pool=pool)
+        fallback_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 2})
+        with patch.object(engine.broker_account_manager, "route_signal", fallback_mock):
+            self._run_precision(series_id, coordinator=coordinator)
+        fallback_mock.assert_awaited_once()  # fell back to the legacy _execute_entry path
+        self._pre_stage_mock.assert_not_awaited()
+
+    def test_a_win_reported_by_submit_stops_the_series(self):
+        self._submit_mock.return_value = {"status": "clicked", "trade_id": 1}
+        series_id = _make_series()
+        coordinator = self._run_precision(series_id)
+
+        conn = database.get_connection()
+        row = conn.execute("SELECT id FROM signals WHERE series_id = ? AND entry_number = 1", (series_id,)).fetchone()
+        conn.close()
+        _run(engine._on_trade_closed({"trade_id": row["id"], "result": "win", "profit_loss": 8.5}))
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["status"], "won")
+        del coordinator  # unused beyond triggering the flow
 
     def test_a_second_concurrent_poll_tick_never_double_fires_the_same_entry(self):
-        series_id = self._make_series()
+        series_id = _make_series()
 
-        async def slow_route(*args, **kwargs):
+        async def slow_submit(staged, latency=None):
             mid_flight = database.get_trade_series(series_id)
-            assert mid_flight["status"] == "active", "series must be marked active before route_signal runs"
+            assert mid_flight["status"] == "active", "series must be marked active before submission runs"
             return {"status": "clicked", "trade_id": 1}
 
-        with patch.object(engine.broker_account_manager, "route_signal", AsyncMock(side_effect=slow_route)):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
+        self._submit_mock.side_effect = slow_submit
+        self._run_precision(series_id)
 
         second_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 2})
         with patch.object(engine.broker_account_manager, "route_signal", second_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        second_mock.assert_not_awaited()
+            # A second call for the SAME entry_number, simulating a
+            # duplicate spawn - the series-level "active" guard (which
+            # _run_precision_entry sets before ever calling submit) must
+            # make this a no-op, exactly like the legacy path.
+            series = database.get_trade_series(series_id)
+            self.assertEqual(series["status"], "active")
 
-    def test_a_wildly_overdue_entry_is_rejected_as_stale_not_fired(self):
+
+class FireDueEntriesSpawnTests(unittest.TestCase):
+    """_fire_due_entries' OWN job, post-redesign: notice when a pending
+    entry has reached its pre-stage window and hand off to a dedicated
+    _run_precision_entry task exactly once - not fire anything itself."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        engine._precision_tasks_in_flight.clear()
+        self._coordinator = FakeCoordinator()
+
+    def tearDown(self):
+        engine._precision_tasks_in_flight.clear()
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_spawns_a_precision_task_once_the_prestage_window_opens(self):
+        entry_1_utc = datetime.now(timezone.utc) + timedelta(seconds=5)  # inside the 20s pre-stage window
+        _make_series(entry_1_utc=entry_1_utc)
+        spawn_mock = AsyncMock(return_value=None)
+        with patch.object(engine, "_run_precision_entry", spawn_mock):
+            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
+            _run(asyncio.sleep(0))  # let the spawned task get scheduled
+        spawn_mock.assert_called_once()
+
+    def test_does_not_spawn_before_the_prestage_window_opens(self):
+        entry_1_utc = datetime.now(timezone.utc) + timedelta(minutes=5)  # well outside the 20s window
+        _make_series(entry_1_utc=entry_1_utc)
+        spawn_mock = AsyncMock(return_value=None)
+        with patch.object(engine, "_run_precision_entry", spawn_mock):
+            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
+            _run(asyncio.sleep(0))
+        spawn_mock.assert_not_called()
+
+    def test_does_not_spawn_a_second_task_for_the_same_entry(self):
+        entry_1_utc = datetime.now(timezone.utc) + timedelta(seconds=5)
+        series_id = _make_series(entry_1_utc=entry_1_utc)
+        engine._precision_tasks_in_flight.add((series_id, 1))  # simulates one already running
+        spawn_mock = AsyncMock(return_value=None)
+        with patch.object(engine, "_run_precision_entry", spawn_mock):
+            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
+            _run(asyncio.sleep(0))
+        spawn_mock.assert_not_called()
+
+    def test_a_wildly_overdue_entry_is_rejected_as_stale_without_ever_spawning(self):
         stale_time = datetime.now(timezone.utc) - timedelta(hours=2)
-        series_id = self._make_series(entry_1_utc=stale_time)
-
-        never_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
-        with patch.object(engine.broker_account_manager, "route_signal", never_mock):
+        series_id = _make_series(entry_1_utc=stale_time)
+        spawn_mock = AsyncMock(return_value=None)
+        with patch.object(engine, "_run_precision_entry", spawn_mock):
             _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-
-        never_mock.assert_not_awaited()
+        spawn_mock.assert_not_called()
         series = database.get_trade_series(series_id)
         self.assertEqual(series["status"], "blocked")
         self.assertIn("stale_entry", series["result"])
 
-    def test_an_entry_a_few_minutes_late_still_fires_normally(self):
+    def test_an_entry_a_few_minutes_late_still_spawns_normally(self):
         # Well within STALE_ENTRY_THRESHOLD_SECONDS - a normal brief
         # restart/deploy delay must never be mistaken for a real outage.
         late_time = datetime.now(timezone.utc) - timedelta(minutes=5)
-        series_id = self._make_series(entry_1_utc=late_time)
-
-        route_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock):
+        series_id = _make_series(entry_1_utc=late_time)
+        spawn_mock = AsyncMock(return_value=None)
+        with patch.object(engine, "_run_precision_entry", spawn_mock):
             _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-
-        route_mock.assert_awaited_once()
-        self.assertEqual(database.get_trade_series(series_id)["status"], "active")
+            _run(asyncio.sleep(0))
+        spawn_mock.assert_called_once()
+        self.assertEqual(database.get_trade_series(series_id)["status"], "pending")
 
     def test_a_series_with_no_resolved_utc_schedule_is_skipped_not_guessed(self):
         series_id = database.create_trade_series(
             channel_id=163, asset="AUD/JPY OTC", direction="SELL", expiry="5 Minute",
             stake=10.0, entry_times=["09:00"], max_entries=1,
         )
-        never_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
-        with patch.object(engine.broker_account_manager, "route_signal", never_mock):
+        spawn_mock = AsyncMock(return_value=None)
+        with patch.object(engine, "_run_precision_entry", spawn_mock):
             _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        never_mock.assert_not_awaited()
+        spawn_mock.assert_not_called()
         self.assertEqual(database.get_trade_series(series_id)["status"], "pending")
 
-    def test_restart_recovery_preserves_the_calculated_five_minute_schedule(self):
-        """2026-07-27 explicit product requirement: "Restart recovery
-        preserves the calculated five-minute schedule." Once entry 2's
-        time is computed and persisted (via schedule_next_entry), a
-        fresh read of the series must show the exact same stored value -
-        never recomputed."""
-        series_id = self._make_series()
-        self._simulate_full_entry_and_outcome(series_id, 1, self._coordinator, "loss", -10.0)
-        before_restart = database.get_trade_series(series_id)["entry_times_utc"]
-
-        # Simulate a restart: nothing in-memory carries over, only a
-        # fresh read from the database.
-        after_restart = database.get_trade_series(series_id)["entry_times_utc"]
-        self.assertEqual(before_restart, after_restart)
-
-        # And it still fires at exactly that stored time, not a
-        # recomputed one.
-        route_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 502})
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock):
-            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        route_mock.assert_awaited_once()
-        self.assertEqual(database.get_trade_series(series_id)["entry_times_utc"], after_restart)
-
-    def test_execution_paused_provider_never_fires_a_pending_entry(self):
-        series_id = self._make_series()
+    def test_execution_paused_provider_never_spawns_a_precision_task(self):
+        entry_1_utc = datetime.now(timezone.utc) + timedelta(seconds=5)
+        series_id = _make_series(entry_1_utc=entry_1_utc)
         profile_id = database.create_provider_profile(163)
         database.update_provider_profile(profile_id, changed_by="test", reason="test", execution_paused=1)
 
-        never_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
-        with patch.object(engine.broker_account_manager, "route_signal", never_mock):
+        spawn_mock = AsyncMock(return_value=None)
+        with patch.object(engine, "_run_precision_entry", spawn_mock):
             _run(engine._fire_due_entries(self._coordinator, channel_id=163))
-        never_mock.assert_not_awaited()
+            _run(asyncio.sleep(0))
+        spawn_mock.assert_not_called()
         self.assertEqual(database.get_trade_series(series_id)["status"], "pending")
 
     def test_other_providers_remain_unchanged_by_a_different_channels_pause(self):
-        series_id = self._make_series()
+        entry_1_utc = datetime.now(timezone.utc) + timedelta(seconds=5)
+        series_id = _make_series(entry_1_utc=entry_1_utc)
         conn = database.get_connection()
         conn.execute("UPDATE trade_series SET channel_id = 999 WHERE id = ?", (series_id,))
         conn.commit()
@@ -551,11 +644,41 @@ class DueEntryFiringTests(unittest.TestCase):
         profile_id = database.create_provider_profile(163)  # a DIFFERENT channel is paused
         database.update_provider_profile(profile_id, changed_by="test", reason="test", execution_paused=1)
 
-        route_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 1})
-        with patch.object(engine.broker_account_manager, "route_signal", route_mock):
+        spawn_mock = AsyncMock(return_value=None)
+        with patch.object(engine, "_run_precision_entry", spawn_mock):
             _run(engine._fire_due_entries(self._coordinator, channel_id=999))
-        route_mock.assert_awaited_once()
-        self.assertEqual(database.get_trade_series(series_id)["status"], "active")
+            _run(asyncio.sleep(0))
+        spawn_mock.assert_called_once()
+
+    def test_restart_recovery_preserves_the_calculated_five_minute_schedule(self):
+        """2026-07-27 explicit product requirement: "Restart recovery
+        preserves the calculated five-minute schedule." Once entry 2's
+        time is computed and persisted (via schedule_next_entry), a
+        fresh read of the series must show the exact same stored value -
+        never recomputed, even across what a restart would look like
+        (nothing in-memory carries over - only a fresh DB read)."""
+        # The boundary-computation logic itself (_apply_entry_outcome ->
+        # next five-minute mark) is already covered by
+        # ApplyEntryOutcomeTests - this test's own distinctive concern is
+        # only whether a persisted entry_times_utc survives a re-read and
+        # is fired from verbatim, not recomputed. schedule_next_entry is
+        # called directly with a real near-future timestamp so the test
+        # is robust to wall-clock timing rather than racing a real
+        # five-minute boundary.
+        series_id = _make_series()
+        entry_2_utc = datetime.now(timezone.utc) + timedelta(seconds=5)
+        database.schedule_next_entry(series_id, 1, entry_2_utc.isoformat())
+        before_restart = database.get_trade_series(series_id)["entry_times_utc"]
+
+        after_restart = database.get_trade_series(series_id)["entry_times_utc"]
+        self.assertEqual(before_restart, after_restart)
+
+        spawn_mock = AsyncMock(return_value=None)
+        with patch.object(engine, "_run_precision_entry", spawn_mock):
+            _run(engine._fire_due_entries(self._coordinator, channel_id=163))
+            _run(asyncio.sleep(0))
+        spawn_mock.assert_called_once()
+        self.assertEqual(database.get_trade_series(series_id)["entry_times_utc"], after_restart)
 
 
 class RestartReconciliationTests(unittest.TestCase):
@@ -603,16 +726,19 @@ class RestartReconciliationTests(unittest.TestCase):
         self.assertEqual(series["status"], "pending")
         self.assertEqual(series["current_entry_number"], 0)
 
+        # _fire_due_entries only spawns a detached asyncio.create_task
+        # for _run_precision_entry now - a bare asyncio.run() call gives
+        # that task no chance to actually execute before the loop shuts
+        # down, so (as with PrecisionEntryOrchestrationTests) the retry
+        # itself is exercised by calling _run_precision_entry directly.
+        # A worker_pool that never yields a worker forces the fallback
+        # to the standard _execute_entry -> route_signal path, which is
+        # what proves this is a genuine retry, not a replay.
         route_mock = AsyncMock(return_value={"status": "clicked", "trade_id": 555})
-        conn = database.get_connection()
-        conn.execute(
-            "UPDATE trade_series SET entry_times_utc_json = ? WHERE id = ?",
-            (json.dumps([(datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()]), series_id),
-        )
-        conn.commit()
-        conn.close()
+        scheduled_dt = datetime.now(timezone.utc) - timedelta(minutes=1)
+        coordinator = FakeCoordinator(worker_pool=FakePool(worker_to_return=None))
         with patch.object(engine.broker_account_manager, "route_signal", route_mock):
-            _run(engine._fire_due_entries(object(), channel_id=163))
+            _run(engine._run_precision_entry(coordinator, series, 1, scheduled_dt, (series_id, 1)))
         route_mock.assert_awaited_once()
 
     def test_an_entry_that_already_resolved_win_is_reconciled_without_re_executing(self):

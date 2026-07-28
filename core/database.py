@@ -2284,6 +2284,27 @@ def record_trade_timeline(trade_id, stage_timestamps, category_totals_ms):
 
 
 @timed("database")
+def record_execution_latency(trade_id, timestamps):
+    """Merges (does not overwrite) core/execution_latency.py's precision-
+    latency timestamps into signals.latency_checkpoints_json for this
+    trade - same merge-not-clobber discipline as record_trade_timeline
+    just above, since these fields are captured across several separate
+    calls (scheduling-time fields before trade_id even exists, then
+    worker/browser/broker/result fields as execution actually proceeds).
+    2026-07-27 precision-latency audit."""
+    conn = get_connection()
+    row = conn.execute("SELECT latency_checkpoints_json FROM signals WHERE id = ?", (trade_id,)).fetchone()
+    existing = json.loads(row["latency_checkpoints_json"]) if row and row["latency_checkpoints_json"] else {}
+    merged = {**existing, **timestamps}
+    conn.execute(
+        "UPDATE signals SET latency_checkpoints_json = ? WHERE id = ?",
+        (json.dumps(merged), trade_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
 def record_recovery_event(event_type, outcome, detail=None):
     """Structured log of an automatic-recovery attempt (browser reconnect,
     worker pool rebuild, process-level restart, abandoned-trade resume) and

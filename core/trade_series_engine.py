@@ -45,22 +45,42 @@ existing path and WHETHER to call it again after an outcome.
 """
 import asyncio
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 CORE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CORE_DIR.parent
 sys.path.insert(0, str(CORE_DIR))
+sys.path.insert(0, str(PROJECT_ROOT / "execution"))
+sys.path.insert(0, str(PROJECT_ROOT / "config"))
 
 import database
 import broker_account_manager
+import pocket_executor
+from execution_latency import ExecutionLatency
+from timeline import TradeTimeline
 from trade_lifecycle import TradeStatus
 from logger import get_logger
 from event_bus import get_event_bus
+from settings import MARTIN_TRADER_PRESTAGE_SECONDS
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
 DUE_ENTRY_POLL_INTERVAL_SECONDS = 3
 MAX_ENTRIES = 4
+
+# How long before the escalation deadline (scheduled boundary minus this
+# many seconds) an unsecured worker gets logged as an escalation, per
+# the 2026-07-27 precision-latency audit's explicit requirement ("escalate
+# if the worker is not secured by T-minus 5 seconds").
+PRESTAGE_ESCALATION_SECONDS = 5
+
+# How often the precision final-wait loop re-checks the monotonic clock
+# once inside the pre-stage window - short enough to submit within a few
+# tens of milliseconds of the boundary, without busy-spinning tightly for
+# an extended period (explicit constraint).
+PRECISION_WAIT_TICK_SECONDS = 0.05
 
 # The resolution method name persisted on every series
 # (trade_series.schedule_resolution_method) - 2026-07-27 product
@@ -289,6 +309,16 @@ async def _execute_entry(default_coordinator, series, entry_number):
             database.advance_trade_series, series["id"], entry_number, "error", result="error",
         )
         return
+    await _handle_route_result(series, entry_number, result)
+
+
+async def _handle_route_result(series, entry_number, result):
+    """The shared "what does this route_signal/submit_staged_trade result
+    dict mean for the series" logic - used by both _execute_entry (the
+    original, always-available path) and _run_precision_entry (2026-07-27
+    precision-latency audit's pre-staged path), so a policy rejection or
+    a transient retry is handled identically regardless of which path
+    produced it."""
     if isinstance(result, dict) and result.get("status") == "clicked":
         return  # real trade placed - wait for _on_trade_closed to decide what happens next
 
@@ -460,6 +490,188 @@ async def reconcile_stuck_series():
             await _apply_entry_outcome(series, series["current_entry_number"], result, entry.get("profit_loss") or 0.0)
 
 
+# In-memory only (2026-07-27 precision-latency audit) - tracks which
+# (series_id, entry_number) pairs already have a dedicated precision
+# task running, so the coarse 3-second poll never spawns a second one
+# for the same entry while the first is still pre-staging. Never the
+# source of truth for correctness: the DB's own current_entry_number/
+# status are what actually prevent a duplicate CLICK (route_signal's
+# series-level "active" guard, unchanged) - this set only avoids
+# redundant, wasted pre-stage attempts, and a process restart resetting
+# it is always safe (see _run_precision_entry's own docstring).
+_precision_tasks_in_flight = set()
+
+
+async def _run_precision_entry(default_coordinator, series, entry_number, scheduled_dt, key):
+    """2026-07-27 precision-latency audit's core mechanism - "the only
+    critical action remaining at the boundary should be the final order
+    submission":
+
+    1. Records the signal and runs every risk check that does NOT need a
+       browser worker immediately (Section C: "pass all risk checks that
+       can safely be completed early") - reuses
+       TradeCoordinator._run_preflight_checks directly rather than
+       reimplementing it, so Emergency Stop/daily-loss/consecutive-loss/
+       demo-only/etc. all run through the exact same audited code every
+       other signal does.
+    2. Waits (coarse, cheap asyncio.sleep) until MARTIN_TRADER_PRESTAGE_
+       SECONDS before the boundary, then reserves a worker and pre-stages
+       asset/expiry/amount/direction-controls-ready (Section C/D). Logged
+       escalation if a worker isn't secured by PRESTAGE_ESCALATION_SECONDS
+       before the boundary - per explicit requirement, this does NOT
+       interrupt an active trade submission elsewhere; it waits its turn
+       (existing FIFO worker_pool.acquire_worker), not true queue-jumping
+       priority (which would require changing the shared pool's queue
+       discipline - a risk to every other provider this audit avoids).
+    3. Falls back to the ordinary _execute_entry() path if a worker still
+       isn't secured by the boundary itself - a slow/unavailable worker
+       degrades into a normal (less precise, but never missed) entry.
+    4. Sleeps precisely (monotonic clock, short ticks - never one long
+       blocking sleep, never a tight busy-spin) until the exact boundary,
+       marks the series 'active' (the same duplicate-execution guard
+       _execute_entry has always used, just timed differently), then
+       submits only the direction click.
+
+    Restart safety: if this task is killed mid-flight (process restart),
+    the series' own DB status is untouched until step 4 ('active') - a
+    fresh _fire_due_entries poll after restart simply notices the entry
+    is (still) within its pre-stage window and spawns a new attempt.
+    Known, accepted, narrow limitation: since record_signal_received (in
+    _run_preflight_checks's caller below) has no idempotency guard of its
+    own (unlike create_trade_series), a restart during the ~20s pre-stage
+    window could leave one harmless, never-clicked extra `signals` row
+    behind - never a duplicate real trade/click, since neither attempt
+    ever reached that point."""
+    latency = ExecutionLatency(series_id=series["id"], entry_number=entry_number)
+    if entry_number == 1:
+        # Entry 1's signal_received_at/series_created_at/boundary_calculated_at
+        # all happen within microseconds of each other inside
+        # create_series_from_signal - approximated here from the series'
+        # own already-stored created_at/telegram_message_date_utc rather
+        # than threading three more values through create_trade_series
+        # for sub-millisecond precision on fields that are audit context,
+        # not part of the six measured latency metrics themselves.
+        if series.get("telegram_message_date_utc"):
+            latency.mark("signal_received_at", at=datetime.fromisoformat(series["telegram_message_date_utc"]))
+        if series.get("created_at"):
+            created_dt = datetime.fromisoformat(series["created_at"])
+            if created_dt.tzinfo is None:
+                created_dt = created_dt.replace(tzinfo=timezone.utc)
+            latency.mark("series_created_at", at=created_dt)
+            latency.mark("boundary_calculated_at", at=created_dt)
+    latency.set_scheduled_boundary(scheduled_dt)
+    latency.mark("scheduler_awakened_at")
+
+    signal = {
+        "asset": series["asset"], "direction": series["direction"], "expiry": series["expiry"],
+        "raw_message": (
+            f"[Martin Trader series {series['id']}, entry #{entry_number}/{series['max_entries']}] "
+            f"{series['raw_message'] or ''}"
+        ),
+    }
+    try:
+        trade_id = await asyncio.to_thread(
+            database.record_signal_received, signal,
+            source="martin_trader_series", session_id=series["session_id"], channel_id=series["channel_id"],
+            series_id=series["id"], entry_number=entry_number,
+        )
+        await asyncio.to_thread(database.record_execution_latency, trade_id, latency.timestamps)
+        timeline = TradeTimeline(trade_id=trade_id)
+
+        outcome, payload = await asyncio.to_thread(
+            default_coordinator._run_preflight_checks, trade_id, series["stake"], series["session_id"],
+            series["asset"], series["direction"], series["expiry"], None, timeline,
+            series["broker_account_id"], series["channel_id"], series["id"],
+        )
+        if outcome != "passed":
+            logger.info(
+                "trade_series_engine: series_id=%s entry #%d rejected during early (worker-independent) "
+                "risk checks - %s",
+                series["id"], entry_number, payload,
+            )
+            await _handle_route_result(series, entry_number, payload)
+            return
+
+        prestage_at = scheduled_dt - timedelta(seconds=MARTIN_TRADER_PRESTAGE_SECONDS)
+        now = datetime.now(timezone.utc)
+        if now < prestage_at:
+            await asyncio.sleep((prestage_at - now).total_seconds())
+
+        latency.mark("worker_requested_at")
+        escalate_at = scheduled_dt - timedelta(seconds=PRESTAGE_ESCALATION_SECONDS)
+        worker = None
+        acquire_timeout = max(0.0, (scheduled_dt - datetime.now(timezone.utc)).total_seconds())
+        if acquire_timeout > 0:
+            worker = await default_coordinator.worker_pool.acquire_worker(
+                timeout=min(acquire_timeout, MARTIN_TRADER_PRESTAGE_SECONDS),
+            )
+        if worker is None and datetime.now(timezone.utc) >= escalate_at:
+            logger.error(
+                "trade_series_engine: series_id=%s entry #%d could not secure a worker by T-minus %ds "
+                "(escalation threshold) - still trying until the boundary",
+                series["id"], entry_number, PRESTAGE_ESCALATION_SECONDS,
+            )
+        if worker is None:
+            remaining = max(0.0, (scheduled_dt - datetime.now(timezone.utc)).total_seconds())
+            if remaining > 0:
+                worker = await default_coordinator.worker_pool.acquire_worker(timeout=remaining)
+        if worker is None:
+            logger.error(
+                "trade_series_engine: series_id=%s entry #%d could not secure a worker before the "
+                "boundary - falling back to standard (non-precision) execution",
+                series["id"], entry_number,
+            )
+            await _execute_entry(default_coordinator, series, entry_number)
+            return
+        latency.mark("worker_acquired_at")
+        await asyncio.to_thread(database.record_execution_latency, trade_id, latency.timestamps)
+
+        staged = await pocket_executor.pre_stage_trade(
+            trade_id, series["asset"], series["direction"], series["expiry"], series["stake"],
+            worker, default_coordinator.worker_pool, default_coordinator.warmup_service,
+            timeline=timeline, latency=latency,
+        )
+        await asyncio.to_thread(database.record_execution_latency, trade_id, latency.timestamps)
+        if not isinstance(staged, pocket_executor.StagedTrade):
+            await _handle_route_result(series, entry_number, staged)
+            return
+
+        # Precision final wait - monotonic clock, short ticks, never one
+        # long blocking sleep and never a tight busy-spin.
+        remaining = (scheduled_dt - datetime.now(timezone.utc)).total_seconds()
+        if remaining > 0:
+            deadline_monotonic = time.monotonic() + remaining
+            while True:
+                left = deadline_monotonic - time.monotonic()
+                if left <= 0:
+                    break
+                await asyncio.sleep(min(left, PRECISION_WAIT_TICK_SECONDS))
+
+        logger.info(
+            "trade_series_engine: series_id=%s firing entry #%d (%s %s) [precision path]",
+            series["id"], entry_number, series["asset"], series["direction"],
+        )
+        await asyncio.to_thread(database.advance_trade_series, series["id"], entry_number, "active")
+        result = await pocket_executor.submit_staged_trade(staged, latency=latency)
+        await asyncio.to_thread(database.record_execution_latency, trade_id, latency.timestamps)
+        await _handle_route_result(series, entry_number, result)
+    except Exception as e:
+        # Terminal, not a retry - same semantics as _execute_entry's own
+        # generic exception handler (entry_number, not entry_number - 1):
+        # an exception escaping this far is unexpected/unmodeled, not one
+        # of the known transient/policy outcomes _handle_route_result
+        # already handles by retrying or blocking.
+        logger.error(
+            "trade_series_engine: series_id=%s entry #%d precision execution failed: %s",
+            series["id"], entry_number, e,
+        )
+        await asyncio.to_thread(
+            database.advance_trade_series, series["id"], entry_number, "error", result="error",
+        )
+    finally:
+        _precision_tasks_in_flight.discard(key)
+
+
 def register(event_bus=None):
     """Subscribes this module's own trade.closed handler - called once at
     listener startup, same pattern as session_manager.register and
@@ -523,8 +735,9 @@ async def _fire_due_entries(default_coordinator, channel_id):
             continue
 
         scheduled_dt = datetime.fromisoformat(series["entry_times_utc"][next_entry_number - 1])
-        if now_utc < scheduled_dt:
-            continue  # not due yet
+        prestage_at = scheduled_dt - timedelta(seconds=MARTIN_TRADER_PRESTAGE_SECONDS)
+        if now_utc < prestage_at:
+            continue  # not even time to pre-stage yet
 
         age_seconds = (now_utc - scheduled_dt).total_seconds()
         if age_seconds > STALE_ENTRY_THRESHOLD_SECONDS:
@@ -540,4 +753,16 @@ async def _fire_due_entries(default_coordinator, channel_id):
             )
             continue
 
-        await _execute_entry(default_coordinator, series, next_entry_number)
+        # 2026-07-27 precision-latency audit: rather than firing
+        # immediately (which would only ever happen on the NEXT 3-second
+        # poll tick after the boundary - exactly the coarse "scheduler
+        # lateness" this audit measures and reduces), spawn a dedicated
+        # task the moment the pre-stage window opens. That task owns its
+        # own precise timing from here on - this coarse poll's only job
+        # for this entry is to notice the window has opened and hand off
+        # once, never twice (the in-flight set below).
+        key = (series["id"], next_entry_number)
+        if key in _precision_tasks_in_flight:
+            continue
+        _precision_tasks_in_flight.add(key)
+        asyncio.create_task(_run_precision_entry(default_coordinator, series, next_entry_number, scheduled_dt, key))

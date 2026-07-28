@@ -57,6 +57,17 @@ MARTIN_TRADER_CHANNEL_ID = int(os.getenv("MARTIN_TRADER_CHANNEL_ID", 163))
 # the Risk Engine's own sizing entirely.
 MARTIN_TRADER_STAKE = float(os.getenv("MARTIN_TRADER_STAKE", 10))
 
+# Precision-latency audit (2026-07-27): how long before the scheduled
+# five-minute boundary AXIM reserves a browser worker and pre-stages
+# asset/expiry/amount, so only the final direction click remains at the
+# boundary itself. Deliberately NOT from signal receipt (which can be
+# several minutes early) - reserving a worker that long would leave only
+# 1 of MAX_CONCURRENT_WORKERS free for every other provider for that
+# whole span. Kept configurable (15-30s is the sane range; latency
+# telemetry - see core/execution_latency.py - should inform any future
+# adjustment) rather than hand-tuned once and forgotten.
+MARTIN_TRADER_PRESTAGE_SECONDS = float(os.getenv("MARTIN_TRADER_PRESTAGE_SECONDS", 20))
+
 # Database
 DATABASE_FILE = "data/axim.db"
 

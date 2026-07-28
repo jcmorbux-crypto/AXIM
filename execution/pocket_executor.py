@@ -2,7 +2,7 @@ import os
 import sys
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 EXECUTION_DIR = Path(__file__).resolve().parent
@@ -92,33 +92,56 @@ def _capture_screenshot_background(page, trade_id, label):
     asyncio.create_task(_do())
 
 
-async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool, warmup_service, timeline=None):
-    """
-    Runs the verified browser interaction sequence (unchanged internals -
-    select_asset/select_expiry/set_amount/verify_direction_controls_ready/
-    click_direction all live in pocket_dom.py exactly as before) against
-    `worker.page`, one of BrowserWorkerPool's N warm pages.
+class StagedTrade:
+    """Result of a successful pre_stage_trade() call (2026-07-27
+    precision-latency audit) - everything submit_staged_trade() needs
+    later, without re-running any of the already-verified asset/expiry/
+    amount/direction-controls-ready work. The worker is held (not
+    released) across the gap between the two calls - callers must
+    always eventually call submit_staged_trade() or release the worker
+    themselves, since pre_stage_trade() only auto-releases on its own
+    rejection/error paths, never on success."""
 
-    `worker`'s lock is already held by the time this is called (acquired
-    by the caller via pool.acquire_worker()) and is always released via
-    the `finally` block below, on every path including a real click -
-    the worker is never held for a trade's expiry. track_outcome (spawned
-    below on a real click) does not reuse this worker at all; it reads
-    from warmup_service's own separate, otherwise-idle page instead - see
-    its own docstring for why. An earlier design held the worker for the
-    whole expiry and this docstring described that; superseded by the P0
-    latency-sprint fix (see track_outcome's docstring), not updated here
-    until now.
+    def __init__(self, trade_id, asset, direction, expiry, amount, payout, worker, pool, warmup_service, timeline):
+        self.trade_id = trade_id
+        self.asset = asset
+        self.direction = direction
+        self.expiry = expiry
+        self.amount = amount
+        self.payout = payout
+        self.worker = worker
+        self.pool = pool
+        self.warmup_service = warmup_service
+        self.timeline = timeline
 
-    "clicked" and "confirmation_detected" are marked inside pocket_dom.
-    click_direction itself (via the active timeline, core/timeline.py),
-    not here - closes a documented instrumentation gap where those two
-    stages used to be marked back-to-back with no separating work.
-    """
+
+async def pre_stage_trade(trade_id, asset, direction, expiry, amount, worker, pool, warmup_service, timeline=None, latency=None):
+    """The "prepare" half of the browser interaction sequence (unchanged
+    internals - select_asset/select_expiry/set_amount/
+    verify_direction_controls_ready all live in pocket_dom.py exactly as
+    before): validates expiry, selects asset/expiry/amount, verifies
+    direction controls are ready, confirms the asset is still tradeable
+    and its payout meets the minimum. Everything through the DB
+    TRADE_PREPARED write - the actual direction click is
+    submit_staged_trade()'s job, not this function's.
+
+    2026-07-27 precision-latency audit: split out of what was previously
+    one combined prepare_trade() so Martin Trader's precision-execution
+    path (core/trade_series_engine.py) can call this well before a
+    scheduled five-minute boundary (holding the worker across the gap)
+    and submit_staged_trade() exactly at the boundary - only the click
+    remains as the boundary-time critical action. prepare_trade() below
+    still calls both halves back-to-back with no gap, so every other
+    (non-Martin-Trader) caller's behavior is completely unchanged.
+
+    Returns a StagedTrade on success (worker still held, not yet
+    released) or a {"status": "rejected"/"error", ...} dict on any
+    failure (worker already released - nothing left to submit)."""
     timeline = timeline or TradeTimeline(trade_id=trade_id)
     timeline.trade_id = trade_id
     page = worker.page
-    clicked = False
+    if latency:
+        latency.mark("browser_command_started_at")
     try:
         # Validated first, before touching the DOM at all: a signal whose
         # expiry never matched a recognizable pattern (parsers/signal_parser.py
@@ -139,6 +162,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
             database.record_pipeline_event(None, None, SignalLifecycleState.FAILED,
                                             signal_id=trade_id, detail="unparseable_expiry")
             timeline.persist(database)
+            pool.release_worker(worker)
             return {
                 "status": "rejected", "trade_id": trade_id,
                 "rule": "unparseable_expiry", "reason": str(e),
@@ -179,6 +203,7 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
                                             signal_id=trade_id, detail=f"{violation.rule}: {violation.reason}")
             print(f"Status    : REJECTED ({violation.rule}: {violation.reason})")
             timeline.persist(database)
+            pool.release_worker(worker)
             return {
                 "status": "rejected", "trade_id": trade_id,
                 "rule": violation.rule, "reason": violation.reason,
@@ -204,6 +229,65 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
         print(f"Payout    : {payout}%" if payout is not None else "Payout    : unknown")
         print(f"Armed     : {ARMED}")
 
+        return StagedTrade(trade_id, asset, direction, expiry, amount, payout, worker, pool, warmup_service, timeline)
+    except pocket_dom.AssetUntradeableError as e:
+        lifecycle_logger.warning("trade_id=%s worker_id=%s asset untradeable: %s", trade_id, worker.worker_id, e)
+        database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable")
+        # The one real, live-DOM-observed broker/venue rejection this
+        # codebase has (the .asset-inactive overlay - see pocket_dom.
+        # read_payout_and_check_tradeable) - the closest real mapping to
+        # BROKER_REJECTED, distinct from every other rejection above
+        # (which are all client-side policy/pre-checks, hence SKIPPED).
+        database.record_pipeline_event(None, None, SignalLifecycleState.BROKER_REJECTED,
+                                        signal_id=trade_id, detail="asset_untradeable")
+        timeline.persist(database)
+        pool.release_worker(worker)
+        return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable", "reason": str(e)}
+    except Exception as e:
+        if _is_transient_browser_error(e):
+            # Confirmed live (see docs/AXIM_RELEASE_CHECKLIST.md's browser
+            # crash investigation): a long-lived, headed Chrome session
+            # occasionally has its context/page torn down mid-selection
+            # (asset/expiry/amount, or a stray-modal/health-check probe) -
+            # always BEFORE any click here, since this function never
+            # clicks. Deliberately skips the usual update_trade_status/
+            # record_pipeline_event/raise below - this trade_id isn't done
+            # failing yet, and writing FAILED here only to overwrite it
+            # with SIZED/OPEN a moment later on a successful retry would
+            # leave a confusing, false-alarm audit trail.
+            # trade_coordinator.handle_signal (and Martin Trader's own
+            # precision path) catch this specific exception and retry
+            # exactly once with a fresh worker; if that also fails (for
+            # any reason), the generic exception handler below does this
+            # same status/pipeline-event bookkeeping instead, exactly once.
+            lifecycle_logger.warning(
+                "trade_id=%s worker_id=%s transient browser error before click (%s) - "
+                "deferring to caller's single retry with a fresh worker",
+                trade_id, worker.worker_id, e,
+            )
+            pool.release_worker(worker)
+            raise RetryableBrowserError(str(e)) from e
+        lifecycle_logger.error("trade_id=%s worker_id=%s status=%s error=%s", trade_id, worker.worker_id, TradeStatus.ERROR.value, e)
+        database.update_trade_status(trade_id, TradeStatus.ERROR, result=f"error:{e}")
+        database.record_pipeline_event(None, None, SignalLifecycleState.FAILED, signal_id=trade_id, detail=str(e))
+        timeline.persist(database)
+        pool.release_worker(worker)
+        raise
+
+
+async def submit_staged_trade(staged, latency=None):
+    """The ONLY action that should remain at a scheduled boundary: the
+    ARMED check and the actual direction click, plus everything that has
+    always followed it (status/pipeline bookkeeping, track_outcome
+    spawn, worker release). Always releases the worker (finally) -
+    exactly the same unconditional-release guarantee prepare_trade has
+    always had."""
+    trade_id, worker, pool, warmup_service = staged.trade_id, staged.worker, staged.pool, staged.warmup_service
+    asset, direction, expiry, amount = staged.asset, staged.direction, staged.expiry, staged.amount
+    timeline = staged.timeline
+    page = worker.page
+    clicked = False
+    try:
         if not ARMED:
             print("Status    : ARMED=false, trade NOT clicked")
             database.record_pipeline_event(None, None, SignalLifecycleState.SKIPPED,
@@ -218,8 +302,22 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
                 "amount": amount,
             }
 
+        if latency:
+            latency.mark("order_payload_sent_at")
         await pocket_dom.click_direction(page, direction)
         clicked = True
+        if latency:
+            # VERIFIED LIMITATION (core/execution_latency.py's own module
+            # docstring): Pocket Option exposes no sub-minute broker-side
+            # timestamp anywhere AXIM can read - this is AXIM's own local
+            # clock at the earliest moment the DOM confirms the broker
+            # accepted the order (.no-deals hiding), not a true
+            # broker-issued timestamp. Both fields share this one moment
+            # since there is no finer distinction available to draw
+            # between "acknowledged" and "opened" with what the broker
+            # actually exposes.
+            latency.mark("broker_acknowledged_at")
+            latency.mark("broker_trade_opened_at")
 
         opened_at = datetime.now().isoformat()
         _capture_screenshot_background(page, trade_id, "clicked")
@@ -249,7 +347,9 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
         # limiting concurrent open trades to MAX_CONCURRENT_WORKERS, and
         # why outcome-watching uses warmup_service's dedicated page rather
         # than this same placement pool.
-        asyncio.create_task(track_outcome(warmup_service, trade_id, expiry_seconds, asset=asset, direction=direction))
+        asyncio.create_task(track_outcome(
+            warmup_service, trade_id, expiry_seconds, asset=asset, direction=direction, latency=latency,
+        ))
 
         return {
             "status": "clicked",
@@ -259,35 +359,8 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
             "expiry": expiry,
             "amount": amount,
         }
-    except pocket_dom.AssetUntradeableError as e:
-        lifecycle_logger.warning("trade_id=%s worker_id=%s asset untradeable: %s", trade_id, worker.worker_id, e)
-        database.update_trade_status(trade_id, TradeStatus.ERROR, result="rejected:asset_untradeable")
-        # The one real, live-DOM-observed broker/venue rejection this
-        # codebase has (the .asset-inactive overlay - see pocket_dom.
-        # read_payout_and_check_tradeable) - the closest real mapping to
-        # BROKER_REJECTED, distinct from every other rejection above
-        # (which are all client-side policy/pre-checks, hence SKIPPED).
-        database.record_pipeline_event(None, None, SignalLifecycleState.BROKER_REJECTED,
-                                        signal_id=trade_id, detail="asset_untradeable")
-        timeline.persist(database)
-        return {"status": "rejected", "trade_id": trade_id, "rule": "asset_untradeable", "reason": str(e)}
     except Exception as e:
         if not clicked and _is_transient_browser_error(e):
-            # Confirmed live (see docs/AXIM_RELEASE_CHECKLIST.md's browser
-            # crash investigation): a long-lived, headed Chrome session
-            # occasionally has its context/page torn down mid-selection
-            # (asset/expiry/amount, or a stray-modal/health-check probe) -
-            # BEFORE click_direction, the one action that actually commits
-            # real risk. Deliberately skips the usual
-            # update_trade_status/record_pipeline_event/raise below - this
-            # trade_id isn't done failing yet, and writing FAILED here
-            # only to overwrite it with SIZED/OPEN a moment later on a
-            # successful retry would leave a confusing, false-alarm audit
-            # trail. trade_coordinator.handle_signal catches this
-            # specific exception and retries exactly once with a fresh
-            # worker; if that also fails (for any reason), its own
-            # generic exception handler does this same
-            # status/pipeline-event bookkeeping instead, exactly once.
             lifecycle_logger.warning(
                 "trade_id=%s worker_id=%s transient browser error before click (%s) - "
                 "deferring to caller's single retry with a fresh worker",
@@ -303,7 +376,42 @@ async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool
         pool.release_worker(worker)
 
 
-async def track_outcome(warmup_service, trade_id, expiry_seconds, asset=None, direction=None):
+async def prepare_trade(trade_id, asset, direction, expiry, amount, worker, pool, warmup_service, timeline=None):
+    """
+    Runs the verified browser interaction sequence (unchanged internals -
+    select_asset/select_expiry/set_amount/verify_direction_controls_ready/
+    click_direction all live in pocket_dom.py exactly as before) against
+    `worker.page`, one of BrowserWorkerPool's N warm pages.
+
+    `worker`'s lock is already held by the time this is called (acquired
+    by the caller via pool.acquire_worker()) and is always released by
+    the end of this call, on every path including a real click - the
+    worker is never held for a trade's expiry. track_outcome (spawned on
+    a real click) does not reuse this worker at all; it reads from
+    warmup_service's own separate, otherwise-idle page instead - see its
+    own docstring for why.
+
+    2026-07-27 precision-latency audit: this is now a thin wrapper
+    calling pre_stage_trade() then, if it succeeded, submit_staged_trade()
+    immediately afterward with no gap between them - behaviorally
+    identical to the single combined function this always was, for every
+    caller except Martin Trader's own precision-execution path (core/
+    trade_series_engine.py), which calls the two halves separately with a
+    deliberate gap so only the final click remains at a scheduled
+    five-minute boundary.
+
+    "clicked" and "confirmation_detected" are marked inside pocket_dom.
+    click_direction itself (via the active timeline, core/timeline.py),
+    not here - closes a documented instrumentation gap where those two
+    stages used to be marked back-to-back with no separating work.
+    """
+    staged = await pre_stage_trade(trade_id, asset, direction, expiry, amount, worker, pool, warmup_service, timeline=timeline)
+    if not isinstance(staged, StagedTrade):
+        return staged  # already a rejected/error dict - worker already released
+    return await submit_staged_trade(staged)
+
+
+async def track_outcome(warmup_service, trade_id, expiry_seconds, asset=None, direction=None, latency=None):
     """Waits for a trade to close and records the result. Used both for the
     normal post-click flow (prepare_trade, above) and by core/recovery.py
     to re-attach tracking to a trade left open across a restart.
@@ -364,9 +472,19 @@ async def track_outcome(warmup_service, trade_id, expiry_seconds, asset=None, di
     # classify the close.
     wait_t0 = time.monotonic()
     try:
+        if latency and latency.timestamps.get("order_payload_sent_at"):
+            # The trade's THEORETICAL close (submit time + its own
+            # contractual expiry) - computed, not separately measured -
+            # distinct from result_detected_at below (when AXIM's own
+            # poll actually confirmed it), which is what
+            # broker_close_to_result_detection_ms is meant to capture.
+            submitted_at = datetime.fromisoformat(latency.timestamps["order_payload_sent_at"])
+            latency.mark("broker_trade_closed_at", at=submitted_at + timedelta(seconds=expiry_seconds))
         outcome = await pocket_dom.wait_for_trade_result(
             warmup_service, expiry_seconds, asset=asset, direction=direction,
         )
+        if latency:
+            latency.mark("result_detected_at")
         detection_overhead_ms = (time.monotonic() - wait_t0 - expiry_seconds) * 1000
         try:
             database.record_outcome_latency(trade_id, detection_overhead_ms)
@@ -416,6 +534,9 @@ async def track_outcome(warmup_service, trade_id, expiry_seconds, asset=None, di
         )
         timeline.mark("outcome_recorded")
         timeline.persist(database)
+        if latency:
+            latency.mark("result_persisted_at")
+            database.record_execution_latency(trade_id, latency.timestamps)
 
         lifecycle_logger.info(
             "trade_id=%s status=%s result=%s stake=%s final_value=%s profit_loss=%s",

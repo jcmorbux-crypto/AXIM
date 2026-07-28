@@ -22,6 +22,7 @@ import database
 import pocket_executor
 import pocket_dom
 import risk_manager
+from execution_latency import ExecutionLatency
 from signal_lifecycle import SignalLifecycleState
 from timeline import TradeTimeline
 
@@ -242,6 +243,123 @@ class TrackOutcomeTests(PocketExecutorTestCase):
         events = database.list_pipeline_events_for_signal(trade_id)
         self.assertEqual(events[-1]["state"], SignalLifecycleState.FAILED)
         self.assertIn("network blip", events[-1]["detail"])
+
+
+class PreStageAndSubmitSplitTests(PocketExecutorTestCase):
+    """2026-07-27 precision-latency audit: prepare_trade was split into
+    pre_stage_trade (everything up to and including the DB "prepared"
+    write, but never the click) and submit_staged_trade (the ARMED check,
+    the click, and everything after). prepare_trade itself just calls
+    both back-to-back (covered already by the tests above, still
+    passing) - these tests cover the split calling convention Martin
+    Trader's precision-execution path actually uses."""
+
+    def test_pre_stage_trade_returns_a_staged_trade_without_releasing_the_worker(self):
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        staged = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool, warmup_service=None, timeline=timeline,
+        ))
+        self.assertIsInstance(staged, pocket_executor.StagedTrade)
+        self.assertEqual(staged.trade_id, trade_id)
+        self.assertEqual(staged.worker, worker)
+        self.assertEqual(pool.released, [], "worker must still be held after a successful pre-stage")
+        pocket_dom.click_direction.assert_not_awaited()  # the whole point - no click yet
+
+    def test_pre_stage_trade_rejection_releases_the_worker(self):
+        trade_id = self._new_trade(expiry="not a real expiry")
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        result = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "not a real expiry", 10, worker, pool,
+            warmup_service=None, timeline=timeline,
+        ))
+        self.assertEqual(result["rule"], "unparseable_expiry")
+        self.assertEqual(pool.released, [worker], "a rejected pre-stage has nothing left to submit")
+
+    def test_submit_staged_trade_clicks_and_releases_the_worker(self):
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        staged = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool, warmup_service=None, timeline=timeline,
+        ))
+        pocket_executor.ARMED = True
+        result = _run(pocket_executor.submit_staged_trade(staged))
+        self.assertEqual(result["status"], "clicked")
+        pocket_dom.click_direction.assert_awaited_once()
+        self.assertEqual(pool.released, [worker])
+
+    def test_submit_staged_trade_armed_false_releases_the_worker_without_clicking(self):
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        staged = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool, warmup_service=None, timeline=timeline,
+        ))
+        pocket_executor.ARMED = False
+        result = _run(pocket_executor.submit_staged_trade(staged))
+        self.assertEqual(result["status"], "prepared_not_armed")
+        pocket_dom.click_direction.assert_not_awaited()
+        self.assertEqual(pool.released, [worker])
+
+    def test_prepare_trade_is_equivalent_to_pre_stage_then_submit(self):
+        """The combined wrapper must behave identically to calling the
+        two halves back-to-back - locks in that the split was a pure
+        refactor, not a behavior change, for every existing caller."""
+        pocket_executor.ARMED = True
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        result = _run(pocket_executor.prepare_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool, warmup_service=None, timeline=timeline,
+        ))
+        self.assertEqual(result["status"], "clicked")
+        self.assertEqual(pool.released, [worker])
+
+
+class ExecutionLatencyMarkingTests(PocketExecutorTestCase):
+    """2026-07-27 precision-latency audit: confirms pre_stage_trade/
+    submit_staged_trade/track_outcome actually populate the latency
+    object's fields when one is passed, and never raise or change
+    behavior when none is passed (latency=None, the default)."""
+
+    def test_latency_fields_populated_across_the_full_flow(self):
+        pocket_executor.track_outcome = self._original_track_outcome  # need the real one for result fields
+        pocket_executor.ARMED = True
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        latency = ExecutionLatency(series_id=1, entry_number=1)
+
+        staged = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool, warmup_service=None,
+            timeline=timeline, latency=latency,
+        ))
+        self.assertIn("browser_command_started_at", latency.timestamps)
+
+        result = _run(pocket_executor.submit_staged_trade(staged, latency=latency))
+        self.assertEqual(result["status"], "clicked")
+        self.assertIn("order_payload_sent_at", latency.timestamps)
+        self.assertIn("broker_acknowledged_at", latency.timestamps)
+        self.assertIn("broker_trade_opened_at", latency.timestamps)
+
+        metrics = latency.metrics_ms()
+        self.assertIsNotNone(metrics["browser_command_ms"])
+        self.assertGreaterEqual(metrics["browser_command_ms"], 0)
+        self.assertIsNotNone(metrics["broker_acknowledgement_ms"])
+
+    def test_no_latency_object_is_a_complete_no_op(self):
+        pocket_executor.ARMED = True
+        trade_id = self._new_trade()
+        timeline = TradeTimeline(trade_id=trade_id)
+        worker, pool = FakeWorker(), FakePool()
+        staged = _run(pocket_executor.pre_stage_trade(
+            trade_id, "EUR/USD OTC", "BUY", "1 Minute", 10, worker, pool, warmup_service=None, timeline=timeline,
+        ))
+        result = _run(pocket_executor.submit_staged_trade(staged))  # no latency=... at all
+        self.assertEqual(result["status"], "clicked")
 
 
 if __name__ == "__main__":
