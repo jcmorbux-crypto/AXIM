@@ -132,7 +132,20 @@ def _next_five_minute_boundary_utc(reference_dt_utc):
         12:58:00 -> 13:00:00 (hour rollover)
         23:58:00 -> 00:00:00 next day (midnight rollover)
     Hour/midnight rollover both fall out of plain timedelta arithmetic -
-    no special-casing needed."""
+    no special-casing needed.
+
+    The exact-boundary case (reference_dt_utc == :00/:05/.../:55 with no
+    leftover seconds) and a reference already past what would otherwise
+    be "due soon" are NOT expected Martin Trader behavior - under normal
+    operation the signal always arrives a few minutes BEFORE its
+    intended candle, per the product's own stated timing. Landing
+    exactly on a boundary, or arriving late, is abnormal telemetry (a
+    delivery delay, a clock skew, a malformed/edge-case signal), not a
+    strategy branch this module optimizes for. It is still handled
+    defensively rather than raising - "too late for this boundary, roll
+    to the next one" - so an unusual delivery never silently misfires
+    into the WRONG candle, but this defensive path is deliberately
+    distinct from, and should never be read as, the normal case."""
     if reference_dt_utc is None or reference_dt_utc.tzinfo is None:
         raise ScheduleResolutionError(
             "reference datetime must be timezone-aware - refusing to schedule from a naive one"

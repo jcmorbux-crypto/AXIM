@@ -335,7 +335,16 @@ class MartinTraderBoundaryHandlerTests(unittest.TestCase):
     possible." Each case patches trade_series_engine._now_utc (the one
     seam create_series_from_signal actually consults for "when was this
     signal received") to a fixed instant, then asserts the real handler
-    path produces the exact expected Entry 1 UTC time."""
+    path produces the exact expected Entry 1 UTC time.
+
+    Note on scope: under NORMAL Martin Trader operation the signal
+    always arrives a few minutes before its intended candle - the
+    exact-:00-boundary and already-past-boundary cases below are
+    defensive coverage for abnormal telemetry (a delivery delay, a
+    clock skew), not part of the expected strategy flow. They stay
+    here so the resolver's defensive behavior can never silently drift,
+    but should be read as "handled safely if it ever happens," not
+    "this is what a real signal looks like." """
 
     def setUp(self):
         self._tmp_dir = tempfile.TemporaryDirectory()

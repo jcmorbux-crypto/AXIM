@@ -80,18 +80,32 @@ class TradeSeriesEngineTests(unittest.TestCase):
                 self.assertEqual(resolved, datetime(2026, 7, 27, eh, em, es, tzinfo=timezone.utc))
 
     def test_a_signal_received_one_second_after_a_boundary_schedules_the_following_boundary(self):
+        # Defensive coverage for an ABNORMAL condition, not expected
+        # Martin Trader behavior: the product's own stated timing is that
+        # a signal always arrives a few minutes BEFORE its intended
+        # candle, so a signal arriving this close to (or past) a boundary
+        # represents unusual telemetry (delivery delay, clock skew) - not
+        # a case the strategy is designed around. Still handled safely
+        # (rolls forward, never misfires into the wrong candle) rather
+        # than left to raise or guess.
         ref = datetime(2026, 7, 27, 12, 5, 1, tzinfo=timezone.utc)
         resolved = engine._next_five_minute_boundary_utc(ref)
         self.assertEqual(resolved, datetime(2026, 7, 27, 12, 10, 0, tzinfo=timezone.utc))
         self.assertNotEqual(resolved, datetime(2026, 7, 27, 12, 5, 0, tzinfo=timezone.utc))
 
     def test_a_signal_received_exactly_on_a_boundary_is_too_late_for_it_and_schedules_the_next_one(self):
-        # Explicit product rule (safer for browser execution latency): a
-        # signal received exactly AT :05:00 is too late for that same
-        # boundary - it schedules :10:00, never :05:00 itself. This must
-        # never silently drift from the implementation - if this test
-        # and _next_five_minute_boundary_utc ever disagree, that is a
-        # real defect, not a test to "fix" by loosening the assertion.
+        # Defensive coverage for an ABNORMAL condition, not expected
+        # Martin Trader behavior (see this module's own docstring on
+        # _next_five_minute_boundary_utc): a signal always arrives before
+        # its intended candle under normal operation, so landing exactly
+        # on a boundary is treated as unexpected telemetry, not a
+        # strategy branch. Explicit product rule (safer for browser
+        # execution latency): a signal received exactly AT :05:00 is too
+        # late for that same boundary - it schedules :10:00, never
+        # :05:00 itself. This must never silently drift from the
+        # implementation - if this test and _next_five_minute_boundary_utc
+        # ever disagree, that is a real defect, not a test to "fix" by
+        # loosening the assertion.
         ref = datetime(2026, 7, 27, 12, 5, 0, tzinfo=timezone.utc)
         resolved = engine._next_five_minute_boundary_utc(ref)
         self.assertEqual(resolved, datetime(2026, 7, 27, 12, 10, 0, tzinfo=timezone.utc))
