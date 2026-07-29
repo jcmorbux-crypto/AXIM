@@ -505,6 +505,87 @@ def _ms_between(a_iso, b_iso):
     return (datetime.fromisoformat(b_iso) - datetime.fromisoformat(a_iso)).total_seconds() * 1000
 
 
+_OVERLAY_ACTUALLY_BLOCKING_JS = """
+() => {
+    const overlay = document.querySelector('.asset-inactive');
+    if (!overlay) return false;
+    const style = getComputedStyle(overlay);
+    const opacity = parseFloat(style.opacity || '1');
+    return opacity > 0.05 && style.pointerEvents !== 'none';
+}
+"""
+
+# 2026-07-28, browser-layer diagnostics (user-requested follow-up to the
+# button.click() variability finding - one sample measured 9.7s with
+# every actionability condition already satisfied, so the remaining
+# candidates are main-thread/renderer-side, not AXIM's own code):
+# registers a PerformanceObserver for Long Tasks (>50ms main-thread
+# blocks - the standard signal for "the page was too busy to respond
+# promptly") and a MutationObserver counting DOM churn, both starting
+# from click_direction's own entry so they cover the whole tab-
+# activation + enabled-wait + click window, not just the click call
+# itself. Read back via _READ_BROWSER_DIAGNOSTICS_JS after the click.
+# Deliberately does not touch anything the real click path depends on -
+# purely additive observation.
+_START_BROWSER_DIAGNOSTICS_JS = """
+() => {
+    window.__axim_diag = { longtasks: [], mutations: 0 };
+    try {
+        const po = new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+                window.__axim_diag.longtasks.push({ duration: entry.duration, startTime: entry.startTime });
+            }
+        });
+        po.observe({ type: 'longtask', buffered: true });
+        window.__axim_diag._po = po;
+    } catch (e) {
+        window.__axim_diag.longtask_error = String(e);
+    }
+    try {
+        const mo = new MutationObserver((mutations) => {
+            window.__axim_diag.mutations += mutations.length;
+        });
+        mo.observe(document.body, { childList: true, subtree: true, attributes: true });
+        window.__axim_diag._mo = mo;
+    } catch (e) {
+        window.__axim_diag.mutation_error = String(e);
+    }
+}
+"""
+
+_READ_BROWSER_DIAGNOSTICS_JS = """
+() => {
+    const d = window.__axim_diag || {};
+    const longtasks = d.longtasks || [];
+    return {
+        long_tasks_count: longtasks.length,
+        long_tasks_total_ms: longtasks.reduce((sum, t) => sum + t.duration, 0),
+        dom_mutations_count: d.mutations || 0,
+        active_animations_count: (typeof document.getAnimations === 'function') ? document.getAnimations().length : null,
+        longtask_observer_error: d.longtask_error || null,
+        mutation_observer_error: d.mutation_error || null,
+    };
+}
+"""
+
+
+async def _asset_overlay_actually_blocking(page):
+    """2026-07-28, correcting a diagnostic-only bug (user-flagged): the
+    click_direction diagnostics originally checked
+    page.locator(SEL_ASSET_INACTIVE_OVERLAY).count() > 0 - mere DOM
+    presence. read_payout_and_check_tradeable's own docstring already
+    documents why that's wrong: this element is confirmed ALWAYS present
+    in the DOM (non-zero size, display:block, visibility:visible) even
+    when completely inert - only opacity/pointer-events genuinely
+    distinguish a real, active "asset unavailable" state from the normal
+    dormant one. Reuses that exact, already-proven check (not a new,
+    unverified one) instead of the naive count()."""
+    try:
+        return await page.evaluate(_OVERLAY_ACTUALLY_BLOCKING_JS)
+    except Exception:
+        return None
+
+
 async def _poll_button_readiness(button, timeout_ms, diag):
     """2026-07-27 precision-bottleneck investigation (user-requested
     follow-up after execution #1 showed the 3.8s delay landing inside
@@ -652,6 +733,7 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
         raise ValueError(f"Unknown direction: {direction!r}")
 
     diag = {} if latency is not None else None
+    cdp = None
 
     try:
         if diag is not None:
@@ -671,6 +753,18 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
                 diag["page_has_focus"] = await page.evaluate("document.hasFocus()")
             except Exception:
                 diag["page_has_focus"] = None
+            try:
+                await page.evaluate(_START_BROWSER_DIAGNOSTICS_JS)
+            except Exception as e:
+                diag["browser_diagnostics_start_error"] = str(e)
+
+            cdp_metrics_before = None
+            try:
+                cdp = await page.context.new_cdp_session(page)
+                await cdp.send("Performance.enable")
+            except Exception as e:
+                diag["cdp_session_error"] = str(e)
+                cdp = None
 
         async with time_category("browser"):
             if diag is not None:
@@ -696,10 +790,7 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
                     diag["button_bounding_box_present"] = (await button.bounding_box()) is not None
                 except Exception:
                     diag["button_bounding_box_present"] = None
-                try:
-                    diag["overlay_detected"] = (await page.locator(SEL_ASSET_INACTIVE_OVERLAY).count()) > 0
-                except Exception:
-                    diag["overlay_detected"] = None
+                diag["overlay_detected"] = await _asset_overlay_actually_blocking(page)
                 diag["enabled_check_started_at"] = _iso_now().isoformat()
                 diag["poll_started_at"] = _iso_now().isoformat()
                 await _poll_button_readiness(button, timeout, diag)
@@ -734,10 +825,7 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
                     diag["button_stable_final"] = box_a is not None and box_a == box_b
                 except Exception:
                     diag["button_stable_final"] = None
-                try:
-                    diag["overlay_detected_final"] = (await page.locator(SEL_ASSET_INACTIVE_OVERLAY).count()) > 0
-                except Exception:
-                    diag["overlay_detected_final"] = None
+                diag["overlay_detected_final"] = await _asset_overlay_actually_blocking(page)
                 try:
                     opened_tab = page.locator(SEL_TRADES_PANEL).get_by_text("Opened", exact=True).first
                     diag["active_tab_final"] = "Opened" if await opened_tab.evaluate(
@@ -746,12 +834,48 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
                 except Exception:
                     diag["active_tab_final"] = None
 
+                if cdp is not None:
+                    try:
+                        cdp_metrics_before = await cdp.send("Performance.getMetrics")
+                    except Exception as e:
+                        diag["cdp_metrics_before_error"] = str(e)
                 diag["button_click_started_at"] = _iso_now().isoformat()
             await button.click(timeout=timeout)
             if diag is not None:
                 diag["button_click_completed_at"] = _iso_now().isoformat()
                 diag["button_click_duration_ms"] = _ms_between(
                     diag["button_click_started_at"], diag["button_click_completed_at"])
+
+                # Browser-layer diagnostics (2026-07-28, user-requested):
+                # was the renderer/main-thread itself busy during the
+                # critical window, independent of AXIM's own code? Long
+                # tasks (>50ms main-thread blocks - the standard "page was
+                # unresponsive" signal), DOM churn, and active CSS
+                # animations/transitions are all real candidates for why
+                # an already-actionable button's click() could still be
+                # slow to dispatch/register.
+                try:
+                    browser_diag = await page.evaluate(_READ_BROWSER_DIAGNOSTICS_JS)
+                    diag.update(browser_diag)
+                except Exception as e:
+                    diag["browser_diagnostics_read_error"] = str(e)
+
+                if cdp is not None and cdp_metrics_before is not None:
+                    try:
+                        cdp_metrics_after = await cdp.send("Performance.getMetrics")
+                        before = {m["name"]: m["value"] for m in cdp_metrics_before.get("metrics", [])}
+                        after = {m["name"]: m["value"] for m in cdp_metrics_after.get("metrics", [])}
+                        # These CDP metrics are cumulative since page load -
+                        # the delta across button_click_started_at..
+                        # completed_at is how much of each happened DURING
+                        # the click specifically, in seconds (CDP's own
+                        # unit), converted to ms to match everything else
+                        # here.
+                        for metric in ("TaskDuration", "ScriptDuration", "LayoutDuration", "RecalcStyleDuration"):
+                            if metric in before and metric in after:
+                                diag[f"cdp_{metric}_during_click_ms"] = (after[metric] - before[metric]) * 1000
+                    except Exception as e:
+                        diag["cdp_metrics_after_error"] = str(e)
 
         timeline = get_current_timeline()
         if timeline is not None:
@@ -770,6 +894,11 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
     except _RETRYABLE_ERRORS as e:
         await _capture_failure(page, "click_direction", button_selector, str(e))
     finally:
+        if cdp is not None:
+            try:
+                await cdp.detach()
+            except Exception:
+                pass
         if diag is not None:
             latency.timestamps["diagnostics"] = diag
 
@@ -828,8 +957,6 @@ def _parse_balance_text(raw):
     cleaned = (raw or "").replace(",", "").replace("$", "").strip()
     return float(cleaned) if cleaned else None
 
-
-SEL_ASSET_INACTIVE_OVERLAY = ".asset-inactive"
 
 _PAYOUT_AND_TRADEABLE_JS = """
 () => {
