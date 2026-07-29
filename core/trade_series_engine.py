@@ -58,6 +58,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "config"))
 import database
 import broker_account_manager
 import pocket_executor
+import pocket_dom
 from execution_latency import ExecutionLatency
 from timeline import TradeTimeline
 from trade_lifecycle import TradeStatus
@@ -114,6 +115,14 @@ _RESOLVED_STATUS_TO_RESULT = {
     TradeStatus.RESULT_WIN.value: "win",
     TradeStatus.RESULT_LOSS.value: "loss",
     TradeStatus.RESULT_DRAW.value: "draw",
+}
+
+# The inverse mapping - used by reconcile_stuck_series/reconcile_series_
+# manually to mirror pocket_executor.track_outcome's own final
+# execution_status (RESULT_WIN/LOSS/DRAW, not just TRADE_CLOSED) whenever
+# a result is applied outside the normal live-tracking path.
+_RESULT_TO_STATUS = {
+    "win": TradeStatus.RESULT_WIN, "loss": TradeStatus.RESULT_LOSS, "draw": TradeStatus.RESULT_DRAW,
 }
 
 
@@ -431,7 +440,7 @@ async def _on_trade_closed(payload):
     await _apply_entry_outcome(series, entry["entry_number"], payload.get("result"), payload.get("profit_loss") or 0.0)
 
 
-async def reconcile_stuck_series():
+async def reconcile_stuck_series(warmup_service=None):
     """Startup-only recovery pass (core/telegram_listener.py calls this
     once, right after recovery.run_recovery() - see that module's own
     docstring for why 'active' entries need this at all): a series left
@@ -443,33 +452,55 @@ async def reconcile_stuck_series():
     without publishing an outcome event - but this series would otherwise
     wait forever for an event that will never come.
 
-    A trade that WAS actually clicked before the crash is NOT this
-    function's concern - recovery.resume_pending_trades already
-    re-attaches real track_outcome tracking for it (see that module),
-    which naturally publishes a genuine trade.closed once it resolves;
-    _on_trade_closed (registered before this ever runs - see
-    telegram_listener._startup()'s ordering) picks that up exactly like
-    any other outcome, live or resumed. This function ONLY handles the
-    "never actually became a real trade" case, treating it as neither a
-    win nor a loss (no attempt was genuinely made) - the same entry
-    number is retried, exactly like a transient all_workers_busy
-    rejection would be, rather than being counted as a loss for an
-    attempt that never happened."""
+    A trade that WAS actually clicked before the crash and is still
+    genuinely being tracked is NOT this function's concern -
+    recovery.resume_pending_trades already re-attaches real track_outcome
+    tracking for it (see that module), which naturally publishes a
+    genuine trade.closed once it resolves; _on_trade_closed (registered
+    before this ever runs - see telegram_listener._startup()'s ordering)
+    picks that up exactly like any other outcome, live or resumed.
+
+    2026-07-29 reconciliation-gap fix (verified production incident:
+    series 105 - a real browser crash during wait_for_trade_result left
+    the entry's execution_status='error', result=f"error:{e}", a string
+    this function's OLD narrow "== 'error:abandoned_on_restart'" check
+    could never match, and recovery.resume_pending_trades' OLD narrow
+    get_open_trades() scan (trade_clicked/trade_opened only) had already
+    stopped seeing it too - so the series sat 'active' forever with
+    nothing watching it). Eligibility for reconciliation is now based on
+    trade lifecycle state, not error wording:
+
+        possibly_submitted (opened_at is set - a real click happened)
+        AND not_authoritatively_resolved (no win/loss/draw recorded)
+        = reconciliation_required
+
+    which covers browser crashes, context closure, timeouts, process
+    restarts, database interruptions, and any other unexpected exception
+    during result monitoring - not just the one exact string recovery.py
+    happens to write for the "never clicked" case. When warmup_service is
+    given, an entry in this state is checked against Pocket Option's own
+    Closed-trades history (pocket_dom.find_closed_trade_by_criteria) -
+    asset+direction+amount+approximate close time, since no broker trade
+    ID is ever readable from the DOM (verified, documented limitation).
+    Only a UNIQUE match is ever auto-applied; "no_match"/"multiple_matches"/
+    "read_failed" all fail closed (database.mark_series_reconciliation_
+    required) rather than guess - the series is explicitly flagged and
+    excluded from list_pending_trade_series (status != 'pending'/'active')
+    so it can never silently resume or re-fire on its own. Without a
+    warmup_service (e.g. a caller that hasn't got a browser context),
+    the same fail-closed marking happens immediately, never guessing."""
     for series in await asyncio.to_thread(database.list_pending_trade_series):
         if series["status"] != "active":
             continue
         entry = await asyncio.to_thread(database.get_series_entry, series["id"], series["current_entry_number"])
         if entry is None:
-            continue
-
-        if entry.get("result") == "error:abandoned_on_restart":
-            logger.warning(
-                "trade_series_engine: series_id=%s entry #%d never actually executed before a restart "
-                "(no real position to reconcile) - retrying the same entry",
+            logger.error(
+                "trade_series_engine: series_id=%s is active but entry #%d has no signals row at all - "
+                "inconsistent state, marking reconciliation_required",
                 series["id"], series["current_entry_number"],
             )
             await asyncio.to_thread(
-                database.advance_trade_series, series["id"], series["current_entry_number"] - 1, "pending",
+                database.mark_series_reconciliation_required, series["id"], "series_active_with_no_child_entry",
             )
             continue
 
@@ -479,7 +510,9 @@ async def reconcile_stuck_series():
         # pocket_executor.track_outcome writing the result and this
         # module's own trade.closed subscriber reacting to it. Applying it
         # here is the same logic _on_trade_closed uses, just driven by the
-        # DB's own already-written result instead of a live event.
+        # DB's own already-written result instead of a live event. Checked
+        # BEFORE the "never executed" branch below since a resolved result
+        # is more specific/definitive than the mere absence of opened_at.
         if entry.get("execution_status") in _RESOLVED_STATUS_TO_RESULT:
             result = _RESOLVED_STATUS_TO_RESULT[entry["execution_status"]]
             logger.warning(
@@ -488,6 +521,192 @@ async def reconcile_stuck_series():
                 series["id"], series["current_entry_number"], result,
             )
             await _apply_entry_outcome(series, series["current_entry_number"], result, entry.get("profit_loss") or 0.0)
+            continue
+        if entry.get("result") in ("win", "loss", "draw"):
+            # Same case, but only the plain `result` column ended up
+            # terminal (execution_status wasn't mapped to a RESULT_* value)
+            # - treat identically rather than falling through to
+            # broker-history reconciliation for an outcome we already have.
+            await asyncio.to_thread(
+                database.update_trade_status, entry["id"], _RESULT_TO_STATUS.get(entry["result"], TradeStatus.ERROR),
+            )
+            await _apply_entry_outcome(
+                series, series["current_entry_number"], entry["result"], entry.get("profit_loss") or 0.0,
+            )
+            continue
+
+        # Never actually became a real trade (no click happened, so there
+        # is no real position to reconcile) - driven by the absence of
+        # opened_at (possibly_submitted is False), not by matching the one
+        # specific string recovery.py happens to write for this case, so
+        # ANY failure before the click is treated the same way.
+        if not entry.get("opened_at"):
+            logger.warning(
+                "trade_series_engine: series_id=%s entry #%d never actually executed (no opened_at, result=%r) - "
+                "retrying the same entry",
+                series["id"], series["current_entry_number"], entry.get("result"),
+            )
+            await asyncio.to_thread(
+                database.advance_trade_series, series["id"], series["current_entry_number"] - 1, "pending",
+            )
+            continue
+
+        # possibly_submitted AND not_authoritatively_resolved - the general
+        # case. entry["execution_status"] here is whatever it happened to
+        # be left at (trade_clicked, trade_opened, or 'error' with an
+        # arbitrary message) - none of that matters; only opened_at set +
+        # no terminal result does.
+        logger.warning(
+            "trade_series_engine: series_id=%s entry #%d was possibly submitted (opened_at=%s) but has no "
+            "authoritative result (execution_status=%r, result=%r) - attempting broker-history reconciliation",
+            series["id"], series["current_entry_number"], entry.get("opened_at"),
+            entry.get("execution_status"), entry.get("result"),
+        )
+
+        if warmup_service is None:
+            logger.error(
+                "trade_series_engine: series_id=%s entry #%d needs reconciliation but no warmup_service was "
+                "provided - marking reconciliation_required rather than guessing",
+                series["id"], series["current_entry_number"],
+            )
+            await asyncio.to_thread(
+                database.mark_series_reconciliation_required, series["id"],
+                "possibly_submitted_not_resolved_no_warmup_service", entry.get("result"),
+            )
+            continue
+
+        try:
+            opened_at = datetime.fromisoformat(entry["opened_at"])
+            expiry_seconds = pocket_dom.expiry_to_seconds(entry["timeframe"])
+            match_status, match = await pocket_dom.find_closed_trade_by_criteria(
+                warmup_service, entry["asset"], entry["direction"], entry.get("trade_amount"),
+                opened_at, expiry_seconds,
+            )
+        except Exception as e:
+            logger.error(
+                "trade_series_engine: series_id=%s entry #%d broker-history lookup raised %s - failing closed",
+                series["id"], series["current_entry_number"], e,
+            )
+            await asyncio.to_thread(
+                database.mark_series_reconciliation_required, series["id"], "broker_history_lookup_raised", str(e),
+            )
+            continue
+
+        if match_status != "unique":
+            logger.error(
+                "trade_series_engine: series_id=%s entry #%d broker-history match=%s - failing closed, marking "
+                "reconciliation_required rather than guessing",
+                series["id"], series["current_entry_number"], match_status,
+            )
+            await asyncio.to_thread(
+                database.mark_series_reconciliation_required, series["id"],
+                f"broker_history_{match_status}", entry.get("result"),
+            )
+            continue
+
+        profit_loss = None
+        if match["final_value"] is not None and match["stake"] is not None:
+            profit_loss = match["final_value"] - match["stake"]
+        logger.warning(
+            "trade_series_engine: series_id=%s entry #%d uniquely matched broker history: result=%s - "
+            "reconciling automatically",
+            series["id"], series["current_entry_number"], match["result"],
+        )
+        # Mirrors pocket_executor.track_outcome's own two-step update
+        # (TRADE_CLOSED, then the final RESULT_WIN/LOSS/DRAW status) so a
+        # broker-history-reconciled entry's execution_status ends up
+        # identical to one resolved through live tracking.
+        closed_at = datetime.now().isoformat()
+        await asyncio.to_thread(
+            database.update_trade_status, entry["id"], TradeStatus.TRADE_CLOSED,
+            closed_at=closed_at, result=match["result"], profit_loss=profit_loss,
+        )
+        result_status = _RESULT_TO_STATUS.get(match["result"], TradeStatus.ERROR)
+        await asyncio.to_thread(
+            database.update_trade_status, entry["id"], result_status,
+            closed_at=closed_at, result=match["result"], profit_loss=profit_loss,
+        )
+        await _apply_entry_outcome(series, series["current_entry_number"], match["result"], profit_loss or 0.0)
+
+
+async def reconcile_series_manually(series_id, operator, reconciliation_source, reconciliation_reason,
+                                     authoritative_result, authoritative_pnl=None,
+                                     original_error=None, broker_trade_id=None, entry_number=None):
+    """The explicit, audited administrative action required whenever
+    automatic broker-history matching (reconcile_stuck_series, above)
+    cannot uniquely resolve an entry on its own - e.g. series 105, where
+    Pocket Option's DOM exposes no broker trade/order ID at all, so a
+    human operator must read the authoritative Pocket Option trade
+    history directly and supply the real result. Never infers a result
+    from price movement, local logs, or the intended direction - the
+    caller is expected to have already determined authoritative_result/
+    authoritative_pnl from the broker's own trade history.
+
+    Routes through the SAME _apply_entry_outcome every live and automatic
+    reconciliation path uses, so risk counters and net P&L update through
+    exactly one, already-tested code path - never a parallel
+    reimplementation that could double-count or diverge.
+
+    Idempotency guard: a series that is no longer 'active' (already
+    resolved, by this function or any other path) is rejected rather than
+    silently re-applying an outcome - required so a duplicate startup
+    reconciliation attempt, or a duplicate manual call, can never
+    double-grade the same trade twice."""
+    if authoritative_result not in ("win", "loss", "draw"):
+        raise ValueError(f"authoritative_result must be one of win/loss/draw, got {authoritative_result!r}")
+    if not operator or not reconciliation_source or not reconciliation_reason:
+        raise ValueError("operator, reconciliation_source, and reconciliation_reason are all mandatory")
+
+    series = await asyncio.to_thread(database.get_trade_series, series_id)
+    if series is None:
+        raise ValueError(f"no such trade_series id={series_id}")
+    if series["status"] not in ("active", "reconciliation_required"):
+        # Only 'active' (never yet reconciled) and 'reconciliation_required'
+        # (flagged by reconcile_stuck_series, awaiting exactly this manual
+        # step) are eligible - any other status (won/lost_exhausted/error/
+        # blocked/cancelled) means some path already resolved this series,
+        # so applying an outcome again would double-grade it.
+        logger.warning(
+            "trade_series_engine: series_id=%s reconcile_series_manually called but series status=%r "
+            "is already resolved - refusing to double-grade",
+            series_id, series["status"],
+        )
+        return {"applied": False, "reason": f"series_status_is_{series['status']}_already_resolved"}
+
+    entry_number = entry_number if entry_number is not None else series["current_entry_number"]
+    entry = await asyncio.to_thread(database.get_series_entry, series_id, entry_number)
+
+    audit = {
+        "series_id": series_id,
+        "reconciliation_source": reconciliation_source,
+        "reconciliation_reason": reconciliation_reason,
+        "operator": operator,
+        "original_error": original_error,
+        "broker_trade_id": broker_trade_id,
+        "authoritative_result": authoritative_result,
+        "authoritative_pnl": authoritative_pnl,
+    }
+    logger.warning(
+        "trade_series_engine: series_id=%s entry #%d manually reconciled by operator=%r via %s (%s): "
+        "result=%s pnl=%s broker_trade_id=%s",
+        series_id, entry_number, operator, reconciliation_source, reconciliation_reason,
+        authoritative_result, authoritative_pnl, broker_trade_id,
+    )
+
+    if entry is not None:
+        closed_at = datetime.now().isoformat()
+        await asyncio.to_thread(
+            database.update_trade_status, entry["id"], TradeStatus.TRADE_CLOSED,
+            closed_at=closed_at, result=authoritative_result, profit_loss=authoritative_pnl,
+        )
+        await asyncio.to_thread(
+            database.update_trade_status, entry["id"], _RESULT_TO_STATUS[authoritative_result],
+            closed_at=closed_at, result=authoritative_result, profit_loss=authoritative_pnl,
+        )
+
+    await _apply_entry_outcome(series, entry_number, authoritative_result, authoritative_pnl or 0.0)
+    reconciled_at = await asyncio.to_thread(database.record_manual_reconciliation, series_id, audit)
+    return {"applied": True, "reconciled_at": reconciled_at, **audit}
 
 
 # In-memory only (2026-07-27 precision-latency audit) - tracks which

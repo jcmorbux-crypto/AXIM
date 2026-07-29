@@ -80,6 +80,31 @@ NEUTRAL_CLICK_POINT = (800, 500)
 
 _RETRYABLE_ERRORS = (PlaywrightTimeoutError, AssertionError)
 
+# Substrings of the real Playwright error messages observed in production
+# (logs/lifecycle.log) when the underlying browser/page is torn down mid-
+# selection - "Target page, context or browser has been closed" (various
+# Locator/Page ops) and "net::ERR_ABORTED; maybe frame was detached?"
+# (Page.goto during a worker respawn). Matched on message content, not
+# exception type, since Playwright raises its own generic Error/TimeoutError
+# for all of these - narrow substrings rather than "retry on any Exception"
+# so an unrelated bug (a real selector regression, a risk-manager error)
+# never gets silently masked by a retry. Canonical home is here (pocket_dom,
+# the lower-level module) rather than pocket_executor - 2026-07-29,
+# wait_for_trade_result needed this exact same classification (series 105's
+# incident: a browser crash during result-reading matched this pattern
+# but wasn't caught anywhere, since only pre_stage_trade/submit_staged_trade
+# retried on it before) and pocket_executor already imports this module,
+# not the other way around.
+_TRANSIENT_BROWSER_ERROR_MARKERS = (
+    "context or browser has been closed",
+    "frame was detached",
+)
+
+
+def _is_transient_browser_error(e):
+    return any(marker in str(e) for marker in _TRANSIENT_BROWSER_ERROR_MARKERS)
+
+
 logger = get_logger("axim.pocket_dom", filename="pocket_dom.log")
 
 
@@ -1242,42 +1267,72 @@ async def wait_for_trade_result(warmup_service, expiry_seconds, asset=None, dire
     async with time_category("waiting"):
         await asyncio.sleep(expiry_seconds + settlement_buffer_seconds)
 
-    max_wait = time.monotonic() + 30
     retry_sleep = 3
-    match = None
     data = None
 
-    page = await warmup_service.get_page()
-    try:
-        while True:
-            async def _read_once():
-                async with time_category("browser"):
-                    await _ensure_opened_tab_active(page)
-                    trades_panel = page.locator(SEL_TRADES_PANEL)
-                    closed_tab = trades_panel.get_by_text("Closed", exact=True).first
-                    found, visible, enabled = await _probe_state(closed_tab)
-                    _log_selector_event("closed_tab_selector", "text=Closed", DEFAULT_TIMEOUT_MS, 1, found, visible, enabled)
-                    await closed_tab.click(timeout=DEFAULT_TIMEOUT_MS)
-                    item = page.locator(SEL_CLOSED_LIST_ITEM).first
-                    await expect(item).to_be_visible(timeout=DEFAULT_TIMEOUT_MS)
-                    return await page.evaluate(_CLOSED_ITEMS_JS, CLOSED_ITEMS_SCAN_COUNT)
+    # 2026-07-29 verified production incident (series 105): a browser
+    # crash/reconnect mid-read here ("Target page, context or browser has
+    # been closed") previously had NO handling at all in this function -
+    # unlike pre_stage_trade/submit_staged_trade, which already retry once
+    # on this exact error class. It propagated straight up to
+    # track_outcome's generic exception handler, which marks the trade
+    # 'error' - after that, the position had genuinely been opened but
+    # never got an authoritative result, and neither startup recovery path
+    # recognized that combination (see database.get_unresolved_submitted_
+    # trades' own docstring). One retry, after confirming the browser has
+    # actually recovered (warmup_service.ensure_alive() - the SAME
+    # self-healing check get_page() does internally, called explicitly
+    # here so a fresh page reference is fetched only once recovery is
+    # confirmed, not mid-crash), directly closes that gap for the most
+    # common real cause. If it happens twice, this is not being silently
+    # swallowed - the caller's own reconciliation path (trade_series_engine
+    # .reconcile_stuck_series / recover_unresolved_submitted_trades) is
+    # what actually resolves it, via broker-history matching instead of a
+    # live watch.
+    for attempt in range(2):
+        max_wait = time.monotonic() + 30
+        page = await warmup_service.get_page()
+        try:
+            while True:
+                async def _read_once():
+                    async with time_category("browser"):
+                        await _ensure_opened_tab_active(page)
+                        trades_panel = page.locator(SEL_TRADES_PANEL)
+                        closed_tab = trades_panel.get_by_text("Closed", exact=True).first
+                        found, visible, enabled = await _probe_state(closed_tab)
+                        _log_selector_event(
+                            "closed_tab_selector", "text=Closed", DEFAULT_TIMEOUT_MS, 1, found, visible, enabled)
+                        await closed_tab.click(timeout=DEFAULT_TIMEOUT_MS)
+                        item = page.locator(SEL_CLOSED_LIST_ITEM).first
+                        await expect(item).to_be_visible(timeout=DEFAULT_TIMEOUT_MS)
+                        return await page.evaluate(_CLOSED_ITEMS_JS, CLOSED_ITEMS_SCAN_COUNT)
 
-            async with warmup_service.outcome_lock:
-                items = await _read_once()
+                async with warmup_service.outcome_lock:
+                    items = await _read_once()
 
-            if asset is not None and direction is not None:
-                match = _closest_closed_item(items, asset, direction, datetime.now())
-            else:
-                match = items[0] if items else None
+                if asset is not None and direction is not None:
+                    match = _closest_closed_item(items, asset, direction, datetime.now())
+                else:
+                    match = items[0] if items else None
 
-            if match is not None or time.monotonic() >= max_wait:
-                data = match
-                break
-            async with time_category("waiting"):
-                await asyncio.sleep(retry_sleep)
-    except _RETRYABLE_ERRORS as e:
-        await _capture_failure(page, "wait_for_trade_result", SEL_CLOSED_LIST_ITEM, str(e))
-        return None
+                if match is not None or time.monotonic() >= max_wait:
+                    data = match
+                    break
+                async with time_category("waiting"):
+                    await asyncio.sleep(retry_sleep)
+            break
+        except _RETRYABLE_ERRORS as e:
+            await _capture_failure(page, "wait_for_trade_result", SEL_CLOSED_LIST_ITEM, str(e))
+            return None
+        except Exception as e:
+            if _is_transient_browser_error(e) and attempt == 0:
+                logger.warning(
+                    "wait_for_trade_result: transient browser error (%s) - waiting for recovery, retrying once",
+                    e,
+                )
+                await warmup_service.ensure_alive()
+                continue
+            raise
 
     if data is None:
         logger.error(
@@ -1292,12 +1347,22 @@ async def wait_for_trade_result(warmup_service, expiry_seconds, asset=None, dire
 
     logger.info("wait_for_trade_result: closed_item=%s", data)
 
-    def _to_amount(text):
-        try:
-            return float(text.replace("$", "").replace(",", ""))
-        except (ValueError, AttributeError, TypeError):
-            return None
+    return _classify_closed_item(data)
 
+
+def _to_amount(text):
+    try:
+        return float(text.replace("$", "").replace(",", ""))
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _classify_closed_item(data):
+    """Shared by wait_for_trade_result (the live-watch path) and
+    find_closed_trade_by_criteria (2026-07-29, the broker-history
+    reconciliation path) - one place classifies a raw Closed-list item
+    into a real win/loss/draw result, so the documented bug fix below
+    can never accidentally regress in a second, parallel copy."""
     values = data.get("values") or []
     stake = _to_amount(values[0]) if len(values) > 0 else None
     # values[1] is the TOTAL amount returned (win: stake+profit, e.g.
@@ -1326,3 +1391,81 @@ async def wait_for_trade_result(warmup_service, expiry_seconds, asset=None, dire
         "final_value": total_returned,
         "raw_values": values,
     }
+
+
+async def find_closed_trade_by_criteria(warmup_service, asset, direction, amount, approx_open_dt,
+                                         expiry_seconds, time_tolerance_minutes=10):
+    """2026-07-29 verified production incident (series 105) - the
+    reconciliation counterpart to wait_for_trade_result: instead of
+    watching for ONE specific trade live, searches the Closed-trades
+    history for a trade matching a strict criteria tuple (asset,
+    direction, amount, approximate close time within tolerance) when no
+    broker trade ID is available to match on directly (Pocket Option's
+    DOM exposes none - the same verified limitation documented throughout
+    core/execution_latency.py).
+
+    Returns exactly one of:
+      ("unique", classified_result_dict) - exactly one candidate matched
+      ("no_match", None) - nothing matched asset+direction+amount at all
+      ("multiple_matches", [classified_result_dict, ...]) - more than one
+        candidate fell within the time window; per the explicit "only
+        resolve when the match is unique" requirement, this is NEVER
+        collapsed to a best guess - the caller must fail closed.
+
+    Never raises on a transient browser error - a failed read here is
+    itself just another "could not verify" outcome (returns
+    ("read_failed", None)), since this function exists specifically for
+    the case where live tracking already failed once; a second silent
+    crash here must not raise past a reconciliation pass that is already
+    trying to recover from the first one."""
+    expected_close_dt = approx_open_dt + timedelta(seconds=expiry_seconds)
+    try:
+        page = await warmup_service.get_page()
+        async with warmup_service.outcome_lock:
+            await _ensure_opened_tab_active(page)
+            trades_panel = page.locator(SEL_TRADES_PANEL)
+            closed_tab = trades_panel.get_by_text("Closed", exact=True).first
+            await closed_tab.click(timeout=DEFAULT_TIMEOUT_MS)
+            item = page.locator(SEL_CLOSED_LIST_ITEM).first
+            await expect(item).to_be_visible(timeout=DEFAULT_TIMEOUT_MS)
+            items = await page.evaluate(_CLOSED_ITEMS_JS, CLOSED_ITEMS_SCAN_COUNT)
+    except Exception as e:
+        logger.error(
+            "find_closed_trade_by_criteria: could not read Closed-trades history (%s) - "
+            "failing closed, not guessing", e,
+        )
+        return ("read_failed", None)
+
+    candidates = [i for i in items if i.get("asset") == asset and i.get("direction") == direction]
+
+    def _within_tolerance(item):
+        try:
+            hh, mm = item["time_text"].split(":")
+            candidate_dt = expected_close_dt.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+            best = abs((candidate_dt - expected_close_dt).total_seconds())
+            for delta_days in (-1, 1):
+                alt = candidate_dt + timedelta(days=delta_days)
+                best = min(best, abs((alt - expected_close_dt).total_seconds()))
+            return best <= time_tolerance_minutes * 60
+        except (ValueError, AttributeError, TypeError, KeyError):
+            return False
+
+    candidates = [c for c in candidates if _within_tolerance(c)]
+
+    if amount is not None:
+        def _amount_matches(item):
+            classified = _classify_closed_item(item)
+            return classified["stake"] is not None and abs(classified["stake"] - amount) < 0.01
+        candidates = [c for c in candidates if _amount_matches(c)]
+
+    if not candidates:
+        return ("no_match", None)
+    if len(candidates) > 1:
+        logger.warning(
+            "find_closed_trade_by_criteria: %d candidates matched asset=%r direction=%r amount=%s within "
+            "%dmin of %s - ambiguous, failing closed rather than guessing",
+            len(candidates), asset, direction, amount, time_tolerance_minutes, expected_close_dt.isoformat(),
+        )
+        return ("multiple_matches", [_classify_closed_item(c) for c in candidates])
+
+    return ("unique", _classify_closed_item(candidates[0]))

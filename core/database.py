@@ -378,6 +378,9 @@ def _migrate_schema(conn):
             "cancelled_at": "TEXT",
             "cancellation_reason": "TEXT",
             "cancellation_audit_json": "TEXT",
+            "reconciliation_required_at": "TEXT",
+            "reconciliation_resolved_at": "TEXT",
+            "reconciliation_audit_json": "TEXT",
         }
         for column, sql_type in _NEW_TRADE_SERIES_COLUMNS.items():
             if column not in trade_series_columns:
@@ -2748,6 +2751,117 @@ def get_open_trades(broker_account_id=None):
         """).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+@timed("database")
+def get_unresolved_submitted_trades(broker_account_id=None):
+    """2026-07-29 verified production incident (series 105): get_open_trades()
+    above only ever matches execution_status IN ('trade_clicked',
+    'trade_opened') - correct for fund_manager.py's own "currently open
+    exposure" use, but too narrow for recovery, since track_outcome's own
+    generic exception handler rewrites execution_status to 'error' the
+    moment ANYTHING goes wrong while watching a genuinely-opened
+    position (a browser crash mid-read, in the confirmed incident) -
+    after that, get_open_trades() no longer sees it at all, and neither
+    does trade_series_engine.reconcile_stuck_series()'s own narrow
+    string-matching, leaving the trade (and its parent series) invisible
+    to every recovery path simultaneously.
+
+    This is the general, status-string-independent criterion instead:
+    opened_at IS NOT NULL (a real click happened - "possibly_submitted")
+    AND result NOT IN ('win', 'loss', 'draw') ("not_authoritatively_
+    resolved" - covers trade_clicked, trade_opened, any error state,
+    anything else that isn't a genuine terminal outcome). Used by
+    recovery/reconciliation, never by exposure/reporting code, which
+    should keep using get_open_trades()'s narrower, "genuinely still
+    open right now" semantics."""
+    conn = get_connection()
+    if broker_account_id is not None:
+        rows = conn.execute("""
+            SELECT * FROM signals
+            WHERE opened_at IS NOT NULL AND (result IS NULL OR result NOT IN ('win', 'loss', 'draw'))
+              AND broker_account_id = ?
+            ORDER BY opened_at ASC
+        """, (broker_account_id,)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT * FROM signals
+            WHERE opened_at IS NOT NULL AND (result IS NULL OR result NOT IN ('win', 'loss', 'draw'))
+            ORDER BY opened_at ASC
+        """).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+@timed("database")
+def mark_series_reconciliation_required(series_id, reason, original_error=None):
+    """2026-07-29: a series whose current entry may have reached the
+    broker but has no authoritative result must never silently stay
+    'active' forever (series 105's own fate before this existed) - this
+    is the explicit, fail-closed alternative. A series in this state is
+    excluded from list_pending_trade_series (never fires a next entry,
+    never auto-resumes) until reconcile_series_manually() closes it out
+    with a full audit trail.
+
+    risk_state_locked, in effect: the child signals row's own result stays
+    whatever it already was (never a genuine win/loss/draw) while this
+    status holds, and get_recent_results() only ever counts rows with a
+    real terminal result - so this entry cannot silently inflate or reset
+    anyone's consecutive-loss streak or net P&L until an operator supplies
+    the real outcome. No separate flag is needed for that guarantee; it
+    falls out of get_recent_results()'s existing terminal-only filter."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    audit = {"reason": reason, "original_error": original_error, "flagged_at": now}
+    conn.execute(
+        "UPDATE trade_series SET status = 'reconciliation_required', reconciliation_required_at = ?, "
+        "reconciliation_audit_json = ? WHERE id = ?",
+        (now, json.dumps(audit), series_id),
+    )
+    conn.commit()
+    conn.close()
+    logger.warning(
+        "database: series_id=%s marked reconciliation_required (%s) - will not auto-resume until manually reconciled",
+        series_id, reason,
+    )
+
+
+@timed("database")
+def list_series_needing_reconciliation():
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM trade_series WHERE status = 'reconciliation_required' ORDER BY id",
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+@timed("database")
+def record_manual_reconciliation(series_id, audit):
+    """The audited administrative action that actually closes out a
+    reconciliation_required series (2026-07-29) - merges the full,
+    attributable record (operator, reconciliation_source/reason,
+    broker_trade_id, authoritative_result/pnl, original_error) into
+    reconciliation_audit_json (never overwriting the flagging audit
+    already recorded by mark_series_reconciliation_required - both
+    survive) and stamps reconciliation_resolved_at. Does NOT itself
+    apply the win/loss/draw outcome to the series - that is
+    trade_series_engine.reconcile_series_manually's job, via the same
+    _apply_entry_outcome every other resolution path uses, so risk
+    counters/net P&L update through one single, already-audited
+    mechanism rather than a second parallel one here."""
+    conn = get_connection()
+    row = conn.execute("SELECT reconciliation_audit_json FROM trade_series WHERE id = ?", (series_id,)).fetchone()
+    existing = json.loads(row["reconciliation_audit_json"]) if row and row["reconciliation_audit_json"] else {}
+    now = datetime.now().isoformat()
+    existing["resolution"] = {**audit, "reconciled_at": now}
+    conn.execute(
+        "UPDATE trade_series SET reconciliation_resolved_at = ?, reconciliation_audit_json = ? WHERE id = ?",
+        (now, json.dumps(existing), series_id),
+    )
+    conn.commit()
+    conn.close()
+    return now
 
 
 @timed("database")

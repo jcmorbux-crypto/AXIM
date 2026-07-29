@@ -837,6 +837,213 @@ class RestartReconciliationTests(unittest.TestCase):
         self.assertEqual(database.get_trade_series(pending_id)["status"], "pending")
 
 
+class ReconciliationGapTests(unittest.TestCase):
+    """2026-07-29 reconciliation-gap fix (verified production incident:
+    series 105 - a real browser crash during wait_for_trade_result left an
+    entry execution_status='error', result=f"error:{e}", a state neither
+    the OLD reconcile_stuck_series (narrow 'error:abandoned_on_restart'
+    string match) nor the OLD recovery.resume_pending_trades
+    (trade_clicked/trade_opened only) ever recognized - the series stayed
+    'active' forever. Covers the general possibly_submitted AND
+    not_authoritatively_resolved criterion, broker-history reconciliation
+    via a mocked pocket_dom.find_closed_trade_by_criteria, and the
+    idempotency guarantee that a duplicate reconciliation pass can never
+    double-grade the same trade."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def _active_series_with_open_entry(self, execution_status, result=None, opened_at=None,
+                                        asset="AUD/JPY OTC", direction="SELL", amount=10.0,
+                                        max_entries=2, entry_times=("09:00", "09:05")):
+        series_id = database.create_trade_series(
+            channel_id=163, asset=asset, direction=direction, expiry="5 Minute",
+            stake=amount, entry_times=list(entry_times), max_entries=max_entries,
+        )
+        database.advance_trade_series(series_id, 1, "active")
+        database.record_signal_received(
+            {"asset": asset, "direction": direction, "expiry": "5 Minute", "raw_message": "x",
+             "trade_amount": amount},
+            series_id=series_id, entry_number=1,
+        )
+        conn = database.get_connection()
+        conn.execute(
+            "UPDATE signals SET execution_status = ?, result = ?, opened_at = ? "
+            "WHERE series_id = ? AND entry_number = 1",
+            (execution_status, result, opened_at, series_id),
+        )
+        conn.commit()
+        conn.close()
+        return series_id
+
+    def test_generic_error_with_opened_at_enters_recovery_not_the_never_executed_path(self):
+        # The exact production shape: track_outcome's generic except sets
+        # execution_status='error', result=f"error:{e}" - an arbitrary
+        # string the OLD code could never match. opened_at IS set (a real
+        # click happened), so this must NOT be treated as "never
+        # executed" (which would incorrectly retry/replay the entry).
+        series_id = self._active_series_with_open_entry(
+            "error", result="error:Target page, context or browser has been closed",
+            opened_at=datetime.now(timezone.utc).isoformat(),
+        )
+        _run(engine.reconcile_stuck_series())  # no warmup_service - must fail closed, not guess
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["status"], "reconciliation_required")
+        self.assertIsNotNone(series["reconciliation_required_at"])
+
+    def test_broker_history_unique_match_completes_the_series_correctly(self):
+        series_id = self._active_series_with_open_entry(
+            "error", result="error:boom", opened_at=datetime.now(timezone.utc).isoformat(),
+        )
+        with patch.object(
+            engine.pocket_dom, "find_closed_trade_by_criteria",
+            new=AsyncMock(return_value=("unique", {
+                "result": "win", "stake": 10.0, "final_value": 19.2,
+                "asset": "AUD/JPY OTC", "direction": "SELL", "raw_values": ["$10.00", "$19.20"],
+            })),
+        ):
+            _run(engine.reconcile_stuck_series(warmup_service="fake-warmup"))
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["status"], "won")
+        self.assertEqual(series["net_profit_loss"], 9.2)
+
+    def test_broker_history_no_match_fails_closed(self):
+        series_id = self._active_series_with_open_entry(
+            "error", result="error:boom", opened_at=datetime.now(timezone.utc).isoformat(),
+        )
+        with patch.object(
+            engine.pocket_dom, "find_closed_trade_by_criteria",
+            new=AsyncMock(return_value=("no_match", None)),
+        ):
+            _run(engine.reconcile_stuck_series(warmup_service="fake-warmup"))
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["status"], "reconciliation_required")
+
+    def test_broker_history_multiple_matches_fails_closed(self):
+        series_id = self._active_series_with_open_entry(
+            "error", result="error:boom", opened_at=datetime.now(timezone.utc).isoformat(),
+        )
+        with patch.object(
+            engine.pocket_dom, "find_closed_trade_by_criteria",
+            new=AsyncMock(return_value=("multiple_matches", [{"result": "win"}, {"result": "loss"}])),
+        ):
+            _run(engine.reconcile_stuck_series(warmup_service="fake-warmup"))
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["status"], "reconciliation_required")
+
+    def test_risk_counters_and_pnl_update_exactly_once(self):
+        series_id = self._active_series_with_open_entry(
+            "error", result="error:boom", opened_at=datetime.now(timezone.utc).isoformat(),
+        )
+        with patch.object(
+            engine.pocket_dom, "find_closed_trade_by_criteria",
+            new=AsyncMock(return_value=("unique", {
+                "result": "loss", "stake": 10.0, "final_value": 0.0,
+                "asset": "AUD/JPY OTC", "direction": "SELL", "raw_values": ["$10.00", "$0"],
+            })),
+        ), patch.object(engine, "_apply_entry_outcome", new=AsyncMock(wraps=engine._apply_entry_outcome)) as spy:
+            _run(engine.reconcile_stuck_series(warmup_service="fake-warmup"))
+        spy.assert_awaited_once()
+        series = database.get_trade_series(series_id)
+        # loss with entries remaining (max_entries=2) schedules the next
+        # entry rather than exhausting the series (matches the existing
+        # "already resolved loss schedules the next one" test's own
+        # current_entry_number convention - it stays at the entry that
+        # just resolved; entry_times_utc_json gains the new schedule) -
+        # the single-invocation guarantee (spy.assert_awaited_once) is the
+        # actual assertion this test exists for.
+        self.assertEqual(series["status"], "pending")
+        self.assertEqual(series["current_entry_number"], 1)
+        self.assertEqual(len(series["entry_times_utc"]), 1)
+
+    def test_duplicate_reconciliation_pass_does_not_double_grade(self):
+        series_id = self._active_series_with_open_entry(
+            "error", result="error:boom", opened_at=datetime.now(timezone.utc).isoformat(),
+            max_entries=1,  # single-entry series - a win terminates it outright
+        )
+        with patch.object(
+            engine.pocket_dom, "find_closed_trade_by_criteria",
+            new=AsyncMock(return_value=("unique", {
+                "result": "win", "stake": 10.0, "final_value": 19.2,
+                "asset": "AUD/JPY OTC", "direction": "SELL", "raw_values": ["$10.00", "$19.20"],
+            })),
+        ):
+            _run(engine.reconcile_stuck_series(warmup_service="fake-warmup"))
+            series_after_first = database.get_trade_series(series_id)
+            self.assertEqual(series_after_first["status"], "won")
+            self.assertEqual(series_after_first["net_profit_loss"], 9.2)
+
+            # A second pass over the same (now resolved) series must be a
+            # no-op - list_pending_trade_series only returns pending/active
+            # series, so a 'won' series is already excluded from the scan
+            # entirely, exactly the guarantee this test verifies.
+            _run(engine.reconcile_stuck_series(warmup_service="fake-warmup"))
+
+        series_after_second = database.get_trade_series(series_id)
+        self.assertEqual(series_after_second["status"], "won")
+        self.assertEqual(series_after_second["net_profit_loss"], 9.2)
+
+    def test_reconcile_series_manually_applies_outcome_with_full_audit_trail(self):
+        series_id = self._active_series_with_open_entry(
+            "error", result="error:Target page, context or browser has been closed",
+            opened_at=datetime.now(timezone.utc).isoformat(), max_entries=1,
+        )
+        result = _run(engine.reconcile_series_manually(
+            series_id, operator="csominq", reconciliation_source="pocket_option_trade_history",
+            reconciliation_reason="browser_context_closed_during_result_read",
+            authoritative_result="win", authoritative_pnl=9.2,
+            original_error="Target page, context or browser has been closed",
+        ))
+        self.assertTrue(result["applied"])
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["status"], "won")
+        self.assertEqual(series["net_profit_loss"], 9.2)
+        self.assertIsNotNone(series["reconciliation_resolved_at"])
+
+    def test_reconcile_series_manually_refuses_to_double_grade(self):
+        series_id = self._active_series_with_open_entry(
+            "error", result="error:boom", opened_at=datetime.now(timezone.utc).isoformat(), max_entries=1,
+        )
+        first = _run(engine.reconcile_series_manually(
+            series_id, operator="csominq", reconciliation_source="pocket_option_trade_history",
+            reconciliation_reason="browser_context_closed_during_result_read",
+            authoritative_result="win", authoritative_pnl=9.2,
+        ))
+        second = _run(engine.reconcile_series_manually(
+            series_id, operator="csominq", reconciliation_source="pocket_option_trade_history",
+            reconciliation_reason="duplicate_attempt",
+            authoritative_result="loss", authoritative_pnl=-10.0,
+        ))
+        self.assertTrue(first["applied"])
+        self.assertFalse(second["applied"])
+        series = database.get_trade_series(series_id)
+        # Still the FIRST reconciliation's outcome - a second call must
+        # never overwrite an already-resolved series.
+        self.assertEqual(series["status"], "won")
+        self.assertEqual(series["net_profit_loss"], 9.2)
+
+    def test_reconcile_series_manually_accepts_a_series_already_flagged_reconciliation_required(self):
+        series_id = self._active_series_with_open_entry(
+            "error", result="error:boom", opened_at=datetime.now(timezone.utc).isoformat(), max_entries=1,
+        )
+        database.mark_series_reconciliation_required(series_id, "broker_history_no_match")
+        result = _run(engine.reconcile_series_manually(
+            series_id, operator="csominq", reconciliation_source="pocket_option_trade_history",
+            reconciliation_reason="operator_reviewed_broker_history_manually",
+            authoritative_result="loss", authoritative_pnl=-10.0,
+        ))
+        self.assertTrue(result["applied"])
+        series = database.get_trade_series(series_id)
+        self.assertEqual(series["status"], "lost_exhausted")
+
+
 class SummaryReportTests(unittest.TestCase):
     def setUp(self):
         self._tmp_dir = tempfile.TemporaryDirectory()

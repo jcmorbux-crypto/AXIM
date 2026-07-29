@@ -915,7 +915,11 @@ async def _startup():
     # position, so recovery.py above marks it ERROR without ever
     # publishing trade.closed) would otherwise wait forever for an event
     # that will never come - see reconcile_stuck_series's own docstring.
-    await trade_series_engine.reconcile_stuck_series()
+    # warmup_service is threaded through so a series left active with a
+    # possibly-submitted, unresolved entry can be checked against
+    # Pocket Option's own Closed-trades history rather than only being
+    # able to fail closed.
+    await trade_series_engine.reconcile_stuck_series(warmup_service)
 
     # A broker account whose user_data_dir is this same legacy default
     # profile (sessions/pocket_browser) is adopted onto the connection

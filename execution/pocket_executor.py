@@ -30,23 +30,12 @@ SCREENSHOT_DIR = PROJECT_ROOT / "logs" / "trades"
 
 lifecycle_logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
-# Substrings of the real Playwright error messages observed in production
-# (logs/lifecycle.log) when the underlying browser/page is torn down mid-
-# selection - "Target page, context or browser has been closed" (various
-# Locator/Page ops) and "net::ERR_ABORTED; maybe frame was detached?"
-# (Page.goto during a worker respawn). Matched on message content, not
-# exception type, since Playwright raises its own generic Error/TimeoutError
-# for all of these - narrow substrings rather than "retry on any Exception"
-# so an unrelated bug (a real selector regression, a risk-manager error)
-# never gets silently masked by a retry.
-_TRANSIENT_BROWSER_ERROR_MARKERS = (
-    "context or browser has been closed",
-    "frame was detached",
-)
-
-
-def _is_transient_browser_error(e):
-    return any(marker in str(e) for marker in _TRANSIENT_BROWSER_ERROR_MARKERS)
+# 2026-07-29: canonical definition moved to pocket_dom.py (the lower-level
+# module) - wait_for_trade_result needed this same classification, and
+# pocket_dom cannot import from pocket_executor (the dependency runs the
+# other way). Re-imported here so every existing call site in this file
+# keeps working unchanged.
+_is_transient_browser_error = pocket_dom._is_transient_browser_error
 
 
 def _capture_screenshot_background(page, trade_id, label):
