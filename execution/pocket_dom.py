@@ -524,12 +524,24 @@ _OVERLAY_ACTUALLY_BLOCKING_JS = """
 # promptly") and a MutationObserver counting DOM churn, both starting
 # from click_direction's own entry so they cover the whole tab-
 # activation + enabled-wait + click window, not just the click call
-# itself. Read back via _READ_BROWSER_DIAGNOSTICS_JS after the click.
-# Deliberately does not touch anything the real click path depends on -
-# purely additive observation.
+# itself. buffered: true means the FIRST batch of longtask entries also
+# includes everything recorded since page load, not just since this
+# observer was registered - verified live (series 96: 202 tasks/19.3s
+# reported against a 1.7s-old page). session_* fields keep that raw,
+# page-lifetime signal (still useful - "has this page been janky since
+# load" - just never conflated with a specific window's own cost).
+# click_window_* fields are the corrected, precisely-scoped metric:
+# overlap-filtered against [click_window_start, click_window_end], both
+# read from performance.now() (the browser's own monotonic clock, not
+# AXIM's wall clock) immediately before/after button.click(). An entry
+# "overlaps" the window per entry.startTime < window_end AND
+# entry.startTime + entry.duration > window_start - correctly counts a
+# task that started before the window but ran into it. Deliberately
+# does not touch anything the real click path depends on - purely
+# additive observation.
 _START_BROWSER_DIAGNOSTICS_JS = """
 () => {
-    window.__axim_diag = { longtasks: [], mutations: 0 };
+    window.__axim_diag = { longtasks: [], mutations: 0, mutation_log: [] };
     try {
         const po = new PerformanceObserver((list) => {
             for (const entry of list.getEntries()) {
@@ -544,6 +556,7 @@ _START_BROWSER_DIAGNOSTICS_JS = """
     try {
         const mo = new MutationObserver((mutations) => {
             window.__axim_diag.mutations += mutations.length;
+            window.__axim_diag.mutation_log.push({ count: mutations.length, at: performance.now() });
         });
         mo.observe(document.body, { childList: true, subtree: true, attributes: true });
         window.__axim_diag._mo = mo;
@@ -553,15 +566,40 @@ _START_BROWSER_DIAGNOSTICS_JS = """
 }
 """
 
+_READ_PERFORMANCE_NOW_JS = "() => performance.now()"
+
 _READ_BROWSER_DIAGNOSTICS_JS = """
-() => {
+(windowBounds) => {
     const d = window.__axim_diag || {};
     const longtasks = d.longtasks || [];
+    const winStart = windowBounds.clickWindowStart;
+    const winEnd = windowBounds.clickWindowEnd;
+
+    const overlapping = longtasks.filter((t) => {
+        const end = t.startTime + t.duration;
+        return t.startTime < winEnd && end > winStart;
+    });
+    const overlapDurations = overlapping.map((t) => {
+        const end = t.startTime + t.duration;
+        return Math.max(0, Math.min(end, winEnd) - Math.max(t.startTime, winStart));
+    });
+
+    const mutationsDuringWindow = (d.mutation_log || [])
+        .filter((m) => m.at >= winStart && m.at <= winEnd)
+        .reduce((sum, m) => sum + m.count, 0);
+
     return {
-        long_tasks_count: longtasks.length,
-        long_tasks_total_ms: longtasks.reduce((sum, t) => sum + t.duration, 0),
-        dom_mutations_count: d.mutations || 0,
-        active_animations_count: (typeof document.getAnimations === 'function') ? document.getAnimations().length : null,
+        session_long_tasks_count: longtasks.length,
+        session_long_tasks_total_duration_ms: longtasks.reduce((sum, t) => sum + t.duration, 0),
+
+        click_window_long_tasks_count: overlapping.length,
+        click_window_long_tasks_total_duration_ms: overlapping.reduce((sum, t) => sum + t.duration, 0),
+        click_window_long_task_max_duration_ms: overlapping.length ? Math.max(...overlapping.map((t) => t.duration)) : 0,
+        click_window_long_task_overlap_duration_ms: overlapDurations.reduce((sum, x) => sum + x, 0),
+
+        mutations_since_click_direction_entry: d.mutations || 0,
+        mutations_during_click_window: mutationsDuringWindow,
+
         longtask_observer_error: d.longtask_error || null,
         mutation_observer_error: d.mutation_error || null,
     };
@@ -753,6 +791,12 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
                 diag["page_has_focus"] = await page.evaluate("document.hasFocus()")
             except Exception:
                 diag["page_has_focus"] = None
+
+            # Diagnostic setup overhead (2026-07-28, user-requested) -
+            # this happens well before the boundary-critical click, but
+            # measured anyway so it's never an unexamined assumption that
+            # it's cheap.
+            diag_setup_started = _iso_now().isoformat()
             try:
                 await page.evaluate(_START_BROWSER_DIAGNOSTICS_JS)
             except Exception as e:
@@ -765,6 +809,7 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
             except Exception as e:
                 diag["cdp_session_error"] = str(e)
                 cdp = None
+            diag["diagnostic_setup_overhead_ms"] = _ms_between(diag_setup_started, _iso_now().isoformat())
 
         async with time_category("browser"):
             if diag is not None:
@@ -833,18 +878,43 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
                     ) else "Closed"
                 except Exception:
                     diag["active_tab_final"] = None
+                try:
+                    diag["active_animations_before_click"] = await page.evaluate(
+                        "(typeof document.getAnimations === 'function') ? document.getAnimations().length : null")
+                except Exception:
+                    diag["active_animations_before_click"] = None
 
                 if cdp is not None:
                     try:
                         cdp_metrics_before = await cdp.send("Performance.getMetrics")
                     except Exception as e:
                         diag["cdp_metrics_before_error"] = str(e)
+                # click_window_*_performance_ms use the browser's own
+                # monotonic clock (performance.now()), not AXIM's wall
+                # clock - this is what the long-task/mutation overlap
+                # filtering below is scoped against, per the corrected
+                # methodology (2026-07-28).
+                try:
+                    diag["click_window_start_performance_ms"] = await page.evaluate(_READ_PERFORMANCE_NOW_JS)
+                except Exception as e:
+                    diag["click_window_start_performance_ms"] = None
+                    diag["click_window_start_read_error"] = str(e)
                 diag["button_click_started_at"] = _iso_now().isoformat()
             await button.click(timeout=timeout)
             if diag is not None:
                 diag["button_click_completed_at"] = _iso_now().isoformat()
                 diag["button_click_duration_ms"] = _ms_between(
                     diag["button_click_started_at"], diag["button_click_completed_at"])
+                try:
+                    diag["click_window_end_performance_ms"] = await page.evaluate(_READ_PERFORMANCE_NOW_JS)
+                except Exception as e:
+                    diag["click_window_end_performance_ms"] = None
+                    diag["click_window_end_read_error"] = str(e)
+                try:
+                    diag["active_animations_after_click"] = await page.evaluate(
+                        "(typeof document.getAnimations === 'function') ? document.getAnimations().length : null")
+                except Exception:
+                    diag["active_animations_after_click"] = None
 
                 # Browser-layer diagnostics (2026-07-28, user-requested):
                 # was the renderer/main-thread itself busy during the
@@ -853,9 +923,21 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
                 # unresponsive" signal), DOM churn, and active CSS
                 # animations/transitions are all real candidates for why
                 # an already-actionable button's click() could still be
-                # slow to dispatch/register.
+                # slow to dispatch/register. Bracketed by
+                # diagnostic_finalization_*: this whole block runs AFTER
+                # button_click_completed_at is already marked (so it
+                # never inflates button_click_duration_ms), but BEFORE
+                # the .no-deals confirmation-wait begins below - meaning
+                # it WAS silently inflating click_to_broker_ack_ms
+                # (previously attributed entirely to Pocket Option's own
+                # confirmation latency) until this was measured
+                # explicitly (2026-07-28, user-caught).
+                diag["diagnostic_finalization_started_at"] = _iso_now().isoformat()
                 try:
-                    browser_diag = await page.evaluate(_READ_BROWSER_DIAGNOSTICS_JS)
+                    browser_diag = await page.evaluate(_READ_BROWSER_DIAGNOSTICS_JS, {
+                        "clickWindowStart": diag.get("click_window_start_performance_ms"),
+                        "clickWindowEnd": diag.get("click_window_end_performance_ms"),
+                    })
                     diag.update(browser_diag)
                 except Exception as e:
                     diag["browser_diagnostics_read_error"] = str(e)
@@ -876,6 +958,9 @@ async def click_direction(page, direction, timeout=DEFAULT_TIMEOUT_MS, latency=N
                                 diag[f"cdp_{metric}_during_click_ms"] = (after[metric] - before[metric]) * 1000
                     except Exception as e:
                         diag["cdp_metrics_after_error"] = str(e)
+                diag["diagnostic_finalization_completed_at"] = _iso_now().isoformat()
+                diag["diagnostic_finalization_overhead_ms"] = _ms_between(
+                    diag["diagnostic_finalization_started_at"], diag["diagnostic_finalization_completed_at"])
 
         timeline = get_current_timeline()
         if timeline is not None:
