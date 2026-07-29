@@ -45,7 +45,27 @@ class _RetryingConnection(sqlite3.Connection):
                     raise
                 if attempt >= len(_LOCK_RETRY_DELAYS):
                     logger.error("database: %s still locked after %d retries, giving up: %s", op_name, len(_LOCK_RETRY_DELAYS), e)
-                    record_recovery_event("database_lock_retry", "failed", f"{op_name}: {e}")
+                    # 2026-07-28 verified production incident: this is a
+                    # DIAGNOSTIC write, not the real caller's data write (that
+                    # one still surfaces via the raise below, per this
+                    # class's own "never silently drop a real write"
+                    # principle) - record_recovery_event opens its own
+                    # connection and goes through this SAME _retrying path,
+                    # so under sustained contention it could ALSO hit this
+                    # branch and try to log ITS OWN failure, recursively -
+                    # confirmed live: multiple stuck diagnostic scripts each
+                    # holding a write lock triggered exactly this compounding
+                    # retry storm, which persisted even after the scripts
+                    # were killed (each failed write from other callers kept
+                    # re-triggering it) until both AXIM processes were
+                    # stopped. A failure to log the diagnostic event is an
+                    # acceptable, self-contained degradation; recursive lock
+                    # contention across the whole application is not.
+                    try:
+                        record_recovery_event("database_lock_retry", "failed", f"{op_name}: {e}")
+                    except Exception as log_error:
+                        logger.error("database: could not record database_lock_retry recovery event (%s) - "
+                                     "not retrying, to avoid compounding the original lock contention", log_error)
                     raise
                 delay = _LOCK_RETRY_DELAYS[attempt]
                 logger.warning("database: %s locked (attempt %d/%d), retrying in %.2fs: %s",
@@ -54,7 +74,11 @@ class _RetryingConnection(sqlite3.Connection):
             else:
                 if attempt > 0:
                     logger.info("database: %s succeeded on retry attempt %d after lock contention", op_name, attempt + 1)
-                    record_recovery_event("database_lock_retry", "succeeded", f"{op_name}: succeeded on attempt {attempt + 1}")
+                    try:
+                        record_recovery_event(
+                            "database_lock_retry", "succeeded", f"{op_name}: succeeded on attempt {attempt + 1}")
+                    except Exception as log_error:
+                        logger.error("database: could not record database_lock_retry recovery event (%s)", log_error)
                 return result
 
     def execute(self, sql, parameters=()):
