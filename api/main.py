@@ -34,6 +34,9 @@ sys.path.insert(0, str(CONFIG_DIR))
 sys.path.insert(0, str(API_DIR))
 sys.path.insert(0, str(PARSERS_DIR))
 
+import single_instance
+single_instance.acquire_or_exit("api", PROJECT_ROOT)
+
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request

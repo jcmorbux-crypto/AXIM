@@ -1024,6 +1024,10 @@ def run_forever():
 
 
 if __name__ == "__main__":
+    import single_instance
+    single_instance.acquire_or_exit(
+        "listener", os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    )
     _running_commit = build_info.record_process_startup(database, "listener")
     print(f"AXIM: listener starting at commit {_running_commit or 'unknown'}")
     run_forever()
