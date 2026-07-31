@@ -39,11 +39,10 @@ def acquire_or_exit(name: str, project_root) -> None:
     lock_dir.mkdir(parents=True, exist_ok=True)
     lock_path = lock_dir / f"{name}.lock"
 
-    fh = open(lock_path, "a+")
-    if fh.tell() == 0:
-        fh.write("0")
-        fh.flush()
-    fh.seek(0)
+    if not lock_path.exists():
+        lock_path.write_bytes(b"0")
+
+    fh = open(lock_path, "r+")
     try:
         msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
     except OSError:
@@ -55,7 +54,15 @@ def acquire_or_exit(name: str, project_root) -> None:
         )
         sys.exit(1)
 
+    # "r+" (not "a+"): "a"/append mode forces every write to the true end
+    # of the file regardless of seek() position, so a prior "a+" version of
+    # this function silently appended each new holder's PID onto whatever
+    # was already there instead of overwriting it - the file grew forever
+    # and stopped meaning "the current holder's PID" (found via a reboot
+    # audit: lock file mtimes were stale even though fresh processes had
+    # just re-acquired the lock).
     fh.seek(0)
+    fh.truncate()
     fh.write(str(os.getpid()))
     fh.flush()
     _held_locks[name] = fh  # module-level ref: keeps the fd (and lock) open for process lifetime
