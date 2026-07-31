@@ -65,19 +65,27 @@ if ($svc) { Add-Line "[Tunnel] service: $($svc.Name) status=$($svc.Status)" } el
 Add-Line ""
 
 # --- Database: unresolved/reconciliation-required series ---
+# Written to a temp .py file and invoked by path rather than passed inline via
+# `python -c "..."` - PowerShell 5.1's native-exe argument quoting mangles
+# embedded double quotes in -c strings (confirmed: silently stripped the SQL
+# string content, producing a Python SyntaxError with no useful indication
+# that the cause was the invocation, not the query).
 $py = Join-Path $ProjectRoot "venv\Scripts\python.exe"
-$dbCheck = & $py -c @"
+$dbCheckScript = Join-Path $env:TEMP "axim_rc1_dbcheck_$ts.py"
+@'
 import sys
-sys.path.insert(0, r'$ProjectRoot\core')
-sys.path.insert(0, r'$ProjectRoot\config')
+sys.path.insert(0, sys.argv[1] + r'\core')
+sys.path.insert(0, sys.argv[1] + r'\config')
 import database
 conn = database.get_connection()
 rows = conn.execute("SELECT id, status FROM trade_series WHERE status IN ('active','reconciliation_required')").fetchall()
 print(len(rows))
 for r in rows:
-    print(f'  id={r[\"id\"]} status={r[\"status\"]}')
+    print(f"  id={r['id']} status={r['status']}")
 conn.close()
-"@ 2>&1
+'@ | Out-File -FilePath $dbCheckScript -Encoding utf8
+$dbCheck = & $py $dbCheckScript $ProjectRoot 2>&1
+Remove-Item $dbCheckScript -ErrorAction SilentlyContinue
 Add-Line "[DB] unresolved (active/reconciliation_required) trade series:"
 $dbCheck -split "`n" | ForEach-Object { Add-Line "    $_" }
 Add-Line ""
