@@ -30,8 +30,23 @@ class BrowserWarmupModeTests(unittest.TestCase):
     (tests/manual_click_test_warm.py etc.) cover the real thing."""
 
     def _mock_page(self, verification_class_present):
+        """For demo-mode tests only - page.evaluate returns the bare bool
+        the body-class check expects."""
         page = MagicMock()
         page.evaluate = AsyncMock(return_value=verification_class_present)
+        return page
+
+    def _mock_live_page(self, url, text="You are trading on Real account",
+                         demo_class_present=False, match_count=1, visible=True,
+                         class_name="type-of-trade-label type-of-trade-label--real"):
+        """For live-mode tests - page.evaluate returns the structured probe
+        dict verify_live_mode expects (see execution/account_mode_
+        verification.py)."""
+        probe = {"url": url, "demo_class_present": demo_class_present, "match_count": match_count}
+        if match_count == 1:
+            probe.update({"visible": visible, "text": text, "class_name": class_name})
+        page = MagicMock()
+        page.evaluate = AsyncMock(return_value=probe)
         return page
 
     def _run_start_with_mocks(self, warmup, page, target_urls, call_kwargs=None):
@@ -77,24 +92,53 @@ class BrowserWarmupModeTests(unittest.TestCase):
     def test_live_mode_without_configured_url_raises_before_touching_browser(self):
         warmup = BrowserWarmupService(mode="live")
         with patch("browser_warmup.LIVE_URL", None), \
-             patch("browser_warmup.LIVE_MODE_VERIFICATION_CLASS", None), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_SELECTOR", None), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_TEXT", None), \
              patch("browser_warmup.PocketBrowserSession") as MockSession:
             with self.assertRaises(LiveModeNotConfiguredError):
                 _run(warmup.start())
             MockSession.assert_not_called()  # fails BEFORE any browser action
 
-    def test_live_mode_with_configured_url_uses_it_and_verifies_configured_class(self):
+    def test_live_mode_partially_configured_still_raises(self):
+        # URL alone (or selector alone, or text alone) is not enough - all
+        # three are required together, same as the fully-unset case above.
+        warmup = BrowserWarmupService(mode="live")
+        with patch("browser_warmup.LIVE_URL", "https://example.test/live-cabinet/"), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_SELECTOR", ".type-of-trade-label--real"), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_TEXT", None), \
+             patch("browser_warmup.PocketBrowserSession") as MockSession:
+            with self.assertRaises(LiveModeNotConfiguredError):
+                _run(warmup.start())
+            MockSession.assert_not_called()
+
+    def test_live_mode_with_configured_values_uses_url_and_verifies_real_account_element(self):
         target_urls = []
-        page = self._mock_page(verification_class_present=True)
+        live_url = "https://example.test/live-cabinet/"
+        page = self._mock_live_page(url=live_url)
         warmup = BrowserWarmupService(mode="live")
         warmup.asset_cache.build_cache = AsyncMock()
 
-        with patch("browser_warmup.LIVE_URL", "https://example.test/live-cabinet/"), \
-             patch("browser_warmup.LIVE_MODE_VERIFICATION_CLASS", "is-chart-live"):
+        with patch("browser_warmup.LIVE_URL", live_url), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_SELECTOR", ".type-of-trade-label--real"), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_TEXT", "You are trading on Real account"):
             self._run_start_with_mocks(warmup, page, target_urls)
 
-        self.assertEqual(target_urls, ["https://example.test/live-cabinet/"])
-        self.assertEqual(page.evaluate.await_args.args[1], "is-chart-live")
+        self.assertEqual(target_urls, [live_url])
+        # Not a body-class check for live - the probe evaluates selector +
+        # demo class together in one call (see account_mode_verification.py).
+        self.assertEqual(page.evaluate.await_args.args[1], [".type-of-trade-label--real", "is-chart-demo"])
+
+    def test_live_mode_wrong_text_raises_demo_mode_verification_error(self):
+        live_url = "https://example.test/live-cabinet/"
+        page = self._mock_live_page(url=live_url, text="You are trading on Demo account")
+        warmup = BrowserWarmupService(mode="live")
+        warmup.asset_cache.build_cache = AsyncMock()
+
+        with patch("browser_warmup.LIVE_URL", live_url), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_SELECTOR", ".type-of-trade-label--real"), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_TEXT", "You are trading on Real account"):
+            with self.assertRaises(DemoModeVerificationError):
+                self._run_start_with_mocks(warmup, page, [])
 
     def test_verification_failure_raises_demo_mode_verification_error(self):
         target_urls = []
@@ -103,6 +147,32 @@ class BrowserWarmupModeTests(unittest.TestCase):
 
         with self.assertRaises(DemoModeVerificationError):
             self._run_start_with_mocks(warmup, page, target_urls)
+
+
+class VerificationConfigPropertyTests(unittest.TestCase):
+    """verification_config (renamed from verification_class - see
+    2026-07-31 live-verification fix) is what execution/browser_health.py
+    re-runs mode verification from for every worker's ongoing per-trade
+    check, so it must carry everything account_mode_verification.
+    verify_live_mode needs, not just a bare class name, once mode='live'."""
+
+    def test_demo_mode_returns_bare_class_name_string(self):
+        warmup = BrowserWarmupService()  # default mode="demo"
+        self.assertEqual(warmup.verification_config, "is-chart-demo")
+
+    def test_live_mode_returns_full_config_dict(self):
+        warmup = BrowserWarmupService(mode="live", broker_account_id=13)
+        with patch("browser_warmup.LIVE_URL", "https://example.test/live-cabinet/"), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_SELECTOR", ".type-of-trade-label--real"), \
+             patch("browser_warmup.LIVE_MODE_VERIFICATION_TEXT", "You are trading on Real account"):
+            config = warmup.verification_config
+        self.assertEqual(config["mode"], "live")
+        self.assertEqual(config["selector"], ".type-of-trade-label--real")
+        self.assertEqual(config["expected_text"], "You are trading on Real account")
+        self.assertEqual(config["demo_class"], "is-chart-demo")
+        self.assertEqual(config["live_url"], "https://example.test/live-cabinet/")
+        self.assertEqual(config["broker_account_id"], 13)
+        self.assertTrue(callable(config["account_lookup"]))
 
 
 class HealthCheckTests(unittest.TestCase):

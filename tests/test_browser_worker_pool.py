@@ -60,7 +60,7 @@ class FakeWarmupService:
         return MagicMock()
 
     @property
-    def verification_class(self):
+    def verification_config(self):
         return "is-chart-demo"
 
 

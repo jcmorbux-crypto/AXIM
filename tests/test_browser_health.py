@@ -142,6 +142,49 @@ class DeepCheckTests(unittest.TestCase):
         mock_balance.assert_called_once()
 
 
+class LiveModeDeepCheckTests(unittest.TestCase):
+    """check_worker/_check_session_authenticated dispatch on the TYPE of
+    the config passed in (see BrowserWarmupService.verification_config) -
+    a bare string still means "demo, check this body class" (unchanged,
+    covered above); a dict means "live" and is delegated to
+    account_mode_verification.verify_live_mode instead of ever treating
+    it as a body class (2026-07-31 live-verification fix)."""
+
+    LIVE_CONFIG = {
+        "mode": "live",
+        "selector": ".type-of-trade-label--real",
+        "expected_text": "You are trading on Real account",
+        "demo_class": "is-chart-demo",
+        "live_url": "https://pocketoption.com/en/cabinet/quick-high-low/",
+        "broker_account_id": None,
+        "account_lookup": None,
+    }
+
+    def _live_probe(self, text="You are trading on Real account"):
+        return {
+            "url": self.LIVE_CONFIG["live_url"], "demo_class_present": False, "match_count": 1,
+            "visible": True, "text": text, "class_name": "type-of-trade-label type-of-trade-label--real",
+        }
+
+    def setUp(self):
+        self.mgr = BrowserHealthManager()
+
+    def test_live_config_passing_probe_is_healthy(self):
+        page = FakePage(evaluate_result=self._live_probe())
+        worker = _worker(page)
+        with patch.object(browser_health.pocket_dom, "read_balance", new=AsyncMock(return_value=1000.0)):
+            result = _run(self.mgr.check_worker(worker, self.LIVE_CONFIG))
+        self.assertTrue(result.healthy)
+
+    def test_live_config_wrong_text_fails_session_authenticated(self):
+        page = FakePage(evaluate_result=self._live_probe(text="You are trading on Demo account"))
+        worker = _worker(page)
+        result = _run(self.mgr.check_worker(worker, self.LIVE_CONFIG))
+        self.assertFalse(result.healthy)
+        self.assertEqual(result.failed_check, "session_authenticated")
+        self.assertIn("text_mismatch", result.detail)
+
+
 class HealthCheckResultTests(unittest.TestCase):
     def test_repr_of_healthy_result(self):
         self.assertEqual(repr(HealthCheckResult(True)), "HealthCheckResult(healthy=True)")

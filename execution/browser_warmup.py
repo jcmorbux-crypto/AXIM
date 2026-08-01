@@ -12,10 +12,14 @@ sys.path.insert(0, str(CORE_DIR))
 
 from browser_session import PocketBrowserSession, get_trading_page, DEMO_URL
 import pocket_dom
+import account_mode_verification as mode_verification
 from asset_cache import AssetCache
 from logger import get_logger
 import database
-from settings import LIVE_URL, LIVE_MODE_VERIFICATION_CLASS
+from settings import (
+    LIVE_URL, LIVE_MODE_VERIFICATION_SELECTOR, LIVE_MODE_VERIFICATION_TEXT,
+    DEMO_MODE_VERIFICATION_CLASS,
+)
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
 
@@ -26,11 +30,11 @@ class DemoModeVerificationError(Exception):
 
 class LiveModeNotConfiguredError(Exception):
     """Raised instead of ever guessing a live cabinet URL/verification
-    signal - see config/settings.py's LIVE_URL/LIVE_MODE_VERIFICATION_CLASS
-    docstring. A broker account configured for live capability
-    (mode='live'/'both' + live_enabled=true) hits this until an operator
-    has personally verified and set both values against a real live
-    Pocket Option account."""
+    signal - see config/settings.py's LIVE_URL/LIVE_MODE_VERIFICATION_
+    SELECTOR/LIVE_MODE_VERIFICATION_TEXT docstring. A broker account
+    configured for live capability (mode='live'/'both' + live_enabled=
+    true) hits this until an operator has personally verified and set
+    all three values against a real live Pocket Option account."""
     pass
 
 
@@ -95,16 +99,17 @@ class BrowserWarmupService:
 
     async def start(self):
         if self._mode == "live":
-            if not LIVE_URL or not LIVE_MODE_VERIFICATION_CLASS:
+            if not LIVE_URL or not LIVE_MODE_VERIFICATION_SELECTOR or not LIVE_MODE_VERIFICATION_TEXT:
                 logger.error(
-                    "browser_warmup: mode=live requested but LIVE_URL/LIVE_MODE_VERIFICATION_CLASS "
-                    "are not configured in .env - refusing to start rather than guess"
+                    "browser_warmup: mode=live requested but LIVE_URL/LIVE_MODE_VERIFICATION_SELECTOR/"
+                    "LIVE_MODE_VERIFICATION_TEXT are not configured in .env - refusing to start rather "
+                    "than guess"
                 )
                 raise LiveModeNotConfiguredError(
-                    "Live mode was requested for this account, but LIVE_URL and/or "
-                    "LIVE_MODE_VERIFICATION_CLASS are not set in .env. These must be set to "
-                    "values verified against a real live Pocket Option account before live "
-                    "trading can start - see docs/AXIM_APP_PLAN.md."
+                    "Live mode was requested for this account, but LIVE_URL, "
+                    "LIVE_MODE_VERIFICATION_SELECTOR, and/or LIVE_MODE_VERIFICATION_TEXT are not set "
+                    "in .env. These must be set to values verified against a real live Pocket Option "
+                    "account before live trading can start - see docs/AXIM_APP_PLAN.md."
                 )
             target_url = LIVE_URL
         else:
@@ -131,40 +136,70 @@ class BrowserWarmupService:
         await self.asset_cache.build_cache(self._page)
 
     async def _verify_account_mode(self):
-        """Demo verification (is-chart-demo) is proven against the real
-        site. Live verification uses whatever class an operator has
-        personally confirmed on a real live cabinet page
-        (LIVE_MODE_VERIFICATION_CLASS) - this service never assumes what
-        that class is."""
+        """Demo verification (a class on <body>) is proven against the
+        real site. Live verification is NOT a body-class check - see
+        execution/account_mode_verification.py's module docstring for why
+        (a real live cabinet, inspected 2026-07-31, puts no demo/real/live
+        class on <body> at all) - it fails closed across every condition
+        verify_live_mode checks, never assumes what "close enough" looks
+        like."""
         if self._mode == "live":
-            verification_class = LIVE_MODE_VERIFICATION_CLASS
-            mode_label = "live"
-        else:
-            verification_class = "is-chart-demo"
-            mode_label = "demo"
-
-        matches = await self._page.evaluate(
-            "(cls) => document.body.classList.contains(cls)", verification_class
-        )
-        if not matches:
-            logger.error("browser_warmup: page is NOT showing %s mode - refusing to proceed", mode_label)
-            raise DemoModeVerificationError(
-                f"Pocket Option page is not showing {mode_label} mode "
-                f"({verification_class!r} class missing on <body>)"
+            result = await mode_verification.verify_live_mode(
+                self._page,
+                selector=LIVE_MODE_VERIFICATION_SELECTOR,
+                expected_text=LIVE_MODE_VERIFICATION_TEXT,
+                demo_class=DEMO_MODE_VERIFICATION_CLASS,
+                live_url=LIVE_URL,
+                broker_account_id=self._broker_account_id,
+                account_lookup=self._is_broker_account_live,
             )
-        logger.info("browser_warmup: %s mode verified (%r present)", mode_label, verification_class)
+        else:
+            result = await mode_verification.verify_demo_mode(self._page, DEMO_MODE_VERIFICATION_CLASS)
+
+        if not result.passed:
+            logger.error("browser_warmup: mode verification failed: %s", result.as_log_dict())
+            raise DemoModeVerificationError(
+                f"Pocket Option page is not showing {result.mode} mode "
+                f"(failed_check={result.failed_check}, detail={result.detail})"
+            )
+        logger.info("browser_warmup: mode verification passed: %s", result.as_log_dict())
+
+    def _is_broker_account_live(self, broker_account_id):
+        """account_lookup callable passed to verify_live_mode - a fresh,
+        re-queried-right-now cross-check that the broker account's own
+        persisted config (not just whatever mode this instance happened
+        to be constructed with) still agrees this account is live-enabled.
+        Deferred import of broker_account_manager to avoid a circular
+        import - that module is what constructs this class in the first
+        place."""
+        from broker_account_manager import account_effective_cabinet_mode
+        account = database.get_broker_account(broker_account_id)
+        if account is None:
+            return False
+        return account_effective_cabinet_mode(account) == "live"
 
     @property
-    def verification_class(self):
-        """The <body> CSS class that must stay present for this account's
-        session to still count as authenticated - "is-chart-demo" for demo,
-        or the operator-confirmed LIVE_MODE_VERIFICATION_CLASS for live
-        (guaranteed non-None here: mode="live" only ever reaches a running
-        instance via start()'s own LiveModeNotConfiguredError guard above).
-        Used by execution/browser_health.py's BrowserHealthManager for its
-        per-trade session-authenticated check, so that check never
-        hardcodes or re-derives this mapping itself."""
-        return LIVE_MODE_VERIFICATION_CLASS if self._mode == "live" else "is-chart-demo"
+    def verification_config(self):
+        """Everything execution/browser_health.py's BrowserHealthManager
+        needs to re-run THIS account's mode verification against a
+        worker's own page later, so the ongoing per-worker check can never
+        drift from the one this class itself used at startup. Demo stays
+        a bare class-name string (unchanged shape/behavior from before);
+        live is a dict of the full config verify_live_mode needs
+        (guaranteed fully populated here: mode="live" only ever reaches a
+        running instance via start()'s own LiveModeNotConfiguredError
+        guard above)."""
+        if self._mode == "live":
+            return {
+                "mode": "live",
+                "selector": LIVE_MODE_VERIFICATION_SELECTOR,
+                "expected_text": LIVE_MODE_VERIFICATION_TEXT,
+                "demo_class": DEMO_MODE_VERIFICATION_CLASS,
+                "live_url": LIVE_URL,
+                "broker_account_id": self._broker_account_id,
+                "account_lookup": self._is_broker_account_live,
+            }
+        return DEMO_MODE_VERIFICATION_CLASS
 
     async def health_check(self):
         try:

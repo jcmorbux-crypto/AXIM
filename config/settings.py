@@ -14,21 +14,38 @@ POCKET_URL = os.getenv("POCKET_URL", "https://pocketoption.com")
 PO_EMAIL = os.getenv("PO_EMAIL")
 PO_PASSWORD = os.getenv("PO_PASSWORD")
 
+# Demo-cabinet DOM verification signal - was hardcoded as the literal
+# string "is-chart-demo" in execution/browser_warmup.py; now configurable
+# (default unchanged) so it lives alongside its live-mode counterpart
+# below rather than split across two places.
+DEMO_MODE_VERIFICATION_CLASS = os.getenv("DEMO_MODE_VERIFICATION_CLASS", "is-chart-demo")
+
 # Live-cabinet URL + its own DOM verification signal (the live-mode
-# equivalent of DEMO_URL/"is-chart-demo" in execution/browser_warmup.py).
-# Deliberately unset by default and NEVER guessed at - unlike DEMO_URL,
-# which was found and verified against the real site early in this
-# project, nobody has inspected a real live Pocket Option cabinet page
-# in this codebase's history. A broker account configured mode="live"/
-# "both" with live_enabled=true will refuse to start
-# (LiveModeNotConfiguredError) until both of these are set to values an
-# operator has personally verified against their own live account - see
-# docs/AXIM_APP_PLAN.md's live-trading section for exactly what to look
-# for (the same technique DEMO_URL's is-chart-demo check used: open
-# devtools, find a CSS class on <body> or similar that's present on the
-# live cabinet and absent elsewhere).
+# equivalent of DEMO_URL/DEMO_MODE_VERIFICATION_CLASS above). Deliberately
+# unset by default and NEVER guessed at - unlike DEMO_URL, which was found
+# and verified against the real site early in this project, nobody had
+# inspected a real live Pocket Option cabinet page in this codebase's
+# history until 2026-07-31. A broker account configured mode="live"/"both"
+# with live_enabled=true will refuse to start (LiveModeNotConfiguredError)
+# until all three of these are set to values an operator has personally
+# verified against their own live account.
+#
+# 2026-07-31 finding, from actually inspecting a real live cabinet: unlike
+# demo, Pocket Option puts NO demo/real/live-specific class on <body> for
+# a live account - so, unlike DEMO_MODE_VERIFICATION_CLASS, this is NOT a
+# body class and execution/account_mode_verification.py's verify_live_mode
+# must never treat it as one. The real, positive signal is a nested,
+# human-readable status element:
+#   <div class="type-of-trade-label type-of-trade-label--real">
+#     You are trading on Real account
+#   </div>
+# LIVE_MODE_VERIFICATION_SELECTOR must resolve to exactly ONE element on
+# the page, and its whitespace-normalized text must exactly equal
+# LIVE_MODE_VERIFICATION_TEXT - both are required together, and verify_
+# live_mode fails closed if either is unset, ambiguous, or mismatched.
 LIVE_URL = os.getenv("LIVE_URL")
-LIVE_MODE_VERIFICATION_CLASS = os.getenv("LIVE_MODE_VERIFICATION_CLASS")
+LIVE_MODE_VERIFICATION_SELECTOR = os.getenv("LIVE_MODE_VERIFICATION_SELECTOR")
+LIVE_MODE_VERIFICATION_TEXT = os.getenv("LIVE_MODE_VERIFICATION_TEXT")
 
 # Trading
 ACCOUNT = os.getenv("ACCOUNT", "DEMO")

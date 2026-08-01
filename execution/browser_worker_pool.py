@@ -236,7 +236,7 @@ class BrowserWorkerPool:
         and rebuild every worker from the new context. The full browser is
         therefore only ever recreated as a last resort, never as the first
         response to one worker's page."""
-        result = await self._health_manager.check_worker(worker, self.warmup_service.verification_class)
+        result = await self._health_manager.check_worker(worker, self.warmup_service.verification_config)
         if result.healthy:
             return worker
 
@@ -246,7 +246,7 @@ class BrowserWorkerPool:
         )
         await self._respawn_worker_page(worker)
 
-        recheck = await self._health_manager.check_worker(worker, self.warmup_service.verification_class, force_deep=True)
+        recheck = await self._health_manager.check_worker(worker, self.warmup_service.verification_config, force_deep=True)
         if recheck.healthy:
             return worker
 

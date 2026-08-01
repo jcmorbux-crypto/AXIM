@@ -11,6 +11,7 @@ sys.path.insert(0, str(EXECUTION_DIR))
 sys.path.insert(0, str(CORE_DIR))
 
 import pocket_dom
+import account_mode_verification as mode_verification
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
@@ -137,15 +138,35 @@ class BrowserHealthManager:
         return True, None
 
     async def _check_session_authenticated(self, page, expected_mode_class):
+        """expected_mode_class is BrowserWarmupService.verification_config -
+        a bare class-name string for demo (unchanged body-class check), or
+        a dict of the full live-verification config for live (see
+        execution/account_mode_verification.py's verify_live_mode - never
+        a body-class check for live, since a real live cabinet has no such
+        class to check)."""
         try:
-            present = await asyncio.wait_for(
-                page.evaluate("(cls) => document.body.classList.contains(cls)", expected_mode_class),
-                timeout=_RESPONSIVE_TIMEOUT_SECONDS,
-            )
+            if isinstance(expected_mode_class, dict):
+                result = await asyncio.wait_for(
+                    mode_verification.verify_live_mode(
+                        page,
+                        selector=expected_mode_class["selector"],
+                        expected_text=expected_mode_class["expected_text"],
+                        demo_class=expected_mode_class["demo_class"],
+                        live_url=expected_mode_class["live_url"],
+                        broker_account_id=expected_mode_class.get("broker_account_id"),
+                        account_lookup=expected_mode_class.get("account_lookup"),
+                    ),
+                    timeout=_RESPONSIVE_TIMEOUT_SECONDS,
+                )
+            else:
+                result = await asyncio.wait_for(
+                    mode_verification.verify_demo_mode(page, expected_mode_class),
+                    timeout=_RESPONSIVE_TIMEOUT_SECONDS,
+                )
         except Exception as e:
             return False, f"could not verify session: {e}"
-        if not present:
-            return False, f"{expected_mode_class!r} class missing - session may be logged out or site changed"
+        if not result.passed:
+            return False, f"{result.failed_check}: {result.detail}"
         return True, None
 
     async def _check_live_data_flowing(self, page):
