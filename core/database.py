@@ -2774,23 +2774,62 @@ def get_unresolved_submitted_trades(broker_account_id=None):
     anything else that isn't a genuine terminal outcome). Used by
     recovery/reconciliation, never by exposure/reporting code, which
     should keep using get_open_trades()'s narrower, "genuinely still
-    open right now" semantics."""
+    open right now" semantics.
+
+    2026-08-01: also excludes result='error:reconciliation_abandoned' -
+    the ONE additional terminal value recovery.py never writes itself
+    (only mark_trade_reconciliation_abandoned() below does, on explicit
+    operator action). Confirmed live: 8 trades from 2026-07-03/07-26
+    whose broker-history reconciliation already failed as no_match at a
+    2026-08-01 restart (weeks-old history, no longer available to check
+    against) would otherwise re-attempt the exact same doomed lookup on
+    every future restart forever, since 'error:reconciliation_required'
+    itself is NOT in ('win','loss','draw') either. This does not change
+    recovery.py's own default behavior for a brand-new failure - a trade
+    only ever reaches 'error:reconciliation_abandoned' via an explicit,
+    separate, audited operator call, never automatically."""
     conn = get_connection()
     if broker_account_id is not None:
         rows = conn.execute("""
             SELECT * FROM signals
-            WHERE opened_at IS NOT NULL AND (result IS NULL OR result NOT IN ('win', 'loss', 'draw'))
+            WHERE opened_at IS NOT NULL
+              AND (result IS NULL OR result NOT IN ('win', 'loss', 'draw', 'error:reconciliation_abandoned'))
               AND broker_account_id = ?
             ORDER BY opened_at ASC
         """, (broker_account_id,)).fetchall()
     else:
         rows = conn.execute("""
             SELECT * FROM signals
-            WHERE opened_at IS NOT NULL AND (result IS NULL OR result NOT IN ('win', 'loss', 'draw'))
+            WHERE opened_at IS NOT NULL
+              AND (result IS NULL OR result NOT IN ('win', 'loss', 'draw', 'error:reconciliation_abandoned'))
             ORDER BY opened_at ASC
         """).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+@timed("database")
+def mark_trade_reconciliation_abandoned(trade_id, reason, actor_user_id=None):
+    """Explicit, one-time operator action closing out a signals-level
+    trade whose broker-history reconciliation already failed
+    (result='error:reconciliation_required', set by core/recovery.py's
+    _resume_one) and has no realistic path to ever resolving - the
+    broker's own closed-trades history does not go back far enough to
+    check again. Unlike core/recovery.py's own automatic writes, this is
+    never called from the recovery path itself - only ever by deliberate
+    operator action - and is logged to admin_actions for the same
+    accountability every other manual state override in this codebase
+    gets (see record_admin_action's other callers, e.g. the consecutive-
+    loss lock reset). See get_unresolved_submitted_trades's own docstring
+    for why this specific result string is the one that stops the
+    startup recovery scan from picking this trade up again."""
+    from trade_lifecycle import TradeStatus
+
+    update_trade_status(trade_id, TradeStatus.ERROR, result="error:reconciliation_abandoned")
+    record_admin_action(
+        actor_user_id, None, "reconciliation_abandoned",
+        detail=f"trade_id={trade_id}: {reason}",
+    )
 
 
 @timed("database")
