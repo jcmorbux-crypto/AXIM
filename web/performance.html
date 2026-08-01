@@ -273,6 +273,16 @@ async function refreshAll() {
   if (!user) return;
   refreshAll();
   loadExecutionQuality();
+  // This page never auto-refreshed at all before (only real content
+  // changes here are closed-trade outcomes - win rate, P/L, drawdown,
+  // streaks - so trade.closed is the only relevant event; prepared/
+  // error/signal_received don't affect anything shown on this page).
+  // 30s poll matches the notification bell's own low-urgency fallback
+  // interval - this page isn't time-critical the way Trades/Sessions are.
+  setInterval(refreshAll, 30000);
+  AximShell.subscribeEvents({
+    "trade.closed": { onEvent: refreshAll, onResync: refreshAll },
+  });
 })();
 </script>
 </body>
