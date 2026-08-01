@@ -858,12 +858,32 @@ async function createFund() {
   }
 }
 
+async function refreshOnTradeClosed() {
+  // Balances here change from more than the operator's own clicks - a
+  // closed trade's P/L, and any Automation Studio rule it triggers (e.g.
+  // _act_move_profit_to_vault), both change trading_balance/
+  // protected_balance/total_account_value with nothing for the operator
+  // to click. Re-selects the CURRENTLY open fund (not allFunds[0], unlike
+  // initial load) so a live update never yanks the operator back to a
+  // different fund than the one they're looking at.
+  await refreshAll();
+  loadPortfolioSummary();
+  if (currentFundId) await selectFund(currentFundId);
+}
+
 (async () => {
   const user = await AximShell.init({ active: "funds" });
   if (!user) return;
   await refreshAll();
   loadPortfolioSummary();
   if (allFunds.length) await selectFund(allFunds[0].id);
+  // No prior polling fallback existed on this page either - 30s matches
+  // the same low-urgency interval used on the Performance page for the
+  // same reason (balances aren't time-critical the way Trades/Sessions are).
+  setInterval(refreshOnTradeClosed, 30000);
+  AximShell.subscribeEvents({
+    "trade.closed": { onEvent: refreshOnTradeClosed, onResync: refreshOnTradeClosed },
+  });
 })();
 </script>
 </body>
