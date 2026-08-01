@@ -236,7 +236,10 @@ function showScreenshot(url) {
   refreshTrades();
   setInterval(refreshTrades, 10000);
   AximShell.subscribeEvents({
+    "trade.signal_received": { onEvent: refreshTrades, onResync: refreshTrades },
     "trade.prepared": { onEvent: refreshTrades, onResync: refreshTrades },
+    "trade.error": { onEvent: refreshTrades, onResync: refreshTrades },
+    "signal.ignored": { onEvent: refreshTrades, onResync: refreshTrades },
     "trade.closed": { onEvent: refreshTrades, onResync: refreshTrades },
   });
 })();

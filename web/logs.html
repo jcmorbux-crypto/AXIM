@@ -133,6 +133,8 @@ async function refreshLogs() {
   // complexity if this page's full-reparse cost ever actually became a
   // problem, which it hasn't.
   AximShell.subscribeEvents({
+    "trade.signal_received": { onEvent: refreshLogs },
+    "trade.prepared": { onEvent: refreshLogs },
     "trade.closed": { onEvent: refreshLogs },
     "trade.error": { onEvent: refreshLogs },
     "signal.ignored": { onEvent: refreshLogs },

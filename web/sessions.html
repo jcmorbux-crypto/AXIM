@@ -726,6 +726,8 @@ async function loadDiagnostics() {
   setInterval(refreshProcessStatus, 10000);
   setInterval(loadBots, 8000);
   AximShell.subscribeEvents({
+    "trade.prepared": { onEvent: refreshActiveSession, onResync: refreshActiveSession },
+    "trade.error": { onEvent: refreshActiveSession, onResync: refreshActiveSession },
     "trade.closed": { onEvent: refreshActiveSession, onResync: refreshActiveSession },
   });
 })();
