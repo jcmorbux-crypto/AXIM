@@ -90,11 +90,25 @@ Add-Line "[DB] unresolved (active/reconciliation_required) trade series:"
 $dbCheck -split "`n" | ForEach-Object { Add-Line "    $_" }
 Add-Line ""
 
-# --- Demo mode confirmation (from most recent lifecycle.log line mentioning it) ---
-$lifecycleLog = Join-Path $ProjectRoot "logs\lifecycle.log"
+# --- Demo mode confirmation (from most recent lifecycle log line mentioning it) ---
+# 2026-08-01: core/logger.py's set_process_role() now splits lifecycle.log
+# per process ("lifecycle-listener.log" for core/telegram_listener.py,
+# which is the only process that ever verifies demo mode) so the API and
+# listener processes never contend for the same rotating file. Falls back
+# to the pre-split bare filename so this still works against older logs.
+$lifecycleLog = Join-Path $ProjectRoot "logs\lifecycle-listener.log"
+if (-not (Test-Path $lifecycleLog)) {
+    $lifecycleLog = Join-Path $ProjectRoot "logs\lifecycle.log"
+}
 if (Test-Path $lifecycleLog) {
-    $demoLine = Get-Content $lifecycleLog -Tail 500 | Select-String "demo mode verified" | Select-Object -Last 1
-    Add-Line "[Demo mode] $(if ($demoLine) { $demoLine.Line } else { 'no recent demo-mode-verified line found in last 500 lifecycle.log lines' })"
+    # execution/browser_warmup.py logs "mode verification passed: {'mode':
+    # 'demo', 'passed': True, ...}" (2026-07-31 live-verification rework -
+    # was "demo mode verified (...)" before) - match both so this keeps
+    # working against older log lines too.
+    $demoLine = Get-Content $lifecycleLog -Tail 500 |
+        Select-String "demo mode verified|mode verification passed.*'mode':\s*'demo'" |
+        Select-Object -Last 1
+    Add-Line "[Demo mode] $(if ($demoLine) { $demoLine.Line } else { 'no recent demo-mode-verified line found in last 500 lifecycle log lines' })"
 }
 
 Add-Line ""

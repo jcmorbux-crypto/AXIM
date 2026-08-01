@@ -1,10 +1,18 @@
+import sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-USER_DATA_DIR = Path("sessions/pocket_browser")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from browser_session import USER_DATA_DIR, guard_against_production_profile_in_tests
 
 
 def open_pocket_option():
+    # Manual debugging entry point (see __main__ below) - USER_DATA_DIR
+    # and this guard both come from browser_session.py, the single
+    # authoritative source for both, so this can never drift out of sync
+    # with or bypass the same production-profile safety check every other
+    # browser-launching path in this codebase goes through.
+    guard_against_production_profile_in_tests(USER_DATA_DIR)
     USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
 
     playwright = sync_playwright().start()

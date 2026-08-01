@@ -22,6 +22,19 @@ sys.path.insert(0, "execution")
 sys.path.insert(0, "core")
 sys.path.insert(0, "config")
 
+from logger import set_process_role
+# Under pytest, many test files (each importing a different subset of
+# get_logger()-owning modules) share this one process - by the time a
+# test that imports telegram_listener runs, some other, earlier-collected
+# test has almost always already called get_logger() first, which would
+# make this raise (set_process_role() requires running before any
+# get_logger() call - see its own docstring). Real production runs (this
+# file launched directly, no pytest involved) are unaffected: role
+# splitting simply isn't meaningful for a single pytest process anyway,
+# consistent with core/logger.py's own "pytest" in sys.modules check.
+if "pytest" not in sys.modules:
+    set_process_role("listener")
+
 from signal_parser import parse_signal, apply_signal_rules, apply_expiry_fallback, parse_asset_announcement
 from signal_lifecycle import SignalLifecycleState
 from trade_coordinator import TradeCoordinator

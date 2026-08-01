@@ -1,10 +1,18 @@
+import sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 
-USER_DATA_DIR = Path("sessions/pocket_browser")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from browser_session import USER_DATA_DIR, guard_against_production_profile_in_tests
 
 
 def probe_page():
+    # USER_DATA_DIR and this guard both come from browser_session.py, the
+    # single authoritative source for both - see its
+    # guard_against_production_profile_in_tests docstring for the 2026-08-01
+    # audit that found this script independently redefining both with no
+    # guard at all.
+    guard_against_production_profile_in_tests(USER_DATA_DIR)
     with sync_playwright() as p:
         browser = p.chromium.launch_persistent_context(
             user_data_dir=str(USER_DATA_DIR),

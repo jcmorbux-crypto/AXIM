@@ -23,6 +23,25 @@ LOG_DIR = PROJECT_ROOT / "logs"
 # missing pocket_dom.log's own entries.
 LOG_FILES = ["lifecycle.log", "ui.log", "axim.log", "dashboard.log", "pocket_dom.log", "source_observer.log"]
 
+# 2026-08-01: core/logger.py's set_process_role() now splits every
+# get_logger()-owned file per process (e.g. "lifecycle.log" ->
+# "lifecycle-api.log" / "lifecycle-listener.log") so the API and listener
+# processes never contend for the same physical rotating file - see
+# set_process_role's own docstring for the incident this fixes. Reading
+# every base name here PLUS its role variants (only the ones that
+# actually exist - _parse_file already skips missing files) keeps this
+# page showing one merged, chronologically-sorted view exactly as before,
+# without hardcoding which specific base names happen to be shared.
+_ROLE_SUFFIXES = ("api", "listener")
+
+
+def _file_variants(filename):
+    stem, dot, ext = filename.rpartition(".")
+    variants = [filename]
+    if dot:
+        variants.extend(f"{stem}-{role}.{ext}" for role in _ROLE_SUFFIXES)
+    return variants
+
 _LINE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}) (\w+) \[([\w.]+)\] (.*)$", re.DOTALL)
 
 
@@ -82,7 +101,8 @@ def read_logs(since=None, until=None, level=None, module=None, search=None, limi
     and combine with AND."""
     entries = []
     for filename in LOG_FILES:
-        entries.extend(_parse_file(filename))
+        for variant in _file_variants(filename):
+            entries.extend(_parse_file(variant))
     entries.extend(_admin_actions_as_entries())
 
     if since:

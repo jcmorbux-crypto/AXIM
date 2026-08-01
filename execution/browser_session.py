@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,93 @@ import pocket_dom
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 USER_DATA_DIR = PROJECT_ROOT / "sessions" / "pocket_browser"
 DEMO_URL = "https://pocketoption.com/en/cabinet/demo-quick-high-low/"
+
+
+class ProductionProfileInTestError(Exception):
+    """Raised instead of ever letting a test touch the real Pocket Option
+    profile - see guard_against_production_profile_in_tests's own
+    docstring for the 2026-07-31 incident this exists to make structurally
+    impossible, not just discouraged by convention."""
+    pass
+
+
+def guard_against_production_profile_in_tests(user_data_dir):
+    """Hard safety guard, not a naming convention: refuses to open a
+    browser against the production Pocket Option profile
+    (sessions/pocket_browser) while running under pytest - called by
+    PocketBrowserSession.__init__ below, and by every other module in
+    this codebase that can launch a real browser against USER_DATA_DIR
+    (execution/browser.py, execution/page_probe.py - see the 2026-08-01
+    audit note below).
+
+    2026-07-31: while investigating a stalled full-suite pytest run, the
+    production profile directory was found under contention from a Chrome
+    process that (initial, later-corrected analysis showed) most likely
+    belonged to the LIVE listener's own legitimate reconnect - but the
+    investigation surfaced that nothing in this codebase actually
+    PREVENTED a test from launching a real browser against that exact
+    directory; only convention (every existing browser-touching test
+    happens to use an isolated temp profile) did. A single missed
+    `user_data_dir=` override in a future test would have opened, and
+    could have corrupted, the real production session - cookies, login
+    state, account mode - with no code-level check to stop it. This
+    closes that gap unconditionally, not just for the one test file
+    that prompted it.
+
+    2026-08-01 audit: execution/browser.py and execution/page_probe.py
+    turned out to be a second and third gap of the exact same shape - both
+    standalone manual debugging scripts that independently redefined their
+    own USER_DATA_DIR = Path("sessions/pocket_browser") and called
+    launch_persistent_context directly, with zero guard, zero relation to
+    this function, and (being ordinary importable modules under
+    execution/, the exact directory every test's own sys.path.insert
+    already reaches into) nothing stopping a future test from importing
+    either one and hitting the same incident this function exists to
+    prevent. Both now import USER_DATA_DIR from here instead of
+    redefining it, and both call this function before launching - this
+    module is the only place either the path or the guard is defined.
+
+    Path normalization (resolve()) so a relative-path trick
+    ('../../sessions/pocket_browser', a symlink, a trailing
+    'sessions/pocket_browser/./'), not just a literal string match,
+    cannot bypass this - both the candidate and the real production path
+    are fully resolved to their real, absolute, symlink-free form before
+    comparing. Matches on EQUALITY (the production dir itself) or
+    CONTAINMENT (anything inside it, e.g. a test pointing at
+    'sessions/pocket_browser/subdir') - both refused.
+
+    Detects "running under pytest" the same way core/logger.py already
+    does ("pytest" in sys.modules) - a real production run (the listener
+    process, or a manual non-test script) never has pytest imported at
+    all, so this never fires outside a test process, and does not apply
+    to core/logger.py's LOG_DIR redirect at all (a completely separate
+    mechanism for a completely separate resource).
+
+    One deliberate, pre-existing exception: tests/test_pocket_execution_
+    dryrun.py intentionally drives a real browser against the real
+    Pocket Option DEMO cabinet (never BUY/SELL) for DOM verification,
+    already gated behind its own explicit human opt-in
+    (AXIM_RUN_LIVE_DOM_TESTS=true - normal pytest runs never set this and
+    that test skips itself immediately). This guard defers to that same
+    existing opt-in rather than blocking it outright - a second,
+    conflicting env var would just invite someone to silence THIS guard
+    without realizing it's the same real-browser-against-production-
+    profile action either way."""
+    if "pytest" not in sys.modules:
+        return
+    if os.getenv("AXIM_RUN_LIVE_DOM_TESTS", "false").lower() == "true":
+        return
+    resolved = Path(user_data_dir).resolve()
+    production_resolved = USER_DATA_DIR.resolve()
+    if resolved == production_resolved or production_resolved in resolved.parents:
+        raise ProductionProfileInTestError(
+            f"Refusing to launch a browser against {resolved} under pytest - this IS "
+            f"(or is inside) the production Pocket Option profile ({production_resolved}). "
+            f"Tests must use an isolated temporary profile directory "
+            f"(tempfile.TemporaryDirectory(), pytest's tmp_path, or another explicit "
+            f"non-production path) - see tests/test_browser_session.py for the established "
+            f"pattern."
+        )
 
 # Fixed off-screen position/size for the (headed, not headless - Pocket
 # Option's own anti-bot checks are the reason this was never switched to
@@ -82,6 +170,7 @@ def _suppress_restore_session_prompt(user_data_dir):
 
 class PocketBrowserSession:
     def __init__(self, user_data_dir=USER_DATA_DIR, headless=False, viewport="maximize"):
+        guard_against_production_profile_in_tests(user_data_dir)
         self.user_data_dir = Path(user_data_dir)
         self.headless = headless
         # "maximize" (default): no fixed content viewport, window opens at

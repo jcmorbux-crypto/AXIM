@@ -1,8 +1,10 @@
 import asyncio
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from playwright.async_api import async_playwright
 
@@ -61,9 +63,19 @@ class GetTradingPageRealBrowserTests(unittest.TestCase):
         self._tmp_dir.cleanup()
 
     async def _fresh_context(self):
+        # Hardcoded to a temp dir, so this is safe today regardless - but
+        # this is still a real launch_persistent_context call site that
+        # bypasses PocketBrowserSession entirely, so it goes through the
+        # same centralized guard as every other one in this codebase (see
+        # execution/browser_session.py's guard_against_production_profile_
+        # in_tests docstring) rather than relying on "this one happens to
+        # already be safe" as the only thing stopping a future edit here
+        # from pointing at the real profile.
+        profile_dir = Path(self._tmp_dir.name) / "profile"
+        browser_session.guard_against_production_profile_in_tests(profile_dir)
         self._playwright = await async_playwright().start()
         self._context = await self._playwright.chromium.launch_persistent_context(
-            user_data_dir=str(Path(self._tmp_dir.name) / "profile"),
+            user_data_dir=str(profile_dir),
             headless=True,
             no_viewport=True,
         )
@@ -129,6 +141,126 @@ class GetTradingPageRealBrowserTests(unittest.TestCase):
                 self.assertEqual(len(set(id(p) for p in pages)), 3)
             finally:
                 await self._close_context()
+        _run(scenario())
+
+
+class ProductionProfileGuardTests(unittest.TestCase):
+    """execution/browser_session.py's hard safety guard (2026-07-31,
+    following a verified incident where the production browser profile
+    was found under contention during a full-suite pytest run) - a test
+    process must never be able to construct a PocketBrowserSession
+    against the real production Pocket Option profile, whether directly,
+    via a relative-path trick, or via a child path inside it. See
+    guard_against_production_profile_in_tests's own docstring for the
+    full mechanism and the one deliberate, pre-existing exception."""
+
+    def test_exact_production_path_is_rejected(self):
+        with self.assertRaises(browser_session.ProductionProfileInTestError):
+            browser_session.PocketBrowserSession(user_data_dir=browser_session.USER_DATA_DIR)
+
+    def test_relative_path_resolving_to_production_is_rejected(self):
+        relative = browser_session.PROJECT_ROOT / "sessions" / ".." / "sessions" / "pocket_browser"
+        with self.assertRaises(browser_session.ProductionProfileInTestError):
+            browser_session.PocketBrowserSession(user_data_dir=relative)
+
+    def test_child_path_inside_production_profile_is_rejected(self):
+        child = browser_session.USER_DATA_DIR / "Default"
+        with self.assertRaises(browser_session.ProductionProfileInTestError):
+            browser_session.PocketBrowserSession(user_data_dir=child)
+
+    def test_temporary_profile_path_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Must not raise - construction alone doesn't launch anything.
+            session = browser_session.PocketBrowserSession(user_data_dir=Path(tmp) / "profile")
+            self.assertEqual(session.user_data_dir, Path(tmp) / "profile")
+
+    def test_each_temporary_profile_call_is_independent(self):
+        with tempfile.TemporaryDirectory() as tmp1, tempfile.TemporaryDirectory() as tmp2:
+            session1 = browser_session.PocketBrowserSession(user_data_dir=Path(tmp1) / "profile")
+            session2 = browser_session.PocketBrowserSession(user_data_dir=Path(tmp2) / "profile")
+            self.assertNotEqual(session1.user_data_dir, session2.user_data_dir)
+
+    def test_guard_is_a_noop_outside_pytest(self):
+        # Simulates a real (non-test) process - must not raise even for the
+        # exact production path, since this is the listener's own
+        # legitimate, intended use. patch.dict restores sys.modules
+        # afterward regardless of the mutation inside.
+        with patch.dict(sys.modules):
+            sys.modules.pop("pytest", None)
+            browser_session.guard_against_production_profile_in_tests(browser_session.USER_DATA_DIR)
+
+    def test_guard_defers_to_the_existing_dryrun_opt_in(self):
+        # The one deliberate, pre-existing, human-opted-in exception
+        # (tests/test_pocket_execution_dryrun.py) - must not raise.
+        with patch.dict(os.environ, {"AXIM_RUN_LIVE_DOM_TESTS": "true"}):
+            browser_session.guard_against_production_profile_in_tests(browser_session.USER_DATA_DIR)
+
+
+class ContextManagerCleanupTests(unittest.TestCase):
+    """__aexit__ must close the real browser context/playwright instance
+    whether the `async with` body succeeded, raised, or was cancelled
+    (asyncio's own timeout machinery cancels via exception, so this same
+    guarantee covers a timed-out test too) - a leaked browser process from
+    any of those three paths is exactly the kind of orphan that could
+    later collide with a legitimate process for the same profile."""
+
+    def test_context_is_closed_after_a_normal_exit(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                session = browser_session.PocketBrowserSession(
+                    user_data_dir=Path(tmp) / "profile", headless=True,
+                )
+                async with session as context:
+                    self.assertFalse(context.pages[0].is_closed())
+                self.assertTrue(session._context is not None)  # object retained
+                # is_closed() on a context isn't exposed directly by Playwright,
+                # so the strongest available proof is that a page from it now
+                # reports closed.
+                self.assertTrue(context.pages == [] or context.pages[0].is_closed())
+        _run(scenario())
+
+    def test_context_is_still_closed_when_the_body_raises(self):
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                session = browser_session.PocketBrowserSession(
+                    user_data_dir=Path(tmp) / "profile", headless=True,
+                )
+                context_ref = {}
+                with self.assertRaises(RuntimeError):
+                    async with session as context:
+                        context_ref["context"] = context
+                        raise RuntimeError("simulated test failure mid-session")
+                context = context_ref["context"]
+                self.assertTrue(context.pages == [] or context.pages[0].is_closed())
+        _run(scenario())
+
+    def test_context_is_still_closed_on_a_real_timeout_cancellation(self):
+        # asyncio.TimeoutError/CancelledError derive from BaseException, not
+        # Exception, since Python 3.8 - a bare "except Exception" inside
+        # __aexit__ would silently NOT run on a real pytest-timeout/
+        # asyncio.wait_for timeout. __aexit__ here has no try/except at all
+        # (see execution/browser_session.py) and relies on `async with`'s
+        # own language guarantee that __aexit__ always runs on any exit
+        # path - this test proves that guarantee holds for a REAL
+        # asyncio.wait_for timeout, not just an ordinary exception, since a
+        # timed-out test is exactly the third cleanup scenario RC1 requires
+        # (pass / fail / timeout) and the other two tests above don't cover it.
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp:
+                session = browser_session.PocketBrowserSession(
+                    user_data_dir=Path(tmp) / "profile", headless=True,
+                )
+                context_ref = {}
+
+                async def hang_forever(context):
+                    context_ref["context"] = context
+                    await asyncio.sleep(3600)
+
+                with self.assertRaises(asyncio.TimeoutError):
+                    async with session as context:
+                        await asyncio.wait_for(hang_forever(context), timeout=0.05)
+                context = context_ref["context"]
+                self.assertTrue(context.pages == [] or context.pages[0].is_closed())
         _run(scenario())
 
 

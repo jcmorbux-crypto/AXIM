@@ -37,6 +37,14 @@ sys.path.insert(0, str(PARSERS_DIR))
 import single_instance
 single_instance.acquire_or_exit("api", PROJECT_ROOT)
 
+import logger as _logger
+# See core/telegram_listener.py's identical guard for why: under pytest,
+# many test files share one process and get_logger() is almost always
+# already called by some earlier-collected test by the time this module
+# would import - set_process_role() requires running before that.
+if "pytest" not in sys.modules:
+    _logger.set_process_role("api")
+
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
