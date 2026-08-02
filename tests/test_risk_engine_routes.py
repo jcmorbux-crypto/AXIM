@@ -204,5 +204,53 @@ class DuplicateCarriesNewerSubConfigsWithNonDefaultValuesTests(RiskEngineRoutesT
         self.assertEqual(still_duplicated["fortress"]["protection_threshold"], 777)
 
 
+class ExportImportRoundTripTests(RiskEngineRoutesTestBase):
+    """2026-08-01 real bug found while wiring Money Management Studio's
+    Export/Import UI: ImportRequest only declared name/description/
+    profile/martingale/compounding/profit_vault - Pydantic silently
+    drops any undeclared field, so every OTHER section export_profile
+    emits (apex_ascension/drawdown_protection/cashflow/strike/momentum/
+    fortress/empire/daily_compounding/sniper/blackwater) was thrown away
+    on import even though database.import_risk_profile has always
+    supported all of them. This proves a full round trip through the
+    real HTTP route layer (not just the database functions) carries
+    every section, not just the original 3."""
+
+    def test_export_then_import_preserves_every_sub_config(self):
+        routes.update_apex_ascension(
+            self.profile_id, routes.ApexAscensionUpdate(enabled=True, standard_units=9), user=_FAKE_ADMIN,
+        )
+        routes.update_cashflow(
+            self.profile_id, routes.CashflowUpdate(enabled=True, target_amount=333), user=_FAKE_ADMIN,
+        )
+        routes.update_empire(
+            self.profile_id, routes.EmpireUpdate(enabled=True, target_amount=888), user=_FAKE_ADMIN,
+        )
+        routes.update_sniper(
+            self.profile_id, routes.SniperUpdate(enabled=True, min_win_rate=72.5), user=_FAKE_ADMIN,
+        )
+        routes.update_blackwater(
+            self.profile_id, routes.BlackwaterUpdate(enabled=True, base_risk_percent=3.5), user=_FAKE_ADMIN,
+        )
+
+        exported = routes.export_profile(self.profile_id, user=_FAKE_ADMIN)
+        exported["name"] = "Imported Clone"
+        imported = routes.import_profile(routes.ImportRequest(**exported), user=_FAKE_ADMIN)
+
+        self.assertTrue(imported["apex_ascension"]["enabled"])
+        self.assertEqual(imported["apex_ascension"]["standard_units"], 9)
+        self.assertTrue(imported["cashflow"]["enabled"])
+        self.assertEqual(imported["cashflow"]["target_amount"], 333)
+        self.assertTrue(imported["empire"]["enabled"])
+        self.assertEqual(imported["empire"]["target_amount"], 888)
+        self.assertTrue(imported["sniper"]["enabled"])
+        self.assertEqual(imported["sniper"]["min_win_rate"], 72.5)
+        self.assertTrue(imported["blackwater"]["enabled"])
+        self.assertEqual(imported["blackwater"]["base_risk_percent"], 3.5)
+        # And it's a real, independent new profile - a distinct id, not
+        # the original re-fetched.
+        self.assertNotEqual(imported["id"], self.profile_id)
+
+
 if __name__ == "__main__":
     unittest.main()

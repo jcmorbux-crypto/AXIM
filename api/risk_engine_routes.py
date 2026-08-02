@@ -78,12 +78,31 @@ class DuplicateRequest(BaseModel):
 
 
 class ImportRequest(BaseModel):
+    """Must mirror every section database.export_risk_profile emits -
+    a real, verified bug found 2026-08-01: this model previously
+    declared only name/description/profile/martingale/compounding/
+    profit_vault, so POST .../import silently DROPPED apex_ascension/
+    drawdown_protection/cashflow/strike/momentum/fortress/empire/
+    daily_compounding/sniper/blackwater on every round trip (Pydantic
+    ignores undeclared fields by default) even though database.
+    import_risk_profile has always supported all of them - export said
+    it exported everything, import quietly threw most of it away."""
     name: Optional[str] = None
     description: Optional[str] = None
     profile: dict
     martingale: Optional[dict] = None
     compounding: Optional[dict] = None
     profit_vault: Optional[dict] = None
+    apex_ascension: Optional[dict] = None
+    drawdown_protection: Optional[dict] = None
+    cashflow: Optional[dict] = None
+    strike: Optional[dict] = None
+    momentum: Optional[dict] = None
+    fortress: Optional[dict] = None
+    empire: Optional[dict] = None
+    daily_compounding: Optional[dict] = None
+    sniper: Optional[dict] = None
+    blackwater: Optional[dict] = None
 
 
 class MartingaleUpdate(BaseModel):
