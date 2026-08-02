@@ -2699,7 +2699,7 @@ def get_recent_signals(limit=25):
     return [dict(row) for row in rows]
 
 
-def filter_signals(search=None, result=None, since=None, until=None, limit=200):
+def filter_signals(search=None, result=None, since=None, until=None, session_id=None, limit=200):
     """2026-08-01: Trade History (web/trades.html) had no filtering at
     all, unlike Logs' search/level/module/date bar - same shape as
     get_recent_signals above (same columns, same ORDER BY id DESC), just
@@ -2715,7 +2715,10 @@ def filter_signals(search=None, result=None, since=None, until=None, limit=200):
     error:* prefix the caller already knows) OR the literal string "open"
     for "received but not yet resolved" (result IS NULL) - never a
     fabricated bucket, only what the result column already means
-    elsewhere in this codebase."""
+    elsewhere in this codebase. session_id (added same day, for Sessions'
+    own history table linking through the same way Analytics/Provider
+    Profile already do) is an exact match, same column the table already
+    displays."""
     conn = get_connection()
     clauses = []
     params = []
@@ -2734,6 +2737,9 @@ def filter_signals(search=None, result=None, since=None, until=None, limit=200):
     if until:
         clauses.append("received_at <= ?")
         params.append(until)
+    if session_id is not None:
+        clauses.append("session_id = ?")
+        params.append(session_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = conn.execute(
         f"SELECT id, asset, direction, timeframe, channel, execution_status, result, "

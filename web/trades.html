@@ -41,6 +41,11 @@
       </div>
     </div>
 
+    <div class="banner info" id="session-scope-banner" style="display:none; margin-bottom:14px; align-items:center; justify-content:space-between;">
+      <span id="session-scope-text"></span>
+      <a href="/trades" class="subtle" style="text-decoration:none;">Show All Trades</a>
+    </div>
+
     <div class="card solid full-width" style="margin-bottom:16px;">
       <div class="row">
         <input type="text" id="f-search" placeholder="Search asset or source..." style="width:260px;" onkeydown="if(event.key==='Enter')refreshTrades()">
@@ -149,6 +154,12 @@ function humanizeResult(result) {
   return result;
 }
 
+// Session scope isn't a visible filter-bar control - a deep link only
+// (Sessions' history table's own "View Trades" link), shown/cleared via
+// the banner above instead, so it can't silently stay applied without
+// the operator seeing why the list looks scoped.
+let scopedSessionId = null;
+
 function currentFilterParams() {
   const params = new URLSearchParams();
   const search = document.getElementById("f-search").value.trim();
@@ -164,6 +175,7 @@ function currentFilterParams() {
   // end-of-day time appended or the last day picked would be silently
   // excluded entirely.
   if (until) params.set("until", until + "T23:59:59");
+  if (scopedSessionId) params.set("session_id", scopedSessionId);
   return params;
 }
 
@@ -302,6 +314,11 @@ function showScreenshot(url) {
   const urlParams = new URLSearchParams(window.location.search);
   if (urlParams.get("search")) document.getElementById("f-search").value = urlParams.get("search");
   if (urlParams.get("result")) document.getElementById("f-result").value = urlParams.get("result");
+  if (urlParams.get("session_id")) {
+    scopedSessionId = urlParams.get("session_id");
+    document.getElementById("session-scope-text").textContent = `Showing trades for Session #${scopedSessionId} only.`;
+    document.getElementById("session-scope-banner").style.display = "flex";
+  }
   refreshTrades();
   setInterval(refreshTrades, 10000);
   AximShell.subscribeEvents({

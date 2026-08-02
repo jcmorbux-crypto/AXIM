@@ -195,6 +195,21 @@ class FilterSignalsTests(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(rows[0]["asset"], "GBP/JPY OTC")  # newest (higher id) first
 
+    def test_session_id_filters_to_an_exact_session(self):
+        # Sessions' history table's own "View Trades" deep link
+        # (/trades?session_id=N) - proves the backend side of that link.
+        trade_id = database.record_signal_received(
+            {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"},
+            session_id=5,
+        )
+        database.record_signal_received(
+            {"asset": "GBP/JPY OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"},
+            session_id=6,
+        )
+        rows = database.filter_signals(session_id=5)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], trade_id)
+
     def test_filters_combine_with_and(self):
         self._make_trade("EUR/USD OTC", result="win")
         self._make_trade("EUR/USD OTC", result="loss")

@@ -494,7 +494,12 @@ async function refreshHistory() {
     }
     tbody.innerHTML = sessions.map(s => `
       <tr>
-        <td>${escapeHtml(s.name || "(unnamed)")}</td>
+        <td>
+          <div class="row" style="gap:8px; align-items:center; justify-content:flex-start;">
+            <span>${escapeHtml(s.name || "(unnamed)")}</span>
+            ${s.trades_count > 0 ? `<a href="/trades?session_id=${s.id}" class="subtle" style="font-size:11px; padding:3px 8px; text-decoration:none;">View Trades</a>` : ""}
+          </div>
+        </td>
         <td>${statusBadge(s.status)}</td>
         <td>${s.trades_count}${s.max_trades > 0 ? " / " + s.max_trades : ""}</td>
         <td class="${plClass(s.realized_pnl)}">${fmtMoney(s.realized_pnl)}</td>

@@ -29,14 +29,16 @@ router = APIRouter(prefix="/api/trades", tags=["trades"])
 
 @router.get("")
 def list_trades(limit: int = 50, search: Optional[str] = None, result: Optional[str] = None,
-                 since: Optional[str] = None, until: Optional[str] = None, user=Depends(get_current_user)):
+                 since: Optional[str] = None, until: Optional[str] = None, session_id: Optional[int] = None,
+                 user=Depends(get_current_user)):
     """No filters given -> database.filter_signals returns byte-identical
     rows to the old database.get_recent_signals(limit) call this endpoint
     used before 2026-08-01 (same columns, same WHERE-less query, same
     ORDER BY id DESC) - existing callers (web/trades.html's plain refresh,
     the Dashboard activity table via get_recent_signals directly) are
     unaffected either way."""
-    return database.filter_signals(search=search, result=result, since=since, until=until, limit=limit)
+    return database.filter_signals(search=search, result=result, since=since, until=until,
+                                    session_id=session_id, limit=limit)
 
 
 # Registered before /{trade_id} for the same reason martin-trader-summary
@@ -45,7 +47,7 @@ def list_trades(limit: int = 50, search: Optional[str] = None, result: Optional[
 @router.get("/export")
 def export_trades(format: str = "csv", limit: int = 10000, search: Optional[str] = None,
                    result: Optional[str] = None, since: Optional[str] = None, until: Optional[str] = None,
-                   user=Depends(get_current_user)):
+                   session_id: Optional[int] = None, user=Depends(get_current_user)):
     """Same filters as list_trades above, so "export what I'm currently
     looking at" (the filtered view) is possible, not just "export
     everything" - just a much higher default limit (a real export should
@@ -53,7 +55,8 @@ def export_trades(format: str = "csv", limit: int = 10000, search: Optional[str]
     file response instead of JSON for csv. Same csv/io.StringIO/Response
     pattern already proven by api/backtest_routes.py's export_run - kept
     consistent rather than inventing a second export convention."""
-    trades = database.filter_signals(search=search, result=result, since=since, until=until, limit=limit)
+    trades = database.filter_signals(search=search, result=result, since=since, until=until,
+                                      session_id=session_id, limit=limit)
 
     if format == "json":
         import json as json_module
