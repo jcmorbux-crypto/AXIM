@@ -242,6 +242,48 @@ class PerformanceTests(FundManagerTestCase):
         self.assertEqual(perf_b["total_closed"], 0)
 
 
+class ListFundsPerformanceTests(FundManagerTestCase):
+    """2026-08-01 trading-engine priority directive: cross-Fund cohort
+    comparison for Analytics - proves each fund's own real trades stay
+    correctly scoped to it, not pooled or leaked."""
+
+    def test_each_fund_reports_its_own_performance_independently(self):
+        fund_a = database.create_fund("Fund A")
+        fund_b = database.create_fund("Fund B")
+        # Two DISTINCT broker accounts, so both sessions can be active at
+        # once - start_trading_session falls back to a single whole-app
+        # exclusivity check when broker_account_id is omitted.
+        account_a = database.create_broker_account("Acc A")
+        account_b = database.create_broker_account("Acc B")
+        session_a = database.start_trading_session("SA", [1], "DEMO", fund_id=fund_a, broker_account_id=account_a)
+        session_b = database.start_trading_session("SB", [1], "DEMO", fund_id=fund_b, broker_account_id=account_b)
+        _make_closed_trade(session_a, result="win", profit_loss=10)
+        _make_closed_trade(session_b, result="loss", profit_loss=-5)
+
+        results = fund_manager.list_funds_performance()
+        by_name = {r["name"]: r for r in results}
+        self.assertEqual(by_name["Fund A"]["wins"], 1)
+        self.assertEqual(by_name["Fund A"]["losses"], 0)
+        self.assertEqual(by_name["Fund B"]["wins"], 0)
+        self.assertEqual(by_name["Fund B"]["losses"], 1)
+
+    def test_a_fund_with_no_trades_yet_still_appears_with_an_empty_summary(self):
+        database.create_fund("Idle Fund")
+        results = fund_manager.list_funds_performance()
+        idle = next(r for r in results if r["name"] == "Idle Fund")
+        self.assertEqual(idle["total_closed"], 0)
+        self.assertIsNone(idle["win_rate"])
+
+    def test_status_filter_scopes_which_funds_are_returned(self):
+        active_id = database.create_fund("Active One")
+        archived_id = database.create_fund("Archived One")
+        database.update_fund(archived_id, status="archived")
+        results = fund_manager.list_funds_performance(status="active")
+        names = {r["name"] for r in results}
+        self.assertIn("Active One", names)
+        self.assertNotIn("Archived One", names)
+
+
 class FundReportTests(FundManagerTestCase):
     def test_full_report_shape(self):
         fund_id = database.create_fund("F", starting_balance=1000)

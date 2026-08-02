@@ -26,12 +26,13 @@
     <div class="page-header">
       <div>
         <h1>Analytics</h1>
-        <div class="subtitle">Cohort performance by signal provider - every provider with at least one closed trade, not just a highlight reel.</div>
+        <div class="subtitle">Cohort performance across the trading engine - every provider and every Fund with at least one closed trade, not just a highlight reel.</div>
       </div>
-      <button onclick="refreshCohorts()">Refresh</button>
+      <button onclick="refreshCohorts(); refreshFundCohorts();">Refresh</button>
     </div>
 
-    <div class="card solid full-width">
+    <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">By Signal Provider</div>
+    <div class="card solid full-width" style="margin-bottom:24px;">
       <div class="row" style="justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
         <div class="muted" style="font-size:12.5px; max-width:640px;">
           Lifetime win rate, P/L, and ROI per signal provider (channel). Providers with fewer than
@@ -43,16 +44,43 @@
       <table>
         <thead>
           <tr>
-            <th class="sortable" data-key="channel">Provider <span class="arrow"></span></th>
-            <th class="sortable" data-key="total_closed">Trades <span class="arrow"></span></th>
-            <th class="sortable" data-key="win_rate">Win Rate <span class="arrow"></span></th>
+            <th class="sortable" data-table="provider" data-key="channel">Provider <span class="arrow"></span></th>
+            <th class="sortable" data-table="provider" data-key="total_closed">Trades <span class="arrow"></span></th>
+            <th class="sortable" data-table="provider" data-key="win_rate">Win Rate <span class="arrow"></span></th>
             <th>W / L / D</th>
-            <th class="sortable" data-key="profit_loss">P/L <span class="arrow"></span></th>
-            <th class="sortable" data-key="roi">ROI <span class="arrow"></span></th>
-            <th class="sortable" data-key="average_payout">Avg Payout <span class="arrow"></span></th>
+            <th class="sortable" data-table="provider" data-key="profit_loss">P/L <span class="arrow"></span></th>
+            <th class="sortable" data-table="provider" data-key="roi">ROI <span class="arrow"></span></th>
+            <th class="sortable" data-table="provider" data-key="average_payout">Avg Payout <span class="arrow"></span></th>
           </tr>
         </thead>
         <tbody id="cohorts-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+      </table>
+      </div>
+    </div>
+
+    <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin-bottom:10px;">By Fund</div>
+    <div class="card solid full-width">
+      <div class="row" style="justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+        <div class="muted" style="font-size:12.5px; max-width:640px;">
+          Lifetime win rate, P/L, and ROI per Fund - which of your independent bankroll allocations is actually
+          performing best, not just its current balance. Every Fund appears here regardless of status
+          (active/paused/archived), same "show the real cohort, not just the highlight reel" rule as above.
+        </div>
+      </div>
+      <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th class="sortable" data-table="fund" data-key="name">Fund <span class="arrow"></span></th>
+            <th class="sortable" data-table="fund" data-key="status">Status <span class="arrow"></span></th>
+            <th class="sortable" data-table="fund" data-key="total_closed">Trades <span class="arrow"></span></th>
+            <th class="sortable" data-table="fund" data-key="win_rate">Win Rate <span class="arrow"></span></th>
+            <th>W / L / D</th>
+            <th class="sortable" data-table="fund" data-key="profit_loss">P/L <span class="arrow"></span></th>
+            <th class="sortable" data-table="fund" data-key="roi">ROI <span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="fund-cohorts-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
       </table>
       </div>
     </div>
@@ -78,21 +106,36 @@ const MIN_RELIABLE_TRADES = 10;
 let cohorts = [];
 let sortKey = "profit_loss";
 let sortDesc = true;
+let fundCohorts = [];
+let fundSortKey = "profit_loss";
+let fundSortDesc = true;
 
-function sortCohorts() {
-  const sorted = [...cohorts].sort((a, b) => {
-    let av = a[sortKey], bv = b[sortKey];
+function _sortRows(rows, key, desc) {
+  return [...rows].sort((a, b) => {
+    let av = a[key], bv = b[key];
     if (typeof av === "string") { av = av.toLowerCase(); bv = (bv || "").toLowerCase(); }
-    if (av === null || av === undefined) av = sortDesc ? -Infinity : Infinity;
-    if (bv === null || bv === undefined) bv = sortDesc ? -Infinity : Infinity;
-    if (av < bv) return sortDesc ? 1 : -1;
-    if (av > bv) return sortDesc ? -1 : 1;
+    if (av === null || av === undefined) av = desc ? -Infinity : Infinity;
+    if (bv === null || bv === undefined) bv = desc ? -Infinity : Infinity;
+    if (av < bv) return desc ? 1 : -1;
+    if (av > bv) return desc ? -1 : 1;
     return 0;
   });
-  renderCohorts(sorted);
-  document.querySelectorAll("th.sortable .arrow").forEach(el => el.textContent = "");
-  const activeArrow = document.querySelector(`th.sortable[data-key="${sortKey}"] .arrow`);
-  if (activeArrow) activeArrow.textContent = sortDesc ? "↓" : "↑";
+}
+
+function _updateArrows(tableName, key, desc) {
+  document.querySelectorAll(`th.sortable[data-table="${tableName}"] .arrow`).forEach(el => el.textContent = "");
+  const activeArrow = document.querySelector(`th.sortable[data-table="${tableName}"][data-key="${key}"] .arrow`);
+  if (activeArrow) activeArrow.textContent = desc ? "↓" : "↑";
+}
+
+function sortCohorts() {
+  renderCohorts(_sortRows(cohorts, sortKey, sortDesc));
+  _updateArrows("provider", sortKey, sortDesc);
+}
+
+function sortFundCohorts() {
+  renderFundCohorts(_sortRows(fundCohorts, fundSortKey, fundSortDesc));
+  _updateArrows("fund", fundSortKey, fundSortDesc);
 }
 
 function renderCohorts(rows) {
@@ -132,12 +175,53 @@ async function refreshCohorts() {
   }
 }
 
+const FUND_STATUS_BADGE = { active: "on", paused: "warn", archived: "off" };
+
+function renderFundCohorts(rows) {
+  const tbody = document.getElementById("fund-cohorts-body");
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No Funds yet - create one on the Portfolio page.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => `
+    <tr>
+      <td class="title-cell">
+        <div class="row" style="gap:8px; align-items:center; justify-content:flex-start;">
+          <span>${escapeHtml(r.name)}</span>
+          <a href="/trades?fund_id=${r.fund_id}" class="subtle" style="font-size:11px; padding:3px 8px; text-decoration:none;">View Trades</a>
+        </div>
+      </td>
+      <td><span class="badge ${FUND_STATUS_BADGE[r.status] || "off"}">${escapeHtml(r.status)}</span></td>
+      <td>${r.total_closed}</td>
+      <td>${fmtPct(r.win_rate)}</td>
+      <td class="muted">${r.wins} / ${r.losses} / ${r.draws}</td>
+      <td class="${plClass(r.profit_loss)}">${fmtMoney(r.profit_loss)}</td>
+      <td class="${plClass(r.roi)}">${r.roi !== null && r.roi !== undefined ? fmtPct(r.roi) : "-"}</td>
+    </tr>
+  `).join("");
+}
+
+async function refreshFundCohorts() {
+  const tbody = document.getElementById("fund-cohorts-body");
+  try {
+    fundCohorts = await fetchJSON("/api/funds/performance-summary");
+    sortFundCohorts();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
 document.addEventListener("click", (e) => {
   const th = e.target.closest("th.sortable");
   if (!th) return;
   const key = th.dataset.key;
-  if (sortKey === key) { sortDesc = !sortDesc; } else { sortKey = key; sortDesc = true; }
-  sortCohorts();
+  if (th.dataset.table === "fund") {
+    if (fundSortKey === key) { fundSortDesc = !fundSortDesc; } else { fundSortKey = key; fundSortDesc = true; }
+    sortFundCohorts();
+  } else {
+    if (sortKey === key) { sortDesc = !sortDesc; } else { sortKey = key; sortDesc = true; }
+    sortCohorts();
+  }
 });
 
 (async () => {
@@ -145,12 +229,16 @@ document.addEventListener("click", (e) => {
   if (!user) return;
   document.getElementById("min-sample-label").textContent = MIN_RELIABLE_TRADES;
   refreshCohorts();
+  refreshFundCohorts();
   // Same trade.closed reasoning as Performance/Funds (also had no live
   // refresh at all before this session) - cohort stats only ever change
   // when a trade closes.
-  setInterval(refreshCohorts, 30000);
+  setInterval(() => { refreshCohorts(); refreshFundCohorts(); }, 30000);
   AximShell.subscribeEvents({
-    "trade.closed": { onEvent: refreshCohorts, onResync: refreshCohorts },
+    "trade.closed": {
+      onEvent: () => { refreshCohorts(); refreshFundCohorts(); },
+      onResync: () => { refreshCohorts(); refreshFundCohorts(); },
+    },
   });
 })();
 </script>

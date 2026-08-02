@@ -71,6 +71,22 @@ def get_fund_performance(fund_id):
     return trade_statistics._summarize(trades)
 
 
+def list_funds_performance(status=None):
+    """2026-08-01 trading-engine priority directive: cross-Fund cohort
+    comparison ("which of my Funds is actually performing best") had
+    nowhere to live - get_fund_performance above is real and already used
+    by the Funds page, but only ever for ONE fund at a time; the Funds
+    list itself (list_funds_with_balances) shows balances, never win
+    rate/ROI. Same shape every other "performance by X" cohort in this
+    codebase already uses (trade_statistics._summarize), just scoped per
+    fund instead of per channel/asset - status=None (default) returns
+    every fund regardless of active/paused/archived, matching Analytics'
+    own "show every real cohort, not just the active ones" philosophy."""
+    funds = database.list_funds(status=status)
+    return [{"fund_id": f["id"], "name": f["name"], "status": f["status"], **get_fund_performance(f["id"])}
+            for f in funds]
+
+
 def get_fund_report(fund_id):
     """Everything the Funds page needs for one fund in a single call:
     the fund row, computed balances, performance, attached broker

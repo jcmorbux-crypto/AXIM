@@ -154,11 +154,13 @@ function humanizeResult(result) {
   return result;
 }
 
-// Session scope isn't a visible filter-bar control - a deep link only
-// (Sessions' history table's own "View Trades" link), shown/cleared via
-// the banner above instead, so it can't silently stay applied without
-// the operator seeing why the list looks scoped.
+// Session/Fund scope isn't a visible filter-bar control - a deep link
+// only (Sessions history's / Analytics' "View Trades" links), shown/
+// cleared via the banner above instead, so it can't silently stay
+// applied without the operator seeing why the list looks scoped. Only
+// one is ever active at once - whichever the URL named on load.
 let scopedSessionId = null;
+let scopedFundId = null;
 
 function currentFilterParams() {
   const params = new URLSearchParams();
@@ -176,6 +178,7 @@ function currentFilterParams() {
   // excluded entirely.
   if (until) params.set("until", until + "T23:59:59");
   if (scopedSessionId) params.set("session_id", scopedSessionId);
+  if (scopedFundId) params.set("fund_id", scopedFundId);
   return params;
 }
 
@@ -318,6 +321,13 @@ function showScreenshot(url) {
     scopedSessionId = urlParams.get("session_id");
     document.getElementById("session-scope-text").textContent = `Showing trades for Session #${scopedSessionId} only.`;
     document.getElementById("session-scope-banner").style.display = "flex";
+  } else if (urlParams.get("fund_id")) {
+    scopedFundId = urlParams.get("fund_id");
+    document.getElementById("session-scope-text").textContent = `Showing trades for Fund #${scopedFundId} only.`;
+    document.getElementById("session-scope-banner").style.display = "flex";
+    fetchJSON(`/api/funds/${scopedFundId}`).then(report => {
+      document.getElementById("session-scope-text").textContent = `Showing trades for ${report.fund.name} only.`;
+    }).catch(() => {});
   }
   refreshTrades();
   setInterval(refreshTrades, 10000);

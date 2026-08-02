@@ -155,5 +155,32 @@ class FundDiagnosticsRouteTestCase(unittest.TestCase):
         self.assertTrue(result["healthy"])
 
 
+class PerformanceSummaryRouteTestCase(unittest.TestCase):
+    """2026-08-01 trading-engine priority directive: Analytics' cross-Fund
+    cohort panel."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_returns_one_row_per_fund_with_a_real_performance_shape(self):
+        database.create_fund("F1", starting_balance=1000)
+        database.create_fund("F2", starting_balance=500)
+        results = routes.funds_performance_summary(user=_FAKE_ADMIN)
+        self.assertEqual(len(results), 2)
+        names = {r["name"] for r in results}
+        self.assertEqual(names, {"F1", "F2"})
+        for r in results:
+            self.assertIn("win_rate", r)
+            self.assertIn("profit_loss", r)
+            self.assertIn("total_closed", r)
+
+
 if __name__ == "__main__":
     unittest.main()

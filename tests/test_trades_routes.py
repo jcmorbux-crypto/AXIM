@@ -210,6 +210,22 @@ class FilterSignalsTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["id"], trade_id)
 
+    def test_fund_id_filters_to_an_exact_fund(self):
+        # Analytics' cross-Fund cohort table's own "View Trades" deep link
+        # (/trades?fund_id=N) - a fund can span MANY sessions, unlike
+        # session_id above, so this is a genuinely separate dimension.
+        trade_id = database.record_signal_received(
+            {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"},
+            fund_id=7,
+        )
+        database.record_signal_received(
+            {"asset": "GBP/JPY OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "test"},
+            fund_id=8,
+        )
+        rows = database.filter_signals(fund_id=7)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], trade_id)
+
     def test_filters_combine_with_and(self):
         self._make_trade("EUR/USD OTC", result="win")
         self._make_trade("EUR/USD OTC", result="loss")

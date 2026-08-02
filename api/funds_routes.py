@@ -106,6 +106,16 @@ def portfolio_overview(user=Depends(get_current_user)):
     return fund_manager.get_portfolio_overview()
 
 
+@router.get("/performance-summary")
+def funds_performance_summary(user=Depends(get_current_user)):
+    """Analytics' "cohort performance by Fund" panel - same reasoning as
+    GET /api/channels/performance-summary (reuses an existing, already-
+    tested per-fund calculation, fund_manager.get_fund_performance, that
+    previously only had a one-fund-at-a-time consumer). Registered before
+    /{fund_id} for the same reason portfolio-overview is."""
+    return fund_manager.list_funds_performance()
+
+
 @router.get("/{fund_id}")
 def get_fund(fund_id: int, user=Depends(get_current_user)):
     report = fund_manager.get_fund_report(fund_id)
