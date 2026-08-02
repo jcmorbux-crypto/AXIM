@@ -295,6 +295,13 @@ function showScreenshot(url) {
   try {
     developerModeEnabled = (await fetchJSON("/api/settings/developer-mode")).enabled;
   } catch (e) {}
+  // Deep-link support (e.g. Analytics' "View trades" link for a specific
+  // provider) - pre-fills the filter bar from the URL so landing here
+  // shows the filtered view immediately, not the unfiltered default with
+  // the filter silently not applied.
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get("search")) document.getElementById("f-search").value = urlParams.get("search");
+  if (urlParams.get("result")) document.getElementById("f-result").value = urlParams.get("result");
   refreshTrades();
   setInterval(refreshTrades, 10000);
   AximShell.subscribeEvents({

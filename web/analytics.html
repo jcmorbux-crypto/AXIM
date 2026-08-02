@@ -105,7 +105,12 @@ function renderCohorts(rows) {
     const lowSample = r.total_closed < MIN_RELIABLE_TRADES;
     return `
       <tr>
-        <td class="title-cell">${escapeHtml(r.channel)}</td>
+        <td class="title-cell">
+          <div class="row" style="gap:8px; align-items:center; justify-content:flex-start;">
+            <span>${escapeHtml(r.channel)}</span>
+            <a href="/trades?search=${encodeURIComponent(r.channel)}" class="subtle" style="font-size:11px; padding:3px 8px; text-decoration:none;">View Trades</a>
+          </div>
+        </td>
         <td class="${lowSample ? "low-sample-cell" : ""}">${r.total_closed}${lowSample ? '<span class="low-sample-badge">low sample</span>' : ""}</td>
         <td>${fmtPct(r.win_rate)}</td>
         <td class="muted">${r.wins} / ${r.losses} / ${r.draws}</td>
