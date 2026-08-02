@@ -10,6 +10,23 @@ not repeat that document's per-module inventory — it isolates only the
 capabilities that stand between AXIM and Live, and gives each one a
 concrete owner-type, effort estimate, and exit criterion.
 
+**Phase 3 companion document:** `docs/AXIM_LIVE_VALIDATION_PACKAGE.md`
+- the full evidence-backed safety-feature verification, the operator
+runbook, the exact graduation-session script, the Go/No-Go gate, and
+failure-recovery/rollback procedures. This document's own Phase 3
+section below stays as the original checklist design; the package is
+where it was turned into an executable, evidence-backed operational
+plan.
+
+**2026-08-01 operator decision:** the Demo session (#12, 363+ trades,
+continuously running since 2026-07-17) is valuable evidence and is
+NOT to be interrupted for a standalone reboot test. Item #9's reboot
+validation is folded into ONE dedicated graduation session (stop Demo
+→ snapshot → reboot → verify full recovery chain → Live login → 5-10
+small Live trades → verify everything → Go/No-Go), scheduled by the
+operator, not run speculatively mid-development. See the Live
+Validation Package's Part 4 for the exact sequence.
+
 ---
 
 ## Phase 1 — Live Readiness Audit
@@ -77,7 +94,7 @@ log line) — "it seemed to work" is not a pass.
 
 | # | Check | What "pass" means | How it's verified |
 |---|---|---|---|
-| 1 | Correct login | AXIM logs into the real Live cabinet, not Demo, using the operator-supplied `LIVE_URL` | `verify_live_account()` (Phase 2) confirms cabinet type before the session is allowed to trade; screenshot of the logged-in cabinet showing real balance |
+| 1 | Correct login | AXIM logs into the real Live cabinet, not Demo, using the operator-supplied `LIVE_URL` | `execution/account_mode_verification.py::verify_live_mode` confirms cabinet type before the session is allowed to trade; screenshot of the logged-in cabinet showing real balance |
 | 2 | Correct account detection | The connected account is definitively identified as the intended Live account, not a different one | Account balance, currency, and any visible account ID match the operator's own out-of-band knowledge of that account |
 | 3 | Correct execution | A test trade's asset/direction/expiry/stake match exactly what was intended | Compare the signal AXIM received against the trade actually placed (DB row `signals.*` vs. broker UI/history) |
 | 4 | Correct expiry | The trade's expiry on the broker matches the configured expiry, not a default or drifted value | Broker trade-history expiry timestamp vs. `signals.expiry`/`opened_at` |
@@ -176,9 +193,25 @@ this plan, using the 5-state taxonomy this plan introduces:
   independently requires alongside `live_enabled`. 11 new/updated
   tests. Commit `cd0a88d`. **Phase 2 (all 4 engineering items) is now
   complete.**
-- **Next:** items #2 (`LIVE_URL`, operator-only), #4 (multi-account
-  scale, needs 2+ real accounts), #8 (honest win-rate window, product
-  decision + time), #9 (a real reboot test - can be run now, doesn't
-  need Live credentials, has not been scheduled). Phase 3's Live
-  Validation checklist is designed and ready, pending a real Live
-  account this session has no credentials for.
+- **2026-08-01** — Operator decision: do not reboot the Mini PC to
+  satisfy item #9 in isolation - the running Demo session (363+ trades,
+  continuous since 2026-07-17) is valuable evidence worth preserving.
+  Item #9 folded into one dedicated, operator-scheduled graduation
+  session instead of a standalone test.
+- **2026-08-01** — Phase 3 (Live Validation) and Phase 4 (Go/No-Go)
+  turned into a full operational package: `docs/AXIM_LIVE_VALIDATION_
+  PACKAGE.md` - evidence-backed verification of all 13 Live safety
+  features (361 passing tests cited directly), the operator runbook
+  (startup through reboot recovery), the exact graduation-session
+  script matching the operator's specified sequence, the Go/No-Go
+  gate, and failure-recovery/rollback procedures. One new test added
+  while gathering evidence (`test_audit_trail_rejection_reason_is_
+  readable_back_off_the_trade`, commit `9c480e3`) - the trade audit
+  trail's `rejection_reason` field had no dedicated test until now.
+- **Current state:** Phase 1 and Phase 2 complete. Phase 3/4 designed
+  and documented, ready to execute. **Nothing further is possible
+  without the operator:** supplying `LIVE_URL`, completing the honest
+  win-rate observation window, funding a small Live stake, and
+  personally scheduling/running the one dedicated graduation session
+  (`AXIM_LIVE_VALIDATION_PACKAGE.md` Part 4). The Demo session remains
+  untouched throughout all of this work.

@@ -6,11 +6,15 @@ verification reports rather than aspirational descriptions. Every row
 below cites the file/line or doc backing its status - if a claim can't
 be traced to something real, it isn't in this document.
 
-**Companion document:** `docs/AXIM_LIVE_PRODUCTION_GRADUATION.md` is
+**Companion documents:** `docs/AXIM_LIVE_PRODUCTION_GRADUATION.md` is
 the detailed Phase 1-5 plan for closing every Live-blocking item listed
-here. This matrix stays the single source of truth for status; that
-plan is where the audit detail (why blocked, blocker type, effort,
-exit criteria) and the formal Live Validation checklist live.
+here (audit detail, blocker type, effort, exit criteria).
+`docs/AXIM_LIVE_VALIDATION_PACKAGE.md` is the executable operational
+package built on top of it: evidence-backed proof every Live safety
+feature works (361 passing tests cited directly), the operator
+runbook, the exact one-session graduation script, the Go/No-Go gate,
+and failure-recovery/rollback procedures. This matrix stays the single
+source of truth for module status.
 
 **Last compiled:** 2026-08-01 (Phase 2 graduation pass - re-tagged
 every row to the graduation taxonomy below). Originally compiled
