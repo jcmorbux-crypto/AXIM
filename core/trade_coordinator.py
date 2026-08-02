@@ -442,6 +442,10 @@ class TradeCoordinator:
                 await asyncio.to_thread(database.update_trade_status, trade_id, TradeStatus.ERROR, result=f"error:{e}")
                 await asyncio.to_thread(database.record_pipeline_event, None, None, SignalLifecycleState.FAILED,
                                          signal_id=trade_id, detail=str(e))
+                await asyncio.to_thread(
+                    database.notify_owner, f"Trade failed: {asset} (trade #{trade_id}) - {e}",
+                    "trade.error",
+                )
                 await self.event_bus.publish("trade.error", {"trade_id": trade_id, "error": str(e)})
                 await asyncio.to_thread(timeline.persist, database)
                 raise

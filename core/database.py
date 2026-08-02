@@ -2133,8 +2133,17 @@ def advance_trade_series(series_id, current_entry_number, status, result=None, n
             "UPDATE trade_series SET current_entry_number = ?, status = ? WHERE id = ?",
             (current_entry_number, status, series_id),
         )
+    asset = None
+    if status in ("blocked", "error"):
+        asset_row = conn.execute("SELECT asset FROM trade_series WHERE id = ?", (series_id,)).fetchone()
+        asset = asset_row["asset"] if asset_row else None
     conn.commit()
     conn.close()
+    if status in ("blocked", "error"):
+        label = f"{asset} (series #{series_id})" if asset else f"series #{series_id}"
+        verb = "blocked" if status == "blocked" else "failed"
+        notify_owner(f"Trade series {verb}: {label} - {result or 'no reason given'}",
+                     source=f"trade_series.{status}")
 
 
 @timed("database")
@@ -2926,6 +2935,10 @@ def mark_series_reconciliation_required(series_id, reason, original_error=None):
         "database: series_id=%s marked reconciliation_required (%s) - will not auto-resume until manually reconciled",
         series_id, reason,
     )
+    series = get_trade_series(series_id)
+    asset = series["asset"] if series else None
+    label = f"{asset} (series #{series_id})" if asset else f"series #{series_id}"
+    notify_owner(f"Reconciliation needed: {label} - {reason}", source="trade_series.reconciliation_required")
 
 
 @timed("database")
@@ -6057,6 +6070,19 @@ def latest_server_event_id():
 # In-app notifications - api/notifications.py, core/rule_engine.py's
 # notify_owner action.
 # ---------------------------------------------------------------------
+
+def notify_owner(message, source):
+    """Same in-app notification pipeline rule_engine's "Notify the Owner"
+    action already uses (create_notification -> notifications table ->
+    web/shell.js's existing bell/unread-count poll) - reused here so real
+    system failures (series blocked/error, stuck reconciliation) surface
+    to the operator automatically instead of only ever being visible to
+    someone who thinks to query the DB, as series 105 was before 2026-07-29."""
+    owner = get_owner_user()
+    if owner is None:
+        return
+    create_notification(owner["id"], message, source=source)
+
 
 @timed("database")
 def create_notification(user_id, message, source=None):

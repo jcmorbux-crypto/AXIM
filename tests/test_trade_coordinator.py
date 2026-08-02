@@ -696,6 +696,32 @@ class LiveSignalPipelineTrackingTests(TradeCoordinatorTests):
         self.assertEqual(recent[0]["state"], "FAILED")
         self.assertIn("boom", recent[0]["detail"])
 
+    def test_unhandled_exception_notifies_the_owner(self):
+        # 2026-08-01: this path had zero owner-facing surfacing before -
+        # a real prepare_trade crash was visible only in lifecycle.log,
+        # the same silent-failure gap trade_series' own blocked/error
+        # notifications close on the Martin Trader side.
+        owner_id = database.create_user("owner@axim.local", "password123", role="owner")
+        trade_coordinator.PREVIEW_ONLY = False
+        trade_coordinator.AUTO_EXECUTE = True
+        database.set_control_state(test_mode=False)
+        pool = FakeWorkerPool()
+        coordinator = TradeCoordinator(pool, warmup_service="fake-warmup")
+
+        original_prepare_trade = pocket_executor.prepare_trade
+        pocket_executor.prepare_trade = AsyncMock(side_effect=RuntimeError("boom"))
+        try:
+            with self.assertRaises(RuntimeError):
+                _run(coordinator.handle_signal(self._signal(asset="EUR/USD OTC")))
+        finally:
+            pocket_executor.prepare_trade = original_prepare_trade
+
+        notifications = database.list_notifications(owner_id)
+        self.assertEqual(len(notifications), 1)
+        self.assertIn("EUR/USD OTC", notifications[0]["message"])
+        self.assertIn("boom", notifications[0]["message"])
+        self.assertEqual(notifications[0]["source"], "trade.error")
+
 
 if __name__ == "__main__":
     unittest.main()
