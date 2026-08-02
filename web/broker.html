@@ -57,6 +57,7 @@
     <details class="diagnostics" style="margin-bottom:24px;">
       <summary>Connection diagnostics</summary>
       <div class="diagnostics-body" id="conn-diagnostics"></div>
+      <div class="diagnostics-body" id="build-info-diagnostics"></div>
     </details>
 
     <div class="card solid full-width" style="margin-bottom:20px;">
@@ -224,6 +225,36 @@ async function refreshStatus() {
     `;
   } catch (e) {
     document.getElementById("conn-detail").textContent = "Failed to load: " + e.message;
+  }
+}
+
+function shortCommit(sha) { return sha ? sha.slice(0, 7) : "unknown"; }
+
+function buildInfoRow(label, process) {
+  if (!process.running_commit) return `<div>${label}: not seen since last restart</div>`;
+  const badge = process.current === false
+    ? '<span class="badge warn">stale - restart to apply latest code</span>'
+    : (process.current === true ? '<span class="badge on">up to date</span>' : "");
+  const started = process.started_at ? new Date(process.started_at).toLocaleString() : "unknown";
+  return `<div>${label}: ${shortCommit(process.running_commit)} ${badge} <span class="muted" style="font-size:11px;">(started ${started})</span></div>`;
+}
+
+async function loadBuildInfo() {
+  // 2026-07-25 Execution Reliability lesson (see api/main.py's own
+  // get_build_info docstring): a process can silently keep running code
+  // from before its last restart, invisible unless something explicitly
+  // compares disk vs. what each process actually loaded at its own
+  // startup - this was found live once, the listener having run 5 days
+  // of stale code unnoticed through an entire session of fixes.
+  try {
+    const info = await fetchJSON("/api/build-info");
+    document.getElementById("build-info-diagnostics").innerHTML = `
+      <div class="muted" style="font-size:11px; margin-bottom:4px;">On disk: ${shortCommit(info.disk_commit)}</div>
+      ${buildInfoRow("API process", info.api)}
+      ${buildInfoRow("Listener process", info.listener)}
+    `;
+  } catch (e) {
+    document.getElementById("build-info-diagnostics").innerHTML = "";
   }
 }
 
@@ -592,6 +623,10 @@ async function clearAccountEmergencyStop(id) {
   if (!user) return;
   refreshStatus();
   refreshAccounts();
+  loadBuildInfo();
+  // A version mismatch only ever changes on a restart (rare) - a longer,
+  // separate interval than the 10s connection poll above is plenty.
+  setInterval(loadBuildInfo, 60000);
   setInterval(refreshStatus, 10000);
   setInterval(refreshAccounts, 10000);
   // scripts/connect_broker_account.py (a real manual Pocket Option
