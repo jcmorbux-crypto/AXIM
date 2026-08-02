@@ -24,30 +24,36 @@
      right now" in one confident surface - status pill, hero number,
      goal progress, broker chip, next action. Replaces the previous
      status-line + hero-panel + broker-row as three separate boxes. ---- */
+  /* Executive Design Brief (2026-08-02) - "one premium command center,"
+     institutional-terminal depth rather than a flat admin-panel card:
+     a real ambient glow (green, AXIM's identity color per the brief -
+     "profit, active trading, connected, executing, completed, capital
+     growth"), a deeper glass edge, and noticeably larger hero typography. */
   .fund-hero {
-    background: linear-gradient(165deg, var(--surface) 0%, var(--bg) 60%);
+    background: linear-gradient(165deg, var(--surface) 0%, var(--bg) 65%);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow);
-    padding: 30px 34px;
+    box-shadow: var(--shadow-lift);
+    padding: 36px 40px;
     margin-bottom: 20px;
     position: relative;
     overflow: hidden;
   }
+  [data-theme="dark"] .fund-hero { border-color: rgba(255,255,255,0.07); }
   .fund-hero:before {
     content: "";
-    position: absolute; top: 0; right: 0; width: 260px; height: 260px;
-    background: radial-gradient(circle at top right, var(--blue-soft) 0%, transparent 70%);
-    opacity: 0.7; pointer-events: none;
+    position: absolute; top: 0; right: 0; width: 340px; height: 340px;
+    background: radial-gradient(circle at top right, var(--green-soft) 0%, transparent 70%);
+    opacity: 0.8; pointer-events: none;
   }
   .fund-hero-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 4px; }
   .status-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--text-dim); }
-  .fund-hero-name { font-size: 15px; font-weight: 650; color: var(--text-dim); margin-bottom: 2px; }
-  .fund-hero-value { font-size: 46px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; line-height: 1.05; }
-  .fund-hero-caption { color: var(--text-dim); font-size: 13.5px; margin-top: 6px; }
-  .goal-progress { margin-top: 20px; max-width: 420px; }
+  .fund-hero-name { font-size: 13px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin-bottom: 6px; }
+  .fund-hero-value { font-size: 56px; font-weight: 700; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; line-height: 1.02; }
+  .fund-hero-caption { color: var(--text-dim); font-size: 13.5px; margin-top: 8px; }
+  .goal-progress { margin-top: 22px; max-width: 420px; }
   .goal-progress-track { height: 7px; border-radius: 999px; background: var(--border); overflow: hidden; }
-  .goal-progress-fill { height: 100%; border-radius: 999px; background: var(--blue); transition: width 0.7s var(--ease); }
+  .goal-progress-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--green) 0%, var(--green-hover) 100%); transition: width 0.9s var(--ease); }
   .goal-progress-caption { font-size: 12.5px; color: var(--text-dim); margin-top: 7px; }
   .fund-hero-subrow { display: flex; gap: 32px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--border); flex-wrap: wrap; align-items: flex-end; }
   .fund-hero-subrow .stat { display: flex; flex-direction: column; gap: 3px; }
@@ -66,8 +72,8 @@
     cursor: pointer; text-align: left; background: var(--bg); width: 100%;
     transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
   }
-  .fund-overview-item:hover { border-color: var(--blue); box-shadow: var(--shadow); }
-  .fund-overview-item.active { border-color: var(--blue); background: var(--blue-soft); }
+  .fund-overview-item:hover { border-color: var(--green); box-shadow: var(--shadow); }
+  .fund-overview-item.active { border-color: var(--green); background: var(--green-soft); }
   .fund-overview-item .name { font-weight: 600; font-size: 13.5px; margin-bottom: 6px; display: flex; justify-content: space-between; gap: 8px; }
   .fund-overview-item .pl { font-size: 17px; font-weight: 650; font-variant-numeric: tabular-nums; }
 
@@ -86,8 +92,9 @@
   .po-stats-grid .stat .label { font-size: 11.5px; color: var(--text-dim); }
   .po-stats-grid .stat .value { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
   .fund-cards-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
-  .fund-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; background: var(--bg); box-shadow: var(--shadow-sm); cursor: pointer; text-align: left; }
-  .fund-card.active { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+  .fund-card { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; background: var(--bg); box-shadow: var(--shadow-sm); cursor: pointer; text-align: left; transition: transform 0.15s var(--ease), box-shadow 0.15s var(--ease), border-color 0.15s var(--ease); }
+  .fund-card:hover { transform: translateY(-1px); box-shadow: var(--shadow); }
+  .fund-card.active { border-color: var(--green); box-shadow: 0 0 0 1px var(--green); }
   .fund-card .fc-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }
   .fund-card .fc-name {
     font-weight: 650; font-size: 14.5px; display: -webkit-box;
@@ -112,16 +119,28 @@
   .metric-card {
     background: var(--surface); border: 1px solid var(--border);
     border-radius: var(--radius-lg); box-shadow: var(--shadow);
-    padding: 20px 22px 18px; transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease);
+    padding: 22px 24px 20px; position: relative; overflow: hidden;
+    transition: transform 0.18s var(--ease), box-shadow 0.18s var(--ease), border-color 0.18s var(--ease);
   }
-  .metric-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+  [data-theme="dark"] .metric-card { border-color: rgba(255,255,255,0.06); }
+  /* A hairline accent bar along the top edge, in each card's own
+     positive/negative color where one applies (set via inline style /
+     .mc-accent-green|red modifier) - the "institutional terminal" cue
+     that this number specifically represents money, not a generic stat. */
+  .metric-card:before {
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: var(--border); opacity: 0.6;
+  }
+  .metric-card.mc-accent-green:before { background: linear-gradient(90deg, var(--green) 0%, var(--green-deep) 100%); opacity: 1; }
+  .metric-card.mc-accent-red:before { background: var(--red); opacity: 0.85; }
+  .metric-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-lift); border-color: var(--green-border); }
   .metric-card .mc-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
   .metric-card .mc-label {
-    font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
     color: var(--text-faint); font-weight: 700; white-space: nowrap;
   }
-  .metric-card .mc-value { font-size: 29px; font-weight: 750; letter-spacing: -0.015em; font-variant-numeric: tabular-nums; margin-top: 7px; line-height: 1.1; }
-  .metric-card .mc-delta { font-size: 12.5px; margin-top: 7px; font-weight: 650; }
+  .metric-card .mc-value { font-size: 33px; font-weight: 750; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; margin-top: 8px; line-height: 1.08; }
+  .metric-card .mc-delta { font-size: 12.5px; margin-top: 8px; font-weight: 650; }
   .metric-card .mc-chart { margin-top: 10px; height: 38px; width: 100%; display: block; }
   .metric-card.ring-card .mc-top { align-items: center; }
   .metric-card .mc-ring { flex-shrink: 0; }
@@ -389,6 +408,34 @@ function plClass(v) {
   if (v === null || v === undefined) return "neutral";
   return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral");
 }
+
+// Executive Design Brief (2026-08-02) - "Animated numbers... Capital
+// counters." A real count-up, not just the pre-existing .count-up
+// class (which only ever animated color, never the digits themselves).
+// Reads the element's own last-rendered value off a data attribute so
+// it always animates FROM whatever is currently on screen, never from
+// zero on every refresh - a live dashboard re-polling every few seconds
+// must not re-play "$0 -> $9,412" from scratch each time.
+function animateMoneyInto(el, newValue, formatter) {
+  if (!el || newValue === null || newValue === undefined || isNaN(newValue)) {
+    if (el) el.textContent = "-";
+    return;
+  }
+  const format = formatter || fmtMoney;
+  const from = parseFloat(el.dataset.animValue);
+  const start = isNaN(from) ? newValue : from; // first paint: no count-up from an arbitrary zero
+  el.dataset.animValue = String(newValue);
+  if (start === newValue) { el.textContent = format(newValue); return; }
+  const duration = 700;
+  const t0 = performance.now();
+  function tick(now) {
+    const p = Math.min(1, (now - t0) / duration);
+    const eased = 1 - Math.pow(1 - p, 3); // ease-out cubic - settles, doesn't overshoot
+    el.textContent = format(start + (newValue - start) * eased);
+    if (p < 1) requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+}
 function timeAgo(iso) {
   if (!iso) return "";
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -580,16 +627,16 @@ async function refreshForFund(fundId) {
   const perf = report.performance;
   const dailyPlEl = document.getElementById("daily-pl");
   document.getElementById("hero-label-text").textContent = `${report.fund.name} - Lifetime Performance`;
-  dailyPlEl.textContent = fmtMoney(perf.profit_loss);
   dailyPlEl.className = "fund-hero-value count-up " + plClass(perf.profit_loss);
+  animateMoneyInto(dailyPlEl, perf.profit_loss, fmtMoney);
   document.getElementById("daily-pl-caption").textContent =
     perf.total_closed > 0 ? `${perf.wins} win${perf.wins === 1 ? "" : "s"}, ${perf.losses} loss${perf.losses === 1 ? "" : "es"} all-time` : "No trades closed yet.";
   document.getElementById("win-rate").textContent = perf.win_rate !== null ? (perf.win_rate * 100).toFixed(1) + "%" : "-";
   document.getElementById("trades-today").textContent = perf.total_closed;
   document.getElementById("session-pl-label").textContent = "Trading balance";
   const sessionPlEl = document.getElementById("session-pl");
-  sessionPlEl.textContent = fmtMoney(report.balances.trading_balance);
   sessionPlEl.className = "value " + plClass(report.balances.trading_balance - report.fund.starting_balance);
+  animateMoneyInto(sessionPlEl, report.balances.trading_balance, fmtMoney);
 
   renderGoalProgress(perf.profit_loss, report.fund.profit_target);
 
@@ -731,8 +778,8 @@ async function refreshGlobal() {
     // ---- Hero: Today's Performance ----
     const daily = dash.statistics.daily;
     const dailyPlEl = document.getElementById("daily-pl");
-    dailyPlEl.textContent = fmtMoney(daily.profit_loss);
     dailyPlEl.className = "fund-hero-value count-up " + plClass(daily.profit_loss);
+    animateMoneyInto(dailyPlEl, daily.profit_loss, fmtMoney);
     document.getElementById("daily-pl-caption").textContent =
       daily.total_closed > 0 ? `${daily.wins} win${daily.wins === 1 ? "" : "s"}, ${daily.losses} loss${daily.losses === 1 ? "" : "es"} today` : "No trades closed yet today.";
     document.getElementById("win-rate").textContent = daily.win_rate !== null ? (daily.win_rate * 100).toFixed(1) + "%" : "-";
@@ -741,8 +788,8 @@ async function refreshGlobal() {
     const sessionPlEl = document.getElementById("session-pl");
     if (activeSessions.length) {
       const combinedPnl = activeSessions.reduce((sum, s) => sum + (s.realized_pnl || 0), 0);
-      sessionPlEl.textContent = fmtMoney(combinedPnl);
       sessionPlEl.className = "value " + plClass(combinedPnl);
+      animateMoneyInto(sessionPlEl, combinedPnl, fmtMoney);
     } else {
       sessionPlEl.textContent = "No active session";
       sessionPlEl.className = "value faint";
@@ -935,12 +982,26 @@ async function loadPortfolioOverview() {
     // UI v2 metric card row - lifetime figures (never a rolling window)
     // for the headline cards, per the v2 hierarchy: equity, realized
     // profit, win rate, trade count are the dashboard's visual priority.
-    document.getElementById("mc-total-balance").textContent = "$" + totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    animateMoneyInto(document.getElementById("mc-total-balance"), totalValue,
+      (v) => "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
     document.getElementById("mc-active-funds-delta").textContent = `${allFunds.length} active fund${allFunds.length === 1 ? "" : "s"}`;
-    document.getElementById("mc-total-profit").innerHTML = `<span class="${plClass(overview.total_profit_loss)}">${fmtMoney(overview.total_profit_loss)}</span>`;
+
+    const profitCard = document.getElementById("mc-total-profit").closest(".metric-card");
+    const profitEl = document.getElementById("mc-total-profit");
+    profitEl.className = "mc-value " + plClass(overview.total_profit_loss);
+    animateMoneyInto(profitEl, overview.total_profit_loss, fmtMoney);
+    if (profitCard) {
+      profitCard.classList.toggle("mc-accent-green", (overview.total_profit_loss ?? 0) > 0);
+      profitCard.classList.toggle("mc-accent-red", (overview.total_profit_loss ?? 0) < 0);
+    }
     document.getElementById("mc-today-pl-delta").innerHTML = `Today: <span class="${plClass(todayPl)}">${fmtMoney(todayPl)}</span>`;
-    document.getElementById("mc-win-rate").textContent = overview.overall_win_rate != null ? (overview.overall_win_rate * 100).toFixed(1) + "%" : "-";
-    document.getElementById("mc-total-trades").textContent = overview.total_trades ?? "-";
+
+    animateMoneyInto(
+      document.getElementById("mc-win-rate"),
+      overview.overall_win_rate != null ? overview.overall_win_rate * 100 : null,
+      (v) => v.toFixed(1) + "%",
+    );
+    animateMoneyInto(document.getElementById("mc-total-trades"), overview.total_trades ?? null, (v) => Math.round(v).toLocaleString());
     document.getElementById("mc-todays-trades-delta").textContent = `${overview.todays_trades ?? 0} today`;
     renderMetricSparkline("mc-balance-spark", growth.points);
     renderMetricSparkline("mc-profit-spark", growth.points);

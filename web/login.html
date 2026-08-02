@@ -22,16 +22,26 @@
   }
   .auth-logo {
     display: flex; align-items: center; gap: 14px;
-    margin-bottom: 26px;
+    margin-bottom: 32px;
   }
   .auth-logo .mark {
     width: 54px; height: 54px; border-radius: 15px; overflow: hidden;
     display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   }
   .auth-logo .mark img { display: block; width: 100%; height: 100%; object-fit: cover; }
-  .auth-logo .wordmark { display: flex; flex-direction: column; line-height: 1.05; }
+  .auth-logo .wordmark { display: flex; flex-direction: column; line-height: 1.05; position: relative; }
   .auth-logo .wordmark-primary { font-weight: 800; font-size: 32px; letter-spacing: -0.02em; color: var(--text); }
-  .auth-logo .wordmark-secondary { font-weight: 650; font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); }
+  /* Executive Design Brief (2026-08-02) - same script signature as
+     web/theme.css's .sidebar-logo .wordmark-secondary; kept in sync by
+     hand since login.html doesn't render through the shared AximShell
+     sidebar this page has no nav at all pre-authentication. */
+  .auth-logo .wordmark-secondary {
+    position: absolute; left: 56%; bottom: -4px;
+    font-family: "Snell Roundhand", "Bickham Script", "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive;
+    font-style: italic; font-weight: 500; font-size: 18px; letter-spacing: 0.01em; line-height: 1; white-space: nowrap;
+    background: linear-gradient(120deg, var(--text-faint) 0%, var(--text) 45%, var(--text-faint) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent; opacity: 0.92;
+  }
   h1 { font-size: 18px; margin: 0 0 4px 0; font-weight: 650; }
   .auth-subtitle { color: var(--text-dim); font-size: 13px; margin-bottom: 22px; }
   .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-dim); margin-bottom: 16px; }

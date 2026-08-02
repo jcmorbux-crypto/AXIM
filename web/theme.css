@@ -28,8 +28,18 @@
   --blue-soft: #eaeefb;
   --blue-border: #c7d2ed;
   --green: #22c55e;
+  --green-hover: #16a34a;
   --green-soft: #dcfce7;
   --green-border: #86efac;
+  /* Executive Design Brief (2026-08-02): Institutional Green promoted to
+     AXIM's primary status/identity accent - "profit, active trading,
+     connected, executing, completed, capital growth." A deeper, richer
+     tone than --green itself for large glow/gradient surfaces (hero
+     panels, equity curves) where the base green would read too pastel
+     at scale - --brand (Institutional Blue) remains the wordmark/link/
+     focus-ring color per the locked brand assets, now used more
+     sparingly as a secondary accent rather than the default action color. */
+  --green-deep: #0f9d58;
   --red: #ef4444;
   --red-hover: #dc2626;
   --red-soft: #fee2e2;
@@ -134,8 +144,10 @@
   --blue-soft: #1c2540;
   --blue-border: #33427a;
   --green: #34d399;
+  --green-hover: #4ade80;
   --green-soft: #10281f;
   --green-border: #1e5a41;
+  --green-deep: #1caa6b;
   --red: #f37070;
   --red-hover: #f68f8f;
   --red-soft: #341a1a;
@@ -234,11 +246,11 @@ a { color: inherit; }
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 12px; border-radius: 999px; font-size: 11.5px; font-weight: 700; letter-spacing: 0.02em;
 }
-.topbar-mode .dot { width: 7px; height: 7px; border-radius: 50%; }
+.topbar-mode .dot { width: 7px; height: 7px; border-radius: 50%; animation: axim-pulse 2.2s ease-in-out infinite; }
 .topbar-mode.live { background: var(--green-soft); color: var(--green); }
 .topbar-mode.live .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
 .topbar-mode.demo { background: var(--blue-soft); color: var(--blue); }
-.topbar-mode.demo .dot { background: var(--blue); }
+.topbar-mode.demo .dot { background: var(--blue); box-shadow: 0 0 5px var(--blue); }
 .topbar-avatar {
   width: 32px; height: 32px; border-radius: 50%;
   background: var(--brand-soft); color: var(--brand);
@@ -280,7 +292,7 @@ a { color: inherit; }
   display: flex;
   align-items: center;
   gap: 13px;
-  padding: 8px 10px 32px 10px;
+  padding: 8px 10px 38px 10px;
   font-weight: 650;
   font-size: 17px;
   letter-spacing: -0.01em;
@@ -301,6 +313,7 @@ a { color: inherit; }
   display: flex;
   flex-direction: column;
   line-height: 1.05;
+  position: relative;
 }
 
 .sidebar-logo .wordmark-primary {
@@ -310,12 +323,32 @@ a { color: inherit; }
   color: var(--text);
 }
 
+/* Executive Design Brief (2026-08-02): "Trader" as an elegant script
+   signature riding the lower-right corner of AXIM, ~15-20% of its
+   height, slight italic, premium rather than playful - Ferrari/
+   Aston Martin/Montblanc script, not a Comic Sans flourish. No script
+   webfont is self-hosted in this build (this codebase deliberately
+   ships zero external font/CDN requests - see theme.css's own Inter
+   @font-face comment) - approximated with the best available platform
+   script-serif stack instead of a generic sans italic, which is the
+   honest ceiling without adding a new font asset. Positioned to
+   overlap AXIM's own baseline rather than stack cleanly underneath it. */
 .sidebar-logo .wordmark-secondary {
-  font-weight: 650;
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-dim);
+  position: absolute;
+  left: 58%;
+  bottom: -3px;
+  font-family: "Snell Roundhand", "Bickham Script", "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive;
+  font-style: italic;
+  font-weight: 500;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  white-space: nowrap;
+  background: linear-gradient(120deg, var(--text-faint) 0%, var(--text) 45%, var(--text-faint) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  opacity: 0.92;
 }
 
 .nav-group { display: flex; flex-direction: column; gap: 1px; }
@@ -957,9 +990,16 @@ td.title-cell { white-space: normal; max-width: 320px; }
     width: 28px; height: 28px; border-radius: 8px; overflow: hidden;
     display: flex; align-items: center; justify-content: center; flex-shrink: 0;
   }
-  .mobile-header .wordmark { display: flex; align-items: baseline; gap: 5px; line-height: 1; }
+  .mobile-header .wordmark { display: flex; align-items: baseline; gap: 4px; line-height: 1; }
   .mobile-header .wordmark-primary { font-weight: 800; font-size: 17px; letter-spacing: -0.01em; color: var(--text); }
-  .mobile-header .wordmark-secondary { font-weight: 650; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim); }
+  /* Space-constrained mobile header: same script signature, inline
+     rather than overlapping (no room for absolute positioning here). */
+  .mobile-header .wordmark-secondary {
+    font-family: "Snell Roundhand", "Bickham Script", "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive;
+    font-style: italic; font-weight: 500; font-size: 13px; letter-spacing: 0;
+    background: linear-gradient(120deg, var(--text-faint) 0%, var(--text) 45%, var(--text-faint) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent; opacity: 0.92;
+  }
   [data-theme="dark"] .mobile-header {
     background: rgba(13, 13, 22, 0.85);
     backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
