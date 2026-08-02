@@ -89,9 +89,10 @@ and safety confirmations before anything live-money-adjacent.
    - Pocket Option panel: session/worker status via a real heartbeat
      (`ui_listener_heartbeat`, written every 30s by the listener, read by
      the API) - verified live (fresh, non-stale heartbeat after a
-     restart). **Balance display: not yet implemented** - no DOM selector
-     for it has been discovered/verified yet; the API/UI honestly report
-     `null`/"not yet implemented" rather than fabricate a number. Manual
+     restart). **Balance display: DONE** (this note was stale - confirmed
+     live 2026-08-01) - `pocket_dom.read_balance(page)` is read every
+     heartbeat and shown both on the Broker Accounts page (per-account
+     `last_balance` column) and the app shell's topbar. Manual
      reconnect currently restarts the whole listener process (stop+start)
      - a lighter-weight "just reconnect the browser" action would need a
      dedicated IPC path into the running process, not built yet.

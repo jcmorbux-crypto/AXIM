@@ -116,12 +116,11 @@ const AximShell = (() => {
   // keep working, per that same spec's own "preserve existing URLs where
   // practical" note.
   //
-  // Three approved items are TEMPORARY placeholders pending real content
-  // work already tracked as separate tasks - this is a transitional nav,
-  // not a finished one:
-  //   - "Signals" -> /telegram (still the old Sources/channel-manager
-  //     page; the approved Signal Feed Table/Filters/Provider Status/
-  //     Execution Rules workspace hasn't been built yet).
+  // Two of these were TEMPORARY placeholders when this comment was
+  // written; "Signals" no longer is (2026-08-01: confirmed live -
+  // web/telegram.html was rebuilt into the approved 5-region blueprint -
+  // Signal Filters, Signal Feed Table, Provider Status, Selected Signal
+  // Details, Execution Rules - all present):
   //   - "Bots" -> /sessions (Trading Sessions is the closer functional
   //     match to the approved bot/session-health+controls+logs screen;
   //     the current /bots route is a DIFFERENT feature - interactive
