@@ -12,10 +12,13 @@ import trade_statistics
 
 
 def _make_closed_trade(asset="EUR/USD OTC", channel="TestChannel", result="win", profit_loss=0.9,
-                        trade_amount=1, payout=90, closed_at=None, session_id=None, fund_id=None):
+                        trade_amount=1, payout=90, closed_at=None, session_id=None, fund_id=None,
+                        broker_account_id=None):
     signal = {"asset": asset, "direction": "BUY", "expiry": "1 Minute", "raw_message": "test",
               "trade_amount": trade_amount}
-    trade_id = database.record_signal_received(signal, source=channel, session_id=session_id, fund_id=fund_id)
+    trade_id = database.record_signal_received(
+        signal, source=channel, session_id=session_id, fund_id=fund_id, broker_account_id=broker_account_id,
+    )
     database.update_trade_status(
         trade_id, __import__("trade_lifecycle").TradeStatus.RESULT_WIN if result == "win"
         else __import__("trade_lifecycle").TradeStatus.RESULT_LOSS,
@@ -160,6 +163,74 @@ class FundScopedStatsTests(unittest.TestCase):
         _make_closed_trade(result="win", profit_loss=5, fund_id=fund_b)
         self.assertEqual(trade_statistics.lifetime_stats(fund_id=fund_a)["profit_loss"], 30)
         self.assertEqual(trade_statistics.lifetime_stats(fund_id=fund_b)["profit_loss"], 5)
+
+
+class ExcludeLiveIsolationTests(unittest.TestCase):
+    """AXIM Live Production Graduation Phase 2 - live statistics
+    isolation (2026-08-01): exclude_live=True must guarantee a Demo-
+    scoped aggregate can never blend in a trade from a Live-effective
+    broker account (mode in (live, both) AND live_enabled), matching
+    core/broker_account_manager.account_effective_cabinet_mode's own
+    rule. Default (exclude_live=False, every existing caller) is
+    byte-identical to before this feature existed."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.live_account = database.create_broker_account("Live Account", mode="live")
+        database.update_broker_account(self.live_account, live_enabled=True)
+        self.demo_account = database.create_broker_account("Demo Account", mode="demo")
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_get_trades_between_default_includes_everything(self):
+        _make_closed_trade(result="win", profit_loss=10, broker_account_id=self.live_account)
+        _make_closed_trade(result="win", profit_loss=5, broker_account_id=self.demo_account)
+        _make_closed_trade(result="win", profit_loss=1)  # no broker account at all
+        rows = database.get_trades_between("2000-01-01", "2100-01-01", closed_only=True)
+        self.assertEqual(len(rows), 3)
+
+    def test_get_trades_between_exclude_live_drops_only_live_effective_account(self):
+        _make_closed_trade(result="win", profit_loss=10, broker_account_id=self.live_account)
+        _make_closed_trade(result="win", profit_loss=5, broker_account_id=self.demo_account)
+        _make_closed_trade(result="win", profit_loss=1)  # no broker account at all - never excluded
+        rows = database.get_trades_between("2000-01-01", "2100-01-01", closed_only=True, exclude_live=True)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sum(r["profit_loss"] for r in rows), 6)
+
+    def test_mode_live_but_not_live_enabled_is_not_excluded(self):
+        # account_effective_cabinet_mode's own rule: mode='live'/'both'
+        # alone isn't enough - live_enabled must also be on. A "live
+        # capability present but not flipped on" account must still
+        # read as Demo for isolation purposes.
+        not_yet_armed = database.create_broker_account("Not Armed", mode="live")
+        _make_closed_trade(result="win", profit_loss=7, broker_account_id=not_yet_armed)
+        rows = database.get_trades_between("2000-01-01", "2100-01-01", closed_only=True, exclude_live=True)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["profit_loss"], 7)
+
+    def test_lifetime_stats_exclude_live(self):
+        _make_closed_trade(result="win", profit_loss=100, broker_account_id=self.live_account)
+        _make_closed_trade(result="win", profit_loss=10, broker_account_id=self.demo_account)
+        self.assertEqual(trade_statistics.lifetime_stats(exclude_live=True)["profit_loss"], 10)
+        self.assertEqual(trade_statistics.lifetime_stats(exclude_live=False)["profit_loss"], 110)
+
+    def test_profit_by_channel_exclude_live(self):
+        _make_closed_trade(channel="Alpha", result="win", profit_loss=50, broker_account_id=self.live_account)
+        _make_closed_trade(channel="Alpha", result="win", profit_loss=5, broker_account_id=self.demo_account)
+        grouped = trade_statistics.profit_by_channel(exclude_live=True)
+        self.assertEqual(grouped["Alpha"]["total_closed"], 1)
+        self.assertEqual(grouped["Alpha"]["profit_loss"], 5)
+
+    def test_max_drawdown_exclude_live(self):
+        _make_closed_trade(result="loss", profit_loss=-1000, broker_account_id=self.live_account)
+        _make_closed_trade(result="win", profit_loss=5, broker_account_id=self.demo_account)
+        self.assertEqual(trade_statistics.max_drawdown(exclude_live=True), 0.0)
+        self.assertGreater(trade_statistics.max_drawdown(exclude_live=False), 900)
 
 
 if __name__ == "__main__":

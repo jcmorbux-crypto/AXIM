@@ -30,17 +30,21 @@ def _summarize(rows):
     }
 
 
-def daily_stats(now=None, fund_id=None):
+def daily_stats(now=None, fund_id=None, exclude_live=False):
     now = now or datetime.now()
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    rows = database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True, fund_id=fund_id)
+    rows = database.get_trades_between(
+        start.isoformat(), now.isoformat(), closed_only=True, fund_id=fund_id, exclude_live=exclude_live,
+    )
     return _summarize(rows)
 
 
-def weekly_stats(now=None, fund_id=None):
+def weekly_stats(now=None, fund_id=None, exclude_live=False):
     now = now or datetime.now()
     start = now - timedelta(days=7)
-    rows = database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True, fund_id=fund_id)
+    rows = database.get_trades_between(
+        start.isoformat(), now.isoformat(), closed_only=True, fund_id=fund_id, exclude_live=exclude_live,
+    )
     return _summarize(rows)
 
 
@@ -87,21 +91,27 @@ def full_report():
 _EPOCH = "2000-01-01T00:00:00"
 
 
-def monthly_stats(now=None, fund_id=None):
+def monthly_stats(now=None, fund_id=None, exclude_live=False):
     now = now or datetime.now()
     start = now - timedelta(days=30)
-    return _summarize(database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True, fund_id=fund_id))
+    return _summarize(database.get_trades_between(
+        start.isoformat(), now.isoformat(), closed_only=True, fund_id=fund_id, exclude_live=exclude_live,
+    ))
 
 
-def yearly_stats(now=None):
+def yearly_stats(now=None, exclude_live=False):
     now = now or datetime.now()
     start = now - timedelta(days=365)
-    return _summarize(database.get_trades_between(start.isoformat(), now.isoformat(), closed_only=True))
+    return _summarize(database.get_trades_between(
+        start.isoformat(), now.isoformat(), closed_only=True, exclude_live=exclude_live,
+    ))
 
 
-def lifetime_stats(now=None, fund_id=None):
+def lifetime_stats(now=None, fund_id=None, exclude_live=False):
     now = now or datetime.now()
-    return _summarize(database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True, fund_id=fund_id))
+    return _summarize(database.get_trades_between(
+        _EPOCH, now.isoformat(), closed_only=True, fund_id=fund_id, exclude_live=exclude_live,
+    ))
 
 
 def _grouped_performance(rows, key):
@@ -118,15 +128,15 @@ def _grouped_performance(rows, key):
     return {k: _summarize(v) for k, v in groups.items()}
 
 
-def profit_by_channel(now=None):
+def profit_by_channel(now=None, exclude_live=False):
     now = now or datetime.now()
-    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True)
+    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True, exclude_live=exclude_live)
     return _grouped_performance(rows, "channel")
 
 
-def profit_by_asset(now=None):
+def profit_by_asset(now=None, exclude_live=False):
     now = now or datetime.now()
-    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True)
+    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True, exclude_live=exclude_live)
     return _grouped_performance(rows, "asset")
 
 
@@ -146,23 +156,23 @@ def best_worst(grouped, min_trades=1):
     }
 
 
-def best_time_of_day(now=None):
+def best_time_of_day(now=None, exclude_live=False):
     """Buckets closed trades by hour-of-day (0-23, local time) and ranks
     by profit_loss - same min-sample-size caution as best_worst."""
     now = now or datetime.now()
-    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True)
+    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True, exclude_live=exclude_live)
     for r in rows:
         r["_hour"] = datetime.fromisoformat(r["closed_at"]).hour if r.get("closed_at") else None
     grouped = _grouped_performance(rows, "_hour")
     return {str(hour): stats for hour, stats in sorted(grouped.items())}
 
 
-def max_drawdown(now=None):
+def max_drawdown(now=None, exclude_live=False):
     """Largest peak-to-trough drop in cumulative realized P&L across all
     closed trades in chronological order - the standard drawdown
     definition, not an approximation."""
     now = now or datetime.now()
-    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True)
+    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True, exclude_live=exclude_live)
     cumulative = 0.0
     peak = 0.0
     max_dd = 0.0
@@ -173,11 +183,11 @@ def max_drawdown(now=None):
     return round(max_dd, 2)
 
 
-def longest_streaks(now=None):
+def longest_streaks(now=None, exclude_live=False):
     """Longest win streak and longest loss streak ever, not just the
     CURRENT streak (see consecutive_wins/consecutive_losses for that)."""
     now = now or datetime.now()
-    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True)
+    rows = database.get_trades_between(_EPOCH, now.isoformat(), closed_only=True, exclude_live=exclude_live)
     longest_win = longest_loss = current_win = current_loss = 0
     for r in rows:
         if r["result"] == "win":
