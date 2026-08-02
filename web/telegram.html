@@ -290,6 +290,7 @@
     <h2 style="margin-top:0;" id="profile-title">Provider Profile</h2>
     <div id="profile-body">Loading...</div>
     <div class="row" style="justify-content:flex-end; margin-top:14px;">
+      <a id="profile-view-trades-link" href="/trades" class="btn subtle" style="text-decoration:none;">View Trades</a>
       <button class="subtle" onclick="closeModal('profile-modal')">Close</button>
     </div>
   </div>
@@ -976,6 +977,7 @@ async function openMessages(id) {
 
 async function openProfileModal(channelId, title) {
   document.getElementById("profile-title").textContent = `Provider Profile - ${title}`;
+  document.getElementById("profile-view-trades-link").href = `/trades?search=${encodeURIComponent(title)}`;
   const bodyEl = document.getElementById("profile-body");
   bodyEl.innerHTML = '<div class="empty">Loading...</div>';
   openModal("profile-modal");
