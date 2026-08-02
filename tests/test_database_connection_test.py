@@ -72,6 +72,28 @@ class ConnectionTestQueueTests(unittest.TestCase):
         pending_account_ids = {p["broker_account_id"] for p in pending}
         self.assertEqual(pending_account_ids, {self.account_id})
 
+    def test_complete_records_a_server_event(self):
+        # 2026-08-01: core/telegram_listener.py's own poll loop writes this
+        # result - a different process than whichever one has the Broker
+        # Accounts page open, so a server_event (see GET /api/events/stream)
+        # is how that page finds out without waiting for its next poll.
+        database.request_connection_test(self.account_id, "owner@example.com")
+        database.complete_connection_test(self.account_id, {"balance": 1234.56})
+        events = database.list_server_events_since(0)
+        matching = [e for e in events if e["event_type"] == "broker_account.connection_test_completed"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["payload"], {
+            "broker_account_id": self.account_id, "status": "completed",
+        })
+
+    def test_fail_records_a_server_event_too(self):
+        database.request_connection_test(self.account_id, "owner@example.com")
+        database.fail_connection_test(self.account_id, "account is not connected")
+        events = database.list_server_events_since(0)
+        matching = [e for e in events if e["event_type"] == "broker_account.connection_test_completed"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["payload"]["status"], "error")
+
 
 if __name__ == "__main__":
     unittest.main()

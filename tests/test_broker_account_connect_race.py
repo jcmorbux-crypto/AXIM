@@ -131,5 +131,53 @@ class FinalizeBrokerAccountConnectionTests(unittest.TestCase):
         self.assertIsNone(account["last_error"])
 
 
+class FinalizeBrokerAccountConnectionEventTests(unittest.TestCase):
+    """2026-08-01: scripts/connect_broker_account.py runs as its own
+    standalone subprocess and can take anywhere from seconds to several
+    minutes (a real manual Pocket Option login) - the Broker Accounts
+    page has nothing to poll FOR until finalize_broker_account_connection
+    writes, so a server_event is recorded here (see GET /api/events/stream)
+    so the page can push-update instead of only ever finding out on its
+    next poll tick."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.account_id = database.create_broker_account("Acct A")
+        database.claim_broker_account_connecting(self.account_id)
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_successful_finalize_records_a_server_event(self):
+        database.finalize_broker_account_connection(self.account_id, "connected")
+        events = database.list_server_events_since(0)
+        matching = [e for e in events if e["event_type"] == "broker_account.connection_updated"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["payload"], {
+            "broker_account_id": self.account_id, "connection_status": "connected",
+        })
+
+    def test_error_finalize_records_a_server_event_too(self):
+        database.finalize_broker_account_connection(self.account_id, "error")
+        events = database.list_server_events_since(0)
+        matching = [e for e in events if e["event_type"] == "broker_account.connection_updated"]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["payload"]["connection_status"], "error")
+
+    def test_discarded_finalize_records_no_event(self):
+        # Same disconnect-race case as test_does_not_overwrite_a_
+        # disconnect_that_happened_mid_login above - nothing changed, so
+        # there's nothing real for a live page to react to.
+        database.update_broker_account(self.account_id, connection_status="disconnected")
+        database.finalize_broker_account_connection(self.account_id, "connected")
+        events = database.list_server_events_since(0)
+        matching = [e for e in events if e["event_type"] == "broker_account.connection_updated"]
+        self.assertEqual(matching, [])
+
+
 if __name__ == "__main__":
     unittest.main()

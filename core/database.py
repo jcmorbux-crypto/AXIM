@@ -4203,7 +4203,22 @@ def finalize_broker_account_connection(account_id, connection_status, **extra_fi
     )
     conn.commit()
     conn.close()
-    return cursor.rowcount > 0
+    wrote = cursor.rowcount > 0
+    if wrote:
+        # scripts/connect_broker_account.py runs as its own standalone
+        # subprocess (not the API or listener process) and can take
+        # anywhere from seconds to several minutes (a real manual Pocket
+        # Option login) - the Broker Accounts page has nothing to poll
+        # FOR until this write happens, so it's exactly the kind of "the
+        # operator is waiting on something no click of theirs can finish"
+        # case the SSE stream exists for, same reasoning as
+        # notification.created (also written inline here rather than via
+        # the listener's event_bus, since this process isn't it either).
+        record_server_event(
+            "broker_account.connection_updated",
+            {"broker_account_id": account_id, "connection_status": connection_status},
+        )
+    return wrote
 
 
 @timed("database")
@@ -5647,6 +5662,14 @@ def complete_connection_test(broker_account_id, result):
     )
     conn.commit()
     conn.close()
+    # Written by core/telegram_listener.py's own poll loop - a different
+    # process than whichever one is showing the Broker Accounts page, so
+    # nothing there can detect this finished without either polling or
+    # this push. Same reasoning as finalize_broker_account_connection.
+    record_server_event(
+        "broker_account.connection_test_completed",
+        {"broker_account_id": broker_account_id, "status": "completed"},
+    )
 
 
 @timed("database")
@@ -5658,6 +5681,10 @@ def fail_connection_test(broker_account_id, error_message):
     )
     conn.commit()
     conn.close()
+    record_server_event(
+        "broker_account.connection_test_completed",
+        {"broker_account_id": broker_account_id, "status": "error"},
+    )
 
 
 # ---------------------------------------------------------------------

@@ -594,6 +594,18 @@ async function clearAccountEmergencyStop(id) {
   refreshAccounts();
   setInterval(refreshStatus, 10000);
   setInterval(refreshAccounts, 10000);
+  // scripts/connect_broker_account.py (a real manual Pocket Option
+  // login, seconds to several minutes) and the connection-test result
+  // (written by core/telegram_listener.py's poll loop) both finish in a
+  // DIFFERENT process than this page - connectAccount()'s own 5s poll
+  // loop above already exists exactly because of that gap; this makes
+  // "connecting" -> "connected"/"error" show up the instant it happens
+  // instead of up to 5s later, without replacing that loop (still the
+  // real fallback/terminator).
+  AximShell.subscribeEvents({
+    "broker_account.connection_updated": { onEvent: refreshAccounts, onResync: refreshAccounts },
+    "broker_account.connection_test_completed": { onEvent: refreshAccounts, onResync: refreshAccounts },
+  });
 })();
 </script>
 </body>
