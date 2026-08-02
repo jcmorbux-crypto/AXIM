@@ -1598,6 +1598,13 @@ def initialize_database():
         "total_strategies": "INTEGER DEFAULT 0",
         "strategies_completed": "INTEGER DEFAULT 0",
         "cancel_requested": "INTEGER DEFAULT 0",
+        # 2026-08-01: Strategy Lab had no versioning/duplication concept at
+        # all (audited per the trading-engine priority directive) -
+        # parent_run_id is real lineage (which run this one was duplicated
+        # from, NULL for an original run), not just a display label, so
+        # "show me every version of this run" is a real query
+        # (list_backtest_run_versions below), not string-matching names.
+        "parent_run_id": "INTEGER",
     }
     for column, sql_type in _NEW_BACKTEST_RUN_ASYNC_COLUMNS.items():
         if column not in backtest_run_columns:
@@ -7018,6 +7025,110 @@ def list_backtest_runs(limit=50, status=None):
         ).fetchall()
     else:
         rows = conn.execute("SELECT * FROM backtest_runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    conn.close()
+    return [_backtest_run_row_to_dict(r) for r in rows]
+
+
+@timed("database")
+def duplicate_backtest_run(run_id, new_name, created_by=None):
+    """New pending run with the same config (signal pool, bankroll,
+    payout, session window, target Fund) and the same compared
+    strategies - but NOT the same results (backtest_sessions/trades/
+    metrics belong to the ORIGINAL run's actual execution and stay
+    there; the caller re-runs this new run to get its own). Returns the
+    new run_id, or None if run_id doesn't exist.
+
+    Each duplicated backtest_strategies row takes a FRESH snapshot from
+    its risk_profile if that profile still exists (so a "run it again"
+    naturally picks up any edits made to the strategy since the last
+    run - the whole point of a v2), and falls back to the ORIGINAL
+    frozen snapshot verbatim for a built-in/virtual strategy
+    (risk_profile_id is NULL - money_studio's canonical strategies are
+    code-defined and never change) or one whose profile has since been
+    deleted (nothing fresher to take)."""
+    conn = get_connection()
+    run = conn.execute("SELECT * FROM backtest_runs WHERE id = ?", (run_id,)).fetchone()
+    if run is None:
+        conn.close()
+        return None
+    strategies = conn.execute(
+        "SELECT * FROM backtest_strategies WHERE backtest_run_id = ? ORDER BY id ASC", (run_id,)
+    ).fetchall()
+    now = datetime.now().isoformat()
+    cursor = conn.execute("""
+        INSERT INTO backtest_runs (
+            name, signal_pool_json, starting_bankroll, default_payout_percent,
+            session_window, status, created_by, created_at, fund_id, run_mode, parent_run_id
+        ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, 'async', ?)
+    """, (new_name, run["signal_pool_json"], run["starting_bankroll"], run["default_payout_percent"],
+          run["session_window"], created_by, now, run["fund_id"], run_id))
+    new_run_id = cursor.lastrowid
+    for s in strategies:
+        snapshot_json = s["profile_snapshot_json"]
+        if s["risk_profile_id"] is not None:
+            fresh = _risk_profile_row_to_dict_or_none(conn, s["risk_profile_id"])
+            if fresh is not None:
+                snapshot_json = json.dumps(fresh)
+        conn.execute("""
+            INSERT INTO backtest_strategies (backtest_run_id, risk_profile_id, label, profile_snapshot_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (new_run_id, s["risk_profile_id"], s["label"], snapshot_json, now))
+    _log_backtest_data_audit(conn, "backtest_run", new_run_id, "duplicated",
+                              {"source_run_id": run_id, "name": new_name}, created_by, None)
+    conn.commit()
+    conn.close()
+    return new_run_id
+
+
+def _risk_profile_row_to_dict_or_none(conn, profile_id):
+    """Same shape as get_risk_profile, but reuses an already-open
+    connection (duplicate_backtest_run runs inside one larger
+    transaction) rather than opening/closing a second one mid-loop."""
+    row = conn.execute("SELECT * FROM risk_profiles WHERE id = ?", (profile_id,)).fetchone()
+    return _risk_profile_row_to_dict(row) if row else None
+
+
+@timed("database")
+def list_backtest_run_versions(run_id):
+    """Every run in the same lineage as run_id, oldest first - walks up
+    to the ORIGINAL (the one with parent_run_id IS NULL) first, then
+    returns every run (including run_id itself) that has that same
+    original as its ultimate ancestor. A run with no duplicates at all
+    still returns a 1-item list (itself), so callers don't need a
+    separate "is this run part of a lineage" check."""
+    conn = get_connection()
+    row = conn.execute("SELECT id, parent_run_id FROM backtest_runs WHERE id = ?", (run_id,)).fetchone()
+    if row is None:
+        conn.close()
+        return []
+    root_id = run_id
+    seen = {run_id}
+    current = dict(row)
+    while current["parent_run_id"] is not None and current["parent_run_id"] not in seen:
+        root_id = current["parent_run_id"]
+        seen.add(root_id)
+        parent_row = conn.execute(
+            "SELECT id, parent_run_id FROM backtest_runs WHERE id = ?", (root_id,)
+        ).fetchone()
+        if parent_row is None:
+            break
+        current = dict(parent_row)
+
+    def _collect_descendants(ancestor_id, acc):
+        acc.append(ancestor_id)
+        children = conn.execute(
+            "SELECT id FROM backtest_runs WHERE parent_run_id = ?", (ancestor_id,)
+        ).fetchall()
+        for child in children:
+            if child["id"] not in acc:
+                _collect_descendants(child["id"], acc)
+
+    lineage_ids = []
+    _collect_descendants(root_id, lineage_ids)
+    rows = conn.execute(
+        f"SELECT * FROM backtest_runs WHERE id IN ({','.join('?' * len(lineage_ids))}) ORDER BY id ASC",
+        lineage_ids,
+    ).fetchall()
     conn.close()
     return [_backtest_run_row_to_dict(r) for r in rows]
 

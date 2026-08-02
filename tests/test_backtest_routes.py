@@ -222,5 +222,138 @@ class AsyncRunRouteTests(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 404)
 
 
+class DuplicateRunRouteTests(unittest.TestCase):
+    """2026-08-01 trading-engine priority directive audit: Strategy Lab
+    had no duplicate/version concept at all. These prove the new
+    duplicate endpoint actually re-runs (not just creates an inert
+    config row), picks up edits made to a real risk_profile since the
+    source run, and that lineage (parent_run_id/versions) is real graph
+    data, not a display-only label."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def _graded_signal(self, i=0):
+        sig_id = database.create_imported_signal(
+            "C", "EUR/USD OTC", "BUY", "1 Minute", f"2026-01-01T10:0{i}:00")
+        database.grade_imported_signal(sig_id, "win", payout_percent=85)
+
+    def _duplicate(self, run_id, new_name):
+        """duplicate_run immediately starts async execution
+        (backtest_engine.start_backtest_run_async), which needs a running
+        event loop - every call site in this class goes through this
+        helper rather than calling the route function directly, matching
+        AsyncRunRouteTests' own established pattern above."""
+        async def scenario():
+            result = backtest_routes.duplicate_run(
+                run_id, backtest_routes.DuplicateRunRequest(new_name=new_name), user=_FAKE_USER,
+            )
+            task = backtest_routes.backtest_engine._ACTIVE_BACKTEST_TASKS.get(result["id"])
+            if task is not None:
+                await task
+            return result
+        return _run(scenario())
+
+    def test_duplicate_creates_a_new_run_with_real_lineage(self):
+        self._graded_signal()
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        body = backtest_routes.RunCreateRequest(
+            name="Original", source="imported", starting_bankroll=1000, risk_profile_ids=[profile_id])
+        original = backtest_routes.create_run(body, user=_FAKE_USER)["run"]
+
+        duplicated = self._duplicate(original["id"], "Original (v2)")
+        self.assertNotEqual(duplicated["id"], original["id"])
+        self.assertEqual(duplicated["name"], "Original (v2)")
+        self.assertEqual(duplicated["parent_run_id"], original["id"])
+
+    def test_duplicate_actually_re_runs_not_just_creates_a_config(self):
+        self._graded_signal()
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        body = backtest_routes.RunCreateRequest(
+            name="Original", source="imported", starting_bankroll=1000, risk_profile_ids=[profile_id])
+        original = backtest_routes.create_run(body, user=_FAKE_USER)["run"]
+
+        duplicated = self._duplicate(original["id"], "v2")
+        final = database.get_backtest_run(duplicated["id"])
+        self.assertEqual(final["status"], "completed")
+        strategies = database.list_backtest_strategies(duplicated["id"])
+        self.assertEqual(len(strategies), 1)
+
+    def test_duplicate_picks_up_edits_to_the_real_profile_since_the_source_run(self):
+        self._graded_signal()
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        body = backtest_routes.RunCreateRequest(
+            name="Original", source="imported", starting_bankroll=1000, risk_profile_ids=[profile_id])
+        original = backtest_routes.create_run(body, user=_FAKE_USER)["run"]
+        original_strategy = database.list_backtest_strategies(original["id"])[0]
+        self.assertEqual(original_strategy["profile_snapshot"]["fixed_amount"], 10)
+
+        # Edit the real profile AFTER the original run - a v2 must reflect
+        # this, not the stale snapshot frozen at the first run.
+        database.update_risk_profile(profile_id, fixed_amount=99)
+
+        duplicated = self._duplicate(original["id"], "v2")
+        new_strategy = database.list_backtest_strategies(duplicated["id"])[0]
+        self.assertEqual(new_strategy["profile_snapshot"]["fixed_amount"], 99)
+        # And the ORIGINAL run's own frozen snapshot must stay exactly as
+        # it was - reproducibility for the run that already happened.
+        still_original = database.list_backtest_strategies(original["id"])[0]
+        self.assertEqual(still_original["profile_snapshot"]["fixed_amount"], 10)
+
+    def test_duplicate_of_a_virtual_strategy_keeps_the_original_snapshot(self):
+        self._graded_signal()
+        body = backtest_routes.RunCreateRequest(
+            name="Original", source="imported", starting_bankroll=1000, strategy_keys=["capital_preservation"])
+        original = backtest_routes.create_run(body, user=_FAKE_USER)["run"]
+        duplicated = self._duplicate(original["id"], "v2")
+        new_strategy = database.list_backtest_strategies(duplicated["id"])[0]
+        self.assertIsNone(new_strategy["risk_profile_id"])
+        self.assertEqual(new_strategy["label"], "Capital Preservation")
+
+    def test_duplicate_404_for_unknown_run(self):
+        with self.assertRaises(HTTPException) as ctx:
+            backtest_routes.duplicate_run(999999, backtest_routes.DuplicateRunRequest(new_name="x"), user=_FAKE_USER)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_versions_returns_the_whole_lineage_oldest_first(self):
+        self._graded_signal()
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        body = backtest_routes.RunCreateRequest(
+            name="v1", source="imported", starting_bankroll=1000, risk_profile_ids=[profile_id])
+        v1 = backtest_routes.create_run(body, user=_FAKE_USER)["run"]
+        v2 = self._duplicate(v1["id"], "v2")
+        v3 = self._duplicate(v2["id"], "v3")
+
+        versions = backtest_routes.run_versions(v1["id"], user=_FAKE_USER)
+        self.assertEqual([v["id"] for v in versions], [v1["id"], v2["id"], v3["id"]])
+        # Querying from the MIDDLE or LATEST version returns the exact
+        # same full lineage, not just "everything after this one".
+        self.assertEqual(
+            [v["id"] for v in backtest_routes.run_versions(v3["id"], user=_FAKE_USER)],
+            [v1["id"], v2["id"], v3["id"]],
+        )
+
+    def test_a_run_with_no_duplicates_still_returns_itself(self):
+        self._graded_signal()
+        profile_id = database.create_risk_profile("S1", sizing_mode="fixed", fixed_amount=10)
+        body = backtest_routes.RunCreateRequest(
+            name="Solo", source="imported", starting_bankroll=1000, risk_profile_ids=[profile_id])
+        run = backtest_routes.create_run(body, user=_FAKE_USER)["run"]
+        versions = backtest_routes.run_versions(run["id"], user=_FAKE_USER)
+        self.assertEqual([v["id"] for v in versions], [run["id"]])
+
+    def test_versions_404_for_unknown_run(self):
+        with self.assertRaises(HTTPException) as ctx:
+            backtest_routes.run_versions(999999, user=_FAKE_USER)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+
 if __name__ == "__main__":
     unittest.main()

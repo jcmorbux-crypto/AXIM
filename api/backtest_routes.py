@@ -459,6 +459,38 @@ def deploy_strategy(run_id: int, strategy_id: int, body: DeployRequest, user=Dep
     }
 
 
+class DuplicateRunRequest(BaseModel):
+    new_name: str
+
+
+@router.post("/runs/{run_id}/duplicate")
+def duplicate_run(run_id: int, body: DuplicateRunRequest, user=Depends(require_admin)):
+    """2026-08-01 trading-engine priority directive audit: Strategy Lab
+    had no duplicate/version concept at all - re-testing a strategy after
+    tweaking it meant manually re-selecting the same signal pool/bankroll/
+    strategies from scratch. Copies the source run's config and compared
+    strategies (a fresh risk_profile snapshot where one still exists, so
+    edits since the last run are picked up - see
+    database.duplicate_backtest_run's own docstring) into a new run,
+    tagged with parent_run_id for real lineage, then immediately starts
+    it the same way the "Run Backtest" button's own async path does -
+    "duplicate" produces a ready result the same way duplicate_risk_profile/
+    duplicate_fund produce a ready, usable copy, not an inert row the
+    operator has to separately remember to execute."""
+    if database.get_backtest_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="backtest run not found")
+    new_run_id = database.duplicate_backtest_run(run_id, body.new_name, created_by=user["email"])
+    backtest_engine.start_backtest_run_async(new_run_id)
+    return database.get_backtest_run(new_run_id)
+
+
+@router.get("/runs/{run_id}/versions")
+def run_versions(run_id: int, user=Depends(get_current_user)):
+    if database.get_backtest_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="backtest run not found")
+    return database.list_backtest_run_versions(run_id)
+
+
 @router.delete("/runs/{run_id}")
 def delete_run(run_id: int, user=Depends(require_admin)):
     database.delete_backtest_run(run_id)
