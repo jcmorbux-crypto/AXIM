@@ -34,7 +34,11 @@
         <h1>Trade History</h1>
         <div class="subtitle">Every trade AXIM has executed - click a row for full detail.</div>
       </div>
-      <button onclick="refreshTrades()">Refresh</button>
+      <div class="row">
+        <a href="/api/trades/export?format=csv" class="btn subtle" download>Export CSV</a>
+        <a href="/api/trades/export?format=json" class="btn subtle" download>Export JSON</a>
+        <button onclick="refreshTrades()">Refresh</button>
+      </div>
     </div>
 
     <div class="card solid full-width">

@@ -3,6 +3,8 @@ over the existing signals table. No new trading logic - purely read-only
 reporting over data core/trade_coordinator.py and execution/pocket_executor.py
 already record.
 """
+import csv
+import io
 import sys
 from pathlib import Path
 
@@ -14,6 +16,7 @@ sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CONFIG_DIR))
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 
 import database
 from auth_routes import get_current_user
@@ -25,6 +28,42 @@ router = APIRouter(prefix="/api/trades", tags=["trades"])
 @router.get("")
 def list_trades(limit: int = 50, user=Depends(get_current_user)):
     return database.get_recent_signals(limit)
+
+
+# Registered before /{trade_id} for the same reason martin-trader-summary
+# is above - "export" would otherwise be swallowed as a trade_id path
+# param and 422 on the int conversion.
+@router.get("/export")
+def export_trades(format: str = "csv", limit: int = 10000, user=Depends(get_current_user)):
+    """Reuses get_recent_signals exactly as list_trades above does - same
+    data, same ordering, just a much higher default limit (a real export
+    should cover the operator's actual history, not the 50-row page
+    view) and a file response instead of JSON for csv. Same
+    csv/io.StringIO/Response pattern already proven by
+    api/backtest_routes.py's export_run - kept consistent rather than
+    inventing a second export convention."""
+    trades = database.get_recent_signals(limit)
+
+    if format == "json":
+        import json as json_module
+        return Response(content=json_module.dumps(trades, indent=2), media_type="application/json",
+                         headers={"Content-Disposition": "attachment; filename=axim_trades.json"})
+
+    if format == "csv":
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["id", "received_at", "opened_at", "closed_at", "channel", "asset", "direction",
+                          "timeframe", "trade_amount", "execution_status", "result", "payout",
+                          "profit_loss", "session_id"])
+        for t in trades:
+            writer.writerow([t["id"], t["received_at"], t["opened_at"], t["closed_at"], t["channel"],
+                              t["asset"], t["direction"], t["timeframe"], t["trade_amount"],
+                              t["execution_status"], t["result"], t["payout"], t["profit_loss"],
+                              t["session_id"]])
+        return Response(content=buffer.getvalue(), media_type="text/csv",
+                         headers={"Content-Disposition": "attachment; filename=axim_trades.csv"})
+
+    raise HTTPException(status_code=400, detail="format must be csv or json")
 
 
 @router.get("/martin-trader-summary")
