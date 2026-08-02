@@ -547,6 +547,24 @@ async function showBuilder(baseKey, existingProfileId) {
     daily_stop_after_target: true, daily_stop_after_loss_limit: true,
     daily_vault_enabled: false, daily_vault_percent_on_target: 0,
   };
+  // Apex Ascension/Empire (sizing modes) and Sentinel/Cashflow/Strike/
+  // Momentum/Fortress (modifier toggles) all default to this same shape
+  // regardless of which branch below is taken - a NEW profile (no
+  // existing/base) still needs sane starting values if the operator
+  // switches into one of these, same as fixed/percent/kelly already do.
+  const newStrategyDefaults = {
+    apex_starting_bankroll: 1000, apex_starting_unit_value: 10, apex_standard_units: 5,
+    apex_first_reset_threshold: 2500, apex_reset_increment: 1000, apex_reset_unit_step: 10,
+    apex_downgrade_protection: true,
+    empire_starting_amount: 10, empire_target_amount: 100, empire_num_levels: 10,
+    empire_failure_behavior: "reset_to_start", empire_checkpoint_level: 0,
+    sentinel_enabled: false, sentinel_suspend_above_percent: 20,
+    cashflow_enabled: false, cashflow_target_amount: 0, cashflow_target_period: "session",
+    cashflow_partial_target_percent: 75, cashflow_partial_reduction_percent: 50,
+    strike_enabled: false, strike_max_session_duration_minutes: 0, strike_max_consecutive_losses: 0,
+    momentum_enabled: false, momentum_max_steps: 0, momentum_multiplier: 1.5, momentum_profit_lock_percent: 0,
+    fortress_enabled: false, fortress_protection_threshold: 0,
+  };
   const preset = existing ? {
     name: existing.name, bankroll: existing.bankroll,
     sizing_mode: existing.sizing_mode, percent: existing.percent_of_bankroll, fixed: existing.fixed_amount,
@@ -562,6 +580,23 @@ async function showBuilder(baseKey, existingProfileId) {
     daily_cooldown_after_loss: existing.daily_compounding.cooldown_after_loss_seconds, daily_consecutive_loss_stop: existing.daily_compounding.consecutive_loss_stop,
     daily_stop_after_target: !!existing.daily_compounding.stop_after_target, daily_stop_after_loss_limit: !!existing.daily_compounding.stop_after_loss_limit,
     daily_vault_enabled: !!existing.daily_compounding.vault_enabled, daily_vault_percent_on_target: existing.daily_compounding.vault_percent_on_target,
+    ...newStrategyDefaults,
+    apex_starting_bankroll: existing.apex_ascension.starting_bankroll, apex_starting_unit_value: existing.apex_ascension.starting_unit_value,
+    apex_standard_units: existing.apex_ascension.standard_units, apex_first_reset_threshold: existing.apex_ascension.first_reset_threshold,
+    apex_reset_increment: existing.apex_ascension.reset_increment, apex_reset_unit_step: existing.apex_ascension.reset_unit_step,
+    apex_downgrade_protection: !!existing.apex_ascension.downgrade_protection,
+    empire_starting_amount: existing.empire.starting_amount, empire_target_amount: existing.empire.target_amount,
+    empire_num_levels: existing.empire.num_levels, empire_failure_behavior: existing.empire.failure_behavior,
+    empire_checkpoint_level: existing.empire.checkpoint_level,
+    sentinel_enabled: existing.drawdown_protection.enabled, sentinel_suspend_above_percent: existing.drawdown_protection.suspend_above_percent,
+    cashflow_enabled: existing.cashflow.enabled, cashflow_target_amount: existing.cashflow.target_amount,
+    cashflow_target_period: existing.cashflow.target_period, cashflow_partial_target_percent: existing.cashflow.partial_target_percent,
+    cashflow_partial_reduction_percent: existing.cashflow.partial_reduction_percent,
+    strike_enabled: existing.strike.enabled, strike_max_session_duration_minutes: existing.strike.max_session_duration_minutes,
+    strike_max_consecutive_losses: existing.strike.max_consecutive_losses,
+    momentum_enabled: existing.momentum.enabled, momentum_max_steps: existing.momentum.max_steps,
+    momentum_multiplier: existing.momentum.multiplier, momentum_profit_lock_percent: existing.momentum.profit_lock_percent,
+    fortress_enabled: existing.fortress.enabled, fortress_protection_threshold: existing.fortress.protection_threshold,
   } : base ? {
     name: `${base.name} (Custom)`, bankroll: 1000,
     sizing_mode: base.key === "daily_compounding" ? "daily_compounding" : "percent", percent: parseFloat(base.risk.headline) || 1, fixed: 10,
@@ -569,6 +604,7 @@ async function showBuilder(baseKey, existingProfileId) {
     vault_enabled: base.vault.active, vault_percent: base.vault.percent || 25, vault_trigger: "per_trade",
     comp_mode: "disabled", comp_steps: [], comp_drawdown: 0, comp_max: 0, comp_min: 0,
     ...dailyDefaults,
+    ...newStrategyDefaults,
   } : {
     name: "My Custom Strategy", bankroll: 1000,
     sizing_mode: "percent", percent: 1, fixed: 10,
@@ -576,6 +612,7 @@ async function showBuilder(baseKey, existingProfileId) {
     vault_enabled: false, vault_percent: 25, vault_trigger: "per_trade",
     comp_mode: "disabled", comp_steps: [], comp_drawdown: 0, comp_max: 0, comp_min: 0,
     ...dailyDefaults,
+    ...newStrategyDefaults,
   };
   const compCycleText = preset.comp_mode === "alternating_cycle" ? preset.comp_steps.join(", ") : "";
 
@@ -607,6 +644,8 @@ async function showBuilder(baseKey, existingProfileId) {
               <option value="dynamic" ${preset.sizing_mode === "dynamic" ? "selected" : ""}>Dynamic (recalculates every trade)</option>
               <option value="kelly" ${preset.sizing_mode === "kelly" ? "selected" : ""}>Kelly sizing</option>
               <option value="daily_compounding" ${preset.sizing_mode === "daily_compounding" ? "selected" : ""}>Daily Compounding (recalculates once per trading day)</option>
+              <option value="apex_ascension" ${preset.sizing_mode === "apex_ascension" ? "selected" : ""}>Apex Ascension (tier-based unit sizing)</option>
+              <option value="empire" ${preset.sizing_mode === "empire" ? "selected" : ""}>Empire (ladder challenge)</option>
             </select>
           </div>
           <div id="sizing-fixed" class="sizing-sub"><div class="field"><label>Fixed amount ($)</label><input type="number" id="f-fixed" step="1" min="1" value="${preset.fixed || 10}"></div></div>
@@ -618,6 +657,38 @@ async function showBuilder(baseKey, existingProfileId) {
           <div id="sizing-kelly" class="sizing-sub">
             <div class="row"><div class="field"><label>Estimated win rate (%)</label><input type="number" id="f-kelly-p" value="55"></div><div class="field"><label>Estimated payout (0-1)</label><input type="number" id="f-kelly-b" step="0.01" value="0.88"></div></div>
             <div class="field"><label>Kelly fraction</label><input type="number" id="f-kelly-fraction" step="0.05" value="0.5"></div>
+          </div>
+          <div id="sizing-apex_ascension" class="sizing-sub">
+            <div class="banner info">Deployment size per trade is <b>tier unit value &times; standard units</b>. The unit value steps up automatically as bankroll crosses each tier threshold below - never a manual adjustment.</div>
+            <div class="row" style="margin-top:10px;">
+              <div class="field"><label>Starting unit value ($)</label><input type="number" id="f-apex-unit-value" step="1" min="0.01" value="${preset.apex_starting_unit_value}"></div>
+              <div class="field"><label>Standard units per trade</label><input type="number" id="f-apex-standard-units" step="0.5" min="0.5" value="${preset.apex_standard_units}"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>First tier threshold ($ bankroll)</label><input type="number" id="f-apex-first-threshold" step="1" min="0" value="${preset.apex_first_reset_threshold}"></div>
+              <div class="field"><label>Bankroll increment per further tier ($)</label><input type="number" id="f-apex-reset-increment" step="1" min="1" value="${preset.apex_reset_increment}"></div>
+            </div>
+            <div class="field"><label>Unit value increase per tier ($)</label><input type="number" id="f-apex-unit-step" step="1" min="0" value="${preset.apex_reset_unit_step}"></div>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:6px;"><input type="checkbox" id="f-apex-downgrade-protection" style="width:auto;" ${preset.apex_downgrade_protection ? "checked" : ""}> Protect the highest tier ever reached - a later drawdown never demotes it back down</label>
+          </div>
+          <div id="sizing-empire" class="sizing-sub">
+            <div class="banner info">A ladder from a starting stake to a target stake across a fixed number of levels - win to advance a level, lose to trigger the failure behavior below. Stake per level is a geometric step (same percentage jump each level), not a fixed dollar amount.</div>
+            <div class="row" style="margin-top:10px;">
+              <div class="field"><label>Starting stake ($, level 0)</label><input type="number" id="f-empire-start" step="1" min="0.01" value="${preset.empire_starting_amount}"></div>
+              <div class="field"><label>Target stake ($, final level)</label><input type="number" id="f-empire-target" step="1" min="0.01" value="${preset.empire_target_amount}"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Number of levels</label><input type="number" id="f-empire-levels" step="1" min="2" value="${preset.empire_num_levels}"></div>
+              <div class="field"><label>Checkpoint level (for "return to checkpoint")</label><input type="number" id="f-empire-checkpoint" step="1" min="0" value="${preset.empire_checkpoint_level}"></div>
+            </div>
+            <div class="field"><label>On a loss</label>
+              <select id="f-empire-failure-behavior">
+                <option value="reset_to_start" ${preset.empire_failure_behavior === "reset_to_start" ? "selected" : ""}>Reset all the way to level 0</option>
+                <option value="return_to_checkpoint" ${preset.empire_failure_behavior === "return_to_checkpoint" ? "selected" : ""}>Return to the checkpoint level</option>
+                <option value="lose_ladder_only" ${preset.empire_failure_behavior === "lose_ladder_only" ? "selected" : ""}>Stay at the current level, try again</option>
+                <option value="terminate" ${preset.empire_failure_behavior === "terminate" ? "selected" : ""}>End the challenge entirely</option>
+              </select>
+            </div>
           </div>
         </div>
         <div class="card" id="daily-compounding-card" style="display:${preset.sizing_mode === "daily_compounding" ? "block" : "none"};">
@@ -710,6 +781,64 @@ async function showBuilder(baseKey, existingProfileId) {
             </div>
           </div>
         </div>
+        <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:20px 0 10px;">Capital Strategies (tm) Modifiers</div>
+        <div class="banner info" style="margin-bottom:14px;">These layer on top of whichever position-sizing method is selected above - none of them are sizing modes of their own. Multiple can be enabled together.</div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Sentinel (drawdown protection)</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-sentinel-enabled" style="width:auto;" ${preset.sentinel_enabled ? "checked" : ""}> Enabled</label></div>
+          <div id="sentinel-fields" style="display:${preset.sentinel_enabled ? "block" : "none"}; margin-top:10px;">
+            <div class="banner info">Reduces position size in graduated steps as session drawdown deepens (5% full size, 10% -25%, 15% -50%, 20% minimum size) - suspends new trades entirely above the threshold below.</div>
+            <div class="field" style="margin-top:8px;"><label>Suspend trading above this drawdown (%)</label><input type="number" id="f-sentinel-suspend" step="1" min="1" max="100" value="${preset.sentinel_suspend_above_percent}"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Cashflow (income target)</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-cashflow-enabled" style="width:auto;" ${preset.cashflow_enabled ? "checked" : ""}> Enabled</label></div>
+          <div id="cashflow-fields" style="display:${preset.cashflow_enabled ? "block" : "none"}; margin-top:10px;">
+            <div class="banner info">Shrinks position size once realized profit for the period crosses the partial threshold, and stops opening new trades entirely once the full target is reached.</div>
+            <div class="row" style="margin-top:8px;">
+              <div class="field"><label>Target amount ($)</label><input type="number" id="f-cashflow-target" step="1" min="0" value="${preset.cashflow_target_amount}"></div>
+              <div class="field"><label>Period</label>
+                <select id="f-cashflow-period">
+                  <option value="session" ${preset.cashflow_target_period === "session" ? "selected" : ""}>This session</option>
+                  <option value="day" ${preset.cashflow_target_period === "day" ? "selected" : ""}>Day</option>
+                  <option value="week" ${preset.cashflow_target_period === "week" ? "selected" : ""}>Week</option>
+                  <option value="month" ${preset.cashflow_target_period === "month" ? "selected" : ""}>Month</option>
+                </select>
+              </div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Partial-reduction trigger (% of target)</label><input type="number" id="f-cashflow-partial-pct" step="1" min="0" max="100" value="${preset.cashflow_partial_target_percent}"></div>
+              <div class="field"><label>Size reduction at that point (%)</label><input type="number" id="f-cashflow-partial-reduction" step="1" min="0" max="100" value="${preset.cashflow_partial_reduction_percent}"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Strike (session termination)</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-strike-enabled" style="width:auto;" ${preset.strike_enabled ? "checked" : ""}> Enabled</label></div>
+          <div id="strike-fields" style="display:${preset.strike_enabled ? "block" : "none"}; margin-top:10px;">
+            <div class="banner info">Adds a duration cap and a consecutive-loss cap on top of this strategy's own profit target/loss limit/max trades (Session controls below) - whichever condition fires first ends the session.</div>
+            <div class="row" style="margin-top:8px;">
+              <div class="field"><label>Max session duration (minutes, 0=off)</label><input type="number" id="f-strike-duration" step="1" min="0" value="${preset.strike_max_session_duration_minutes}"></div>
+              <div class="field"><label>Max consecutive losses (0=off)</label><input type="number" id="f-strike-consecutive-losses" step="1" min="0" value="${preset.strike_max_consecutive_losses}"></div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Momentum (win-streak ladder)</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-momentum-enabled" style="width:auto;" ${preset.momentum_enabled ? "checked" : ""}> Enabled</label></div>
+          <div id="momentum-fields" style="display:${preset.momentum_enabled ? "block" : "none"}; margin-top:10px;">
+            <div class="banner info">The opposite of Martingale - escalates position size on a WIN streak instead of a loss streak, resetting to base stake the moment a trade loses.</div>
+            <div class="row" style="margin-top:8px;">
+              <div class="field"><label>Max steps (0=unlimited)</label><input type="number" id="f-momentum-steps" step="1" min="0" value="${preset.momentum_max_steps}"></div>
+              <div class="field"><label>Multiplier</label><input type="number" id="f-momentum-mult" step="0.1" min="1" value="${preset.momentum_multiplier}"></div>
+            </div>
+            <div class="field"><label>Lock in this % of the streak's running profit (0=off)</label><input type="number" id="f-momentum-profit-lock" step="1" min="0" max="100" value="${preset.momentum_profit_lock_percent}"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Fortress (principal protection)</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-fortress-enabled" style="width:auto;" ${preset.fortress_enabled ? "checked" : ""}> Enabled</label></div>
+          <div id="fortress-fields" style="display:${preset.fortress_enabled ? "block" : "none"}; margin-top:10px;">
+            <div class="banner info">Once real profit crosses the threshold below, that much starting capital is locked in and never risked again - it stays protected even through a later drawdown, permanently, not just until the next win.</div>
+            <div class="field" style="margin-top:8px;"><label>Protect principal once profit reaches ($)</label><input type="number" id="f-fortress-threshold" step="1" min="0" value="${preset.fortress_protection_threshold}"></div>
+          </div>
+        </div>
         <div class="card">
           <h3 style="margin-top:0;">Session controls</h3>
           <div class="row">
@@ -738,6 +867,13 @@ async function showBuilder(baseKey, existingProfileId) {
   });
   document.getElementById("f-vault-enabled").addEventListener("change", (e) => {
     document.getElementById("vault-fields").style.display = e.target.checked ? "block" : "none";
+  });
+  [["f-sentinel-enabled", "sentinel-fields"], ["f-cashflow-enabled", "cashflow-fields"],
+   ["f-strike-enabled", "strike-fields"], ["f-momentum-enabled", "momentum-fields"],
+   ["f-fortress-enabled", "fortress-fields"]].forEach(([checkboxId, fieldsId]) => {
+    document.getElementById(checkboxId).addEventListener("change", (e) => {
+      document.getElementById(fieldsId).style.display = e.target.checked ? "block" : "none";
+    });
   });
   document.getElementById("f-comp-mode").addEventListener("change", (e) => {
     document.getElementById("comp-milestone-fields").style.display = e.target.value === "milestone_based" ? "block" : "none";
@@ -829,7 +965,11 @@ function updateLivePreview() {
       ${preview.exact ? "" : `<div class="banner info" style="font-size:11px; margin-bottom:10px;">This number assumes the session baseline above - AXIM recalculates the real figure from live session state at trade time.</div>`}
     `;
   } else {
-    html += `<div class="muted" style="font-size:12px; margin-bottom:14px;">${mode === "kelly" ? "Kelly sizing" : "Daily Compounding"} is calculated by AXIM's real risk engine at trade/day-start time - not duplicated here to avoid ever showing a number that could drift from what actually executes.</div>`;
+    const modeLabels = {
+      kelly: "Kelly sizing", daily_compounding: "Daily Compounding",
+      apex_ascension: "Apex Ascension", empire: "Empire",
+    };
+    html += `<div class="muted" style="font-size:12px; margin-bottom:14px;">${modeLabels[mode] || "This sizing mode"} is calculated by AXIM's real risk engine at trade/day-start time - not duplicated here to avoid ever showing a number that could drift from what actually executes.</div>`;
   }
 
   const martEnabled = document.getElementById("f-mart-enabled").checked;
@@ -870,7 +1010,7 @@ function updateLivePreview() {
 }
 
 function showSizingSub(mode) {
-  ["fixed", "percent", "dynamic", "kelly", "daily_compounding"].forEach(m => {
+  ["fixed", "percent", "dynamic", "kelly", "daily_compounding", "apex_ascension", "empire"].forEach(m => {
     document.getElementById(`sizing-${m}`).classList.toggle("visible", m === mode);
   });
   document.getElementById("daily-compounding-card").style.display = mode === "daily_compounding" ? "block" : "none";
@@ -942,6 +1082,78 @@ async function saveBuilder(existingProfileId) {
         enabled: vaultEnabled,
         vault_percent: parseFloat(document.getElementById("f-vault-percent").value) || 25,
         trigger_event: document.getElementById("f-vault-trigger").value,
+      }),
+    });
+
+    // Apex Ascension/Empire are only meaningful while actually selected as
+    // the sizing mode, but PATCHed unconditionally (not just when
+    // sizingMode matches) so switching AWAY and back later doesn't lose
+    // whatever the operator already entered - same "settings persist
+    // independent of which mode is currently active" behavior every other
+    // sizing mode's own fields already have (e.g. Kelly's fields stay
+    // filled in even while Fixed is selected).
+    await fetchJSON(`/api/risk-profiles/${profileId}/apex-ascension`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: sizingMode === "apex_ascension",
+        starting_unit_value: parseFloat(document.getElementById("f-apex-unit-value").value) || 10,
+        standard_units: parseFloat(document.getElementById("f-apex-standard-units").value) || 5,
+        first_reset_threshold: parseFloat(document.getElementById("f-apex-first-threshold").value) || 2500,
+        reset_increment: parseFloat(document.getElementById("f-apex-reset-increment").value) || 1000,
+        reset_unit_step: parseFloat(document.getElementById("f-apex-unit-step").value) || 10,
+        downgrade_protection: document.getElementById("f-apex-downgrade-protection").checked,
+      }),
+    });
+    await fetchJSON(`/api/risk-profiles/${profileId}/empire`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: sizingMode === "empire",
+        starting_amount: parseFloat(document.getElementById("f-empire-start").value) || 10,
+        target_amount: parseFloat(document.getElementById("f-empire-target").value) || 100,
+        num_levels: parseInt(document.getElementById("f-empire-levels").value, 10) || 10,
+        failure_behavior: document.getElementById("f-empire-failure-behavior").value,
+        checkpoint_level: parseInt(document.getElementById("f-empire-checkpoint").value, 10) || 0,
+      }),
+    });
+    await fetchJSON(`/api/risk-profiles/${profileId}/drawdown-protection`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.getElementById("f-sentinel-enabled").checked,
+        suspend_above_percent: parseFloat(document.getElementById("f-sentinel-suspend").value) || 20,
+      }),
+    });
+    await fetchJSON(`/api/risk-profiles/${profileId}/cashflow`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.getElementById("f-cashflow-enabled").checked,
+        target_amount: parseFloat(document.getElementById("f-cashflow-target").value) || 0,
+        target_period: document.getElementById("f-cashflow-period").value,
+        partial_target_percent: parseFloat(document.getElementById("f-cashflow-partial-pct").value) || 75,
+        partial_reduction_percent: parseFloat(document.getElementById("f-cashflow-partial-reduction").value) || 50,
+      }),
+    });
+    await fetchJSON(`/api/risk-profiles/${profileId}/strike`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.getElementById("f-strike-enabled").checked,
+        max_session_duration_minutes: parseFloat(document.getElementById("f-strike-duration").value) || 0,
+        max_consecutive_losses: parseInt(document.getElementById("f-strike-consecutive-losses").value, 10) || 0,
+      }),
+    });
+    await fetchJSON(`/api/risk-profiles/${profileId}/momentum`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.getElementById("f-momentum-enabled").checked,
+        max_steps: parseInt(document.getElementById("f-momentum-steps").value, 10) || 0,
+        multiplier: parseFloat(document.getElementById("f-momentum-mult").value) || 1.5,
+        profit_lock_percent: parseFloat(document.getElementById("f-momentum-profit-lock").value) || 0,
+      }),
+    });
+    await fetchJSON(`/api/risk-profiles/${profileId}/fortress`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.getElementById("f-fortress-enabled").checked,
+        protection_threshold: parseFloat(document.getElementById("f-fortress-threshold").value) || 0,
       }),
     });
 
