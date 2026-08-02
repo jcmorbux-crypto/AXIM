@@ -366,6 +366,11 @@ def performance_page():
     return _serve("performance.html")
 
 
+@app.get("/analytics")
+def analytics_page():
+    return _serve("analytics.html")
+
+
 @app.get("/broker")
 def broker_page():
     return _serve("broker.html")

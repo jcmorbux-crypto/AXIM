@@ -36,6 +36,7 @@ const AximShell = (() => {
     capital: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.8 14.2h12.4"/><rect x="2.5" y="9.5" width="2.6" height="4.7" fill="currentColor" stroke="none"/><rect x="6.7" y="6.5" width="2.6" height="7.7" fill="currentColor" stroke="none"/><rect x="10.9" y="2.8" width="2.6" height="11.4" fill="currentColor" stroke="none"/></svg>',
     bots: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="5.5" width="10" height="8" rx="1.8"/><path d="M8 5.5V3M6 2.3h4"/><circle cx="6" cy="9.5" r="0.9" fill="currentColor" stroke="none"/><circle cx="10" cy="9.5" r="0.9" fill="currentColor" stroke="none"/><path d="M6 12h4"/></svg>',
     pipeline: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="2.5" cy="3" r="1.5"/><circle cx="8" cy="8" r="1.5"/><circle cx="13.5" cy="13" r="1.5"/><path d="M3.8 4.2L6.8 6.8M9.2 9.2l3 2.8"/><path d="M2.5 6.5v3M13.5 6.5v3"/></svg>',
+    analytics: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M1.8 14.2h12.4"/><path d="M2.5 11l3-3.5 2.5 2 4.5-5.5"/><circle cx="12.5" cy="4" r="1" fill="currentColor" stroke="none"/></svg>',
   };
 
   // Theme toggle icons (UI v2, 2026-07-18) - sun shown while in light
@@ -116,20 +117,22 @@ const AximShell = (() => {
   // keep working, per that same spec's own "preserve existing URLs where
   // practical" note.
   //
-  // Two of these were TEMPORARY placeholders when this comment was
-  // written; "Signals" no longer is (2026-08-01: confirmed live -
-  // web/telegram.html was rebuilt into the approved 5-region blueprint -
-  // Signal Filters, Signal Feed Table, Provider Status, Selected Signal
-  // Details, Execution Rules - all present):
+  // "Signals" was a TEMPORARY placeholder when this comment was written;
+  // no longer is (2026-08-01: confirmed live - web/telegram.html was
+  // rebuilt into the approved 5-region blueprint - Signal Filters,
+  // Signal Feed Table, Provider Status, Selected Signal Details,
+  // Execution Rules - all present):
   //   - "Bots" -> /sessions (Trading Sessions is the closer functional
   //     match to the approved bot/session-health+controls+logs screen;
   //     the current /bots route is a DIFFERENT feature - interactive
   //     bot-command signal channels - kept below, not renamed, to avoid
   //     conflating the two).
-  //   - "Analytics" is intentionally OMITTED, not stubbed: no real,
-  //     separately-justified content exists yet for it (this project's
-  //     own standing "no placeholder screens" rule) - added back once
-  //     real diagnostics/cohort content is scoped.
+  // "Analytics" was intentionally OMITTED (not stubbed) until real,
+  // separately-justified content was scoped - added back 2026-08-01, per
+  // explicit direction: cohort performance by signal provider
+  // (web/analytics.html - every provider with a closed trade, not just
+  // the Dashboard widget's top-8 highlight strip, reusing the same
+  // already-tested /api/channels/performance-summary data).
   const PRIMARY_NAV_ITEMS = [
     { key: "dashboard", label: "Dashboard", href: "/dashboard", icon: ICONS.dashboard },
     { key: "funds", label: "Portfolio", href: "/funds", icon: ICONS.funds },
@@ -138,6 +141,7 @@ const AximShell = (() => {
     { key: "lab", label: "Backtesting", href: "/strategy-lab", icon: ICONS.lab },
     { key: "automation", label: "Strategies", href: "/automation", icon: ICONS.rules },
     { key: "stats", label: "Performance", href: "/performance", icon: ICONS.stats },
+    { key: "analytics", label: "Analytics", href: "/analytics", icon: ICONS.analytics },
     { key: "sessions", label: "Bots", href: "/sessions", icon: ICONS.sessions },
     // Broker Accounts (2026-07-25 Integration Review): deliberately kept
     // as its own primary destination, not merged into Portfolio or made

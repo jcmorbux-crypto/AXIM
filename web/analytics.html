@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Analytics - AXIM Trader</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/png" href="/web/assets/brand/axim-icon-white-on-blue.png">
+<link rel="stylesheet" href="/web/theme.css">
+<script>(function(){try{var t=localStorage.getItem("axim-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();</script>
+<style>
+  th.sortable { cursor: pointer; user-select: none; }
+  th.sortable:hover { color: var(--text); }
+  th.sortable .arrow { opacity: 0.5; font-size: 10px; margin-left: 3px; }
+  td.low-sample-cell { position: relative; }
+  .low-sample-badge {
+    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    background: var(--bg); border: 1px solid var(--border); color: var(--text-dim);
+    margin-left: 6px; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div id="app-shell">
+  <main class="main">
+    <div class="page-header">
+      <div>
+        <h1>Analytics</h1>
+        <div class="subtitle">Cohort performance by signal provider - every provider with at least one closed trade, not just a highlight reel.</div>
+      </div>
+      <button onclick="refreshCohorts()">Refresh</button>
+    </div>
+
+    <div class="card solid full-width">
+      <div class="row" style="justify-content:space-between; align-items:flex-start; margin-bottom:12px;">
+        <div class="muted" style="font-size:12.5px; max-width:640px;">
+          Lifetime win rate, P/L, and ROI per signal provider (channel). Providers with fewer than
+          <span id="min-sample-label">10</span> closed trades are marked <span class="low-sample-badge">low sample</span> -
+          shown, not hidden, but not yet a reliable read on that provider's real edge.
+        </div>
+      </div>
+      <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th class="sortable" data-key="channel">Provider <span class="arrow"></span></th>
+            <th class="sortable" data-key="total_closed">Trades <span class="arrow"></span></th>
+            <th class="sortable" data-key="win_rate">Win Rate <span class="arrow"></span></th>
+            <th>W / L / D</th>
+            <th class="sortable" data-key="profit_loss">P/L <span class="arrow"></span></th>
+            <th class="sortable" data-key="roi">ROI <span class="arrow"></span></th>
+            <th class="sortable" data-key="average_payout">Avg Payout <span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="cohorts-body"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+      </table>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="/web/shell.js"></script>
+<script>
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, { credentials: "same-origin", ...opts });
+  if (!res.ok) {
+    const err = new Error(`${url} -> ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res.json();
+}
+function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s || ""; return d.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
+function fmtMoney(n) { return (n === null || n === undefined) ? "-" : `${n > 0 ? "+" : ""}$${Number(n).toFixed(2)}`; }
+function fmtPct(n) { return (n === null || n === undefined) ? "-" : (n * 100).toFixed(1) + "%"; }
+function plClass(v) { return v > 0 ? "pos" : (v < 0 ? "neg" : "neutral"); }
+
+const MIN_RELIABLE_TRADES = 10;
+let cohorts = [];
+let sortKey = "profit_loss";
+let sortDesc = true;
+
+function sortCohorts() {
+  const sorted = [...cohorts].sort((a, b) => {
+    let av = a[sortKey], bv = b[sortKey];
+    if (typeof av === "string") { av = av.toLowerCase(); bv = (bv || "").toLowerCase(); }
+    if (av === null || av === undefined) av = sortDesc ? -Infinity : Infinity;
+    if (bv === null || bv === undefined) bv = sortDesc ? -Infinity : Infinity;
+    if (av < bv) return sortDesc ? 1 : -1;
+    if (av > bv) return sortDesc ? -1 : 1;
+    return 0;
+  });
+  renderCohorts(sorted);
+  document.querySelectorAll("th.sortable .arrow").forEach(el => el.textContent = "");
+  const activeArrow = document.querySelector(`th.sortable[data-key="${sortKey}"] .arrow`);
+  if (activeArrow) activeArrow.textContent = sortDesc ? "↓" : "↑";
+}
+
+function renderCohorts(rows) {
+  const tbody = document.getElementById("cohorts-body");
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">No closed trades yet - nothing to show a cohort for.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = rows.map(r => {
+    const lowSample = r.total_closed < MIN_RELIABLE_TRADES;
+    return `
+      <tr>
+        <td class="title-cell">${escapeHtml(r.channel)}</td>
+        <td class="${lowSample ? "low-sample-cell" : ""}">${r.total_closed}${lowSample ? '<span class="low-sample-badge">low sample</span>' : ""}</td>
+        <td>${fmtPct(r.win_rate)}</td>
+        <td class="muted">${r.wins} / ${r.losses} / ${r.draws}</td>
+        <td class="${plClass(r.profit_loss)}">${fmtMoney(r.profit_loss)}</td>
+        <td class="${plClass(r.roi)}">${r.roi !== null && r.roi !== undefined ? fmtPct(r.roi) : "-"}</td>
+        <td>${r.average_payout !== null && r.average_payout !== undefined ? r.average_payout.toFixed(1) + "%" : "-"}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+async function refreshCohorts() {
+  const tbody = document.getElementById("cohorts-body");
+  try {
+    cohorts = await fetchJSON("/api/channels/performance-summary");
+    sortCohorts();
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">Failed to load: ${escapeHtml(e.message)}</td></tr>`;
+  }
+}
+
+document.addEventListener("click", (e) => {
+  const th = e.target.closest("th.sortable");
+  if (!th) return;
+  const key = th.dataset.key;
+  if (sortKey === key) { sortDesc = !sortDesc; } else { sortKey = key; sortDesc = true; }
+  sortCohorts();
+});
+
+(async () => {
+  const user = await AximShell.init({ active: "analytics" });
+  if (!user) return;
+  document.getElementById("min-sample-label").textContent = MIN_RELIABLE_TRADES;
+  refreshCohorts();
+  // Same trade.closed reasoning as Performance/Funds (also had no live
+  // refresh at all before this session) - cohort stats only ever change
+  // when a trade closes.
+  setInterval(refreshCohorts, 30000);
+  AximShell.subscribeEvents({
+    "trade.closed": { onEvent: refreshCohorts, onResync: refreshCohorts },
+  });
+})();
+</script>
+</body>
+</html>
