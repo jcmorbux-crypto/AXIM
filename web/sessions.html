@@ -211,18 +211,32 @@ function statusBadge(status) {
   return `<span class="badge ${map[status] || "off"}">${status.replace(/_/g, " ")}</span>`;
 }
 
-async function loadChannelPicker() {
+// fundSourceChannelIds: when the selected Fund has assigned Signal
+// Providers (web/funds.html), the picker shows ONLY those channels -
+// starting a session against anything else is now server-rejected
+// (api/sessions.py's start_session), so showing the unfiltered full
+// list would just be an invitation to hit that rejection blind. A Fund
+// with no assignment yet (the common case for funds that predate this
+// or haven't set it up) still sees every channel, unchanged.
+async function loadChannelPicker(fundSourceChannelIds) {
   try {
     allChannels = await fetchJSON("/api/channels");
     const enabled = allChannels.filter(c => c.enabled);
-    const list = enabled.length ? enabled : allChannels;
-    document.getElementById("channel-picker").innerHTML = list.map(c => `
+    let list = enabled.length ? enabled : allChannels;
+    let scopedNote = "";
+    let emptyMessage = '<div class="empty">No channels yet - add some on the Signals page.</div>';
+    if (fundSourceChannelIds && fundSourceChannelIds.size > 0) {
+      list = list.filter(c => fundSourceChannelIds.has(c.id));
+      scopedNote = '<div class="muted" style="font-size:11px; margin-bottom:6px;">Scoped to this Fund\'s assigned Signal Providers - manage the assignment on the Portfolio page.</div>';
+      emptyMessage = '<div class="empty">This Fund\'s assigned Signal Provider(s) aren\'t available (disabled or removed) - fix the assignment on the Portfolio page.</div>';
+    }
+    document.getElementById("channel-picker").innerHTML = scopedNote + (list.map(c => `
       <div class="channel-picker-item">
         <input type="checkbox" value="${c.id}" class="session-channel-checkbox" style="width:auto;">
         <span>${escapeHtml(c.title || c.username || c.id)}</span>
         <span class="muted" style="font-size:11px;">(${c.source_type})</span>
       </div>
-    `).join("") || '<div class="empty">No channels yet - add some on the Signals page.</div>';
+    `).join("") || emptyMessage);
   } catch (e) {
     document.getElementById("channel-picker").innerHTML = `<div class="empty">Failed to load: ${escapeHtml(e.message)}</div>`;
   }
@@ -277,7 +291,14 @@ async function onFundSelectChange() {
   if (!fundId) {
     summaryEl.style.display = "none";
     currentPreStartSummary = null;
+    loadChannelPicker();
     return;
+  }
+  try {
+    const fundReport = await fetchJSON(`/api/funds/${fundId}`);
+    loadChannelPicker(new Set(fundReport.sources || []));
+  } catch (e) {
+    loadChannelPicker();
   }
   try {
     currentPreStartSummary = await fetchJSON(`/api/sessions/pre-start-summary/${fundId}`);

@@ -197,6 +197,30 @@ def start_session(body: SessionStart, user=Depends(require_admin)):
     if fund is None:
         raise HTTPException(status_code=404, detail="fund not found")
 
+    # 2026-08-01 trading-engine priority directive audit: fund_sources
+    # (Portfolio's "Signal Providers" assignment, web/funds.html) was
+    # real, persisted, and had a working UI, but NOTHING at session-start
+    # time actually checked a session's channel_ids against it - an
+    # operator could assign Provider X to this Fund, then start a session
+    # against Provider Y's channel instead, and every Y signal would
+    # route to this Fund anyway. Enforced here, not just recommended in
+    # the UI: a Fund with at least one assigned source can ONLY start a
+    # session against a subset of those channels. A Fund with none
+    # assigned yet stays fully open (every existing Fund that predates
+    # this check, or simply hasn't set up provider assignment, keeps
+    # working exactly as before - this only tightens funds that have
+    # actually opted into scoping).
+    assigned_channel_ids = set(database.list_fund_source_channel_ids(body.fund_id))
+    if assigned_channel_ids:
+        not_assigned = [cid for cid in body.channel_ids if cid not in assigned_channel_ids]
+        if not_assigned:
+            raise HTTPException(
+                status_code=400,
+                detail=f"channel id(s) {not_assigned} are not assigned as a signal provider for "
+                       f"{fund['name']!r} - add them under Portfolio > this Fund > Signal Providers first, "
+                       f"or select a different channel",
+            )
+
     can_trade, reason, _ = fund_manager.can_trade(body.fund_id)
     if not can_trade:
         raise HTTPException(status_code=409, detail=reason)
