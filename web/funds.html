@@ -120,7 +120,11 @@
           <div id="add-edit-fields" style="display:none;">
             <div class="field"><label>Name</label><input type="text" id="f-name"></div>
             <div class="field"><label>Starting balance ($)</label><input type="number" id="f-starting-balance" step="0.01"></div>
-            <div class="field"><label>Broker / account label</label><input type="text" id="f-broker-label" placeholder="e.g. Pocket Option Demo"></div>
+            <div class="field">
+              <label>Note (display only)</label>
+              <input type="text" id="f-broker-label" placeholder="e.g. Pocket Option Demo">
+              <div class="muted" style="font-size:11px; margin-top:2px;">A free-text label for your own reference - it does not connect a broker account. Use "Broker Account" below to actually attach one.</div>
+            </div>
             <div class="field"><label>Default money management profile</label><select id="f-risk-profile"><option value="">None</option></select></div>
             <div class="field"><label>Default session template</label><select id="f-session-profile"><option value="">None</option></select></div>
             <div class="muted" style="font-size:11.5px; margin-bottom:4px;">Lifetime circuit breaker - measured against all-time realized P/L and trade count, not reset daily.</div>

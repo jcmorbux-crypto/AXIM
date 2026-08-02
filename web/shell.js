@@ -523,7 +523,7 @@ const AximShell = (() => {
         return;
       }
       list.innerHTML = rows.map(n => `
-        <div class="notif-item ${n.read_at ? "" : "unread"}">
+        <div class="notif-item ${n.read_at ? "" : "unread"}" ${n.read_at ? "" : `onclick="AximShell._markOneNotifRead(${n.id})" style="cursor:pointer;" title="Click to mark read"`}>
           <div class="notif-message">${escapeHtml(n.message)}</div>
           <div class="notif-time">${fmtNotifTime(n.created_at)}</div>
         </div>
@@ -535,6 +535,12 @@ const AximShell = (() => {
 
   async function _markAllNotifsRead() {
     try { await fetchJSON("/api/notifications/read-all", { method: "POST" }); } catch (e) {}
+    await loadNotifList();
+    await pollNotifCount();
+  }
+
+  async function _markOneNotifRead(notificationId) {
+    try { await fetchJSON(`/api/notifications/${notificationId}/read`, { method: "POST" }); } catch (e) {}
     await loadNotifList();
     await pollNotifCount();
   }
@@ -796,7 +802,7 @@ const AximShell = (() => {
 
   return {
     init, logout, fetchJSON, isDeveloperMode, _confirmPendingTrade, _rejectPendingTrade,
-    _toggleNotifDropdown, _markAllNotifsRead, subscribeEvents, toggleTheme, confirm: confirmDialog,
+    _toggleNotifDropdown, _markAllNotifsRead, _markOneNotifRead, subscribeEvents, toggleTheme, confirm: confirmDialog,
     emptyPanel,
     statusBadge, signalRowState, metricCard,
     tableLoadingRow, tableEmptyRow, tableErrorRow,
