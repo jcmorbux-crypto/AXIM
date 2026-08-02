@@ -1772,6 +1772,11 @@ def initialize_database():
         "avg_daily_pnl": "REAL",
         "daily_target_hit_rate": "REAL",
         "daily_loss_limit_hit_rate": "REAL",
+        # Sniper (tm) backtest reporting (2026-08-01) - see core/
+        # backtest_engine.py's compute_metrics: 0 for every non-Sniper
+        # profile, since only a real sniper_settings.enabled profile ever
+        # produces a nonzero count.
+        "sniper_rejected_count": "INTEGER",
     }
     backtest_metrics_columns = {row["name"] for row in conn.execute("PRAGMA table_info(backtest_metrics)")}
     for column, sql_type in _NEW_BACKTEST_METRICS_COLUMNS.items():

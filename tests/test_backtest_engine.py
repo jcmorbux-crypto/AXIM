@@ -571,6 +571,32 @@ class MetricsTests(unittest.TestCase):
         self.assertIsNone(metrics["win_rate"])
         self.assertEqual(metrics["avg_trade_size"], 0.0)
 
+    def test_sniper_rejected_count_defaults_to_zero_for_non_sniper_profiles(self):
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "win") for i in range(3)]
+        result = backtest_engine.simulate_strategy(pool, _fixed_profile(fixed_amount=10), 1000)
+        metrics = backtest_engine.compute_metrics(result["sessions"], result["trades"], 1000)
+        self.assertEqual(metrics["sniper_rejected_count"], 0)
+
+    def test_sniper_rejected_count_flows_from_simulate_strategy_into_metrics(self):
+        # 2026-08-01 real gap found: simulate_strategy computed this
+        # count during the walk-forward Sniper gate but it was silently
+        # dropped before ever reaching the saved metrics row or the UI -
+        # this proves it now survives the full compute_metrics hand-off.
+        profile = _fixed_profile(fixed_amount=10)
+        profile["sniper"] = {
+            "enabled": True, "min_win_rate": 0, "min_sample_size": 1, "min_profit_factor": 0,
+            "require_positive_ev": False, "min_payout_percent": 0, "max_signal_age_seconds": 999999,
+            "max_consecutive_losses": 0, "blacklisted_assets_json": "[]",
+        }
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "win") for i in range(3)]
+        result = backtest_engine.simulate_strategy(pool, profile, 1000, session_window="all")
+        self.assertGreater(result["sniper_rejected_count"], 0)
+        metrics = backtest_engine.compute_metrics(
+            result["sessions"], result["trades"], 1000,
+            sniper_rejected_count=result["sniper_rejected_count"],
+        )
+        self.assertEqual(metrics["sniper_rejected_count"], result["sniper_rejected_count"])
+
     def test_risk_score_and_best_for_label_are_deterministic(self):
         self.assertEqual(backtest_engine._risk_score(5, 0), "Low")
         self.assertEqual(backtest_engine._risk_score(15, 2), "Medium")
@@ -863,6 +889,36 @@ class RunBacktestIntegrationTests(DbBackedTestCase):
         report = database.get_backtest_report(run_id)
         self.assertEqual(report["strategies"][0]["metrics"]["win_rate"], 1.0)
         self.assertEqual(database.list_tier_events(profile_id), [])
+
+    def test_sniper_rejected_count_persists_to_the_saved_backtest_metrics_row(self):
+        # 2026-08-01 real gap: simulate_strategy computed this count but
+        # run_backtest never read it off the result dict before calling
+        # compute_metrics, so it never reached the saved backtest_metrics
+        # row (or the Strategy Lab UI) even though the number existed in
+        # memory during the run.
+        for i in range(5):
+            sig_id = database.create_imported_signal(
+                "TestChannel", "EUR/USD OTC", "BUY", "1 Minute", f"2026-01-01T10:0{i}:00")
+            database.grade_imported_signal(sig_id, "win", payout_percent=85)
+
+        profile_id = database.create_risk_profile("Sniper Test", sizing_mode="fixed", fixed_amount=10)
+        database.update_sniper_settings(
+            profile_id, enabled=1, min_win_rate=0, min_sample_size=1, min_profit_factor=0,
+            require_positive_ev=0, min_payout_percent=0, max_signal_age_seconds=999999,
+            max_consecutive_losses=0,
+        )
+        run_id = database.create_backtest_run(
+            "Sniper Reporting Test", {"source": "imported"}, 1000, default_payout_percent=85, session_window="all")
+        profile = database.get_risk_profile(profile_id)
+        database.create_backtest_strategy(run_id, profile_id, profile["name"], profile)
+
+        backtest_engine.run_backtest(run_id)
+
+        report = database.get_backtest_report(run_id)
+        # Sniper always rejects at least the first signal (no track
+        # record yet) in an isolated run - see backtest_engine's own
+        # "Bootstrap note".
+        self.assertGreater(report["strategies"][0]["metrics"]["sniper_rejected_count"], 0)
 
     def test_run_fails_cleanly_with_no_matching_signals(self):
         run_id = database.create_backtest_run("Empty Run", {"source": "imported"}, 1000)

@@ -906,6 +906,7 @@ async function renderResults(report) {
         <div class="metric-row"><span class="label">Win Rate</span><span class="value">${m.win_rate !== null ? (m.win_rate * 100).toFixed(1) + "%" : "-"}</span></div>
         <div class="metric-row"><span class="label">Profit Factor</span><span class="value">${m.profit_factor ?? "-"}</span></div>
         <div class="metric-row"><span class="label">Consistency</span><span class="value">${m.consistency_percent !== null && m.consistency_percent !== undefined ? m.consistency_percent + "%" : "-"}</span></div>
+        ${m.sniper_rejected_count ? `<div class="metric-row"><span class="label">Sniper Rejected</span><span class="value" title="Signals this Sniper-gated profile did not have enough real trade history to qualify, walk-forward - never a trade AXIM actually opened">${m.sniper_rejected_count}</span></div>` : ""}
         <div class="metric-row"><span class="label">Risk Score</span><span class="badge ${m.risk_score === "Low" ? "on" : (m.risk_score === "Medium" ? "warn" : "danger")}">${m.risk_score || "-"}</span></div>
         <div class="metric-row"><span class="label">Safest Rank</span><span class="value">#${m.rank_safest ?? "-"}</span></div>
         <div class="metric-row"><span class="label">Highest Growth Rank</span><span class="value">#${m.rank_highest_growth ?? "-"}</span></div>

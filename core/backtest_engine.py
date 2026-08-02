@@ -559,9 +559,13 @@ def _best_for_label(roi_percent, max_drawdown_percent):
     return "Balanced Growth"
 
 
-def compute_metrics(sessions, trades, starting_bankroll):
+def compute_metrics(sessions, trades, starting_bankroll, sniper_rejected_count=0):
     """Pure. Aggregates one strategy's simulate_strategy() output into
-    the backtest_metrics row shape."""
+    the backtest_metrics row shape. sniper_rejected_count is simulate_
+    strategy()'s own return value passed straight through (0 for every
+    non-Sniper profile) - without it, the count Sniper's walk-forward
+    gate rejects was computed during simulation and then silently
+    thrown away before ever reaching the saved metrics row or the UI."""
     total_realized_pnl = sum(s["realized_pnl"] for s in sessions)
     final_bankroll = round(starting_bankroll + total_realized_pnl, 2)
     total_profit_loss = round(final_bankroll - starting_bankroll, 2)
@@ -679,6 +683,7 @@ def compute_metrics(sessions, trades, starting_bankroll):
         "consistency_percent": consistency_percent,
         "recovery_factor": recovery_factor,
         "volatility": volatility,
+        "sniper_rejected_count": sniper_rejected_count,
     }
 
 
@@ -800,7 +805,10 @@ def run_backtest(run_id, cancel_check=None):
                 # SQLite connection per trade - see create_backtest_trades_
                 # bulk's own docstring for the real perf bug this fixes.
                 database.create_backtest_trades_bulk(session_id, session_trades)
-            metrics = compute_metrics(result["sessions"], result["trades"], run["starting_bankroll"])
+            metrics = compute_metrics(
+                result["sessions"], result["trades"], run["starting_bankroll"],
+                sniper_rejected_count=result.get("sniper_rejected_count", 0),
+            )
             database.save_backtest_metrics(strategy["id"], metrics)
             strategy_metrics.append((strategy["id"], metrics))
 
