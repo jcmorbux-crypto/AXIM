@@ -2699,6 +2699,52 @@ def get_recent_signals(limit=25):
     return [dict(row) for row in rows]
 
 
+def filter_signals(search=None, result=None, since=None, until=None, limit=200):
+    """2026-08-01: Trade History (web/trades.html) had no filtering at
+    all, unlike Logs' search/level/module/date bar - same shape as
+    get_recent_signals above (same columns, same ORDER BY id DESC), just
+    with optional WHERE clauses, so a call with every argument left at
+    its default returns byte-identical rows to get_recent_signals(limit)
+    - kept as a SEPARATE function (not a get_recent_signals rewrite)
+    since that one has its own other callers (api/main.py's dashboard
+    activity table) that don't need or expect filter params.
+
+    search matches asset OR channel (substring) - same "covers channel/
+    asset names too" convenience Logs' own search already promises.
+    result accepts a literal result value (win/loss/draw, or a rejected:*/
+    error:* prefix the caller already knows) OR the literal string "open"
+    for "received but not yet resolved" (result IS NULL) - never a
+    fabricated bucket, only what the result column already means
+    elsewhere in this codebase."""
+    conn = get_connection()
+    clauses = []
+    params = []
+    if search:
+        clauses.append("(asset LIKE ? OR channel LIKE ?)")
+        params.extend([f"%{search}%", f"%{search}%"])
+    if result:
+        if result == "open":
+            clauses.append("result IS NULL")
+        else:
+            clauses.append("result = ?")
+            params.append(result)
+    if since:
+        clauses.append("received_at >= ?")
+        params.append(since)
+    if until:
+        clauses.append("received_at <= ?")
+        params.append(until)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        f"SELECT id, asset, direction, timeframe, channel, execution_status, result, "
+        f"profit_loss, payout, received_at, opened_at, closed_at, trade_amount, session_id FROM signals "
+        f"{where} ORDER BY id DESC LIMIT ?",
+        params + [limit],
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
 @timed("database")
 def get_signal_detail(trade_id):
     """Full detail for the Trade Center's trade-detail view: raw message,

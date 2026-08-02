@@ -35,9 +35,26 @@
         <div class="subtitle">Every trade AXIM has executed - click a row for full detail.</div>
       </div>
       <div class="row">
-        <a href="/api/trades/export?format=csv" class="btn subtle" download>Export CSV</a>
-        <a href="/api/trades/export?format=json" class="btn subtle" download>Export JSON</a>
+        <a href="/api/trades/export?format=csv" id="export-csv-link" class="btn subtle" download>Export CSV</a>
+        <a href="/api/trades/export?format=json" id="export-json-link" class="btn subtle" download>Export JSON</a>
         <button onclick="refreshTrades()">Refresh</button>
+      </div>
+    </div>
+
+    <div class="card solid full-width" style="margin-bottom:16px;">
+      <div class="row">
+        <input type="text" id="f-search" placeholder="Search asset or source..." style="width:260px;" onkeydown="if(event.key==='Enter')refreshTrades()">
+        <select id="f-result" style="width:auto;">
+          <option value="">All results</option>
+          <option value="win">Win</option>
+          <option value="loss">Loss</option>
+          <option value="draw">Draw</option>
+          <option value="open">Not yet resolved</option>
+        </select>
+        <input type="date" id="f-since" style="width:auto;" title="From">
+        <input type="date" id="f-until" style="width:auto;" title="To">
+        <button class="primary" onclick="refreshTrades()">Apply Filters</button>
+        <button class="subtle" onclick="clearFilters()">Clear</button>
       </div>
     </div>
 
@@ -132,12 +149,53 @@ function humanizeResult(result) {
   return result;
 }
 
+function currentFilterParams() {
+  const params = new URLSearchParams();
+  const search = document.getElementById("f-search").value.trim();
+  const result = document.getElementById("f-result").value;
+  const since = document.getElementById("f-since").value;
+  const until = document.getElementById("f-until").value;
+  if (search) params.set("search", search);
+  if (result) params.set("result", result);
+  if (since) params.set("since", since + "T00:00:00");
+  // Inclusive of the whole end day - a bare date string sorts BEFORE any
+  // timestamp on that same day (string comparison, same convention
+  // web/logs.html already uses for "since"), so "until" needs the
+  // end-of-day time appended or the last day picked would be silently
+  // excluded entirely.
+  if (until) params.set("until", until + "T23:59:59");
+  return params;
+}
+
+function clearFilters() {
+  document.getElementById("f-search").value = "";
+  document.getElementById("f-result").value = "";
+  document.getElementById("f-since").value = "";
+  document.getElementById("f-until").value = "";
+  refreshTrades();
+}
+
+function updateExportLinks(params) {
+  const csvParams = new URLSearchParams(params);
+  csvParams.set("format", "csv");
+  document.getElementById("export-csv-link").href = "/api/trades/export?" + csvParams.toString();
+  const jsonParams = new URLSearchParams(params);
+  jsonParams.set("format", "json");
+  document.getElementById("export-json-link").href = "/api/trades/export?" + jsonParams.toString();
+}
+
 async function refreshTrades() {
   const tbody = document.getElementById("trades-body");
+  // Export links must NOT inherit the page view's limit=50 - built from a
+  // fresh, separate params object so the export keeps the server's own
+  // much higher default (see api/trades.py's export_trades).
+  updateExportLinks(currentFilterParams());
+  const params = currentFilterParams();
+  params.set("limit", "50");
   try {
-    const trades = await fetchJSON("/api/trades?limit=50");
+    const trades = await fetchJSON("/api/trades?" + params.toString());
     if (!trades.length) {
-      tbody.innerHTML = '<tr><td colspan="10" class="empty">No trades yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" class="empty">No trades match these filters.</td></tr>';
       return;
     }
     tbody.innerHTML = trades.map(t => `
