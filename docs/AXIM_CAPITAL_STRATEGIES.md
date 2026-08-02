@@ -1,10 +1,34 @@
 # AXIM Capital Strategies (tm)
 
-**Status: Phase 1 + partial Phase 2 complete (2026-07-11).** Confirmed
-product direction - see `memory/project_axim_capital_strategies.md` for
-how this was confirmed (arrived via an unusual channel first, verified
+**Status: Phase 1 + Phase 2 complete except Leviathan/Oracle (2026-08-01).**
+Confirmed product direction - see `memory/project_axim_capital_strategies.md`
+for how this was confirmed (arrived via an unusual channel first, verified
 directly with the user before any implementation started, per this
 project's standing practice for consequential instructions).
+
+**2026-08-01 update - Blackwater and Sniper are now real and live**,
+resolving the "Deliberately not started" blocker below in a genuinely
+different way than originally guessed at: a fresh product decision ruled
+out ever inventing a "conviction level"/confidence score for either -
+both are driven entirely by `core/provider_scorecard.py`, a provider's
+own REAL, measurable trade history (win rate, sample size, profit
+factor, expected value, payout, rolling windows, drawdown, streak,
+signal age, signal rejection rate) computed from the real `signals`
+table, nothing fabricated. Blackwater is a real `sizing_mode` in
+`core/risk_engine.py`/`core/capital_strategies.py` (tiered
+base/premium/elite/institutional stake percentages, gated by
+configurable per-tier scorecard thresholds); Sniper is a hard
+`core/risk_manager.check_sniper_qualification` preflight gate in
+`core/trade_coordinator.py`. Both have real settings tables
+(`sniper_settings`/`blackwater_settings`), full Money Management Studio
+config UI (`web/risk.html`), a genuine walk-forward (no-lookahead)
+backtest simulation in `core/backtest_engine.py`, and real
+qualification-reason surfacing on Trade Detail
+(`database.get_signal_detail`'s `rejection_reason` field). **Leviathan
+and Oracle remain Definition Required** - see the updated "Deliberately
+not started" section below; they are visible in the catalog
+(`core/capital_strategies_catalog.py`, `definition_required: True`) but
+cannot be activated, and no placeholder logic exists for either.
 
 **Phase 2 progress**: Momentum, Fortress, and Empire are real and wired
 into live sizing (`core/risk_engine.py`), same standard as every Phase 1
@@ -59,10 +83,12 @@ before (the new Cashflow/Sentinel/Apex Ascension features all default to
   existing `api/risk_engine_routes.py` (new PATCH endpoints for the four
   new sub-configs, matching the martingale/compounding/vault pattern
   exactly).
-- `web/capital_strategies.html` - Investment House browsing → strategy
-  catalog → strategy detail → configure/simulate, wired into the nav
-  (`web/shell.js`). Live-verified in a real browser (screenshots taken
-  during this session, not just code review).
+- `web/capital_strategies.html` (Investment House browsing → strategy
+  catalog → strategy detail → configure/simulate) was live-verified in a
+  real browser when first built, but was later deliberately removed - see
+  "Next up" below. The catalog API (`api/capital_strategies_routes.py`)
+  is still live; strategy configuration now happens only through
+  `web/risk.html`'s Money Management Studio.
 - **Wired into live trade sizing**, not just the demo simulator:
   `core/risk_engine.py`'s `compute_position_size()` now has a real
   `apex_ascension` sizing_mode branch, plus Cashflow/Sentinel as opt-in
@@ -101,34 +127,45 @@ that need a base_amount sourced from a DIFFERENT sizing mode's settings -
 this single-strategy simulator has no honest source for that without
 fabricating a convention the spec never defined, so they stay out
 deliberately (Phase 3's real Strategy Lab integration is the right place
-to solve this, not a guessed default here). **Leviathan, Blackwater,
-Sniper, and Oracle** are genuinely not built yet - see "Deliberately not
-started" below for why, rather than a rushed, fabricated version of each.
+to solve this, not a guessed default here). **Leviathan and Oracle**
+are genuinely not built yet - see "Deliberately not started" below for
+why, rather than a rushed, fabricated version of each. Blackwater and
+Sniper are real and live now (2026-08-01) but, like Sentinel/Cashflow/
+Momentum/Fortress above, aren't wired into this simplified single-path
+demo simulator either - Blackwater's tiered sizing needs a real
+Provider Scorecard as input (no honest source for one in a stateless
+demo call) and Sniper is a pass/fail gate, not a stake-size calculation,
+so neither fits this simulator's shape.
 
-## Deliberately not started (Leviathan, Blackwater, Sniper)
+## Deliberately not started (Leviathan, Oracle)
 
-These three need a real design decision or a new data source before
-they can be built honestly, not just more engineering time:
+Sniper and Blackwater are DONE as of 2026-08-01 (see the status update
+above) - the original framing below (needing invented "confidence"/
+"conviction" metadata) turned out to be the wrong approach entirely; a
+2026-08-01 product decision ruled that out and both were built instead
+on real, already-collected Provider Scorecard statistics. Leviathan and
+Oracle still need a real design decision before they can be built
+honestly, not just more engineering time:
 
-- **Sniper** needs signal-level metadata (confidence, volatility, signal
-  age at receipt) to filter on. `parsers/signal_parser.py`'s current
-  output doesn't carry most of these - they'd need to be added to the
-  signal schema first (or sourced from `core/source_profiler.py`'s
-  research module), not invented at the strategy layer.
-- **Blackwater** needs a "conviction level" classification (Watch /
-  Qualified / Prime / Whale / Blackwater per the spec) computed from
-  something - provider historical win rate, multi-source agreement,
-  etc. - none of which AXIM tracks per-signal today. This is the same
-  underlying gap Oracle (Phase 3's confidence-score engine) needs too;
-  building Blackwater properly probably means building a shared
-  scoring primitive both can use, not two separate ad hoc ones.
 - **Leviathan** is a genuine multi-phase state machine (break-even
   objectives, "Pay Opportunities," controlled 2X sequences) with more
   free design parameters than the spec pins down precisely enough to
   implement without guessing at several judgment calls (how a "Pay
-  Opportunity" is actually detected, phase-advancement thresholds).
-  Worth a short design pass with the user before writing code, not
-  worth fabricating defaults for.
+  Opportunity" is actually detected, phase-advancement thresholds) -
+  and per the 2026-08-01 decision, any such rule must itself be defined
+  in terms of real, measurable statistics, not invented ones. Worth a
+  short design pass with the user before writing code, not worth
+  fabricating defaults for.
+- **Oracle**'s own spec concept - a "0-100 AXIM Confidence Score" - IS
+  the fabricated AI/confidence scoring the 2026-08-01 decision forbids
+  inventing. It needs a replacement product definition: a deterministic
+  formula over real Provider Scorecard statistics that maps to a
+  deployment band, with every recommendation traceable to the real
+  numbers behind it, not a learned/opaque score.
+
+See `core/capital_strategies_catalog.py`'s `definition_required_reason`
+field on both entries for the exact same text surfaced to the catalog
+API - kept in sync by hand, not duplicated blindly.
 
 ## Known simplifications (stated plainly, not silently overclaimed)
 
@@ -178,10 +215,21 @@ trail with simulated data. Both fixed:
 
 ## Next up
 
-Remaining Phase 2: Leviathan, Blackwater, Sniper (blocked on the design/
-data-source gaps above, not effort). Phase 3: Oracle, Phoenix/Momentum/
-Fortress's full re-wiring into the quick single-strategy demo simulator
-(needs the Strategy Lab's richer multi-mode-aware simulation, not that
+Remaining: Leviathan and Oracle (blocked on a real product design
+decision, not effort or a missing data source - see "Deliberately not
+started" above). Also still open: Phoenix/Momentum/Fortress's full
+re-wiring into the quick single-strategy demo simulator (needs the
+Strategy Lab's richer multi-mode-aware simulation, not that
 single-strategy helper - historical replay through the real Backtest
-Engine already works for them today, see above), the Strategy Builder,
-Strategy Lab Monte Carlo simulation, sportsbook support.
+Engine already works for them today, see above), Strategy Lab Monte
+Carlo simulation, sportsbook support.
+
+Note: `web/capital_strategies.html` (the standalone Investment House
+browsing page referenced earlier in this doc) was deliberately removed
+by a later session - Money Management Studio's narrower official-plans
+model became the real product surface, and a competing "browse all ~20
+strategies" page was judged to contradict it. The catalog module
+(`core/capital_strategies_catalog.py`) and its read-only API
+(`api/capital_strategies_routes.py`) still exist and stay accurate, but
+new strategy work (like Blackwater/Sniper above) integrates into
+`web/risk.html`'s Money Management Studio, not a revived browse page.
