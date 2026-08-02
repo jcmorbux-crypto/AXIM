@@ -647,6 +647,29 @@ class LiveSignalPipelineTrackingTests(TradeCoordinatorTests):
         self.assertEqual(events[-1]["state"], "SKIPPED")
         self.assertIn("max_trade_amount", events[-1]["detail"])
 
+    def test_audit_trail_rejection_reason_is_readable_back_off_the_trade(self):
+        """The trade audit trail's real end-to-end contract: a rejected
+        trade's actual human reason (not just the terse "rejected:<rule>"
+        result slug) must be readable back from database.get_signal_detail
+        - see that function's own "rejection_reason" field, sourced from
+        the exact same signal_pipeline_events row the line above proves
+        gets written on every rejection."""
+        trade_coordinator.PREVIEW_ONLY = True
+        risk_manager.MAX_TRADE_AMOUNT = 0.01
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal()))
+        detail = database.get_signal_detail(result["trade_id"])
+        self.assertTrue(detail["result"].startswith("rejected:"))
+        self.assertIsNotNone(detail["rejection_reason"])
+        self.assertIn("max_trade_amount", detail["rejection_reason"])
+
+    def test_audit_trail_rejection_reason_is_none_for_a_normal_trade(self):
+        trade_coordinator.PREVIEW_ONLY = True
+        coordinator = TradeCoordinator(FakeWorkerPool(), warmup_service=None)
+        result = _run(coordinator.handle_signal(self._signal()))
+        detail = database.get_signal_detail(result["trade_id"])
+        self.assertIsNone(detail["rejection_reason"])
+
     def test_worker_pool_busy_is_tracked_skipped(self):
         trade_coordinator.PREVIEW_ONLY = False
         trade_coordinator.AUTO_EXECUTE = True
