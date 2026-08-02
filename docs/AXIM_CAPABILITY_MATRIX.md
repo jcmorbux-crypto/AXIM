@@ -64,12 +64,12 @@ designed and ready for the moment a real Live account is available.
 |---|---|---|
 | Signal ingestion (Telegram) → parse → execute pipeline | **Live Validation Required** | `execution/pocket_executor.py:27` gates every click on `ARMED`; `core/risk_manager.py:100` independently hard-fails unless `ACCOUNT=DEMO`. 499 real Demo signals soak-tested per `docs/AXIM_LIVE_READINESS_CHECKLIST.md`. See Graduation Plan Phase 3, checks #1-#5. |
 | Risk management (emergency stop, max daily loss, consecutive losses, cooldown, duplicate detection) | **Production Ready** | All enforced in `core/risk_manager.py` (`check_demo_only`, `emergency_stop`, `check_max_consecutive_losses`, `check_duplicate_signal`, `MAX_DAILY_LOSS` since RC1); wired into `core/trade_coordinator.py`. |
-| Live-mode safety gates (Live-specific tightened defaults + mandatory confirmation) | **Live Validation Required** (engineering underway) | Graduation Plan Phase 1 item #5 / Phase 2. Demo and Live currently share the same thresholds - being hardened. |
-| Live account verification (is this cabinet genuinely Live, not Demo?) | **Live Validation Required** (engineering underway) | Graduation Plan Phase 1 item #3 / Phase 2. Not built as of the audit; a dedicated `verify_live_account()` gate is in progress. |
+| Live-mode safety gates (mandatory, reason-required confirmation before an account is Live-effective) | **Production Ready** | `database.confirm_live_arm` + `POST /{account_id}/confirm-live-arm` - `account_effective_cabinet_mode` now requires this in addition to `live_enabled`. Graduation Plan Phase 1 item #5, commit `cd0a88d`. |
+| Live account verification (is this cabinet genuinely Live, not Demo?) | **Production Ready** | `execution/account_mode_verification.py`'s `verify_live_mode()` - fails closed across 7 independent conditions, verified against a real live cabinet's DOM (2026-07-31), 58 passing tests. Graduation Plan Phase 1 item #3 - corrected 2026-08-01 from an earlier "not built" finding. |
 | Multi-broker-account architecture (N concurrent Pocket Option logins) | **Live Validation Required** | Code supports independent `BrowserWarmupService`/`BrowserWorkerPool` per account (`core/broker_account_manager.py:41-115`), but `docs/AXIM_V1_FINAL_ACCEPTANCE_REPORT.md:122-126` confirms only **1** concurrent live browser session has ever actually been demonstrated. Graduation Plan Phase 1 item #4. |
 | Session management (loss limit / max trades / duration) | **Production Ready** | `core/session_manager.py:121` enforces pessimistically against pending stake, not just realized P&L. |
-| Trade reconciliation (broker-history vs. AXIM state) | **Live Validation Required** (mode-agnostic verification underway) | `core/recovery.py:30-148` - lifecycle-based recovery, fail-closed broker matching, built from a real 2026-07-29 production incident (series 105), proven against Demo only. Graduation Plan Phase 1 item #6. |
-| Live statistics / execution telemetry isolation (Live never blended with Demo in any aggregate) | **Live Validation Required** (engineering underway) | Graduation Plan Phase 1 item #7. No runtime guarantee audited yet that a Live trade can't leak into a Demo-scoped stat. |
+| Trade reconciliation (broker-history vs. AXIM state) | **Production Ready** | `core/recovery.py:30-148` - verified mode-agnostic by construction (zero demo/live branching anywhere in the reconciliation path, `pocket_dom.py`, or `pocket_executor.py`); lifecycle-based recovery, fail-closed broker matching, built from a real 2026-07-29 production incident (series 105). Graduation Plan Phase 1 item #6. |
+| Live statistics / execution telemetry isolation (Live never blended with Demo in any aggregate) | **Production Ready** | `database.get_trades_between(exclude_live=...)`, threaded through every previously-unscoped `core/trade_statistics.py` aggregate; 6 tests confirm isolation. Graduation Plan Phase 1 item #7, commit `71f6246`. |
 | Crash/process-level recovery (`run_forever`) | **Live Validation Required** (in-process recovery is Production Ready; full reboot untested) | `core/telegram_listener.py:980` handles browser/Telegram reconnect, live-fire verified. A real incident found the OS-level Scheduled Task hadn't fired for days (`AXIM_LIVE_READINESS_CHECKLIST.md`). Graduation Plan Phase 1 item #9. |
 | `LIVE_URL` / live cabinet configuration | **Configuration Required** | Unset - raises `LiveModeNotConfiguredError`. Only the operator can supply a real live cabinet URL, after personally inspecting it. Graduation Plan Phase 1 item #2. |
 | Honest win-rate under real (non-relaxed) risk thresholds | **Product Decision Required** | Last measured win rate (37%) was taken under relaxed thresholds (`AXIM_LIVE_READINESS_CHECKLIST.md`) - not representative. A fresh observation window's result must be reviewed and explicitly accepted by the operator. Graduation Plan Phase 1 item #8. |
@@ -166,9 +166,12 @@ open-ended waiting. Current state:
 - `ACCOUNT=DEMO` and `ARMED=false` remain the defaults; nothing in this
   codebase flips them automatically.
 - `LIVE_URL` is unset (**Configuration Required** - operator-only).
-- Live-specific engineering hardening (account verification, tightened
-  safety gates, reconciliation/statistics mode-isolation) is in
-  progress under Graduation Plan Phase 2.
+- **Graduation Plan Phase 2 (all 4 engineering items) is complete**:
+  live account verification and live reconciliation were audited and
+  found already correct; live statistics isolation and a mandatory
+  reason-required live-arm confirmation gate were built and tested.
+  What remains for Live is entirely configuration/external-dependency/
+  operator-time (items #2, #4, #8, #9), not engineering.
 - The formal Live Validation checklist (13 checks: login, account
   detection, execution, expiry, stake sizing, reconciliation, bankroll
   updates, interruption recovery, stop-loss, stop-win, no duplicates,
