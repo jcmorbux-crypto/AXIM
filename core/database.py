@@ -463,6 +463,85 @@ def initialize_database():
     );
     """)
 
+    # "Flat 10% Session Compounding - One Chase" (temporary test strategy,
+    # 2026-08-02 multi-provider Demo validation) - a genuinely SEPARATE
+    # table from trade_series above, not a reuse of it. Both autoincrement
+    # from 1, so storing a chase_series id in signals.series_id (the
+    # column trade_series_engine.py's own trade.closed subscriber reads)
+    # would risk a real collision: a closing chase entry could resolve to
+    # an unrelated trade_series row that happens to share the same
+    # numeric id, and Martin Trader's production subscriber would act on
+    # it incorrectly. This mechanism instead links back to its own
+    # entries via entry_1_trade_id/entry_2_trade_id (see core/
+    # chase_series_engine.py), never touching signals.series_id at all -
+    # fully isolated from trade_series_engine.py's schema and event
+    # handling, by construction, not by convention.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS chase_series (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        fund_id INTEGER,
+        test_session_id INTEGER,
+        stake REAL,
+        asset TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        expiry TEXT,
+        max_entries INTEGER NOT NULL DEFAULT 2,
+        current_entry_number INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        entry_1_trade_id INTEGER,
+        entry_2_trade_id INTEGER,
+        result TEXT,
+        net_profit_loss REAL,
+        source_message_id INTEGER,
+        raw_message TEXT,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT
+    );
+    """)
+
+    # Entries a provider's own signal published beyond what this test
+    # will ever execute (max_entries=2) - tracked, never submitted to
+    # Pocket Option, never deducted from the virtual fund. hypothetical_
+    # result is honestly nullable: AXIM has no capability today to read a
+    # live price and determine what an un-placed trade's outcome would
+    # have been without actually placing it - see chase_series_engine.py's
+    # module docstring. Recorded as real, visible data rather than
+    # silently dropped.
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS chase_watch_only_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        series_id INTEGER NOT NULL,
+        entry_number INTEGER NOT NULL,
+        asset TEXT,
+        direction TEXT,
+        scheduled_time TEXT,
+        hypothetical_result TEXT,
+        created_at TEXT NOT NULL
+    );
+    """)
+
+    # A provider's own $100 virtual-fund "session" boundary, per the
+    # test's "flat betting within a session, recalculate only between
+    # completed sessions" rule (2026-08-02) - deliberately NOT the same
+    # thing as a real trading_sessions row: AXIM allows only one ACTIVE
+    # trading_session per broker_account at a time, and all 4 test
+    # providers share the one real connected Demo account, so they
+    # cannot each have their own concurrently-active Fund-attached
+    # session. This is a lightweight, provider-scoped bookkeeping
+    # boundary instead - stake is fixed for the life of one open row,
+    # recomputed only when a new one is opened (core/chase_series_engine.py).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS chase_test_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        opening_virtual_fund REAL NOT NULL,
+        stake REAL NOT NULL,
+        started_at TEXT NOT NULL,
+        ended_at TEXT
+    );
+    """)
+
     # UI-managed state (api/, core/telegram_channels.py,
     # core/telegram_listener.py) - deliberately separate from the
     # signals/recovery_events tables above, which are trade history, not
@@ -2364,6 +2443,276 @@ def get_trade_series_summary(channel_id=None, since=None):
         "net_profit_loss": round(net_pl, 2),
         "per_signal": per_signal,
     }
+
+
+# ---------------------------------------------------------------------
+# "Flat 10% Session Compounding - One Chase" - temporary test strategy
+# (2026-08-02 multi-provider Demo validation, core/chase_series_engine.py).
+# A genuinely separate mechanism from trade_series above - see the
+# chase_series table's own migration comment for why it isn't a reuse of
+# trade_series's schema/id space.
+# ---------------------------------------------------------------------
+
+@timed("database")
+def create_chase_series(channel_id, asset, direction, expiry, fund_id=None, test_session_id=None,
+                         stake=None, max_entries=2, source_message_id=None, raw_message=None):
+    conn = get_connection()
+    cursor = conn.execute(
+        """INSERT INTO chase_series
+           (channel_id, fund_id, test_session_id, stake, asset, direction, expiry,
+            max_entries, current_entry_number, status, source_message_id, raw_message, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', ?, ?, ?)""",
+        (channel_id, fund_id, test_session_id, stake, asset, direction, expiry,
+         max_entries, source_message_id, raw_message, datetime.now().isoformat()),
+    )
+    series_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return series_id
+
+
+def _chase_series_row_to_dict(row):
+    return dict(row) if row is not None else None
+
+
+@timed("database")
+def get_chase_series(series_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM chase_series WHERE id = ?", (series_id,)).fetchone()
+    conn.close()
+    return _chase_series_row_to_dict(row)
+
+
+@timed("database")
+def get_chase_series_by_message(channel_id, source_message_id):
+    """Idempotency guard, same role as get_trade_series_by_message: a
+    redelivered Telegram event for a message this channel already turned
+    into a chase series must return that SAME series_id, never start a
+    second one. None (no source_message_id, or no existing row) means
+    safe to create."""
+    if source_message_id is None:
+        return None
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM chase_series WHERE channel_id = ? AND source_message_id = ?",
+        (channel_id, source_message_id),
+    ).fetchone()
+    conn.close()
+    return _chase_series_row_to_dict(row)
+
+
+@timed("database")
+def get_chase_series_by_trade_id(trade_id):
+    """Reverse lookup for the trade.closed event subscriber - given a
+    just-closed trade_id, find the chase_series it belongs to (as either
+    entry 1 or entry 2), or None if this trade has nothing to do with
+    this mechanism (the overwhelming majority of trades)."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM chase_series WHERE entry_1_trade_id = ? OR entry_2_trade_id = ?",
+        (trade_id, trade_id),
+    ).fetchone()
+    conn.close()
+    return _chase_series_row_to_dict(row)
+
+
+@timed("database")
+def advance_chase_series(series_id, current_entry_number, status, entry_trade_id=None,
+                          result=None, net_profit_loss=None):
+    """Mirrors advance_trade_series's status vocabulary where it applies:
+    'pending' (created, entry 1 not yet fired), 'active' (an entry fired,
+    outcome not yet known), 'won' (a winning entry closed the series -
+    terminal), 'lost_exhausted' (entry 2 resolved without a win, or entry
+    1 lost and there is no entry 2 to fire - terminal), 'error' (a real
+    execution failure - terminal). entry_trade_id, when given, is written
+    to entry_1_trade_id or entry_2_trade_id based on current_entry_number
+    - never overwritten once set, so the series' own execution history
+    stays intact."""
+    terminal = status in ("won", "lost_exhausted", "error")
+    conn = get_connection()
+    set_clauses = ["current_entry_number = ?", "status = ?"]
+    params = [current_entry_number, status]
+    if entry_trade_id is not None:
+        column = "entry_1_trade_id" if current_entry_number == 1 else "entry_2_trade_id"
+        set_clauses.append(f"{column} = ?")
+        params.append(entry_trade_id)
+    if result is not None:
+        set_clauses.append("result = ?")
+        params.append(result)
+    if net_profit_loss is not None:
+        set_clauses.append("net_profit_loss = ?")
+        params.append(net_profit_loss)
+    if terminal:
+        set_clauses.append("resolved_at = ?")
+        params.append(datetime.now().isoformat())
+    params.append(series_id)
+    conn.execute(f"UPDATE chase_series SET {', '.join(set_clauses)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def record_chase_watch_only_entries(series_id, entries):
+    """entries: list of {"entry_number", "asset", "direction",
+    "scheduled_time"} dicts - the provider's own published entries beyond
+    what this test ever executes. hypothetical_result is always written
+    None here (never fabricated) - see chase_watch_only_entries's own
+    migration comment for why AXIM cannot currently determine what an
+    un-placed trade's outcome would have been."""
+    if not entries:
+        return
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    conn.executemany(
+        """INSERT INTO chase_watch_only_entries
+           (series_id, entry_number, asset, direction, scheduled_time, hypothetical_result, created_at)
+           VALUES (?, ?, ?, ?, ?, NULL, ?)""",
+        [(series_id, e["entry_number"], e.get("asset"), e.get("direction"), e.get("scheduled_time"), now)
+         for e in entries],
+    )
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def list_chase_watch_only_entries(series_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM chase_watch_only_entries WHERE series_id = ? ORDER BY entry_number", (series_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@timed("database")
+def get_chase_series_summary(channel_id=None, since=None):
+    """Provider-scoped report for the final validation output - executed
+    entries/wins/losses/P&L come from real signals rows (entry_1_trade_id/
+    entry_2_trade_id), watch-only entries are reported completely
+    separately and never folded into net_profit_loss, per the explicit
+    "the real virtual-fund balance must be calculated only from trades
+    AXIM actually submitted" requirement."""
+    conn = get_connection()
+    where = []
+    params = []
+    if channel_id is not None:
+        where.append("channel_id = ?")
+        params.append(channel_id)
+    if since is not None:
+        where.append("created_at >= ?")
+        params.append(since)
+    clause = f"WHERE {' AND '.join(where)}" if where else ""
+    series_rows = conn.execute(f"SELECT * FROM chase_series {clause} ORDER BY id", params).fetchall()
+    series_ids = [row["id"] for row in series_rows]
+    watch_only_by_series = {}
+    if series_ids:
+        placeholders = ", ".join("?" for _ in series_ids)
+        wo_rows = conn.execute(
+            f"SELECT * FROM chase_watch_only_entries WHERE series_id IN ({placeholders}) ORDER BY series_id, entry_number",
+            series_ids,
+        ).fetchall()
+        for row in wo_rows:
+            watch_only_by_series.setdefault(row["series_id"], []).append(dict(row))
+    conn.close()
+
+    per_signal = []
+    wins = losses = completed = 0
+    total_executed_entries = 0
+    net_pl = 0.0
+    total_watch_only = 0
+    for row in series_rows:
+        d = dict(row)
+        total_executed_entries += d["current_entry_number"]
+        if d["status"] in ("won", "lost_exhausted"):
+            completed += 1
+            if d["status"] == "won":
+                wins += 1
+            else:
+                losses += 1
+        if d["net_profit_loss"]:
+            net_pl += d["net_profit_loss"]
+        watch_only = watch_only_by_series.get(d["id"], [])
+        total_watch_only += len(watch_only)
+        per_signal.append({
+            "series_id": d["id"], "asset": d["asset"], "direction": d["direction"], "status": d["status"],
+            "executed_entries": d["current_entry_number"], "net_profit_loss": d["net_profit_loss"],
+            "watch_only_entries": watch_only, "created_at": d["created_at"], "resolved_at": d["resolved_at"],
+        })
+
+    return {
+        "signals_received": len(series_rows),
+        "series_completed": completed,
+        "wins": wins,
+        "losses": losses,
+        "win_rate_by_signal": round(wins / completed * 100, 1) if completed else None,
+        "total_executed_entries": total_executed_entries,
+        "total_watch_only_entries": total_watch_only,
+        "net_profit_loss": round(net_pl, 2),
+        "per_signal": per_signal,
+    }
+
+
+@timed("database")
+def get_open_chase_test_session(channel_id):
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT * FROM chase_test_sessions WHERE channel_id = ? AND ended_at IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (channel_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def chase_channel_lifetime_net_pl(channel_id):
+    """Sum of every completed chase_series' own net_profit_loss for this
+    channel, across every session that has ever run - the running
+    "virtual fund" total (100 + this) is recomputed from this real
+    number, never a separately-maintained running balance that could
+    drift out of sync with the underlying trades."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT COALESCE(SUM(net_profit_loss), 0) AS total FROM chase_series "
+        "WHERE channel_id = ? AND status IN ('won', 'lost_exhausted')",
+        (channel_id,),
+    ).fetchone()
+    conn.close()
+    return row["total"] or 0.0
+
+
+@timed("database")
+def start_chase_test_session(channel_id, opening_virtual_fund, stake):
+    """Ends any currently-open session for this channel (defensive - the
+    engine's own get_or_start already checks first, this is the atomic
+    enforcement) and opens a new one with the given, already-computed
+    opening balance/stake. Returns the new session's id."""
+    conn = get_connection()
+    now = datetime.now().isoformat()
+    conn.execute(
+        "UPDATE chase_test_sessions SET ended_at = ? WHERE channel_id = ? AND ended_at IS NULL",
+        (now, channel_id),
+    )
+    cursor = conn.execute(
+        "INSERT INTO chase_test_sessions (channel_id, opening_virtual_fund, stake, started_at) "
+        "VALUES (?, ?, ?, ?)",
+        (channel_id, opening_virtual_fund, stake, now),
+    )
+    session_id = cursor.lastrowid
+    conn.commit()
+    conn.close()
+    return session_id
+
+
+@timed("database")
+def end_chase_test_session(channel_id):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE chase_test_sessions SET ended_at = ? WHERE channel_id = ? AND ended_at IS NULL",
+        (datetime.now().isoformat(), channel_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 @timed("database")
