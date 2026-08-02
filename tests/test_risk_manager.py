@@ -1,3 +1,4 @@
+import json
 import sys
 import tempfile
 import unittest
@@ -719,6 +720,88 @@ class DiagnoseSettingsTests(unittest.TestCase):
     def test_negative_duplicate_window_is_warning(self):
         findings = self._findings_by_key({"duplicate_signal_window_seconds": -10})
         self.assertEqual(findings["duplicate_signal_window_seconds"]["severity"], "warning")
+
+
+class SniperQualificationTests(unittest.TestCase):
+    """Sniper (tm) - core/risk_manager.check_sniper_qualification, the
+    hard execution gate driven entirely by core/provider_scorecard.py's
+    real, measurable per-provider stats (2026-08-01 product decision:
+    never a fabricated confidence score)."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def _setup_session(self, **sniper_overrides):
+        database.upsert_channel(chat_id=555, username="prov", title="Provider", kind="channel")
+        channel_id = database.list_channels()[0]["id"]
+        profile_id = database.create_risk_profile("Sniper Test")
+        database.update_sniper_settings(profile_id, enabled=True, **sniper_overrides)
+        session_id = database.start_trading_session(
+            "Sniper session", [channel_id], "demo", risk_profile_id=profile_id,
+        )
+        return session_id, channel_id, profile_id
+
+    def _closed_trade(self, channel_id, result, profit_loss, payout=90):
+        trade_id = database.record_signal_received(
+            {"asset": "EUR/USD OTC", "direction": "BUY", "expiry": "1 Minute", "raw_message": "t"},
+            channel_id=channel_id,
+        )
+        database.update_trade_status(
+            trade_id, TradeStatus.RESULT_WIN, result=result, profit_loss=profit_loss, payout=payout,
+        )
+        return trade_id
+
+    def test_disabled_is_a_noop(self):
+        session_id, channel_id, profile_id = self._setup_session()
+        database.update_sniper_settings(profile_id, enabled=False)
+        risk_manager.check_sniper_qualification(session_id, channel_id, "EUR/USD OTC", 1.0)
+
+    def test_no_session_id_is_a_noop(self):
+        risk_manager.check_sniper_qualification(None, 5, "EUR/USD OTC", 1.0)
+
+    def test_no_channel_id_is_a_noop(self):
+        session_id, _channel_id, _profile_id = self._setup_session()
+        risk_manager.check_sniper_qualification(session_id, None, "EUR/USD OTC", 1.0)
+
+    def test_rejects_when_no_track_record_yet(self):
+        session_id, channel_id, _profile_id = self._setup_session()
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_sniper_qualification(session_id, channel_id, "EUR/USD OTC", 1.0)
+        self.assertEqual(ctx.exception.rule, "sniper_reject")
+        self.assertIn("no resolved trade history", ctx.exception.reason)
+
+    def test_passes_once_real_history_clears_every_threshold(self):
+        session_id, channel_id, _profile_id = self._setup_session(
+            min_sample_size=2, min_win_rate=0, min_profit_factor=0, require_positive_ev=0,
+            min_payout_percent=0, max_signal_age_seconds=999, max_consecutive_losses=100,
+        )
+        # profit_factor is None (not "infinitely good") with zero losses in
+        # the history - a real loss must be present for a numeric profit
+        # factor to exist at all (see capital_strategies.sniper_qualifies).
+        self._closed_trade(channel_id, "win", 9.0, payout=90)
+        self._closed_trade(channel_id, "loss", -10.0, payout=90)
+        risk_manager.check_sniper_qualification(session_id, channel_id, "EUR/USD OTC", 1.0)  # does not raise
+
+    def test_rejects_on_stale_signal_age_before_touching_scorecard(self):
+        session_id, channel_id, _profile_id = self._setup_session(max_signal_age_seconds=5)
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_sniper_qualification(session_id, channel_id, "EUR/USD OTC", 10.0)
+        self.assertEqual(ctx.exception.rule, "sniper_reject")
+        self.assertIn("signal age", ctx.exception.reason)
+
+    def test_rejects_blacklisted_asset(self):
+        session_id, channel_id, profile_id = self._setup_session()
+        database.update_sniper_settings(profile_id, blacklisted_assets_json=json.dumps(["EUR/USD OTC"]))
+        with self.assertRaises(risk_manager.RiskViolation) as ctx:
+            risk_manager.check_sniper_qualification(session_id, channel_id, "EUR/USD OTC", 1.0)
+        self.assertIn("blacklisted", ctx.exception.reason)
 
 
 if __name__ == "__main__":

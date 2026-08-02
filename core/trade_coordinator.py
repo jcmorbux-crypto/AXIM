@@ -92,6 +92,7 @@ class TradeCoordinator:
         """
         # Stage: Validation (freshness)
         stage_t0 = time.monotonic()
+        age_seconds = None
         if sent_at is not None:
             now = datetime.now(sent_at.tzinfo) if sent_at.tzinfo else datetime.now()
             age_seconds = (now - sent_at).total_seconds()
@@ -154,6 +155,20 @@ class TradeCoordinator:
             timeline.persist(database)
             return "rejected", self._reject(trade_id, violation, time.monotonic() - stage_t0)
         self._log_stage(trade_id, "duplicate_detection", "passed", time.monotonic() - stage_t0)
+
+        # Stage: Sniper (tm) qualification - a hard execution gate, no-op
+        # unless this session's active profile has sniper_settings.enabled
+        # (see risk_manager.check_sniper_qualification's own docstring).
+        # Placed last, after every cheaper/broader check has already
+        # passed, since it's the one stage that costs a real provider_
+        # scorecard.get_scorecard() database read.
+        stage_t0 = time.monotonic()
+        try:
+            risk_manager.check_sniper_qualification(session_id, channel_id, asset, age_seconds)
+        except risk_manager.RiskViolation as violation:
+            timeline.persist(database)
+            return "rejected", self._reject(trade_id, violation, time.monotonic() - stage_t0)
+        self._log_stage(trade_id, "sniper_qualification", "passed", time.monotonic() - stage_t0)
         timeline.mark("risk_evaluated")
         return "passed", None
 
@@ -260,7 +275,9 @@ class TradeCoordinator:
                 if fixed_stake is not None:
                     amount = fixed_stake
                 else:
-                    amount = await asyncio.to_thread(risk_engine.compute_position_size, session_id, TRADE_AMOUNT)
+                    amount = await asyncio.to_thread(
+                        risk_engine.compute_position_size, session_id, TRADE_AMOUNT, True, channel_id,
+                    )
             except (
                 risk_engine.CashflowTargetReached, risk_engine.SentinelSuspended,
                 risk_engine.FortressPrincipalProtected, risk_engine.EmpireChallengeOver,

@@ -281,6 +281,7 @@ async function openDetail(tradeId) {
       ${resultIsLong && developerModeEnabled
         ? `<pre class="result-detail">${escapeHtml(t.result)}</pre>`
         : `<div class="stat-value">${escapeHtml(humanizeResult(t.result))}</div>`}
+      ${t.rejection_reason ? `<div class="stat-label" style="margin-top:8px; margin-bottom:4px;">Qualification reason</div><div class="stat-value">${escapeHtml(t.rejection_reason)}</div>` : ""}
     `;
 
     const shotsEl = document.getElementById("detail-screenshots");

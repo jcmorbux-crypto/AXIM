@@ -96,24 +96,65 @@ STRATEGIES = {
         "philosophy": "Protect capital, operate through phases, deploy larger amounts only during designated Pay Opportunities - never unlimited doubling.",
         "tagline": "Stay submerged until the opportunity is large enough.",
         "risk_level": "Moderate to Aggressive", "implemented": False, "phase": 2,
+        # 2026-08-01 product decision: AXIM only ever sizes off REAL,
+        # measurable statistics (see core/provider_scorecard.py) - never
+        # a fabricated judgment call. "Pay Opportunity" is not currently
+        # a defined, measurable concept anywhere in AXIM - it would need
+        # a precise, product-owner-specified rule for exactly which real
+        # signal/provider/market conditions constitute one (e.g. some
+        # combination of provider_scorecard fields plus a threshold?
+        # Asset-specific? Time-of-day? Signal-language-based?) before any
+        # code can honestly implement "deploy larger amounts only during
+        # a Pay Opportunity" - inventing that rule here would be exactly
+        # the kind of fabricated scoring system the product decision
+        # forbids. Definition Required: never activatable until this
+        # exists.
+        "definition_required": True,
+        "definition_required_reason": (
+            "\"Pay Opportunity\" has no defined, measurable trigger - needs a precise product "
+            "specification of which real, already-collected AXIM statistics (see the Provider "
+            "Scorecard fields Blackwater/Sniper already use: win rate, sample size, profit factor, "
+            "payout, rolling performance, drawdown, streak, signal age) combine to mark a signal as "
+            "a qualifying \"Pay Opportunity\", and what the phase structure itself (how phases "
+            "advance/reset) actually is. No AI/fabricated confidence score may be substituted."
+        ),
     },
     "blackwater": {
         "name": "Blackwater", "house": "alpha", "formerly": "Black Whale Club",
         "philosophy": "Ignore most signals; execute only on strict high-conviction conditions. Increase allocation only for qualified premium opportunities. This is not Martingale - never chase losses.",
         "tagline": "We do not trade often. We trade when the price is wrong.",
-        "risk_level": "Aggressive", "implemented": False, "phase": 2,
+        "risk_level": "Aggressive", "implemented": True, "phase": 2,
+        "sizing_mode": "blackwater",
     },
     "sniper": {
         "name": "Sniper", "house": "alpha", "formerly": None,
         "philosophy": "Execute only signals passing every selected filter - precision over maximum deployment.",
         "tagline": "One shot. No hesitation.",
-        "risk_level": "Moderate", "implemented": False, "phase": 2,
+        "risk_level": "Moderate", "implemented": True, "phase": 2,
     },
     "oracle": {
         "name": "Oracle", "house": "alpha", "formerly": None,
         "philosophy": "Adaptive allocation engine - a 0-100 AXIM Confidence Score drives deployment band, with every recommendation showing the reasons behind it.",
         "tagline": "Intelligence decides the size. Discipline controls the risk.",
         "risk_level": "Adaptive", "implemented": False, "phase": 3,
+        # Same 2026-08-01 decision as Leviathan above, even more directly:
+        # Oracle's own catalog description names a "0-100 AXIM Confidence
+        # Score" - that IS the fabricated AI confidence score the product
+        # decision explicitly forbids inventing. Definition Required until
+        # a real product definition replaces it with a deterministic
+        # formula over AXIM's own already-measured statistics (same
+        # Provider Scorecard fields Blackwater/Sniper use), with every
+        # "recommendation" traceable to real numbers, not a black-box score.
+        "definition_required": True,
+        "definition_required_reason": (
+            "The catalog's own \"0-100 AXIM Confidence Score\" concept is exactly the fabricated "
+            "AI/confidence scoring the 2026-08-01 product decision forbids. Needs a replacement "
+            "product definition: a deterministic formula over real, already-collected Provider "
+            "Scorecard statistics (win rate, sample size, profit factor, payout, rolling "
+            "performance, drawdown, streak, signal age) that maps to a deployment band, with every "
+            "recommendation showing exactly which real numbers produced it - no learned/opaque "
+            "scoring model, no invented weighting scheme without explicit product sign-off."
+        ),
     },
     "quantedge": {
         "name": "QuantEdge", "house": "alpha", "formerly": "Kelly / Fractional Kelly",

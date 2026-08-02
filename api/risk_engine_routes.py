@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api/risk-profiles", tags=["risk-engine"])
 # so they don't belong in this set. "daily_compounding" (Money Management
 # Studio's 5th official strategy) is a real sizing mode of its own too -
 # see core/daily_compounding.py.
-_VALID_SIZING_MODES = {"fixed", "percent", "dynamic", "kelly", "apex_ascension", "empire", "daily_compounding"}
+_VALID_SIZING_MODES = {"fixed", "percent", "dynamic", "kelly", "apex_ascension", "empire", "daily_compounding", "blackwater"}
 
 
 class ProfileCreate(BaseModel):
@@ -189,6 +189,35 @@ class DailyCompoundingUpdate(BaseModel):
     vault_percent_on_target: Optional[float] = None
     stop_after_target: Optional[bool] = None
     stop_after_loss_limit: Optional[bool] = None
+
+
+class SniperUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    min_win_rate: Optional[float] = None
+    min_sample_size: Optional[int] = None
+    min_profit_factor: Optional[float] = None
+    require_positive_ev: Optional[bool] = None
+    min_payout_percent: Optional[float] = None
+    max_signal_age_seconds: Optional[float] = None
+    max_consecutive_losses: Optional[int] = None
+    blacklisted_assets_json: Optional[str] = None
+
+
+class BlackwaterUpdate(BaseModel):
+    enabled: Optional[bool] = None
+    base_risk_percent: Optional[float] = None
+    premium_risk_percent: Optional[float] = None
+    premium_min_win_rate: Optional[float] = None
+    premium_min_sample_size: Optional[int] = None
+    premium_min_profit_factor: Optional[float] = None
+    elite_risk_percent: Optional[float] = None
+    elite_min_win_rate: Optional[float] = None
+    elite_min_sample_size: Optional[int] = None
+    elite_min_profit_factor: Optional[float] = None
+    institutional_risk_percent: Optional[float] = None
+    institutional_min_win_rate: Optional[float] = None
+    institutional_min_sample_size: Optional[int] = None
+    institutional_min_profit_factor: Optional[float] = None
 
 
 def _get_or_404(profile_id):
@@ -420,6 +449,22 @@ def update_daily_compounding(profile_id: int, body: DailyCompoundingUpdate, user
             raise HTTPException(status_code=400, detail=f"unknown timezone {fields['timezone']!r}")
 
     database.update_daily_compounding_settings(profile_id, **fields)
+    return database.get_risk_profile(profile_id)
+
+
+@router.patch("/{profile_id}/sniper")
+def update_sniper(profile_id: int, body: SniperUpdate, user=Depends(require_admin)):
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    database.update_sniper_settings(profile_id, **body.model_dump(exclude_unset=True))
+    return database.get_risk_profile(profile_id)
+
+
+@router.patch("/{profile_id}/blackwater")
+def update_blackwater(profile_id: int, body: BlackwaterUpdate, user=Depends(require_admin)):
+    profile = _get_or_404(profile_id)
+    _reject_if_template(profile)
+    database.update_blackwater_settings(profile_id, **body.model_dump(exclude_unset=True))
     return database.get_risk_profile(profile_id)
 
 

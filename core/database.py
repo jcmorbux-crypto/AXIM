@@ -1189,6 +1189,56 @@ def initialize_database():
     );
     """)
 
+    # Sniper (tm) - hard execution gate, 2026-08-01 product decision:
+    # driven entirely by a provider's own real, measurable trade history
+    # (core/provider_scorecard.py), never a fabricated confidence score -
+    # every threshold below is operator-editable, no hard-coded values.
+    # Every configured threshold must pass or the signal is rejected
+    # before execution (core/risk_manager.check_sniper_qualification).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS sniper_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        min_win_rate REAL DEFAULT 70.0,
+        min_sample_size INTEGER DEFAULT 200,
+        min_profit_factor REAL DEFAULT 1.0,
+        require_positive_ev INTEGER DEFAULT 1,
+        min_payout_percent REAL DEFAULT 90.0,
+        max_signal_age_seconds REAL DEFAULT 10.0,
+        max_consecutive_losses INTEGER DEFAULT 3,
+        blacklisted_assets_json TEXT DEFAULT '[]'
+    );
+    """)
+
+    # Blackwater (tm) - tiered stake allocation, same 2026-08-01 real-
+    # stats-only decision as Sniper above. Does not reject a trade - it
+    # scales the stake up as a percent of current bankroll (same family
+    # as Titan Allocation's sizing_mode='dynamic') once a provider's own
+    # measured performance clears a tier's thresholds. Never overrides
+    # risk_manager.check_max_trade_amount, which still runs after sizing
+    # regardless of tier (core/capital_strategies.blackwater_deployment).
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS blackwater_settings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        risk_profile_id INTEGER UNIQUE NOT NULL,
+        enabled INTEGER DEFAULT 0,
+        base_risk_percent REAL DEFAULT 2.0,
+        premium_risk_percent REAL DEFAULT 3.0,
+        premium_min_win_rate REAL DEFAULT 65.0,
+        premium_min_sample_size INTEGER DEFAULT 100,
+        premium_min_profit_factor REAL DEFAULT 1.1,
+        elite_risk_percent REAL DEFAULT 5.0,
+        elite_min_win_rate REAL DEFAULT 72.0,
+        elite_min_sample_size INTEGER DEFAULT 200,
+        elite_min_profit_factor REAL DEFAULT 1.3,
+        institutional_risk_percent REAL DEFAULT 7.0,
+        institutional_min_win_rate REAL DEFAULT 78.0,
+        institutional_min_sample_size INTEGER DEFAULT 400,
+        institutional_min_profit_factor REAL DEFAULT 1.5
+    );
+    """)
+
     # Backfill: every risk_profile is supposed to own exactly one row in
     # each of the 10 tables above (create_risk_profile inserts all 10
     # together) - but any profile created before a given table existed
@@ -1209,7 +1259,7 @@ def initialize_database():
         "martingale_settings", "compounding_settings", "profit_vault_settings",
         "apex_ascension_settings", "drawdown_protection_settings", "cashflow_settings",
         "strike_settings", "momentum_settings", "fortress_settings", "empire_settings",
-        "daily_compounding_settings",
+        "daily_compounding_settings", "sniper_settings", "blackwater_settings",
     ):
         conn.execute(f"""
             INSERT INTO {settings_table} (risk_profile_id)
@@ -2796,6 +2846,23 @@ def get_signal_detail(trade_id):
         detail["session"] = get_trading_session(detail["session_id"])
     else:
         detail["session"] = None
+    # Every risk_manager/session_manager rejection (Sniper's included -
+    # core/risk_manager.check_sniper_qualification) already writes its
+    # real "<rule>: <human reason>" text (never a fabricated summary) to
+    # signal_pipeline_events via trade_coordinator._reject - result
+    # itself only ever stores the terse "rejected:<rule>" slug, so
+    # without this the actual qualification reason (e.g. "win rate 60%
+    # below required 70%") was write-only, never read back anywhere.
+    # Last such event wins - a signal can only be rejected once, but this
+    # stays correct even if that ever changes.
+    if (detail["result"] or "").startswith("rejected:") or (detail["result"] or "").startswith("ignored:") or (detail["result"] or "").startswith("skipped:"):
+        rejection_detail = None
+        for event in list_pipeline_events_for_signal(detail["id"]):
+            if event["detail"]:
+                rejection_detail = event["detail"]
+        detail["rejection_reason"] = rejection_detail
+    else:
+        detail["rejection_reason"] = None
     return detail
 
 
@@ -2998,6 +3065,43 @@ def get_trades_between(start_iso, end_iso, closed_only=False, fund_id=None):
         """, (start_iso, end_iso) + fund_params).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+@timed("database")
+def get_channel_closed_trades(channel_id):
+    """Oldest-first resolved (win/loss/draw) trades for one provider/
+    channel - the raw feed for core/provider_scorecard.py's real,
+    measurable per-provider stats (win rate, profit factor, drawdown,
+    streaks, rolling windows). No channel-scoped trade query existed
+    before this (get_trades_between/get_recent_results above have no
+    channel_id param - they scope by fund_id/session_id/broker_account_id,
+    a genuinely different axis)."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM signals WHERE channel_id = ? AND result IN ('win', 'loss', 'draw') ORDER BY id ASC",
+        (channel_id,),
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
+@timed("database")
+def get_channel_signal_counts(channel_id):
+    """Total signals received from one channel vs how many a risk rule
+    rejected/ignored/skipped - the real data behind Sniper/Blackwater's
+    'signal rejection rate' stat. trade_statistics.signals_rejected_count/
+    signals_ignored_count (core/trade_statistics.py) already count this
+    exact result-prefix shape, but only globally - no channel_id param."""
+    conn = get_connection()
+    rows = conn.execute("SELECT result FROM signals WHERE channel_id = ?", (channel_id,)).fetchall()
+    conn.close()
+    total = len(rows)
+    rejected = sum(
+        1 for r in rows
+        if r["result"] and (r["result"].startswith("rejected:") or r["result"].startswith("ignored:")
+                             or r["result"].startswith("skipped:"))
+    )
+    return {"total": total, "rejected": rejected}
 
 
 @timed("database")
@@ -4761,6 +4865,18 @@ _DAILY_COMPOUNDING_FIELDS = {
     "consecutive_loss_stop", "vault_enabled", "vault_percent_on_target",
     "stop_after_target", "stop_after_loss_limit",
 }
+_SNIPER_FIELDS = {
+    "enabled", "min_win_rate", "min_sample_size", "min_profit_factor",
+    "require_positive_ev", "min_payout_percent", "max_signal_age_seconds",
+    "max_consecutive_losses", "blacklisted_assets_json",
+}
+_BLACKWATER_FIELDS = {
+    "enabled", "base_risk_percent",
+    "premium_risk_percent", "premium_min_win_rate", "premium_min_sample_size", "premium_min_profit_factor",
+    "elite_risk_percent", "elite_min_win_rate", "elite_min_sample_size", "elite_min_profit_factor",
+    "institutional_risk_percent", "institutional_min_win_rate", "institutional_min_sample_size",
+    "institutional_min_profit_factor",
+}
 
 
 def _risk_profile_row_to_dict(row):
@@ -4776,6 +4892,8 @@ def _risk_profile_row_to_dict(row):
     d["fortress"] = get_fortress_settings(d["id"])
     d["empire"] = get_empire_settings(d["id"])
     d["daily_compounding"] = get_daily_compounding_settings(d["id"])
+    d["sniper"] = get_sniper_settings(d["id"])
+    d["blackwater"] = get_blackwater_settings(d["id"])
     return d
 
 
@@ -4802,6 +4920,8 @@ def create_risk_profile(name, is_template=False, description=None, **fields):
     conn.execute("INSERT INTO fortress_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.execute("INSERT INTO empire_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.execute("INSERT INTO daily_compounding_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO sniper_settings (risk_profile_id) VALUES (?)", (profile_id,))
+    conn.execute("INSERT INTO blackwater_settings (risk_profile_id) VALUES (?)", (profile_id,))
     conn.commit()
     conn.close()
     return profile_id
@@ -4861,6 +4981,8 @@ def delete_risk_profile(profile_id):
     conn.execute("DELETE FROM fortress_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM empire_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM daily_compounding_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM sniper_settings WHERE risk_profile_id = ?", (profile_id,))
+    conn.execute("DELETE FROM blackwater_settings WHERE risk_profile_id = ?", (profile_id,))
     conn.execute("DELETE FROM risk_profiles WHERE id = ?", (profile_id,))
     conn.commit()
     conn.close()
@@ -4918,6 +5040,8 @@ def create_risk_profile_from_snapshot(new_name, snapshot):
     update_fortress_settings(new_id, **{k: snapshot["fortress"][k] for k in _FORTRESS_FIELDS})
     update_empire_settings(new_id, **{k: snapshot["empire"][k] for k in _EMPIRE_FIELDS})
     update_daily_compounding_settings(new_id, **{k: snapshot["daily_compounding"][k] for k in _DAILY_COMPOUNDING_FIELDS})
+    update_sniper_settings(new_id, **{k: snapshot["sniper"][k] for k in _SNIPER_FIELDS})
+    update_blackwater_settings(new_id, **{k: snapshot["blackwater"][k] for k in _BLACKWATER_FIELDS})
     return new_id
 
 
@@ -4943,6 +5067,8 @@ def export_risk_profile(profile_id):
         "fortress": {k: profile["fortress"][k] for k in _FORTRESS_FIELDS},
         "empire": {k: profile["empire"][k] for k in _EMPIRE_FIELDS},
         "daily_compounding": {k: profile["daily_compounding"][k] for k in _DAILY_COMPOUNDING_FIELDS},
+        "sniper": {k: profile["sniper"][k] for k in _SNIPER_FIELDS},
+        "blackwater": {k: profile["blackwater"][k] for k in _BLACKWATER_FIELDS},
     }
 
 
@@ -4973,6 +5099,10 @@ def import_risk_profile(data, name=None):
         update_empire_settings(new_id, **data["empire"])
     if data.get("daily_compounding"):
         update_daily_compounding_settings(new_id, **data["daily_compounding"])
+    if data.get("sniper"):
+        update_sniper_settings(new_id, **data["sniper"])
+    if data.get("blackwater"):
+        update_blackwater_settings(new_id, **data["blackwater"])
     return new_id
 
 
@@ -5165,6 +5295,52 @@ def update_strike_settings(risk_profile_id, **fields):
     params = list(fields.values()) + [risk_profile_id]
     conn = get_connection()
     conn.execute(f"UPDATE strike_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_sniper_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM sniper_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_sniper_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _SNIPER_FIELDS:
+            raise ValueError(f"Unknown Sniper field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE sniper_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def get_blackwater_settings(risk_profile_id):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM blackwater_settings WHERE risk_profile_id = ?", (risk_profile_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+@timed("database")
+def update_blackwater_settings(risk_profile_id, **fields):
+    for key in fields:
+        if key not in _BLACKWATER_FIELDS:
+            raise ValueError(f"Unknown Blackwater field: {key!r}")
+    if not fields:
+        return
+    set_clauses = [f"{key} = ?" for key in fields]
+    params = list(fields.values()) + [risk_profile_id]
+    conn = get_connection()
+    conn.execute(f"UPDATE blackwater_settings SET {', '.join(set_clauses)} WHERE risk_profile_id = ?", params)
     conn.commit()
     conn.close()
 

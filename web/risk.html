@@ -564,6 +564,12 @@ async function showBuilder(baseKey, existingProfileId) {
     strike_enabled: false, strike_max_session_duration_minutes: 0, strike_max_consecutive_losses: 0,
     momentum_enabled: false, momentum_max_steps: 0, momentum_multiplier: 1.5, momentum_profit_lock_percent: 0,
     fortress_enabled: false, fortress_protection_threshold: 0,
+    bw_base_risk_percent: 2, bw_premium_risk_percent: 3, bw_premium_min_win_rate: 65, bw_premium_min_sample_size: 100, bw_premium_min_profit_factor: 1.1,
+    bw_elite_risk_percent: 5, bw_elite_min_win_rate: 72, bw_elite_min_sample_size: 200, bw_elite_min_profit_factor: 1.3,
+    bw_institutional_risk_percent: 7, bw_institutional_min_win_rate: 78, bw_institutional_min_sample_size: 400, bw_institutional_min_profit_factor: 1.5,
+    sniper_enabled: false, sniper_min_win_rate: 70, sniper_min_sample_size: 200, sniper_min_profit_factor: 1.0,
+    sniper_require_positive_ev: true, sniper_min_payout_percent: 90, sniper_max_signal_age_seconds: 10,
+    sniper_max_consecutive_losses: 3, sniper_blacklisted_assets: "",
   };
   const preset = existing ? {
     name: existing.name, bankroll: existing.bankroll,
@@ -597,6 +603,18 @@ async function showBuilder(baseKey, existingProfileId) {
     momentum_enabled: existing.momentum.enabled, momentum_max_steps: existing.momentum.max_steps,
     momentum_multiplier: existing.momentum.multiplier, momentum_profit_lock_percent: existing.momentum.profit_lock_percent,
     fortress_enabled: existing.fortress.enabled, fortress_protection_threshold: existing.fortress.protection_threshold,
+    bw_base_risk_percent: existing.blackwater.base_risk_percent,
+    bw_premium_risk_percent: existing.blackwater.premium_risk_percent, bw_premium_min_win_rate: existing.blackwater.premium_min_win_rate,
+    bw_premium_min_sample_size: existing.blackwater.premium_min_sample_size, bw_premium_min_profit_factor: existing.blackwater.premium_min_profit_factor,
+    bw_elite_risk_percent: existing.blackwater.elite_risk_percent, bw_elite_min_win_rate: existing.blackwater.elite_min_win_rate,
+    bw_elite_min_sample_size: existing.blackwater.elite_min_sample_size, bw_elite_min_profit_factor: existing.blackwater.elite_min_profit_factor,
+    bw_institutional_risk_percent: existing.blackwater.institutional_risk_percent, bw_institutional_min_win_rate: existing.blackwater.institutional_min_win_rate,
+    bw_institutional_min_sample_size: existing.blackwater.institutional_min_sample_size, bw_institutional_min_profit_factor: existing.blackwater.institutional_min_profit_factor,
+    sniper_enabled: existing.sniper.enabled, sniper_min_win_rate: existing.sniper.min_win_rate,
+    sniper_min_sample_size: existing.sniper.min_sample_size, sniper_min_profit_factor: existing.sniper.min_profit_factor,
+    sniper_require_positive_ev: !!existing.sniper.require_positive_ev, sniper_min_payout_percent: existing.sniper.min_payout_percent,
+    sniper_max_signal_age_seconds: existing.sniper.max_signal_age_seconds, sniper_max_consecutive_losses: existing.sniper.max_consecutive_losses,
+    sniper_blacklisted_assets: (JSON.parse(existing.sniper.blacklisted_assets_json || "[]")).join(", "),
   } : base ? {
     name: `${base.name} (Custom)`, bankroll: 1000,
     sizing_mode: base.key === "daily_compounding" ? "daily_compounding" : "percent", percent: parseFloat(base.risk.headline) || 1, fixed: 10,
@@ -646,6 +664,7 @@ async function showBuilder(baseKey, existingProfileId) {
               <option value="daily_compounding" ${preset.sizing_mode === "daily_compounding" ? "selected" : ""}>Daily Compounding (recalculates once per trading day)</option>
               <option value="apex_ascension" ${preset.sizing_mode === "apex_ascension" ? "selected" : ""}>Apex Ascension (tier-based unit sizing)</option>
               <option value="empire" ${preset.sizing_mode === "empire" ? "selected" : ""}>Empire (ladder challenge)</option>
+              <option value="blackwater" ${preset.sizing_mode === "blackwater" ? "selected" : ""}>Blackwater (tiered by provider quality)</option>
             </select>
           </div>
           <div id="sizing-fixed" class="sizing-sub"><div class="field"><label>Fixed amount ($)</label><input type="number" id="f-fixed" step="1" min="1" value="${preset.fixed || 10}"></div></div>
@@ -670,6 +689,9 @@ async function showBuilder(baseKey, existingProfileId) {
             </div>
             <div class="field"><label>Unit value increase per tier ($)</label><input type="number" id="f-apex-unit-step" step="1" min="0" value="${preset.apex_reset_unit_step}"></div>
             <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:6px;"><input type="checkbox" id="f-apex-downgrade-protection" style="width:auto;" ${preset.apex_downgrade_protection ? "checked" : ""}> Protect the highest tier ever reached - a later drawdown never demotes it back down</label>
+          </div>
+          <div id="sizing-blackwater" class="sizing-sub">
+            <div class="banner info">Full tier settings (win rate, sample size, profit factor thresholds per tier) are below. Stake = current bankroll &times; the qualifying tier's risk percent, using the provider's own real, measured trade history - never a fabricated confidence score.</div>
           </div>
           <div id="sizing-empire" class="sizing-sub">
             <div class="banner info">A ladder from a starting stake to a target stake across a fixed number of levels - win to advance a level, lose to trigger the failure behavior below. Stake per level is a geometric step (same percentage jump each level), not a fixed dollar amount.</div>
@@ -719,6 +741,38 @@ async function showBuilder(baseKey, existingProfileId) {
           <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:6px;"><input type="checkbox" id="f-daily-stop-after-loss" style="width:auto;" ${preset.daily_stop_after_loss_limit !== false ? "checked" : ""}> Stop trading for the rest of the day once the loss limit is hit</label>
           <div class="row" style="justify-content:space-between; margin-top:14px;"><h4 style="margin:0;">Vault on daily target</h4><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-daily-vault-enabled" style="width:auto;" ${preset.daily_vault_enabled ? "checked" : ""}> Enabled</label></div>
           <div class="field"><label>Vault % of the day's profit the moment the target is hit</label><input type="number" id="f-daily-vault-percent" step="1" min="0" max="100" value="${preset.daily_vault_percent_on_target || 0}"></div>
+        </div>
+        <div class="card" id="blackwater-card" style="display:${preset.sizing_mode === "blackwater" ? "block" : "none"};">
+          <h3 style="margin-top:0;">Blackwater (tm) Tier Settings</h3>
+          <div class="banner info">Every threshold below is checked against that provider's own real Provider Scorecard (win rate, sample size, profit factor over its full resolved trade history) - checked from Institutional down, so a provider clearing every bar gets the top rate. An unproven provider (no scorecard yet, or clearing no tier) always gets the base rate.</div>
+          <div class="field" style="margin-top:10px;"><label>Base risk (% of bankroll, unproven providers)</label><input type="number" id="f-bw-base-risk" step="0.1" min="0.1" value="${preset.bw_base_risk_percent}"></div>
+          <div class="row" style="margin-top:6px;"><h4 style="margin:0;">Premium tier</h4></div>
+          <div class="row">
+            <div class="field"><label>Risk (%)</label><input type="number" id="f-bw-premium-risk" step="0.1" min="0.1" value="${preset.bw_premium_risk_percent}"></div>
+            <div class="field"><label>Min win rate (%)</label><input type="number" id="f-bw-premium-winrate" step="0.5" min="0" max="100" value="${preset.bw_premium_min_win_rate}"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Min sample size</label><input type="number" id="f-bw-premium-sample" step="1" min="1" value="${preset.bw_premium_min_sample_size}"></div>
+            <div class="field"><label>Min profit factor</label><input type="number" id="f-bw-premium-pf" step="0.05" min="0" value="${preset.bw_premium_min_profit_factor}"></div>
+          </div>
+          <div class="row" style="margin-top:6px;"><h4 style="margin:0;">Elite tier</h4></div>
+          <div class="row">
+            <div class="field"><label>Risk (%)</label><input type="number" id="f-bw-elite-risk" step="0.1" min="0.1" value="${preset.bw_elite_risk_percent}"></div>
+            <div class="field"><label>Min win rate (%)</label><input type="number" id="f-bw-elite-winrate" step="0.5" min="0" max="100" value="${preset.bw_elite_min_win_rate}"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Min sample size</label><input type="number" id="f-bw-elite-sample" step="1" min="1" value="${preset.bw_elite_min_sample_size}"></div>
+            <div class="field"><label>Min profit factor</label><input type="number" id="f-bw-elite-pf" step="0.05" min="0" value="${preset.bw_elite_min_profit_factor}"></div>
+          </div>
+          <div class="row" style="margin-top:6px;"><h4 style="margin:0;">Institutional tier</h4></div>
+          <div class="row">
+            <div class="field"><label>Risk (%)</label><input type="number" id="f-bw-institutional-risk" step="0.1" min="0.1" value="${preset.bw_institutional_risk_percent}"></div>
+            <div class="field"><label>Min win rate (%)</label><input type="number" id="f-bw-institutional-winrate" step="0.5" min="0" max="100" value="${preset.bw_institutional_min_win_rate}"></div>
+          </div>
+          <div class="row">
+            <div class="field"><label>Min sample size</label><input type="number" id="f-bw-institutional-sample" step="1" min="1" value="${preset.bw_institutional_min_sample_size}"></div>
+            <div class="field"><label>Min profit factor</label><input type="number" id="f-bw-institutional-pf" step="0.05" min="0" value="${preset.bw_institutional_min_profit_factor}"></div>
+          </div>
         </div>
         <div class="section-title" style="font-size:11px; text-transform:uppercase; color:var(--text-dim); font-weight:650; margin:20px 0 10px;">Loss Recovery Rules</div>
         <div class="card">
@@ -840,6 +894,26 @@ async function showBuilder(baseKey, existingProfileId) {
           </div>
         </div>
         <div class="card">
+          <div class="row" style="justify-content:space-between;"><h3 style="margin:0;">Sniper (tm) execution gate</h3><label style="display:flex; align-items:center; gap:8px;"><input type="checkbox" id="f-sniper-enabled" style="width:auto;" ${preset.sniper_enabled ? "checked" : ""}> Enabled</label></div>
+          <div id="sniper-fields" style="display:${preset.sniper_enabled ? "block" : "none"}; margin-top:10px;">
+            <div class="banner info">A hard reject, not a sizing adjustment - a signal must clear every threshold below, checked against that provider's own real Provider Scorecard, or it never executes. Never a fabricated confidence score.</div>
+            <div class="row" style="margin-top:8px;">
+              <div class="field"><label>Min win rate (%)</label><input type="number" id="f-sniper-winrate" step="0.5" min="0" max="100" value="${preset.sniper_min_win_rate}"></div>
+              <div class="field"><label>Min sample size</label><input type="number" id="f-sniper-sample" step="1" min="1" value="${preset.sniper_min_sample_size}"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Min profit factor</label><input type="number" id="f-sniper-pf" step="0.05" min="0" value="${preset.sniper_min_profit_factor}"></div>
+              <div class="field"><label>Min average payout (%)</label><input type="number" id="f-sniper-payout" step="0.5" min="0" max="100" value="${preset.sniper_min_payout_percent}"></div>
+            </div>
+            <div class="row">
+              <div class="field"><label>Max signal age (seconds)</label><input type="number" id="f-sniper-age" step="1" min="0" value="${preset.sniper_max_signal_age_seconds}"></div>
+              <div class="field"><label>Max consecutive losses before cold (0=off)</label><input type="number" id="f-sniper-cold" step="1" min="0" value="${preset.sniper_max_consecutive_losses}"></div>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; font-size:13px; margin-top:6px;"><input type="checkbox" id="f-sniper-positive-ev" style="width:auto;" ${preset.sniper_require_positive_ev ? "checked" : ""}> Require positive expected value</label>
+            <div class="field" style="margin-top:8px;"><label>Blacklisted assets (comma-separated, optional)</label><input type="text" id="f-sniper-blacklist" value="${escapeHtml(preset.sniper_blacklisted_assets || "")}"></div>
+          </div>
+        </div>
+        <div class="card">
           <h3 style="margin-top:0;">Session controls</h3>
           <div class="row">
             <div class="field"><label>Daily loss limit ($, 0=off)</label><input type="number" id="f-max-daily-loss" value="0"></div>
@@ -870,7 +944,7 @@ async function showBuilder(baseKey, existingProfileId) {
   });
   [["f-sentinel-enabled", "sentinel-fields"], ["f-cashflow-enabled", "cashflow-fields"],
    ["f-strike-enabled", "strike-fields"], ["f-momentum-enabled", "momentum-fields"],
-   ["f-fortress-enabled", "fortress-fields"]].forEach(([checkboxId, fieldsId]) => {
+   ["f-fortress-enabled", "fortress-fields"], ["f-sniper-enabled", "sniper-fields"]].forEach(([checkboxId, fieldsId]) => {
     document.getElementById(checkboxId).addEventListener("change", (e) => {
       document.getElementById(fieldsId).style.display = e.target.checked ? "block" : "none";
     });
@@ -967,7 +1041,7 @@ function updateLivePreview() {
   } else {
     const modeLabels = {
       kelly: "Kelly sizing", daily_compounding: "Daily Compounding",
-      apex_ascension: "Apex Ascension", empire: "Empire",
+      apex_ascension: "Apex Ascension", empire: "Empire", blackwater: "Blackwater",
     };
     html += `<div class="muted" style="font-size:12px; margin-bottom:14px;">${modeLabels[mode] || "This sizing mode"} is calculated by AXIM's real risk engine at trade/day-start time - not duplicated here to avoid ever showing a number that could drift from what actually executes.</div>`;
   }
@@ -1010,10 +1084,11 @@ function updateLivePreview() {
 }
 
 function showSizingSub(mode) {
-  ["fixed", "percent", "dynamic", "kelly", "daily_compounding", "apex_ascension", "empire"].forEach(m => {
+  ["fixed", "percent", "dynamic", "kelly", "daily_compounding", "apex_ascension", "empire", "blackwater"].forEach(m => {
     document.getElementById(`sizing-${m}`).classList.toggle("visible", m === mode);
   });
   document.getElementById("daily-compounding-card").style.display = mode === "daily_compounding" ? "block" : "none";
+  document.getElementById("blackwater-card").style.display = mode === "blackwater" ? "block" : "none";
 }
 
 async function saveBuilder(existingProfileId) {
@@ -1154,6 +1229,46 @@ async function saveBuilder(existingProfileId) {
       body: JSON.stringify({
         enabled: document.getElementById("f-fortress-enabled").checked,
         protection_threshold: parseFloat(document.getElementById("f-fortress-threshold").value) || 0,
+      }),
+    });
+
+    // Blackwater's tier fields, like Apex Ascension/Empire above, are
+    // PATCHed unconditionally regardless of whether it's the currently
+    // selected sizing mode, so switching away and back never loses what
+    // was already entered.
+    await fetchJSON(`/api/risk-profiles/${profileId}/blackwater`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: sizingMode === "blackwater",
+        base_risk_percent: parseFloat(document.getElementById("f-bw-base-risk").value) || 2,
+        premium_risk_percent: parseFloat(document.getElementById("f-bw-premium-risk").value) || 3,
+        premium_min_win_rate: parseFloat(document.getElementById("f-bw-premium-winrate").value) || 65,
+        premium_min_sample_size: parseInt(document.getElementById("f-bw-premium-sample").value, 10) || 100,
+        premium_min_profit_factor: parseFloat(document.getElementById("f-bw-premium-pf").value) || 1.1,
+        elite_risk_percent: parseFloat(document.getElementById("f-bw-elite-risk").value) || 5,
+        elite_min_win_rate: parseFloat(document.getElementById("f-bw-elite-winrate").value) || 72,
+        elite_min_sample_size: parseInt(document.getElementById("f-bw-elite-sample").value, 10) || 200,
+        elite_min_profit_factor: parseFloat(document.getElementById("f-bw-elite-pf").value) || 1.3,
+        institutional_risk_percent: parseFloat(document.getElementById("f-bw-institutional-risk").value) || 7,
+        institutional_min_win_rate: parseFloat(document.getElementById("f-bw-institutional-winrate").value) || 78,
+        institutional_min_sample_size: parseInt(document.getElementById("f-bw-institutional-sample").value, 10) || 400,
+        institutional_min_profit_factor: parseFloat(document.getElementById("f-bw-institutional-pf").value) || 1.5,
+      }),
+    });
+    const sniperBlacklist = document.getElementById("f-sniper-blacklist").value
+      .split(",").map(s => s.trim()).filter(s => s.length > 0);
+    await fetchJSON(`/api/risk-profiles/${profileId}/sniper`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: document.getElementById("f-sniper-enabled").checked,
+        min_win_rate: parseFloat(document.getElementById("f-sniper-winrate").value) || 70,
+        min_sample_size: parseInt(document.getElementById("f-sniper-sample").value, 10) || 200,
+        min_profit_factor: parseFloat(document.getElementById("f-sniper-pf").value) || 1.0,
+        require_positive_ev: document.getElementById("f-sniper-positive-ev").checked,
+        min_payout_percent: parseFloat(document.getElementById("f-sniper-payout").value) || 90,
+        max_signal_age_seconds: parseFloat(document.getElementById("f-sniper-age").value) || 10,
+        max_consecutive_losses: parseInt(document.getElementById("f-sniper-cold").value, 10) || 0,
+        blacklisted_assets_json: JSON.stringify(sniperBlacklist),
       }),
     });
 

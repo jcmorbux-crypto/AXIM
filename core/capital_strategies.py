@@ -506,3 +506,80 @@ def per_trade_vault_skim(vault, profit_loss):
     if not vault["enabled"] or vault["trigger_event"] != "per_trade" or profit_loss <= 0:
         return 0
     return round(profit_loss * (vault["vault_percent"] / 100.0), 2)
+
+
+# ---------------------------------------------------------------------
+# Blackwater (tm) and Sniper (tm) - 2026-08-01 product decision: unlike
+# Leviathan/Oracle (still core/capital_strategies_catalog.py's
+# "implemented": False - see that module's DEFINITION_REQUIRED entries),
+# these two are driven entirely by a provider's own REAL, measurable
+# trade history (core/provider_scorecard.py) - never a fabricated
+# confidence value. Both are pure functions of (settings, scorecard) -
+# the scorecard is computed and passed in by the caller (core/
+# risk_manager.py for Sniper's gate, core/risk_engine.py for Blackwater's
+# sizing), exactly like every other strategy function in this module
+# never touches the database itself.
+# ---------------------------------------------------------------------
+
+_BLACKWATER_TIERS = ("institutional", "elite", "premium")
+
+
+def blackwater_qualifying_tier(settings, scorecard):
+    """Returns (tier_name, risk_percent). Checked from the highest tier
+    down so a provider clearing every bar gets the top rate. 'base' (the
+    default, lowest rate) is returned both when no scorecard exists yet
+    (an unproven provider - Blackwater only ever increases allocation on
+    positive real evidence) and when a scorecard exists but clears no
+    tier's thresholds."""
+    if scorecard is not None:
+        for tier in _BLACKWATER_TIERS:
+            if (scorecard["sample_size"] >= settings[f"{tier}_min_sample_size"]
+                    and scorecard["win_rate"] is not None
+                    and scorecard["win_rate"] >= settings[f"{tier}_min_win_rate"]
+                    and scorecard["profit_factor"] is not None
+                    and scorecard["profit_factor"] >= settings[f"{tier}_min_profit_factor"]):
+                return tier, settings[f"{tier}_risk_percent"]
+    return "base", settings["base_risk_percent"]
+
+
+def blackwater_deployment(settings, current_bankroll, scorecard):
+    """Position size = current_bankroll * tier_percent - a dynamic
+    percent-of-bankroll strategy (same family as Titan Allocation)
+    whose percent is chosen by provider quality tier instead of being a
+    single fixed configured value. Never itself enforces a dollar
+    ceiling - risk_manager.check_max_trade_amount (runs after this,
+    unchanged) remains the one hard ceiling regardless of tier, exactly
+    as the product spec requires ('never overrides hard risk limits')."""
+    tier, percent = blackwater_qualifying_tier(settings, scorecard)
+    amount = current_bankroll * (percent / 100.0) if current_bankroll > 0 else 0.0
+    return round(amount, 2), tier
+
+
+def sniper_qualifies(settings, scorecard):
+    """Returns (passed: bool, reason: str or None) - checked in a fixed,
+    deterministic order so a provider failing multiple thresholds always
+    reports the SAME first-failing one (the operator fixes one thing,
+    sees the next, rather than a different reason each call). The reason
+    string follows the same 'label: required vs actual' shape every
+    existing risk_manager.RiskViolation already uses, so Analytics can
+    render it without a new format. Per-SIGNAL checks (this specific
+    signal's own age, this specific asset's blacklist status) are NOT
+    here - those aren't provider-scorecard facts, see
+    risk_manager.check_sniper_qualification for where those run."""
+    if scorecard is None or scorecard["sample_size"] == 0:
+        return False, "no resolved trade history yet for this provider"
+    if scorecard["sample_size"] < settings["min_sample_size"]:
+        return False, f"sample size {scorecard['sample_size']} below required {settings['min_sample_size']}"
+    if scorecard["win_rate"] is None or scorecard["win_rate"] < settings["min_win_rate"]:
+        return False, f"win rate {scorecard['win_rate']}% below required {settings['min_win_rate']}%"
+    if settings["require_positive_ev"] and (scorecard["expected_value"] is None or scorecard["expected_value"] <= 0):
+        return False, f"expected value {scorecard['expected_value']} is not positive"
+    if scorecard["profit_factor"] is None or scorecard["profit_factor"] < settings["min_profit_factor"]:
+        return False, f"profit factor {scorecard['profit_factor']} below required {settings['min_profit_factor']}"
+    if scorecard["current_streak"] <= -settings["max_consecutive_losses"]:
+        return False, (f"provider is cold ({-scorecard['current_streak']} consecutive losses, "
+                        f"limit {settings['max_consecutive_losses']})")
+    if (scorecard["avg_payout_percent"] is not None
+            and scorecard["avg_payout_percent"] < settings["min_payout_percent"]):
+        return False, f"average payout {scorecard['avg_payout_percent']}% below required {settings['min_payout_percent']}%"
+    return True, None

@@ -70,6 +70,30 @@ class CatalogTests(unittest.TestCase):
         self.assertTrue(empire["implemented"])
         self.assertTrue(empire["simulate_supported"], "empire is self-contained and should be quick-simulatable")
 
+    def test_blackwater_and_sniper_are_implemented_real_measurable_stats_only(self):
+        # 2026-08-01 product decision: Blackwater/Sniper are complete,
+        # driven entirely by core/provider_scorecard.py's real,
+        # measurable per-provider stats - never a fabricated confidence
+        # score.
+        for key in ["blackwater", "sniper"]:
+            strategy = catalog.get_strategy(key)
+            self.assertTrue(strategy["implemented"], f"{key} should be marked implemented")
+            self.assertFalse(strategy.get("definition_required"), f"{key} should not need a definition")
+        self.assertEqual(catalog.get_strategy("blackwater")["sizing_mode"], "blackwater")
+
+    def test_leviathan_and_oracle_are_definition_required_never_implemented(self):
+        # Same 2026-08-01 decision, the other direction: Leviathan's "Pay
+        # Opportunity" and Oracle's "0-100 AXIM Confidence Score" are both
+        # undefined/fabricated-scoring concepts - must stay visible in the
+        # catalog but never activatable, with the exact missing
+        # definition documented, not silently faked.
+        for key in ["leviathan", "oracle"]:
+            strategy = catalog.get_strategy(key)
+            self.assertFalse(strategy["implemented"], f"{key} must not be marked implemented")
+            self.assertTrue(strategy.get("definition_required"), f"{key} should be flagged definition_required")
+            self.assertTrue(strategy.get("definition_required_reason"), f"{key} needs a documented reason")
+            self.assertNotIn(key, engine.SIMULATABLE_STRATEGIES)
+
     def test_every_strategy_has_required_display_fields(self):
         c = catalog.get_catalog()
         all_strategies = [s for h in c["houses"] for s in h["strategies"]] + c["standalone"]

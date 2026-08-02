@@ -457,6 +457,88 @@ class CapitalStrategiesSimulationTests(unittest.TestCase):
         self.assertEqual(result["sessions"][0]["status"], "completed")
 
 
+class BlackwaterSniperSimulationTests(unittest.TestCase):
+    """Blackwater/Sniper (tm) reused inside the backtest engine via a
+    genuine WALK-FORWARD provider scorecard built from only the signals
+    already replayed earlier in the same run - see provider_scorecard.
+    scorecard_from_trades and backtest_engine.simulate_strategy's own
+    comments on why this must never be a live DB query."""
+
+    def _blackwater_profile(self, base_risk_percent=1.0, premium_min_sample_size=3,
+                             premium_min_win_rate=50.0, premium_min_profit_factor=1.0,
+                             premium_risk_percent=5.0):
+        profile = _fixed_profile(fixed_amount=10)
+        profile["sizing_mode"] = "blackwater"
+        profile["bankroll"] = 1000
+        profile["blackwater"] = {
+            "enabled": True, "base_risk_percent": base_risk_percent,
+            "premium_risk_percent": premium_risk_percent, "premium_min_win_rate": premium_min_win_rate,
+            "premium_min_sample_size": premium_min_sample_size, "premium_min_profit_factor": premium_min_profit_factor,
+            # Elite/institutional deliberately unreachable so this fixture only ever tests base <-> premium.
+            "elite_risk_percent": 8.0, "elite_min_win_rate": 99.0, "elite_min_sample_size": 100000, "elite_min_profit_factor": 99.0,
+            "institutional_risk_percent": 9.0, "institutional_min_win_rate": 99.0, "institutional_min_sample_size": 100000, "institutional_min_profit_factor": 99.0,
+        }
+        return profile
+
+    def test_first_trade_has_no_scorecard_yet_uses_base_tier(self):
+        pool = [_signal("2026-01-01T10:00:00", "win")]
+        result = backtest_engine.simulate_strategy(pool, self._blackwater_profile(), 1000, session_window="all")
+        self.assertEqual(result["trades"][0]["trade_amount"], 10.0)  # 1% of $1000
+
+    def test_tier_upgrades_to_premium_once_walk_forward_evidence_clears_the_bar(self):
+        # 3 prior resolved trades (win/loss/win) clear premium's sample
+        # size (3), win rate (50%, actual 66.7%) and profit factor (1.0,
+        # actual > 1.0 since 2 wins' 85% payout outweighs 1 loss) bars -
+        # the 4th trade must size at the premium rate, not base.
+        pool = [_signal(f"2026-01-01T10:0{i}:00", r) for i, r in enumerate(["win", "loss", "win", "win"])]
+        result = backtest_engine.simulate_strategy(pool, self._blackwater_profile(), 1000, session_window="all")
+        trades = result["trades"]
+        self.assertEqual(len(trades), 4)
+        self.assertEqual(trades[0]["trade_amount"], 10.0)  # base: 1% of $1000, no history
+        # trade 4 sizes off the running bankroll at premium's 5%, not base's 1%
+        expected_bankroll_before_trade4 = 1000 + sum(t["profit_loss"] for t in trades[:3])
+        self.assertAlmostEqual(trades[3]["trade_amount"], round(expected_bankroll_before_trade4 * 0.05, 2), places=2)
+
+    def test_no_walk_forward_evidence_never_leaves_base_tier(self):
+        # Every trade is a loss - profit_factor stays undefined-or-below-bar
+        # forever, so Blackwater must never escalate off base, no matter
+        # how many trades accumulate.
+        pool = [_signal(f"2026-01-01T10:0{i}:00", "loss") for i in range(5)]
+        result = backtest_engine.simulate_strategy(pool, self._blackwater_profile(), 1000, session_window="all")
+        trades = result["trades"]
+        for i in range(1, len(trades)):
+            bankroll_before = 1000 + sum(t["profit_loss"] for t in trades[:i])
+            self.assertAlmostEqual(trades[i]["trade_amount"], round(bankroll_before * 0.01, 2), places=2)
+
+    def _sniper_profile(self, min_sample_size=1, min_win_rate=0.0, min_profit_factor=0.0,
+                         require_positive_ev=False, min_payout_percent=0.0, max_consecutive_losses=0):
+        profile = _fixed_profile(fixed_amount=10)
+        profile["sniper"] = {
+            "enabled": True, "min_win_rate": min_win_rate, "min_sample_size": min_sample_size,
+            "min_profit_factor": min_profit_factor, "require_positive_ev": require_positive_ev,
+            "min_payout_percent": min_payout_percent, "max_signal_age_seconds": 999999,
+            "max_consecutive_losses": max_consecutive_losses, "blacklisted_assets_json": "[]",
+        }
+        return profile
+
+    def test_first_signal_is_always_rejected_no_track_record_yet(self):
+        # A single isolated backtest run can never bootstrap past Sniper's
+        # very first signal - see the "Bootstrap note" comment in
+        # simulate_strategy. Real, not faked leniency.
+        pool = [_signal("2026-01-01T10:00:00", "win")]
+        result = backtest_engine.simulate_strategy(pool, self._sniper_profile(), 1000, session_window="all")
+        self.assertEqual(len(result["trades"]), 0)
+        self.assertEqual(result["sniper_rejected_count"], 1)
+
+    def test_disabled_sniper_is_a_pure_noop(self):
+        pool = [_signal("2026-01-01T10:00:00", "win")]
+        profile = self._sniper_profile()
+        profile["sniper"]["enabled"] = False
+        result = backtest_engine.simulate_strategy(pool, profile, 1000, session_window="all")
+        self.assertEqual(len(result["trades"]), 1)
+        self.assertEqual(result["sniper_rejected_count"], 0)
+
+
 class MetricsTests(unittest.TestCase):
     def test_metrics_on_all_wins(self):
         pool = [_signal(f"2026-01-01T10:0{i}:00", "win") for i in range(3)]

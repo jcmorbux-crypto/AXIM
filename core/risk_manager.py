@@ -1,3 +1,4 @@
+import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -9,6 +10,8 @@ sys.path.insert(0, str(CORE_DIR))
 sys.path.insert(0, str(CONFIG_DIR))
 
 import database
+import capital_strategies
+import provider_scorecard
 from logger import get_logger
 from settings import (
     ACCOUNT,
@@ -448,6 +451,52 @@ def check_duplicate_signal(asset, direction, expiry, exclude_id=None, channel_id
             f"identical signal (asset={asset}, direction={direction}, expiry={expiry}) "
             f"already recorded as trade id {duplicate_id} within {window}s on the same source",
         )
+
+
+def check_sniper_qualification(session_id, channel_id, asset, signal_age_seconds):
+    """Sniper (tm) - 2026-08-01 product decision: a hard execution gate
+    driven entirely by a provider's own real, measurable trade history
+    (core/provider_scorecard.py), never a fabricated confidence score.
+    Layered exactly like Cashflow/Strike/Sentinel (core/session_manager.py/
+    core/risk_engine.py) - gated purely by this session's active
+    profile's own sniper_settings.enabled, independent of sizing_mode, a
+    no-op for every profile that hasn't turned it on. session_id/
+    channel_id=None (no attached session, or a caller not tied to a real
+    channel - e.g. manual test trades) is a no-op, same as every other
+    profile-scoped check in this module.
+
+    Per-SIGNAL facts (this specific signal's own age, this specific
+    asset's blacklist status) are checked here directly, before falling
+    to capital_strategies.sniper_qualifies for the provider-scorecard-
+    wide thresholds - those two are a genuinely different kind of fact
+    (this one signal vs. this provider's whole history) and both must
+    pass."""
+    if session_id is None or channel_id is None:
+        return
+    session = database.get_trading_session(session_id)
+    if session is None:
+        return
+    profile = database.resolve_money_plan(session["risk_profile_id"], session["money_plan_key"])
+    if profile is None:
+        return
+    settings = profile["sniper"]
+    if not settings["enabled"]:
+        return
+
+    if signal_age_seconds is not None and signal_age_seconds > settings["max_signal_age_seconds"]:
+        raise RiskViolation(
+            "sniper_reject",
+            f"signal age {signal_age_seconds:.1f}s exceeds Sniper's max_signal_age_seconds "
+            f"{settings['max_signal_age_seconds']}s",
+        )
+    blacklisted = json.loads(settings["blacklisted_assets_json"] or "[]")
+    if asset in blacklisted:
+        raise RiskViolation("sniper_reject", f"asset {asset!r} is blacklisted for this Sniper strategy")
+
+    scorecard = provider_scorecard.get_scorecard(channel_id, session_id=session_id)
+    passed, reason = capital_strategies.sniper_qualifies(settings, scorecard)
+    if not passed:
+        raise RiskViolation("sniper_reject", reason)
 
 
 def compute_trade_amount(static_default_amount):

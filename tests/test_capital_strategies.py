@@ -580,5 +580,135 @@ class SimulateStrategyTests(unittest.TestCase):
         self.assertEqual(result["wins"], 0)
 
 
+def _blackwater_settings(**overrides):
+    base = {
+        "base_risk_percent": 2.0,
+        "premium_risk_percent": 3.0, "premium_min_win_rate": 65.0,
+        "premium_min_sample_size": 100, "premium_min_profit_factor": 1.1,
+        "elite_risk_percent": 5.0, "elite_min_win_rate": 72.0,
+        "elite_min_sample_size": 200, "elite_min_profit_factor": 1.3,
+        "institutional_risk_percent": 7.0, "institutional_min_win_rate": 78.0,
+        "institutional_min_sample_size": 400, "institutional_min_profit_factor": 1.5,
+    }
+    base.update(overrides)
+    return base
+
+
+def _scorecard(**overrides):
+    base = {
+        "sample_size": 0, "win_rate": None, "profit_factor": None, "expected_value": None,
+        "avg_payout_percent": None, "current_streak": 0,
+    }
+    base.update(overrides)
+    return base
+
+
+class BlackwaterTests(unittest.TestCase):
+    def test_no_scorecard_yet_returns_base_tier(self):
+        tier, percent = cs.blackwater_qualifying_tier(_blackwater_settings(), None)
+        self.assertEqual(tier, "base")
+        self.assertEqual(percent, 2.0)
+
+    def test_qualifies_for_institutional_when_every_bar_cleared(self):
+        card = _scorecard(sample_size=500, win_rate=80.0, profit_factor=1.6)
+        tier, percent = cs.blackwater_qualifying_tier(_blackwater_settings(), card)
+        self.assertEqual(tier, "institutional")
+        self.assertEqual(percent, 7.0)
+
+    def test_qualifies_for_premium_only(self):
+        card = _scorecard(sample_size=120, win_rate=66.0, profit_factor=1.15)
+        tier, percent = cs.blackwater_qualifying_tier(_blackwater_settings(), card)
+        self.assertEqual(tier, "premium")
+        self.assertEqual(percent, 3.0)
+
+    def test_falls_back_to_base_when_no_tier_clears(self):
+        card = _scorecard(sample_size=10, win_rate=50.0, profit_factor=0.8)
+        tier, percent = cs.blackwater_qualifying_tier(_blackwater_settings(), card)
+        self.assertEqual(tier, "base")
+        self.assertEqual(percent, 2.0)
+
+    def test_deployment_uses_tier_percent_of_current_bankroll(self):
+        card = _scorecard(sample_size=500, win_rate=80.0, profit_factor=1.6)
+        amount, tier = cs.blackwater_deployment(_blackwater_settings(), 1000.0, card)
+        self.assertEqual(tier, "institutional")
+        self.assertEqual(amount, 70.0)  # 7% of 1000
+
+    def test_deployment_with_no_bankroll_is_zero(self):
+        amount, tier = cs.blackwater_deployment(_blackwater_settings(), 0.0, None)
+        self.assertEqual(amount, 0.0)
+        self.assertEqual(tier, "base")
+
+
+def _sniper_settings(**overrides):
+    base = {
+        "min_win_rate": 70.0, "min_sample_size": 200, "min_profit_factor": 1.0,
+        "require_positive_ev": 1, "min_payout_percent": 90.0,
+        "max_consecutive_losses": 3,
+    }
+    base.update(overrides)
+    return base
+
+
+class SniperTests(unittest.TestCase):
+    def test_no_scorecard_fails(self):
+        passed, reason = cs.sniper_qualifies(_sniper_settings(), None)
+        self.assertFalse(passed)
+        self.assertIn("no resolved trade history", reason)
+
+    def test_passes_when_every_threshold_cleared(self):
+        card = _scorecard(sample_size=250, win_rate=75.0, profit_factor=1.2,
+                           expected_value=0.5, avg_payout_percent=92.0, current_streak=1)
+        passed, reason = cs.sniper_qualifies(_sniper_settings(), card)
+        self.assertTrue(passed)
+        self.assertIsNone(reason)
+
+    def test_fails_on_sample_size(self):
+        card = _scorecard(sample_size=50, win_rate=90.0, profit_factor=2.0,
+                           expected_value=1.0, avg_payout_percent=95.0)
+        passed, reason = cs.sniper_qualifies(_sniper_settings(), card)
+        self.assertFalse(passed)
+        self.assertIn("sample size", reason)
+
+    def test_fails_on_win_rate(self):
+        card = _scorecard(sample_size=250, win_rate=60.0, profit_factor=2.0,
+                           expected_value=1.0, avg_payout_percent=95.0)
+        passed, reason = cs.sniper_qualifies(_sniper_settings(), card)
+        self.assertFalse(passed)
+        self.assertIn("win rate", reason)
+
+    def test_fails_on_non_positive_ev(self):
+        card = _scorecard(sample_size=250, win_rate=75.0, profit_factor=2.0,
+                           expected_value=-0.1, avg_payout_percent=95.0)
+        passed, reason = cs.sniper_qualifies(_sniper_settings(), card)
+        self.assertFalse(passed)
+        self.assertIn("expected value", reason)
+
+    def test_ev_check_skipped_when_require_positive_ev_disabled(self):
+        card = _scorecard(sample_size=250, win_rate=75.0, profit_factor=2.0,
+                           expected_value=-0.1, avg_payout_percent=95.0)
+        passed, reason = cs.sniper_qualifies(_sniper_settings(require_positive_ev=0), card)
+        self.assertTrue(passed)
+
+    def test_fails_when_provider_is_cold(self):
+        card = _scorecard(sample_size=250, win_rate=75.0, profit_factor=2.0,
+                           expected_value=1.0, avg_payout_percent=95.0, current_streak=-3)
+        passed, reason = cs.sniper_qualifies(_sniper_settings(), card)
+        self.assertFalse(passed)
+        self.assertIn("cold", reason)
+
+    def test_win_streak_is_not_cold(self):
+        card = _scorecard(sample_size=250, win_rate=75.0, profit_factor=2.0,
+                           expected_value=1.0, avg_payout_percent=95.0, current_streak=5)
+        passed, reason = cs.sniper_qualifies(_sniper_settings(), card)
+        self.assertTrue(passed)
+
+    def test_fails_on_payout_below_minimum(self):
+        card = _scorecard(sample_size=250, win_rate=75.0, profit_factor=2.0,
+                           expected_value=1.0, avg_payout_percent=87.0)
+        passed, reason = cs.sniper_qualifies(_sniper_settings(), card)
+        self.assertFalse(passed)
+        self.assertIn("payout", reason)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -58,6 +58,7 @@ import database
 import risk_engine
 import capital_strategies
 import daily_compounding
+import provider_scorecard
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
@@ -292,6 +293,17 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
     sessions = []
     trades = []
 
+    # Blackwater/Sniper (tm) - the provider's own quality is tracked
+    # across the WHOLE run (not reset per simulated session, same as
+    # empire_current_level/fortress_protected_principal above), but only
+    # from WALK-FORWARD history: signals already resolved earlier in
+    # this same replay, in replay order. Never provider_scorecard.
+    # get_scorecard's real DB query - see scorecard_from_trades's own
+    # docstring on why that would leak the provider's live/future
+    # performance into a historical simulation.
+    resolved_trades_for_scorecard = []
+    sniper_rejected_count = 0
+
     for session_index, signals_in_session in enumerate(session_groups):
         trading_balance = max(0.0, starting_bankroll + cumulative_realized_pnl - cumulative_vaulted)
         profile = dict(profile_snapshot)
@@ -306,6 +318,7 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
         vault = profile.get("profit_vault", _DISABLED)
         strike = profile.get("strike", _DISABLED)
         daily = profile.get("daily_compounding", _DISABLED)
+        sniper = profile.get("sniper", _DISABLED)
 
         session_state = {
             "realized_pnl": 0.0, "current_martingale_step": 0, "current_momentum_step": 0,
@@ -318,8 +331,40 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
         ended_at = started_at
 
         for seq, signal in enumerate(signals_in_session):
+            # Sniper (tm) - a hard per-signal reject, same real,
+            # measurable-stats-only qualification core/risk_manager.
+            # check_sniper_qualification enforces live, reused directly
+            # here (capital_strategies.sniper_qualifies is already pure)
+            # rather than re-implemented. A rejected signal is skipped
+            # entirely - never counted as a trade, exactly like a live
+            # Sniper rejection never reaches execution.
+            if sniper.get("enabled"):
+                walkforward_scorecard = provider_scorecard.scorecard_from_trades(None, resolved_trades_for_scorecard)
+                passed, _reason = capital_strategies.sniper_qualifies(sniper, walkforward_scorecard)
+                if not passed:
+                    sniper_rejected_count += 1
+                    # Bootstrap note: resolved_trades_for_scorecard is
+                    # only ever grown by trades that actually executed
+                    # (below) - a Sniper-rejected signal never becomes
+                    # scorecard evidence, honestly matching live (a
+                    # rejected signal never opens a real trade to
+                    # resolve). A single isolated backtest run therefore
+                    # cannot bootstrap past Sniper's very first signal
+                    # (scorecard sample_size is always 0 then) - it
+                    # rejects the entire pool, exactly as Sniper would
+                    # live for a genuinely brand-new provider with zero
+                    # track record. This is a real limit of replaying
+                    # one strategy against one pool in isolation, not
+                    # faked leniency or a fabricated seed history.
+                    continue
+
             try:
-                amount = risk_engine._base_amount(profile, session_state, record_events=False)
+                blackwater_scorecard = "unset"
+                if profile.get("sizing_mode") == "blackwater":
+                    blackwater_scorecard = provider_scorecard.scorecard_from_trades(None, resolved_trades_for_scorecard)
+                amount = risk_engine._base_amount(
+                    profile, session_state, record_events=False, blackwater_scorecard=blackwater_scorecard,
+                )
             except risk_engine.EmpireChallengeOver as e:
                 status = f"stopped_{e.rule}"
                 break
@@ -381,6 +426,7 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
             session_state["realized_pnl"] += profit_loss
             session_state["trades_count"] += 1
             ended_at = signal["timestamp"]
+            resolved_trades_for_scorecard.append({"result": result, "profit_loss": profit_loss, "payout": payout_percent})
 
             # Martingale/Momentum step advancement and Empire's ladder
             # both key off `won` (result == "win"), exactly matching
@@ -486,7 +532,7 @@ def simulate_strategy(signal_pool, profile_snapshot, starting_bankroll, session_
         })
         trades.extend(session_trades)
 
-    return {"sessions": sessions, "trades": trades}
+    return {"sessions": sessions, "trades": trades, "sniper_rejected_count": sniper_rejected_count}
 
 
 def _risk_score(max_drawdown_percent, max_martingale_step_used):

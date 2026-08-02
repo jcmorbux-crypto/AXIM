@@ -210,12 +210,12 @@ class BuildVirtualProfileTests(unittest.TestCase):
             "live_allowed", "created_at", "updated_at", "strategy_key", "archived_at",
             "martingale", "momentum", "compounding", "profit_vault", "apex_ascension",
             "drawdown_protection", "cashflow", "strike", "fortress", "empire",
-            "daily_compounding", "is_virtual",
+            "daily_compounding", "sniper", "blackwater", "is_virtual",
         }
         self.assertEqual(set(profile.keys()), expected_top_level)
         for sub in ("martingale", "momentum", "compounding", "profit_vault", "apex_ascension",
                     "drawdown_protection", "cashflow", "strike", "fortress", "empire",
-                    "daily_compounding"):
+                    "daily_compounding", "sniper", "blackwater"):
             self.assertIn("enabled" if sub != "compounding" else "mode", profile[sub])
             self.assertIn("id", profile[sub])
             self.assertIn("risk_profile_id", profile[sub])
@@ -242,7 +242,8 @@ class BuildVirtualProfileTests(unittest.TestCase):
         profile = money_studio.build_virtual_profile("recovery_ladder")
         self.assertTrue(profile["martingale"]["enabled"])
         for sub in ("momentum", "profit_vault", "apex_ascension",
-                    "drawdown_protection", "cashflow", "strike", "fortress", "empire"):
+                    "drawdown_protection", "cashflow", "strike", "fortress", "empire",
+                    "sniper", "blackwater"):
             self.assertFalse(profile[sub]["enabled"])
         self.assertEqual(profile["compounding"]["mode"], "disabled")
 
@@ -251,7 +252,8 @@ class BuildVirtualProfileTests(unittest.TestCase):
         self.assertTrue(profile["daily_compounding"]["enabled"])
         self.assertEqual(profile["sizing_mode"], "daily_compounding")
         for sub in ("martingale", "momentum", "profit_vault", "apex_ascension",
-                    "drawdown_protection", "cashflow", "strike", "fortress", "empire"):
+                    "drawdown_protection", "cashflow", "strike", "fortress", "empire",
+                    "sniper", "blackwater"):
             self.assertFalse(profile[sub]["enabled"])
 
 

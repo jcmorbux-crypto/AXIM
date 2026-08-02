@@ -586,6 +586,28 @@ _DAILY_COMPOUNDING_DEFAULTS = {
     "consecutive_loss_stop": 0, "vault_enabled": 0, "vault_percent_on_target": 0,
     "stop_after_target": 1, "stop_after_loss_limit": 1,
 }
+# None of the 5 canonical plans use Sniper/Blackwater (both are Alpha
+# House strategies, only reachable via a real, user-owned risk_profile -
+# see core/capital_strategies_catalog.py) - these two dicts exist here
+# purely so core/risk_manager.check_sniper_qualification and core/
+# risk_engine.py's blackwater sizing branch can read profile["sniper"]/
+# profile["blackwater"] unconditionally, exactly like every other
+# sub-setting below, without a KeyError on a session using a canonical
+# money_plan_key instead of a real risk_profile_id.
+_SNIPER_DEFAULTS = {
+    "enabled": 0, "min_win_rate": 70.0, "min_sample_size": 200, "min_profit_factor": 1.0,
+    "require_positive_ev": 1, "min_payout_percent": 90.0, "max_signal_age_seconds": 10.0,
+    "max_consecutive_losses": 3, "blacklisted_assets_json": "[]",
+}
+_BLACKWATER_DEFAULTS = {
+    "enabled": 0, "base_risk_percent": 2.0,
+    "premium_risk_percent": 3.0, "premium_min_win_rate": 65.0,
+    "premium_min_sample_size": 100, "premium_min_profit_factor": 1.1,
+    "elite_risk_percent": 5.0, "elite_min_win_rate": 72.0,
+    "elite_min_sample_size": 200, "elite_min_profit_factor": 1.3,
+    "institutional_risk_percent": 7.0, "institutional_min_win_rate": 78.0,
+    "institutional_min_sample_size": 400, "institutional_min_profit_factor": 1.5,
+}
 
 
 def _sub_settings(defaults, overrides=None):
@@ -625,4 +647,6 @@ def build_virtual_profile(key, name=None, bankroll=None):
     profile["fortress"] = _sub_settings(_FORTRESS_DEFAULTS)
     profile["empire"] = _sub_settings(_EMPIRE_DEFAULTS)
     profile["daily_compounding"] = _sub_settings(_DAILY_COMPOUNDING_DEFAULTS, daily_compounding_fields)
+    profile["sniper"] = _sub_settings(_SNIPER_DEFAULTS)
+    profile["blackwater"] = _sub_settings(_BLACKWATER_DEFAULTS)
     return profile

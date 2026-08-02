@@ -47,6 +47,8 @@ import database
 import capital_strategies
 import daily_compounding
 import fund_manager
+import provider_scorecard
+from signal_lifecycle import SignalLifecycleState
 from logger import get_logger
 
 logger = get_logger("axim.lifecycle", filename="lifecycle.log")
@@ -96,7 +98,7 @@ def _effective_risk_percent(base_percent, compounding, current_pnl, bankroll, tr
     return effective
 
 
-def _base_amount(profile, session, record_events=True):
+def _base_amount(profile, session, record_events=True, channel_id=None, blackwater_scorecard="unset"):
     """Sizing before Martingale stepping - fixed/percent/dynamic/Kelly.
 
     record_events=False (used by core/backtest_engine.py) suppresses the
@@ -104,7 +106,17 @@ def _base_amount(profile, session, record_events=True):
     signal pool through a PROFILE SNAPSHOT, not the live profile, and
     must never leave real rows in capital_tier_events. Every other
     caller (core/trade_coordinator.py's live path, indirectly) leaves
-    this True, so live behavior is completely unchanged."""
+    this True, so live behavior is completely unchanged.
+
+    blackwater_scorecard: the sentinel "unset" (not None) means "look it
+    up live via provider_scorecard.get_scorecard(channel_id)" - the
+    normal live-trading path. core/backtest_engine.py passes an actual
+    dict (or None) instead - a WALK-FORWARD scorecard built from only
+    the signals already replayed earlier in that same simulation, never
+    a live DB query, which would leak the provider's current/future real
+    performance into a historical replay (lookahead bias). None must be
+    a legal override (falls back to Blackwater's base tier), so "unset"
+    is a separate sentinel value, not None itself."""
     mode = profile["sizing_mode"]
     bankroll = profile["bankroll"]
     current_pnl = session["realized_pnl"]
@@ -196,6 +208,23 @@ def _base_amount(profile, session, record_events=True):
 
         return daily_compounding.compute_risk_per_trade(settings, day_starting_balance)
 
+    if mode == "blackwater":
+        bw = profile["blackwater"]
+        if not bw["enabled"]:
+            return profile["fixed_amount"]
+        current_bankroll = bankroll + current_pnl
+        if blackwater_scorecard != "unset":
+            scorecard = blackwater_scorecard
+        else:
+            scorecard = provider_scorecard.get_scorecard(channel_id) if channel_id is not None else None
+        amount, tier = capital_strategies.blackwater_deployment(bw, current_bankroll, scorecard)
+        if record_events:
+            database.record_pipeline_event(
+                None, None, SignalLifecycleState.SIZED, channel_id=channel_id,
+                detail=f"blackwater: tier={tier}, stake=${amount}",
+            )
+        return amount
+
     return profile["fixed_amount"]
 
 
@@ -221,7 +250,7 @@ def _apply_martingale(amount, martingale, step):
     return stepped
 
 
-def compute_position_size(session_id, static_default_amount, record_events=True):
+def compute_position_size(session_id, static_default_amount, record_events=True, channel_id=None):
     """The one entry point trade_coordinator.py calls. Returns
     risk_manager.compute_trade_amount(static_default_amount) unchanged if
     the session has neither risk_profile_id nor money_plan_key set (see
@@ -275,7 +304,7 @@ def compute_position_size(session_id, static_default_amount, record_events=True)
         if fund_balances is not None:
             profile["bankroll"] = fund_balances["trading_balance"] - session["realized_pnl"]
 
-    amount = _base_amount(profile, session, record_events=record_events)
+    amount = _base_amount(profile, session, record_events=record_events, channel_id=channel_id)
     if not session["martingale_disabled"]:
         amount = _apply_martingale(amount, profile["martingale"], session["current_martingale_step"])
 
