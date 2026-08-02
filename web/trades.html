@@ -243,7 +243,7 @@ async function openDetail(tradeId) {
       <div class="stat-row"><span class="stat-label">Asset</span><span class="stat-value">${escapeHtml(t.asset || "-")}</span></div>
       <div class="stat-row"><span class="stat-label">Direction</span><span class="stat-value">${escapeHtml(t.direction || "-")}</span></div>
       <div class="stat-row"><span class="stat-label">Expiry</span><span class="stat-value">${escapeHtml(t.timeframe || "-")}</span></div>
-      <div class="stat-row"><span class="stat-label">Source</span><span class="stat-value">${escapeHtml(t.channel || "-")}</span></div>
+      <div class="stat-row"><span class="stat-label">Source</span><span class="stat-value">${escapeHtml(t.channel || "-")}${t.channel_id ? ` <a href="/telegram?open_profile=${t.channel_id}" class="subtle" style="font-size:11px; padding:3px 8px; text-decoration:none;">View Provider Profile</a>` : ""}</span></div>
     `;
 
     let moneyHtml = `<div class="stat-row"><span class="stat-label">Amount used</span><span class="stat-value">${t.trade_amount !== null ? "$" + t.trade_amount : "-"}</span></div>`;

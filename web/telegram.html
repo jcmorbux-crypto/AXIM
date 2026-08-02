@@ -1248,6 +1248,12 @@ async function runParseTest() {
   const qChannel = params.get("channel");
   const qMessage = params.get("message");
   if (qChannel && qMessage) openJourneyModalFromQuery(qChannel, qMessage);
+
+  // Trade Detail's own "View Provider Profile" link (web/trades.html) -
+  // same channelLabel(id) lookup against allChannels (already loaded by
+  // refreshChannels() above) openJourneyModalFromQuery already uses.
+  const qOpenProfile = params.get("open_profile");
+  if (qOpenProfile) openProfileModal(Number(qOpenProfile), channelLabel(Number(qOpenProfile)));
 })();
 </script>
 </body>
