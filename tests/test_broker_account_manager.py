@@ -185,22 +185,32 @@ class BrokerAccountManagerTests(unittest.TestCase):
 class AccountEffectiveCabinetModeTests(unittest.TestCase):
     """account_effective_cabinet_mode() - see core/database.py's
     broker_accounts.mode docstring: 'a both account can still be
-    demo-only in practice until [live_enabled] is flipped'."""
+    demo-only in practice until [live_enabled] is flipped'. 2026-08-01
+    Live Production Graduation Phase 2 item #5: live_enabled alone is no
+    longer sufficient - a separate live_arm_confirmed_at (only ever set
+    by database.confirm_live_arm, a reason-required action) is also
+    required."""
 
-    def _account(self, mode, live_enabled):
-        return {"mode": mode, "live_enabled": live_enabled}
+    def _account(self, mode, live_enabled, live_arm_confirmed_at=None):
+        return {"mode": mode, "live_enabled": live_enabled, "live_arm_confirmed_at": live_arm_confirmed_at}
 
     def test_demo_mode_is_always_demo_regardless_of_live_enabled(self):
         self.assertEqual(account_effective_cabinet_mode(self._account("demo", False)), "demo")
-        self.assertEqual(account_effective_cabinet_mode(self._account("demo", True)), "demo")
+        self.assertEqual(account_effective_cabinet_mode(self._account("demo", True, "2026-08-01T00:00:00")), "demo")
 
     def test_both_mode_is_demo_until_live_enabled_flipped(self):
         self.assertEqual(account_effective_cabinet_mode(self._account("both", False)), "demo")
-        self.assertEqual(account_effective_cabinet_mode(self._account("both", True)), "live")
+        self.assertEqual(account_effective_cabinet_mode(self._account("both", True, "2026-08-01T00:00:00")), "live")
 
     def test_live_mode_is_demo_until_live_enabled_flipped(self):
         self.assertEqual(account_effective_cabinet_mode(self._account("live", False)), "demo")
-        self.assertEqual(account_effective_cabinet_mode(self._account("live", True)), "live")
+        self.assertEqual(account_effective_cabinet_mode(self._account("live", True, "2026-08-01T00:00:00")), "live")
+
+    def test_live_enabled_without_a_live_arm_confirmation_is_still_demo(self):
+        # The exact gap this Phase 2 item closed: previously mode=live/
+        # both + live_enabled=True alone was sufficient.
+        self.assertEqual(account_effective_cabinet_mode(self._account("both", True, None)), "demo")
+        self.assertEqual(account_effective_cabinet_mode(self._account("live", True, None)), "demo")
 
 
 class LiveAuthorizationGateTests(unittest.TestCase):
@@ -232,6 +242,12 @@ class LiveAuthorizationGateTests(unittest.TestCase):
         database.update_broker_account(
             account_id, connection_status="connected", live_enabled=int(account_live_enabled),
         )
+        if account_live_enabled:
+            # 2026-08-01 Live Production Graduation Phase 2 item #5:
+            # live_enabled alone is no longer sufficient - these tests
+            # exercise "the account IS live-effective," which now also
+            # requires the separate, reason-required live-arm confirmation.
+            database.confirm_live_arm(account_id, confirmed_by="test@axim.local", reason="test setup")
         database.assign_broker_account_to_fund(fund_id, account_id)
         session_id = database.start_trading_session("Test", [1], "DEMO", fund_id=fund_id)
         fake_coordinator = FakeCoordinator()

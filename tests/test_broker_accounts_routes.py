@@ -156,6 +156,62 @@ class EmergencyStopRouteTestCase(unittest.TestCase):
         self.assertEqual(still_active["status"], "active")
 
 
+class ConfirmLiveArmRouteTestCase(unittest.TestCase):
+    """Live-mode safety gate (2026-08-01, Live Production Graduation
+    Phase 2 item #5) - POST /{account_id}/confirm-live-arm, the
+    separate, reason-required action account_effective_cabinet_mode now
+    requires in addition to live_enabled=True before an account is ever
+    Live-effective."""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.TemporaryDirectory()
+        self._original_db_file = database.DB_FILE
+        database.DB_FILE = Path(self._tmp_dir.name) / "test_axim.db"
+        database.initialize_database()
+        self.account_id = database.create_broker_account("Test Account", mode="both")
+        database.update_broker_account(self.account_id, live_enabled=True)
+
+    def tearDown(self):
+        database.DB_FILE = self._original_db_file
+        self._tmp_dir.cleanup()
+
+    def test_confirm_live_arm_sets_confirmation_fields(self):
+        result = routes.confirm_live_arm(
+            self.account_id, routes.ConfirmLiveArmRequest(reason="verified real live cabinet"), user=_FAKE_ADMIN,
+        )
+        self.assertIsNotNone(result["live_arm_confirmed_at"])
+        self.assertEqual(result["live_arm_confirmed_by"], _FAKE_ADMIN["email"])
+        self.assertEqual(result["live_arm_reason"], "verified real live cabinet")
+
+    def test_empty_reason_is_rejected(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            routes.confirm_live_arm(self.account_id, routes.ConfirmLiveArmRequest(reason="   "), user=_FAKE_ADMIN)
+        self.assertEqual(ctx.exception.status_code, 400)
+
+    def test_unknown_account_404s(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            routes.confirm_live_arm(999999, routes.ConfirmLiveArmRequest(reason="x"), user=_FAKE_ADMIN)
+        self.assertEqual(ctx.exception.status_code, 404)
+
+    def test_confirming_alone_does_not_flip_live_enabled(self):
+        # confirm-live-arm is deliberately NOT a substitute for the
+        # live_enabled toggle - both are independently required.
+        database.update_broker_account(self.account_id, live_enabled=False)
+        result = routes.confirm_live_arm(
+            self.account_id, routes.ConfirmLiveArmRequest(reason="test"), user=_FAKE_ADMIN,
+        )
+        self.assertFalse(result["live_enabled"])
+        self.assertIsNotNone(result["live_arm_confirmed_at"])
+
+    def test_disabling_live_enabled_afterward_clears_the_confirmation(self):
+        routes.confirm_live_arm(self.account_id, routes.ConfirmLiveArmRequest(reason="test"), user=_FAKE_ADMIN)
+        routes.update_broker_account(self.account_id, routes.BrokerAccountUpdate(live_enabled=False), user=_FAKE_ADMIN)
+        account = database.get_broker_account(self.account_id)
+        self.assertIsNone(account["live_arm_confirmed_at"])
+
+
 class DisconnectRouteTestCase(unittest.TestCase):
     def setUp(self):
         self._tmp_dir = tempfile.TemporaryDirectory()

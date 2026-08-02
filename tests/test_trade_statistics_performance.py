@@ -169,10 +169,11 @@ class ExcludeLiveIsolationTests(unittest.TestCase):
     """AXIM Live Production Graduation Phase 2 - live statistics
     isolation (2026-08-01): exclude_live=True must guarantee a Demo-
     scoped aggregate can never blend in a trade from a Live-effective
-    broker account (mode in (live, both) AND live_enabled), matching
-    core/broker_account_manager.account_effective_cabinet_mode's own
-    rule. Default (exclude_live=False, every existing caller) is
-    byte-identical to before this feature existed."""
+    broker account (mode in (live, both) AND live_enabled AND a
+    live-arm confirmation on file), matching core/broker_account_
+    manager.account_effective_cabinet_mode's own rule exactly. Default
+    (exclude_live=False, every existing caller) is byte-identical to
+    before this feature existed."""
 
     def setUp(self):
         self._tmp_dir = tempfile.TemporaryDirectory()
@@ -181,6 +182,7 @@ class ExcludeLiveIsolationTests(unittest.TestCase):
         database.initialize_database()
         self.live_account = database.create_broker_account("Live Account", mode="live")
         database.update_broker_account(self.live_account, live_enabled=True)
+        database.confirm_live_arm(self.live_account, confirmed_by="test@axim.local", reason="test setup")
         self.demo_account = database.create_broker_account("Demo Account", mode="demo")
 
     def tearDown(self):
@@ -212,6 +214,28 @@ class ExcludeLiveIsolationTests(unittest.TestCase):
         rows = database.get_trades_between("2000-01-01", "2100-01-01", closed_only=True, exclude_live=True)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["profit_loss"], 7)
+
+    def test_live_enabled_but_not_arm_confirmed_is_not_excluded(self):
+        # 2026-08-01 Live-mode safety gate (Graduation Phase 2 item #5):
+        # live_enabled=True alone is no longer sufficient - without a
+        # separate confirm_live_arm() call, the account still reads as
+        # Demo for isolation purposes too, consistent with
+        # account_effective_cabinet_mode.
+        enabled_not_confirmed = database.create_broker_account("Enabled Not Confirmed", mode="both")
+        database.update_broker_account(enabled_not_confirmed, live_enabled=True)
+        _make_closed_trade(result="win", profit_loss=9, broker_account_id=enabled_not_confirmed)
+        rows = database.get_trades_between("2000-01-01", "2100-01-01", closed_only=True, exclude_live=True)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["profit_loss"], 9)
+
+    def test_disarming_clears_confirmation_so_the_account_reads_demo_again(self):
+        database.update_broker_account(self.live_account, live_enabled=False)
+        _make_closed_trade(result="win", profit_loss=3, broker_account_id=self.live_account)
+        rows = database.get_trades_between("2000-01-01", "2100-01-01", closed_only=True, exclude_live=True)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["profit_loss"], 3)
+        account = database.get_broker_account(self.live_account)
+        self.assertIsNone(account["live_arm_confirmed_at"])
 
     def test_lifetime_stats_exclude_live(self):
         _make_closed_trade(result="win", profit_loss=100, broker_account_id=self.live_account)

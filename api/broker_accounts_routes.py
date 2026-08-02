@@ -251,6 +251,27 @@ def set_broker_account_safety_settings(account_id: int, body: BrokerAccountSafet
     return {"overrides": overrides, **risk_manager.get_account_safety_status(account_id)}
 
 
+class ConfirmLiveArmRequest(BaseModel):
+    reason: str
+
+
+@router.post("/{account_id}/confirm-live-arm")
+def confirm_live_arm(account_id: int, body: ConfirmLiveArmRequest, user=Depends(require_admin)):
+    """The Live-mode safety gate's arm action (2026-08-01, Live
+    Production Graduation Phase 2 item #5) - a separate, reason-required
+    step beyond just toggling live_enabled=True on PATCH /{account_id}.
+    core/broker_account_manager.account_effective_cabinet_mode now
+    requires BOTH before this account's browser session will ever load
+    the live cabinet. See database.confirm_live_arm's own docstring for
+    why this can't be bypassed via the plain PATCH endpoint."""
+    _get_or_404(account_id)
+    try:
+        database.confirm_live_arm(account_id, confirmed_by=user["email"], reason=body.reason)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return _with_funds(database.get_broker_account(account_id))
+
+
 class ResetConsecutiveLossLockRequest(BaseModel):
     reason: str
 

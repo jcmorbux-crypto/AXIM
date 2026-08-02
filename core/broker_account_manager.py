@@ -68,14 +68,17 @@ def _lock_for(broker_account_id):
 
 def account_effective_cabinet_mode(account):
     """Which cabinet this account's persistent browser session should
-    actually load: 'live' only if the account is BOTH configured for
-    live capability (mode 'live' or 'both') AND has its own live_enabled
-    safety switch on - matches core/database.py's broker_accounts.mode
-    docstring exactly ("a 'both' account can still be demo-only in
-    practice until this is flipped"). Anything else (mode='demo', or
-    live capability present but not yet flipped on) is 'demo' - there is
-    no unsafe middle state here, only demo-or-live."""
-    if account["mode"] in ("live", "both") and account["live_enabled"]:
+    actually load: 'live' only if the account is configured for live
+    capability (mode 'live' or 'both'), has its own live_enabled safety
+    switch on, AND (2026-08-01, Live Production Graduation Phase 2 item
+    #5) has a live-arm confirmation on file (database.confirm_live_arm -
+    a separate, reason-required action; live_enabled alone used to be
+    sufficient, which meant a single unconfirmed checkbox toggle was
+    enough to arm the most consequential switch in the system). Anything
+    else (mode='demo', live_enabled not set, or live_enabled set but
+    never separately confirmed) is 'demo' - there is no unsafe middle
+    state here, only demo-or-live."""
+    if account["mode"] in ("live", "both") and account["live_enabled"] and account.get("live_arm_confirmed_at"):
         return "live"
     return "demo"
 

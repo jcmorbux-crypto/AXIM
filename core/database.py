@@ -824,6 +824,24 @@ def initialize_database():
         "daily_profit_target_override": "REAL",
         "max_trades_per_hour_override": "INTEGER",
         "max_trades_per_day_override": "INTEGER",
+        # Live-mode safety gate (2026-08-01, AXIM Live Production
+        # Graduation Phase 2 item #5): before this, flipping
+        # live_enabled=True (a single unconfirmed checkbox PATCH, no
+        # reason, no audit trail) was, by itself, enough to make
+        # account_effective_cabinet_mode return "live" - the single
+        # most consequential switch in the whole system had less
+        # friction than resetting a consecutive-loss lock. Now
+        # account_effective_cabinet_mode (core/broker_account_manager.py)
+        # ALSO requires live_arm_confirmed_at to be set, which only
+        # confirm_live_arm() (a separate, reason-required action) can
+        # set - live_enabled remains a real, independent field (still
+        # required, still toggleable), but is no longer sufficient on
+        # its own. Cleared automatically whenever live_enabled is set
+        # back to False (see update_broker_account) - re-enabling later
+        # always requires a fresh confirmation, never a stale one.
+        "live_arm_confirmed_at": "TEXT",
+        "live_arm_confirmed_by": "TEXT",
+        "live_arm_reason": "TEXT",
     }
     broker_account_columns = {row["name"] for row in conn.execute("PRAGMA table_info(broker_accounts)")}
     for column, sql_type in _NEW_BROKER_ACCOUNT_COLUMNS.items():
@@ -3055,22 +3073,26 @@ def record_manual_reconciliation(series_id, audit):
 def get_trades_between(start_iso, end_iso, closed_only=False, fund_id=None, exclude_live=False):
     """exclude_live=True (2026-08-01, AXIM Live Production Graduation
     Phase 2 - live statistics isolation) drops every trade whose
-    broker_account is currently Live-effective (core/broker_account_
-    manager.account_effective_cabinet_mode's own 'mode in (live, both)
-    AND live_enabled' rule, duplicated here as a subquery rather than
+    broker_account is currently Live-effective - core/broker_account_
+    manager.account_effective_cabinet_mode's own rule (mode in (live,
+    both) AND live_enabled AND a live-arm confirmation on file, see
+    confirm_live_arm), duplicated here as a subquery rather than
     imported to avoid a circular import - database.py has no dependency
-    on broker_account_manager.py today). Every existing caller keeps
-    exclude_live's default of False, so today's global/lifetime
-    aggregate stats (core/trade_statistics.py) are BYTE-IDENTICAL to
-    before this - there are no Live trades yet for it to matter. This
-    exists so the moment a Live trade exists, a Demo-scoped view can
-    provably never blend it in, without redesigning any consuming page."""
+    on broker_account_manager.py today. Kept in sync by hand; if that
+    function's rule ever changes, this clause must change with it.
+    Every existing caller keeps exclude_live's default of False, so
+    today's global/lifetime aggregate stats (core/trade_statistics.py)
+    are BYTE-IDENTICAL to before this - there are no Live trades yet for
+    it to matter. This exists so the moment a Live trade exists, a
+    Demo-scoped view can provably never blend it in, without redesigning
+    any consuming page."""
     conn = get_connection()
     fund_clause = " AND fund_id = ?" if fund_id is not None else ""
     fund_params = (fund_id,) if fund_id is not None else ()
     live_clause = (
         " AND (broker_account_id IS NULL OR broker_account_id NOT IN "
-        "(SELECT id FROM broker_accounts WHERE mode IN ('live', 'both') AND live_enabled = 1))"
+        "(SELECT id FROM broker_accounts WHERE mode IN ('live', 'both') "
+        "AND live_enabled = 1 AND live_arm_confirmed_at IS NOT NULL))"
     ) if exclude_live else ""
     if closed_only:
         rows = conn.execute(f"""
@@ -4346,11 +4368,46 @@ def update_broker_account(account_id, **fields):
         raise ValueError(f"invalid connection status: {fields['connection_status']!r}")
     if not fields:
         return
+    # Live-mode safety gate: disarming (live_enabled -> False) always
+    # clears any prior live-arm confirmation in the SAME update, so a
+    # later re-enable can never silently inherit a stale confirmation -
+    # see confirm_live_arm's own docstring and the live_arm_* columns'
+    # migration comment above. Only fires on an explicit False, never on
+    # every unrelated PATCH (e.g. renaming the account).
+    if fields.get("live_enabled") is False or fields.get("live_enabled") == 0:
+        fields = {**fields, "live_arm_confirmed_at": None, "live_arm_confirmed_by": None, "live_arm_reason": None}
     set_clauses = [f"{key} = ?" for key in fields] + ["updated_at = ?"]
     params = list(fields.values()) + [datetime.now().isoformat()]
     params.append(account_id)
     conn = get_connection()
     conn.execute(f"UPDATE broker_accounts SET {', '.join(set_clauses)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+
+@timed("database")
+def confirm_live_arm(account_id, confirmed_by, reason):
+    """The Live-mode safety gate's own arm action (2026-08-01, Live
+    Production Graduation Phase 2 item #5) - the ONLY way live_arm_
+    confirmed_at gets set (deliberately not added to _BROKER_ACCOUNT_
+    FIELDS/update_broker_account's generic field set, so an admin can't
+    bypass the reason requirement via the plain PATCH endpoint). Does
+    NOT flip live_enabled itself - that remains its own explicit,
+    independent field; arming requires BOTH live_enabled=True (set via
+    the normal PATCH) AND this confirmation (see core/
+    broker_account_manager.account_effective_cabinet_mode, which now
+    requires both). Raises ValueError on an empty reason - this
+    overrides a real safety gate, so "who" alone was never enough,
+    matching the same standard core/risk_manager.reset_consecutive_
+    loss_lock already holds itself to."""
+    if not reason or not reason.strip():
+        raise ValueError("a reason is required to confirm live-mode arming")
+    conn = get_connection()
+    conn.execute(
+        "UPDATE broker_accounts SET live_arm_confirmed_at = ?, live_arm_confirmed_by = ?, "
+        "live_arm_reason = ?, updated_at = ? WHERE id = ?",
+        (datetime.now().isoformat(), confirmed_by, reason.strip(), datetime.now().isoformat(), account_id),
+    )
     conn.commit()
     conn.close()
 
